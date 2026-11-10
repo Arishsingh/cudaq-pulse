@@ -1,0 +1,15 @@
+{
+    "pythonVersion": "3.12",
+    "pythonPlatform": "Linux",
+    "executionEnvironments": [
+        {
+            "root": "core/frontend"
+        },
+        {
+            "root": "examples"
+        },
+        {
+            "root": "tests"
+        }
+    ]
+}

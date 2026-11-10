@@ -1,0 +1,300 @@
+# ============================================================================ #
+# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
+# All rights reserved.                                                         #
+#                                                                              #
+# This source code and the accompanying materials are made available under     #
+# the terms of the Apache License 2.0 which accompanies this distribution.     #
+# ============================================================================ #
+"""The wire format against the CUDA-Q Realtime protocol and CUDA-QX decoders.
+
+The facts come from ``fixtures/realtime_wire.json``, copied from the public
+sources it names. With ``CUDAQ_SOURCE_DIR`` (and ``CUDAQX_SOURCE_DIR``) set
+to checkouts of those projects, the fixture is checked against them too.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import struct
+import subprocess
+from pathlib import Path
+
+import cudaq_pulse as pulse
+import pytest
+from cudaq_pulse import classical
+from cudaq_pulse.classical import (
+    _IQ,
+    _Bits,
+    _Byte,
+    _Bytes,
+    _Float,
+    _Floats,
+    _Integer,
+    _Integers,
+    _Levels,
+    wire,
+)
+
+from tests._tools import c_compiler, tool_env
+
+
+def _schema_function(name, args=(), results=(), body=None):
+    """A function of one schema given as wire types, for layouts that no
+    type hint spells (u8, 32-bit numbers)."""
+    return classical.ClassicalFunction._declared(body, args, results, name=name, max_latency_ns=0)
+
+
+FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "realtime_wire.json").read_text())
+
+
+def test_header_layout_and_magics():
+    assert wire.HEADER_BYTES == FIXTURE["header_bytes"]
+    assert wire.REQUEST_MAGIC == FIXTURE["request_magic"]
+    assert wire.RESPONSE_MAGIC == FIXTURE["response_magic"]
+
+    @pulse.classical(name="probe", max_latency_ns=0)
+    def fn() -> None:
+        pass
+
+    request = wire.encode_request(fn, (), request_id=7, timestamp=2**40)
+    magic, fid, length, rid, ts = struct.unpack("<IIIIQ", request)
+    key = classical.function_id("probe")
+    assert (magic, fid, length, rid, ts) == (wire.REQUEST_MAGIC, key, 0, 7, 2**40)
+    assert wire.decode_request(fn, request)[0] == 7
+    moved = wire.encode_request(fn, (), dispatch_key=3)
+    assert struct.unpack_from("<I", moved, 4)[0] == 3 and wire.decode_request(fn, moved, 3)[0] == 0
+    with pytest.raises(pulse.ExecutionError, match="request for dispatch key 0x3, not probe's"):
+        wire.decode_request(fn, moved)
+
+
+def test_payload_type_ids():
+    ids = FIXTURE["payload_types"]
+    fn = _schema_function(
+        "all",
+        (
+            _Byte(),
+            _Integer(32),
+            _Integer(),
+            _Float(32),
+            _Float(),
+            _Floats(2, 32),
+            _Floats(2),
+            _Bits(3),
+        ),
+        (two_bytes := _Bytes(2), _Integers(2), _Levels(2), _IQ(1)),
+    )
+    s = wire.schema(fn)
+    assert [a["type_id"] for a in s["args"]] == [
+        ids["UINT8"],
+        ids["INT32"],
+        ids["INT64"],
+        ids["FLOAT32"],
+        ids["FLOAT64"],
+        ids["ARRAY_FLOAT32"],
+        ids["ARRAY_FLOAT64"],
+        ids["BIT_PACKED"],
+    ]
+    assert [r["type_id"] for r in s["results"]] == [
+        ids["ARRAY_UINT8"],
+        ids["ARRAY_INT32"],
+        ids["ARRAY_UINT8"],
+        ids["ARRAY_FLOAT32"],
+    ]
+    assert s["args"][-1] == {"type_id": ids["BIT_PACKED"], "size_bytes": 1, "num_elements": 3}
+    assert s["results"][-1] == {"type_id": ids["ARRAY_FLOAT32"], "size_bytes": 8, "num_elements": 2}
+    assert two_bytes.descriptor == "u8[2]"
+    assert len(fn.args) <= FIXTURE["schema_limits"]["args"]
+
+
+def test_protocol_examples():
+    example1, example2, example3, _ = FIXTURE["protocol_examples"]
+    process = _schema_function("process", (_Integer(32), _Float(32)))
+    request = wire.encode_request(process, (5, 0.25))
+    assert len(request) - 24 == example1["arg_len"]
+    assert struct.unpack_from("<i", request, example1["offsets"][0])[0] == 5
+    assert struct.unpack_from("<f", request, example1["offsets"][1])[0] == 0.25
+    decode = _schema_function("decode", (_Bits(128), _Integer(32)))
+    request = wire.encode_request(decode, ([1] * 128, 128))
+    assert len(request) - 24 == example2["arg_len"]
+    assert struct.unpack_from("<I", request, example2["offsets"][1])[0] == 128
+    answer_fn = _schema_function("answer", (), (_Byte(),))
+    answer = wire.encode_answer(answer_fn, 3)
+    assert answer[24] == example3["result_byte_24"]
+    assert struct.unpack_from("<I", answer, 8)[0] == example3["result_len"]
+
+
+def test_bits_pack_lsb_first():
+    case = FIXTURE["bit_packing"]
+
+    @pulse.classical(name="bits", max_latency_ns=0)
+    def bits(b: pulse.Bits) -> None:
+        return None
+
+    fn = bits.specialize(b=len(case["bits"]))
+    request = wire.encode_request(fn, (case["bits"],))
+    assert list(request[24:]) == case["bytes"]
+    assert wire.decode_request(fn, request)[2] == [case["bits"]]
+
+
+def test_round_trips():
+    @pulse.classical(max_latency_ns=0)
+    def mixed(
+        bits: pulse.Length[pulse.Bits, 10],
+        counts: pulse.Length[list[int], 3],
+        points: pulse.Length[list[complex], 2],
+        x: float,
+    ) -> tuple[float, pulse.Bits]:
+        return x, bits[:3]
+
+    assert [a.descriptor for a in mixed.args] == ["bits:10", "i32[3]", "iq:2", "f64"]
+    args = ([1, 0] * 5, [0, 2, 1], [0.5 - 0.5j, 1.0 + 2.0j], 3.25)
+    request = wire.encode_request(mixed, args, request_id=9)
+    rid, _, decoded = wire.decode_request(mixed, request)
+    assert rid == 9 and decoded == [args[0], args[1], [0.5 - 0.5j, 1.0 + 2.0j], 3.25]
+    answer = wire.encode_answer(mixed, (0.125, [1, 1, 0]), request_id=9)
+    assert wire.decode_answer(mixed, answer) == (0, 9, (0.125, [1, 1, 0]))
+
+    fn = _schema_function(
+        "mixed32",
+        (_Bits(10), _Levels(3), _IQ(2), _Float(), _Integer(32), _Floats(2, 32)),
+        (_Float(), _Bits(3)),
+    )
+    args = ([1, 0] * 5, [0, 2, 1], [(0.5, -0.5), (1.0, 2.0)], 3.25, -7, [1.5, 2.5])
+    request = wire.encode_request(fn, args, request_id=9)
+    rid, _, decoded = wire.decode_request(fn, request)
+    assert rid == 9
+    assert decoded[:2] == [args[0], args[1]] and decoded[2] == [0.5 - 0.5j, 1.0 + 2.0j]
+    assert decoded[3:] == [3.25, -7, [1.5, 2.5]]
+    answer = wire.encode_answer(fn, (0.125, [1, 1, 0]), request_id=9)
+    assert wire.decode_answer(fn, answer) == (0, 9, (0.125, [1, 1, 0]))
+    failed = wire.encode_answer(fn, (0.0, [0, 0, 0]), status=3)
+    assert wire.decode_answer(fn, failed)[0] == 3
+    with pytest.raises(pulse.ExecutionError, match="not a request"):
+        wire.decode_request(fn, answer)
+
+
+def test_cudaqx_decoder_ids():
+    for name, fid in FIXTURE["cudaqx_decoder"]["function_ids"].items():
+        assert classical.function_id(name) == fid
+
+
+_C_HANDLER = r"""
+#include <stdint.h>
+#include <string.h>
+#include <stddef.h>
+struct header { uint32_t magic, function_id, length, request_id; uint64_t timestamp; };
+struct answer { uint32_t magic; int32_t status; uint32_t length, request_id; uint64_t timestamp; };
+/* The parity of 4 bit-packed syndrome bits, as one bit. */
+void parity(const void *request, void *out, size_t slot) {
+  const struct header *h = request;
+  const uint8_t *bits = (const uint8_t *)request + 24;
+  uint8_t p = (bits[0] ^ (bits[0] >> 1) ^ (bits[0] >> 2) ^ (bits[0] >> 3)) & 1;
+  struct answer a = {0x43555153u, 0, 1, h->request_id, h->timestamp};
+  memcpy(out, &a, sizeof a);
+  ((uint8_t *)out)[24] = p;
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def handler_library(tmp_path_factory):
+    compiler = c_compiler()
+    directory = tmp_path_factory.mktemp("handler")
+    source = directory / "parity.c"
+    source.write_text(_C_HANDLER)
+    library = directory / "libparity.so"
+    subprocess.run(
+        [compiler, "-shared", "-fPIC", "-o", str(library), str(source)], env=tool_env(), check=True
+    )
+    return str(library)
+
+
+@pulse.classical(max_latency_ns=0)
+def parity(bits: pulse.Bits) -> pulse.Bits:
+    return [sum(bits) % 2]
+
+
+def test_a_native_handler_answers_like_the_python_one(handler_library):
+    native = wire.native(handler_library, "parity", parity.specialize(bits=4))
+    for bits in ([0, 0, 0, 0], [1, 0, 0, 0], [1, 1, 0, 1], [1, 1, 1, 1]):
+        assert native(bits) == parity(bits)
+
+
+def test_a_native_handler_drives_a_simulation(handler_library):
+    from tests.classical.test_simulation import PI_AMP, _device
+
+    @pulse.kernel
+    def k(a, b, c, d, flag):
+        ms = []
+        for q in (a, b, c, d):
+            r = get_readout_line(q)
+            ms.append(readout(r, square(100, 0.05)))
+        f = get_drive_line(flag)
+        if parity.submit(ms).result()[0]:
+            drive(f, square(40, PI_AMP))
+
+    dev = _device(n=5)
+    low = pulse.compile(k, device=dev).lower(*dev.qudit_handles[:5])
+    import numpy as np
+
+    rho0 = np.zeros(32)
+    rho0[0b00111] = 1.0  # three data qubits in |1>: odd parity
+    python = pulse.simulate(low, initial_state=rho0, levels=2)
+    native = pulse.simulate(
+        low,
+        initial_state=rho0,
+        handlers={"parity": wire.native(handler_library, "parity", parity.specialize(bits=4))},
+        levels=2,
+    )
+    np.testing.assert_allclose(native.density_matrix, python.density_matrix, atol=1e-12)
+    assert native.density_matrix[0b10111, 0b10111].real == pytest.approx(1.0, abs=1e-6)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("CUDAQ_SOURCE_DIR"), reason="set CUDAQ_SOURCE_DIR to check the fixture"
+)
+def test_fixture_matches_cuda_q_sources():
+    root = Path(os.environ["CUDAQ_SOURCE_DIR"])
+    header = (root / FIXTURE["sources"]["cuda-quantum"]["files"][0]).read_text()
+    assert (
+        int(re.search(r"CUDAQ_RPC_MAGIC_REQUEST (0x[0-9A-Fa-f]+)u", header).group(1), 16)
+        == FIXTURE["request_magic"]
+    )
+    assert (
+        int(re.search(r"CUDAQ_RPC_MAGIC_RESPONSE (0x[0-9A-Fa-f]+)u", header).group(1), 16)
+        == FIXTURE["response_magic"]
+    )
+    assert (
+        int(re.search(r"CUDAQ_RPC_HEADER_SIZE (\d+)u", header).group(1)) == FIXTURE["header_bytes"]
+    )
+    api = (root / FIXTURE["sources"]["cuda-quantum"]["files"][1]).read_text()
+    for name, value in FIXTURE["payload_types"].items():
+        assert int(re.search(rf"CUDAQ_TYPE_{name} = (0x[0-9A-Fa-f]+)", api).group(1), 16) == value
+    assert re.search(r"cudaq_type_desc_t args\[(\d+)\]", api).group(1) == str(
+        FIXTURE["schema_limits"]["args"]
+    )
+    assert re.search(r"cudaq_type_desc_t results\[(\d+)\]", api).group(1) == str(
+        FIXTURE["schema_limits"]["results"]
+    )
+
+
+@pytest.mark.skipif(
+    not os.environ.get("CUDAQX_SOURCE_DIR"), reason="set CUDAQX_SOURCE_DIR to check the fixture"
+)
+def test_fixture_matches_cudaqx_sources():
+    root = Path(os.environ["CUDAQX_SOURCE_DIR"])
+    text = (root / FIXTURE["sources"]["cudaqx"]["files"][0]).read_text()
+    expected = FIXTURE["cudaqx_decoder"]
+    for name, fid in expected["function_ids"].items():
+        assert re.search(rf'fnv1a_hash\("{name}"\)', text)
+        assert (
+            f"{fid:#X}".replace("0X", "0x") in text.replace("u,", ",").replace("u\n", "\n")
+            or f"0x{fid:08X}" in text
+        )
+    for name, value in expected["status"].items():
+        assert re.search(rf"\b{name} = {value}\b", text)
+    assert "sizeof(EnqueueRequestPayload) == 32" in text
+    assert "sizeof(GetCorrectionsRequestPayload) == 17" in text
+    assert "sizeof(ResetRequestPayload) == 8" in text

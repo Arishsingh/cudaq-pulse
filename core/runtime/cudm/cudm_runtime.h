@@ -1,0 +1,120 @@
+/*******************************************************************************
+ * Copyright (c) 2026 NVIDIA Corporation & Affiliates.                         *
+ * All rights reserved.                                                        *
+ *                                                                             *
+ * This source code and the accompanying materials are made available under    *
+ * the terms of the Apache License 2.0 which accompanies this distribution.    *
+ *******************************************************************************/
+
+#ifndef CUDAQ_PULSE_RUNTIME_CUDM_RUNTIME_H
+#define CUDAQ_PULSE_RUNTIME_CUDM_RUNTIME_H
+
+#include <cstddef>
+#include <cstdint>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef void *CudmHandle;
+typedef void *CudmState;
+typedef void *CudmWorkspace;
+typedef void *CudmOperator;
+typedef void *CudmElementaryOp;
+typedef void *CudmOpTerm;
+
+typedef enum {
+  CUDM_SUCCESS = 0,
+  CUDM_ERROR_INVALID_HANDLE = 1,
+  CUDM_ERROR_INVALID_STATE = 2,
+  CUDM_ERROR_NO_GPU = 3,
+  CUDM_ERROR_CUDA = 4,
+  CUDM_ERROR_INTERNAL = 99,
+} CudmStatus;
+
+// Loaded cuDensityMat library version (major * 10000 + minor * 100 + patch),
+// which the Python loader checks against the version this runtime was built
+// with.
+int64_t cudm_runtime_version(void);
+
+// Context management
+CudmStatus cudm_init(CudmHandle *handle);
+CudmStatus cudm_destroy(CudmHandle handle);
+
+// State management
+CudmStatus cudm_state_alloc(CudmHandle handle, CudmState *state,
+                            const int64_t *mode_extents, int32_t num_modes,
+                            int32_t purity, int32_t data_type);
+CudmStatus cudm_state_destroy(CudmState state);
+CudmStatus cudm_state_capture(CudmState state);
+// Use `data` (`size` bytes, in the layout cudm_state_capture produces) as the
+// initial value of the next state allocated on this thread instead of |0>.
+CudmStatus cudm_set_initial_state(const void *data, int64_t size);
+int64_t cudm_last_result_size(void);
+CudmStatus cudm_last_result_copy(void *destination, int64_t destination_size);
+const char *cudm_last_error_message(void);
+
+// Workspace management
+CudmStatus cudm_workspace_create(CudmHandle handle, CudmWorkspace *ws);
+CudmStatus cudm_workspace_destroy(CudmWorkspace ws);
+
+// Operator management
+CudmStatus cudm_operator_create(CudmHandle handle, CudmOperator *op,
+                                const int64_t *mode_extents, int32_t num_modes);
+CudmStatus cudm_operator_destroy(CudmOperator op);
+
+// Elementary operator
+CudmStatus cudm_elementary_op_create(CudmHandle handle,
+                                     CudmElementaryOp *elem_op,
+                                     const void *tensor_data,
+                                     int64_t tensor_value_count,
+                                     const int64_t *mode_extents,
+                                     int32_t num_modes, int32_t data_type);
+CudmStatus cudm_elementary_op_destroy(CudmElementaryOp elem_op);
+
+// Operator term
+CudmStatus cudm_op_term_create(CudmHandle handle, CudmOpTerm *term,
+                               const int64_t *mode_extents, int32_t num_modes);
+CudmStatus cudm_op_term_append(CudmHandle handle, CudmOpTerm term,
+                               const CudmElementaryOp *elementary_ops,
+                               const int32_t *modes_acted_on,
+                               const int32_t *duality,
+                               int32_t num_elementary_ops, double coeff_real,
+                               double coeff_imag, int32_t callback_kind,
+                               const double *callback_parameters,
+                               int32_t callback_parameter_count);
+CudmStatus cudm_op_term_destroy(CudmOpTerm term);
+
+// Composite operator assembly
+CudmStatus cudm_operator_append(CudmHandle handle, CudmOperator op,
+                                CudmOpTerm term, int32_t duality,
+                                double coeff_real, double coeff_imag);
+
+// Classical calls. A run holds its own table of host handlers by function id
+// (the FNV-1a hash of the function's name), so concurrent runs answer their
+// calls independently. A handler reads a request (24-byte header, then the
+// arguments) and writes the answer (24-byte header, then the results); its
+// signature is that of a CUDA-Q Realtime host-call handler.
+typedef void (*CudmClassicalHandler)(const void *request, void *answer,
+                                     size_t slot_bytes);
+CudmStatus cudm_classical_register(CudmHandle handle, uint32_t function_id,
+                                   CudmClassicalHandler handler);
+// Send `request` to the run's handler for its function id and check the
+// answer it writes to `answer` (`answer_capacity` bytes): its magic, and the
+// request id echoed. The answer's size is written to `answer_bytes`.
+CudmStatus cudm_classical_call(CudmHandle handle, const void *request,
+                               int64_t request_bytes, void *answer,
+                               int64_t answer_capacity, int64_t *answer_bytes);
+
+// Time evolution over [t_start, t_end] in num_steps equal steps.
+// The `integrator` code matches the CuDensityMat dialect IntegratorKind enum:
+//   2 = rk1, 3 = rk2, 4 = rk4, 5 = magnus, 6 = crank_nicolson.
+CudmStatus cudm_evolve(CudmHandle handle, CudmOperator op, CudmState state_in,
+                       CudmState state_out, CudmWorkspace ws, double t_start,
+                       double t_end, int64_t num_steps, int32_t integrator);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // CUDAQ_PULSE_RUNTIME_CUDM_RUNTIME_H

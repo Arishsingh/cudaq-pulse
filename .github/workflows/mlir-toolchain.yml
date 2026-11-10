@@ -1,0 +1,155 @@
+# ============================================================================ #
+# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
+# All rights reserved.                                                         #
+#                                                                              #
+# This source code and the accompanying materials are made available under     #
+# the terms of the Apache License 2.0 which accompanies this distribution.     #
+# ============================================================================ #
+
+name: mlir-toolchain
+
+# Builds the pinned MLIR toolchain and publishes it as release assets under the
+# tag named in tools/mlir-toolchain.lock.json. Publishing happens when that tag
+# is pushed, which also commits the checksums to the lock file on staging, or
+# on a manual run with `publish` set, after which you commit the printed lock
+# file yourself. Pushing the tag is the only way to run this from a branch
+# other than the default one.
+
+on:
+  push:
+    tags: ["mlir-toolchain-*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload the archives to the toolchain release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: mlir-toolchain (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            container: quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae # 2026.10.09-1
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6 # 2026.10.09-1
+          - platform: macos-aarch64
+            runner: macos-15
+            container: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install build tools (manylinux)
+        if: startsWith(matrix.platform, 'linux')
+        run: pipx install cmake ninja
+
+      - name: Install build tools (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: brew install ninja
+
+      - name: Build toolchain
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: tools/build-mlir-toolchain.sh --work-dir "$RUNNER_TEMP/mlir" --out-dir dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mlir-toolchain-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      # A tag push commits the checksums to staging, so start from its tip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_type == 'tag' && 'staging' || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Record checksums
+        run: |
+          python3 - <<'EOF' > "$RUNNER_TEMP/mlir-toolchain.lock.json"
+          import hashlib, json, pathlib, sys
+          lock = json.loads(pathlib.Path("tools/mlir-toolchain.lock.json").read_text())
+          assets = {}
+          for sha_file in sorted(pathlib.Path("dist").glob("*.sha256")):
+              digest, name = sha_file.read_text().split()
+              actual = hashlib.sha256((sha_file.parent / name).read_bytes()).hexdigest()
+              if actual != digest:
+                  sys.exit(f"{name}: {sha_file.name} says {digest}, archive is {actual}")
+              assets[name] = digest
+          if not assets:
+              sys.exit("no toolchain archives were downloaded")
+          lock["assets"] = assets
+          print(json.dumps(lock, indent=2))
+          EOF
+          {
+            echo '### tools/mlir-toolchain.lock.json'
+            echo '```json'
+            cat "$RUNNER_TEMP/mlir-toolchain.lock.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/mlir-toolchain-') || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          tag="$(jq -r .release_tag tools/mlir-toolchain.lock.json)"
+          if [[ "$REF_TYPE" == "tag" && "$REF_NAME" != "$tag" ]]; then
+            echo "error: pushed tag $REF_NAME does not match release_tag $tag in the lock file" >&2
+            exit 1
+          fi
+          gh release view "$tag" >/dev/null 2>&1 ||
+            gh release create "$tag" --title "$tag" \
+              --notes "Prebuilt MLIR toolchain used to build cudaq-pulse." --prerelease
+          # Write-once: released sdists build against these exact archives, so
+          # an existing asset is never replaced (gh refuses without --clobber).
+          gh release upload "$tag" dist/*.tar.xz dist/*.sha256
+          echo "Published $tag with these checksums:"
+          cat "$RUNNER_TEMP/mlir-toolchain.lock.json"
+
+      # Pushes made with GITHUB_TOKEN start no workflows; the next push to
+      # staging builds the wheels against these checksums.
+      - name: Commit checksums to staging
+        if: startsWith(github.ref, 'refs/tags/mlir-toolchain-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "$RUNNER_TEMP/mlir-toolchain.lock.json" tools/mlir-toolchain.lock.json
+          if git diff --quiet -- tools/mlir-toolchain.lock.json; then
+            echo "tools/mlir-toolchain.lock.json already pins these checksums."
+            exit 0
+          fi
+          version="$(jq -r .llvm_version tools/mlir-toolchain.lock.json)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898729+github-actions[bot]@users.noreply.github.com"
+          git add tools/mlir-toolchain.lock.json
+          git commit -m "Pin MLIR toolchain $version checksums"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:staging

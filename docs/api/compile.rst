@@ -1,0 +1,38 @@
+..
+   Copyright (c) 2026 NVIDIA Corporation & Affiliates.
+   All rights reserved.
+
+   This source code and the accompanying materials are made available under
+   the terms of the Apache License 2.0 which accompanies this distribution.
+
+Compilation API
+===============
+
+.. autofunction:: cudaq_pulse.compile
+
+.. autoclass:: cudaq_pulse.CompiledKernel
+   :members:
+
+.. autoclass:: cudaq_pulse.Lowered
+   :members:
+
+.. autoclass:: cudaq_pulse.Pass
+   :members:
+   :undoc-members:
+
+.. autoclass:: cudaq_pulse.compiler.IRLevel
+   :members:
+   :undoc-members:
+
+.. autoclass:: cudaq_pulse.compiler.ScheduledEvent
+   :members:
+   :undoc-members:
+
+.. autoclass:: cudaq_pulse.compiler.CompileMetrics
+   :members:
+   :undoc-members:
+
+.. autodata:: cudaq_pulse.compiler.DEFAULT_PASSES
+   :no-value:
+
+   The passes ``pulse.compile`` runs when ``passes`` is not given, in order.

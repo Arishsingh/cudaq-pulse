@@ -1,0 +1,79 @@
+# ============================================================================ #
+# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
+# All rights reserved.                                                         #
+#                                                                              #
+# This source code and the accompanying materials are made available under     #
+# the terms of the Apache License 2.0 which accompanies this distribution.     #
+# ============================================================================ #
+"""Lowering kernel calls on a test's own target, and GPU evolution of them."""
+
+from types import SimpleNamespace
+
+import cudaq_pulse as pulse
+import numpy as np
+from cudaq_pulse.runtime.simulate import _simulate_lowered
+from cudaq_pulse.targets import Qubit, TargetDescription
+
+EVOLVE_PASSES = (
+    "verify",
+    "fold_constants",
+    "remove_unused",
+    "merge_waits",
+    "simplify_control_flow",
+    "fold_phases",
+    "fuse_pulses",
+)
+
+
+def _handles(dev, args):
+    """Map handles of another device to *dev*'s handles of the same qudits."""
+    out = []
+    for a in args:
+        if isinstance(a, pulse.Qudit):
+            out.append(dev.qudit_handles[a.index])
+        elif isinstance(a, pulse.Register):
+            out.append(dev.qudit_handles[[q.index for q in a]])
+        else:
+            out.append(a)
+    return out
+
+
+def on(target, kernel, *args, passes=EVOLVE_PASSES):
+    """The module of ``kernel(*args)`` on a device of *target*."""
+    dev = pulse.device({"target": target})
+    return pulse.compile(kernel, passes=passes).lower(*_handles(dev, args))
+
+
+def evolve(lowered, *, t_start, t_end, num_steps, integrator="rk4", levels=2, initial_state=None):
+    """GPU evolution over ``[t_start, t_end]`` in *num_steps* steps."""
+    result = _simulate_lowered(
+        lowered,
+        levels=levels,
+        initial_state=initial_state,
+        backend="gpu",
+        t_start=t_start,
+        t_end=t_end,
+        dt_ns=(t_end - t_start) / num_steps,
+        integrator=integrator,
+    )
+    # The state the runtime evolved: a closed system's state vector, or the
+    # density matrix of one with collapse operators. Purity cannot tell them
+    # apart: damping keeps the ground state pure, and a fixed-step integrator
+    # does not hold a closed system's norm exactly. A program that measures
+    # ends in the mixture of its branches.
+    states = result._states
+    state = states[0] if len(states) == 1 else result.density_matrix
+    return SimpleNamespace(final_state=state, times=np.linspace(t_start, t_end, num_steps + 1))
+
+
+def frequency_target(qubit_freq_hz, clock_ghz=2.0):
+    return TargetDescription(
+        name="frequencies",
+        qubits={q: Qubit(q, f, -300e6, 50.0, 30.0) for q, f in qubit_freq_hz.items()},
+        clock_ghz=clock_ghz,
+    )
+
+
+def pulse_mlir(ir, *, qubit_freq_hz, clock_ghz=2.0):
+    """The pulse MLIR a GPU run of ``ir = (kernel, *args)`` lowers."""
+    return on(frequency_target(qubit_freq_hz, clock_ghz), *ir).mlir()

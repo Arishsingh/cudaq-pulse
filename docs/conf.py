@@ -1,0 +1,64 @@
+# ============================================================================ #
+# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
+# All rights reserved.                                                         #
+#                                                                              #
+# This source code and the accompanying materials are made available under     #
+# the terms of the Apache License 2.0 which accompanies this distribution.     #
+# ============================================================================ #
+"""Sphinx configuration for cudaq-pulse documentation."""
+
+from cudaq_pulse._build_config import PACKAGE_VERSION
+from pygments.lexers.special import TextLexer
+
+project = "cudaq-pulse"
+copyright = "2026, NVIDIA Corporation & Affiliates"
+author = "NVIDIA Corporation"
+release = PACKAGE_VERSION
+
+extensions = [
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.viewcode",
+    "sphinx.ext.mathjax",
+    "myst_parser",
+]
+
+myst_enable_extensions = [
+    "colon_fence",
+    "deflist",
+]
+
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+
+html_theme = "nvidia_sphinx_theme"
+
+html_theme_options = {
+    "show_nav_level": 1,
+    "navigation_depth": 4,
+    "show_toc_level": 2,
+}
+
+autodoc_member_order = "bysource"
+autodoc_typehints = "description"
+autodoc_default_options = {
+    "members": True,
+    "undoc-members": True,
+    "show-inheritance": True,
+}
+
+napoleon_google_docstring = True
+napoleon_numpy_docstring = True
+
+
+def _own_docstrings_only(app, what, name, obj, options, lines):
+    # pulse.Length is typing.Annotated: its page describes it, not typing's
+    # docstring.
+    if name == "cudaq_pulse.Length":
+        lines.clear()
+
+
+def setup(app):
+    # The generated dialect reference fences its examples as ```mlir, which
+    # Pygments has no lexer for.
+    app.add_lexer("mlir", TextLexer)
+    app.connect("autodoc-process-docstring", _own_docstrings_only)

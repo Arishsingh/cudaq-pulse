@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+# ============================================================================ #
+# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
+# All rights reserved.                                                         #
+#                                                                              #
+# This source code and the accompanying materials are made available under     #
+# the terms of the Apache License 2.0 which accompanies this distribution.     #
+# ============================================================================ #
+"""Rabi oscillation on qubit D5 using the 17-qubit transmon target.
+
+Demonstrates:
+  - Loading the pre-defined transmon target
+  - Using the published single-qubit pulse (40 ns DRAG, sigma = 10 ns)
+  - Compiling (default passes, ALAP schedule) a single-qubit
+    pulse program
+  - Lowering it to the operator (QOp) dialect the simulator consumes
+"""
+
+import math
+import shutil
+import subprocess
+
+import cudaq_pulse as pulse
+from cudaq_pulse.targets import MicrowaveDrive, transmon_17q
+
+target = transmon_17q()
+dev = pulse.device("transmon_17q")
+qubit_idx = 4  # D5 -- central data qubit
+
+qubit_d5 = target.qubits[qubit_idx]
+microwave = qubit_d5.drive
+assert isinstance(microwave, MicrowaveDrive)
+clock_ghz = dev.clock_ghz  # the program clock the schedule counts cycles of
+
+print(f"Target: {target.name} ({target.n_qubits} qubits)")
+print(f"Qubit {qubit_d5.label} (idx {qubit_idx}):")
+print(f"  frequency = {qubit_d5.frequency_hz / 1e9:.3f} GHz")
+print(f"  anharmonicity = {qubit_d5.anharmonicity_hz / 1e6:.1f} MHz")
+print(f"  T1 = {qubit_d5.t1_us:.1f} us, T2* = {qubit_d5.t2_star_us:.1f} us")
+
+# The target gives the pulse shape; with no published amplitude, amplitudes
+# are rates in rad/ns, and a pi pulse has area pi.
+duration_ns = microwave.x_duration_ns
+sigma_ns = microwave.x_sigma_ns
+assert duration_ns is not None and sigma_ns is not None
+area_ns = sigma_ns * math.sqrt(2 * math.pi) * math.erf(duration_ns / (2 * math.sqrt(2) * sigma_ns))
+pi_amplitude = math.pi / area_ns
+print(f"  DRAG pi pulse: {duration_ns:.0f} ns, sigma = {sigma_ns:.0f} ns, amp = {pi_amplitude:.4f}")
+
+cal = {"x_duration": duration_ns * pulse.ns, "x_sigma": sigma_ns * pulse.ns, "gap": 50 * pulse.ns}
+n_rabi_points = 21
+
+
+@pulse.kernel
+def rabi_d5(qubit):
+    drive_line = get_drive_line(qubit)
+    for i in range(n_rabi_points):
+        scale = 2 * i / (n_rabi_points - 1)
+        rabi_pulse = drag(cal["x_duration"], pi_amplitude * scale, cal["x_sigma"], 0.0)
+        drive(drive_line, rabi_pulse)
+        wait(drive_line, cal["gap"])
+
+
+compiled = pulse.compile(rabi_d5, device=dev).lower(dev.qudit_handles[qubit_idx])
+total_cycles = max(e.end for e in compiled.schedule)
+print(
+    f"\nCompiled {compiled.metrics.op_count} ops, total length = {total_cycles / clock_ghz:.1f} ns"
+)
+
+# cudaq-pulse-opt, installed with the package, runs any pass on MLIR text.
+tool = shutil.which("cudaq-pulse-opt")
+if tool is None:
+    raise SystemExit("cudaq-pulse-opt is not on PATH; it is installed with cudaq-pulse")
+qop = subprocess.run(
+    [tool, "--pulse-to-qop"], input=compiled.mlir(), capture_output=True, text=True, check=True
+).stdout
+print(f"Operator program: {qop.count('qop.callback_scalar')} time-dependent drive terms")

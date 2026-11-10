@@ -1,0 +1,65 @@
+# ============================================================================ #
+# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
+# All rights reserved.                                                         #
+#                                                                              #
+# This source code and the accompanying materials are made available under     #
+# the terms of the Apache License 2.0 which accompanies this distribution.     #
+# ============================================================================ #
+
+exclude: ^(build|\.cache)/
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+        exclude: ^LICENSES/  # third-party license texts stay verbatim
+      - id: trailing-whitespace
+        exclude: ^LICENSES/  # third-party license texts stay verbatim
+
+  # Keep in step with the ruff version in uv.lock (tests/test_release_tools.py).
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+
+  # Workflow security audit; ci.yml also runs its online audits.
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.31.1
+    hooks:
+      - id: zizmor
+        args: [--no-progress, --offline, --min-severity, medium]
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v23.1.3
+    hooks:
+      - id: clang-format
+        types_or: [c, c++]
+
+  - repo: local
+    hooks:
+      - id: license-headers
+        name: license headers
+        entry: python3 tools/check-license-headers.py
+        language: system
+        files: \.(py|pyi|cpp|h|td|mlir|cmake|sh|in|yml|yaml)$|(^|/)CMakeLists\.txt$
+      - id: release-hygiene
+        name: no local paths, internal hosts or credentials
+        entry: python3 tools/check-release-hygiene.py
+        language: system
+        types: [text]
+      - id: classical-remnants
+        name: classical functions declared by type hints, not the old types
+        entry: python3 tools/check-classical-remnants.py
+        language: system
+        files: \.(py|pyi|md|rst|txt|ipynb|td|h)$
+      - id: workflow-pins
+        name: actions and images pinned by commit or digest
+        entry: python3 tools/check-workflow-pins.py
+        language: system
+        files: ^\.github/.*\.ya?ml$

@@ -1,0 +1,111 @@
+# ============================================================================ #
+# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
+# All rights reserved.                                                         #
+#                                                                              #
+# This source code and the accompanying materials are made available under     #
+# the terms of the Apache License 2.0 which accompanies this distribution.     #
+# ============================================================================ #
+"""End-to-end roundtrip tests: kernel -> compile() -> CompiledKernel."""
+
+from __future__ import annotations
+
+import math
+
+import cudaq_pulse as pulse
+
+from tests._handles import Q
+
+
+def test_single_qubit_full_pipeline():
+    """Single qubit: kernel -> compile -> verify scheduled MLIR output."""
+
+    @pulse.kernel
+    def k(q):
+        d = get_drive_line(q)
+        shift_phase(d.tone, math.pi / 4)
+        wf = gaussian(40, 0.3, 10.0)
+        drive(d, wf)
+        shift_phase(d.tone, math.pi / 4)
+        wf2 = gaussian(40, 0.3, 10.0)
+        drive(d, wf2)
+
+    ck = k.lower(Q[0])
+    assert isinstance(ck, pulse.Lowered)
+    assert "pulse.drive" in ck.mlir()
+    assert ck.metrics.total_ms > 0
+    assert ck.metrics.trace_ms > 0
+
+
+def test_full_lowering_reaches_llvm_dialect():
+    """The experimental GPU path produces LLVM-dialect IR."""
+
+    @pulse.kernel
+    def k(q):
+        drive_line = get_drive_line(q)
+        drive(drive_line, gaussian(8, 0.2, 2.0))
+
+    ck = k.lower(Q[0])
+    llvm_ir = ck.mlir("llvm")
+
+    assert "llvm.func @main" in llvm_ir
+    assert "llvm.call @cudm_init" in llvm_ir
+    assert "llvm.call @cudm_evolve" in llvm_ir
+    assert "llvm.call @cudm_state_capture" in llvm_ir
+    assert "\n    pulse." not in llvm_ir
+    assert "\n    qop." not in llvm_ir
+    assert "\n    cudm." not in llvm_ir
+    assert "pulse.drive" in ck.mlir()
+    assert "llvm.call" not in ck.mlir()
+
+
+def test_two_qubit_full_pipeline():
+    """Two qubits with sync: full compilation pipeline via compile()."""
+
+    @pulse.kernel
+    def k(q0, q1):
+        d0 = get_drive_line(q0)
+        d1 = get_drive_line(q1)
+        wf = gaussian(40, 0.3, 10.0)
+        drive(d0, wf)
+        sync(d0, d1)
+        drive(d1, wf)
+
+    ck = k.lower(Q[0], Q[1])
+    assert isinstance(ck, pulse.Lowered)
+    assert "pulse.drive" in ck.mlir()
+    assert ck.metrics.total_ms > 0
+
+
+def test_loop_full_pipeline():
+    """Loop kernel: compile() handles loops end-to-end."""
+
+    @pulse.kernel
+    def k(q):
+        d = get_drive_line(q)
+        for _ in range(5):
+            wf = gaussian(40, 0.3, 10.0)
+            drive(d, wf)
+            wait(d, 20)
+
+    ck = k.lower(Q[0])
+    assert isinstance(ck, pulse.Lowered)
+    assert "pulse.drive" in ck.mlir()
+    assert ck.metrics.total_ms > 0
+
+
+def test_scheduling_pipeline():
+    """Scheduling via compile() with the ALAP policy."""
+
+    @pulse.kernel
+    def k(q0, q1):
+        d0 = get_drive_line(q0)
+        d1 = get_drive_line(q1)
+        wf = gaussian(40, 0.3, 10.0)
+        drive(d0, wf)
+        drive(d1, wf)
+
+    ck = pulse.compile(k, schedule="alap").lower(Q[0], Q[1])
+    assert isinstance(ck, pulse.Lowered)
+    assert "pulse.drive" in ck.mlir()
+    assert ck.metrics.total_ms > 0
+    assert ck.metrics.schedule_ms >= 0

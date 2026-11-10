@@ -1,0 +1,273 @@
+# ============================================================================ #
+# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
+# All rights reserved.                                                         #
+#                                                                              #
+# This source code and the accompanying materials are made available under     #
+# the terms of the Apache License 2.0 which accompanies this distribution.     #
+# ============================================================================ #
+
+# Building from source needs the pinned MLIR toolchain, which configuring
+# fetches via tools/fetch-mlir-toolchain.py on supported platforms; see
+# CONTRIBUTING.md.
+[build-system]
+requires = [
+    "scikit-build-core>=0.11",
+    "setuptools-scm>=9",
+    "nanobind>=2.12",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cudaq-pulse"
+dynamic = ["version"]
+description = "Pulse-level MLIR dialect and programming model for quantum control"
+readme = "README.md"
+authors = [{ name = "NVIDIA Corporation" }]
+# cudaq-pulse itself is Apache-2.0; the wheels statically link LLVM/MLIR
+# (with the parts of LLVM's Support library under their own terms), nanobind
+# and robin-map. THIRD_PARTY_NOTICES lists them with their license texts;
+# tools/third-party-notices.py generates it from the linker maps, and the
+# wheel build fails if it no longer covers what the binaries link. The
+# license files have to exist before the build, so it is committed.
+license = "Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND MIT AND Spencer-94 AND (CC0-1.0 OR Apache-2.0) AND Unicode-DFS-2015 AND LicenseRef-LLVM-MD5"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "LICENSES/*"]
+requires-python = ">=3.12"
+dependencies = [
+    # NumPy 2, and on newer CPythons the first NumPy with wheels for them.
+    "numpy>=2.0",
+    "numpy>=2.1; python_version >= '3.13'",
+    "numpy>=2.3.2; python_version >= '3.14'",
+    "numpy>=2.5.2; python_version >= '3.15'",
+]
+keywords = ["quantum", "pulse", "quantum control", "MLIR", "compiler", "CUDA-Q", "cuDensityMat"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Software Development :: Compilers",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/NVIDIA/cudaq-pulse"
+Documentation = "https://nvidia.github.io/cudaq-pulse/"
+Repository = "https://github.com/NVIDIA/cudaq-pulse"
+Issues = "https://github.com/NVIDIA/cudaq-pulse/issues"
+Changelog = "https://github.com/NVIDIA/cudaq-pulse/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+# Every shared library libcudm-runtime-cuNN.so loads, transitively, except the
+# driver's libcuda.so.1. cudensitymat is pre-1.0, so pin the minor we build
+# against. The two sets install into the same cuquantum/ and cutensor/
+# directories, so install only one of them.
+cu12 = [
+    "cudensitymat-cu12==0.7.*",
+    "nvidia-cuda-runtime-cu12>=12.9,<13",
+    "nvidia-cublas-cu12>=12.9,<13",
+    "nvidia-cusolver-cu12>=11.7.5,<12",
+    "nvidia-cusparse-cu12>=12.5.10,<13",
+    "nvidia-curand-cu12>=10.3.10,<11",
+    "nvidia-nvjitlink-cu12>=12.9,<13",
+]
+# CUDA 13 component wheels are not suffixed by major; cuda-toolkit pins a
+# mutually consistent CUDA 13 set of them.
+cu13 = [
+    "cudensitymat-cu13==0.7.*",
+    "cuda-toolkit[cudart,cublas,cusolver,cusparse,curand,nvjitlink]>=13.0,<14",
+]
+gpu = ["cudaq-pulse[cu12]"]
+viz = ["matplotlib>=3.9"]
+
+[dependency-groups]
+build = [
+    "cmake>=3.30",
+    "ninja>=1.11",
+    "nanobind>=2.12",
+    "numpy>=2.0",
+    # CMake builds read the package version from the git tags with it.
+    "setuptools-scm>=9",
+]
+test = [
+    "pytest>=8",
+    "hypothesis>=6",
+    "lit>=18",
+    # Pickles kernels as Ray and Dask do; its tests skip without it.
+    "cloudpickle>=3",
+]
+lint = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.7",
+    # The editor-types CI job runs this version; keep the two in step.
+    "pyright==1.1.414",
+    # mypy checks cudaq_pulse.viz against matplotlib's own annotations.
+    "matplotlib>=3.9",
+]
+docs = [
+    "sphinx>=7",
+    "myst-parser>=3",
+    "nvidia-sphinx-theme==0.0.8",
+]
+bench = ["matplotlib>=3.9"]
+# The coverage job in ci.yml only; not part of dev.
+coverage = ["coverage>=7.10"]
+dev = [
+    { include-group = "build" },
+    { include-group = "test" },
+    { include-group = "lint" },
+    { include-group = "docs" },
+]
+
+[tool.uv]
+default-groups = ["dev"]
+# `uv sync` installs tooling only. The package itself is built by CMake
+# (contributor loop) or by `pip install .` (wheel); see CONTRIBUTING.md.
+package = false
+# The CUDA 12 and CUDA 13 extras install into the same directories.
+conflicts = [
+    [{ extra = "cu12" }, { extra = "cu13" }],
+    [{ extra = "gpu" }, { extra = "cu13" }],
+]
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+cmake.build-type = "Release"
+install.components = ["CudaqPulse"]
+install.strip = true
+wheel.packages = []
+# One abi3 wheel per platform covers the GIL builds of CPython 3.12 and newer.
+# A free-threaded CPython has no stable ABI before 3.15's abi3t, so
+# scikit-build-core ignores this there and tags the wheel for its one version
+# (cp314t).
+wheel.py-api = "cp312"
+sdist.exclude = [".cache", "build", "dist", "wheelhouse", ".github"]
+metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
+
+[tool.scikit-build.cmake.define]
+CUDAQ_PULSE_BUILD_TESTS = "OFF"
+CUDAQ_PULSE_ENABLE_GPU = { env = "CUDAQ_PULSE_ENABLE_GPU", default = "OFF" }
+CUDAQ_PULSE_CUDA12_ROOT = { env = "CUDAQ_PULSE_CUDA12_ROOT", default = "" }
+CUDAQ_PULSE_CUDA13_ROOT = { env = "CUDAQ_PULSE_CUDA13_ROOT", default = "" }
+
+# A wheel for a free-threaded CPython declares that its extension runs
+# without the GIL; otherwise importing it would turn the GIL back on.
+[[tool.scikit-build.overrides]]
+if.abi-flags = "t"
+inherit.cmake.define = "append"
+cmake.define.CUDAQ_PULSE_FREE_THREADED = "ON"
+
+# Only v* tags carry package versions; mlir-toolchain-* tags name toolchain
+# releases.
+[tool.setuptools_scm]
+tag_regex = '^v(?P<version>\d+(?:\.\d+)*(?:(?:a|b|rc)\d+|\.post\d+)?)$'
+
+[tool.setuptools_scm.scm.git]
+describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "v*"]
+
+[tool.cibuildwheel]
+# cp312 builds the abi3 wheel that also covers 3.13 and later; cp314t builds
+# the free-threaded wheel, which covers 3.14t only.
+build = ["cp312-*", "cp314t-*"]
+skip = ["*-musllinux_*"]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+build-verbosity = 1
+# The viz extra lets tests/test_viz.py run against the wheel. The type
+# checkers' tests run in ci.yml's test job, not here (tests/_tools.py).
+test-extras = ["cu12", "viz"]
+test-groups = ["test"]
+test-environment = { CUDAQ_PULSE_OPTIONAL_TOOLS = "pyright,mypy" }
+test-sources = [
+    "tests",
+    "pyproject.toml",
+    "benchmarks/compiler/compile_time.py",
+    "benchmarks/baselines/compile_time.json",
+]
+test-command = [
+    "python -c \"import cudaq_pulse._build_config as c; assert sorted(c.GPU_RUNTIME_LIBRARIES) == [12, 13], 'release wheels must include the CUDA 12 and CUDA 13 GPU runtimes'\"",
+    "python -c \"import sys, sysconfig, cudaq_pulse; assert not sysconfig.get_config_var('Py_GIL_DISABLED') or not sys._is_gil_enabled(), 'importing cudaq_pulse enabled the GIL'\"",
+    "cudaq-pulse-opt --help > /dev/null",
+    "python -m pytest -m \"not gpu\"",
+]
+
+[tool.cibuildwheel.linux]
+before-all = "bash tools/ci/manylinux-before-all.sh"
+environment = { CUDAQ_PULSE_ENABLE_GPU = "ON", CUDAQ_PULSE_CUDA12_ROOT = "/opt/cuda12", CUDAQ_PULSE_CUDA13_ROOT = "/opt/cuda13" }
+# The tests run in the manylinux container, which sees only the variables
+# passed in. With CI passed, a missing tool fails its tests here as it does
+# on the macOS host, instead of skipping them (tests/_tools.py).
+environment-pass = ["CI"]
+repair-wheel-command = "auditwheel repair --exclude libcudensitymat.so.0 --exclude libcudart.so.12 --exclude libcudart.so.13 -w {dest_dir} {wheel}"
+
+# macOS wheels are compiler-only: there is no CUDA on macOS.
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+test-extras = ["viz"]
+test-command = [
+    "python -c \"import cudaq_pulse._build_config as c; assert not c.GPU_RUNTIME_ENABLED, 'macOS wheels must be compiler-only'\"",
+    "python -c \"import sys, sysconfig, cudaq_pulse; assert not sysconfig.get_config_var('Py_GIL_DISABLED') or not sys._is_gil_enabled(), 'importing cudaq_pulse enabled the GIL'\"",
+    "cudaq-pulse-opt --help > /dev/null",
+    "python -m pytest -m \"not gpu\"",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["build", ".cache"]
+# Kernel DSL intrinsics: resolved while @pulse.kernel traces the body, never
+# bound at module scope.
+builtins = [
+  "cosine", "custom", "custom_samples", "drag", "drive", "gaussian",
+  "gaussian_square", "get_drive_line", "get_readout_line",
+  "readout", "set_frequency", "set_phase", "shift_frequency", "shift_phase",
+  "square", "sync", "tanh_ramp", "wait", "wf_add", "wf_mul", "wf_neg",
+  "wf_scale", "wf_sub",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B"]
+# An external's placeholder result names its type: return float().
+ignore = ["UP018"]
+
+[tool.ruff.lint.per-file-ignores]
+"test/**/lit*.cfg.py" = ["F821"]
+# DSL intrinsic stubs: their parameters exist for the signatures and types.
+"core/frontend/cudaq_pulse/ops/__init__.py" = ["ARG"]
+# Short corpus constructors (_C, _O, ...).
+"tests/workloads/bug_corpus.py" = ["N802"]
+# Column-aligned report tables.
+"benchmarks/**" = ["E501"]
+"examples/**" = ["E501"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+# Generated by nanobind.stubgen; its ndarray shape annotations are not PEP 484.
+[[tool.mypy.overrides]]
+module = "cudaq_pulse._native._cudaq_pulse_native"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers"]
+markers = [
+    "gpu: requires GPU runtime",
+    "benchmark: timing guard, skipped unless --run-benchmarks is given",
+    "scaling: benchmark that compares two sizes in one process, so holds on any machine",
+    "physics: physics verification against reference values (tests/physics)",
+    "nightly: slow physics check, skipped unless --run-nightly is given",
+    "slow: spends seconds in native code or child processes; the sanitizer job leaves it out",
+]

@@ -1,0 +1,61 @@
+# Build trees
+build*/
+dist/
+wheelhouse/
+_skbuild/
+*.egg-info/
+
+# Fetched MLIR toolchains and other local caches
+.cache/
+
+# Local CMake presets and clangd
+CMakeUserPresets.json
+compile_commands.json
+.clangd/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# Coverage, test reports and profiles
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit*.xml
+.tox/
+.nox/
+*.profraw
+
+# A CudaqPulse component installed for the editor-types check
+installed/
+
+# Local environment files
+.env
+
+# Native artifacts produced outside the build tree
+*.o
+*.so
+*.dylib
+*.a
+
+# Docs
+docs/_build/
+
+# Benchmark output
+benchmarks/results/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Generated summaries and notes stay out of the tracked tree
+*.summary.md
+NOTES*.md
