@@ -1,9 +1,6 @@
 ..
-   Copyright (c) 2026 NVIDIA Corporation & Affiliates.
-   All rights reserved.
-
-   This source code and the accompanying materials are made available under
-   the terms of the Apache License 2.0 which accompanies this distribution.
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
 
 Controller Backends API
 =======================
@@ -19,6 +16,12 @@ Export and limits
    :no-index:
 
 .. autodata:: cudaq_pulse.controller.FORMAT
+
+.. autoclass:: cudaq_pulse.controller.DriveLine
+   :members: qudit, delay_ns
+
+.. autoclass:: cudaq_pulse.controller.ReadoutLine
+   :members: qudit, delay_ns
 
 .. autoclass:: cudaq_pulse.controller.WaveformMemoryScope
    :members:
@@ -38,7 +41,9 @@ Export and limits
 
 .. autofunction:: cudaq_pulse.controller.evaluate_expression
 
-.. autodata:: cudaq_pulse.controller.EXPRESSION_TERMS
+.. autoclass:: cudaq_pulse.controller.ExpressionTerm
+   :members:
+   :undoc-members:
 
 .. autofunction:: cudaq_pulse.controller.shape_key
 
@@ -60,7 +65,15 @@ What classical functions cost
 .. autoclass:: cudaq_pulse.controller.FunctionCost
    :members:
 
-.. autodata:: cudaq_pulse.controller.OP_CLASSES
+.. autoclass:: cudaq_pulse.controller.OpClass
+   :members:
+   :undoc-members:
+
+.. autoclass:: cudaq_pulse.controller.OpCounts
+   :members: total, replace
+
+.. autoclass:: cudaq_pulse.controller.OpCycles
+   :members: replace
 
 What a program uses of each processor
 -------------------------------------

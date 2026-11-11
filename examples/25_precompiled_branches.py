@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Compiling every branch of an adaptive experiment ahead of time.
 
 Builds on ``24_pipelined_calibration.py``. A check measures whether each of
@@ -111,7 +106,7 @@ def drifted(factors):
         given = qubits[q].drive
         assert isinstance(given, MicrowaveDrive)
         stronger = given.replace(amplitude_scale_rad_per_ns=strength)
-        qubits[q] = dataclasses.replace(qubits[q], drive=stronger)
+        qubits[q] = qubits[q].replace(drive=stronger)
     return dataclasses.replace(target, qubits=qubits)
 
 
@@ -139,7 +134,7 @@ def median_s(operation, repeat):
 
 
 if __name__ == "__main__":
-    device = pulse.device({"target": target})
+    device = pulse.device(target)
     qudits = device.qudit_handles[list(qudit_indices)]
     outcomes = every_outcome()
     compile_branch(pi_trains, qudits, outcomes[-1])  # compile once here before timing anything

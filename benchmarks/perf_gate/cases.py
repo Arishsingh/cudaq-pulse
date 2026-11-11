@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The cases of the deterministic performance gate (tools/perf-gate.py).
 
 Each case is one operation of the compiler or the runtime on fixed inputs,
@@ -72,12 +67,10 @@ _WORKLOADS = {name: (kernel, n) for name, kernel, n, _ in _workloads.WORKLOADS}
 
 # Qudit i at 5 GHz + i * 100 MHz, as in tests/_handles.py.
 _DEVICE = pulse.device(
-    {
-        "target": TargetDescription(
-            name="perf-gate",
-            qubits={i: Qubit(i, 5.0e9 + 1.0e8 * i, -300e6, 50.0, 30.0) for i in range(64)},
-        )
-    }
+    TargetDescription(
+        name="perf-gate",
+        qubits={i: Qubit(i, 5.0e9 + 1.0e8 * i, -300e6, 50.0, 30.0) for i in range(64)},
+    )
 )
 Q = _DEVICE.qudit_handles
 

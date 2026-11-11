@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """``viz.plot_schedule`` and ``viz.save_schedule`` draw what was scheduled."""
 
 from __future__ import annotations
@@ -110,3 +105,14 @@ def test_save_schedule_writes_the_image_and_closes_its_figure(lowered, tmp_path)
     svg = tmp_path / "schedule.svg"
     viz.save_schedule(lowered, str(svg))
     assert "<svg" in svg.read_text()
+
+
+def test_timeline_takes_the_keywords_of_plot_schedule(lowered):
+    fig = lowered.timeline(figsize=(6, 2), title="two lines")
+    assert tuple(fig.get_size_inches()) == (6, 2)
+    assert fig.axes[0].get_title() == "two lines"
+    compiled = pulse.compile(_two_lines, device=Q[0].device)
+    with pytest.raises(TypeError):
+        lowered.timeline(dpi=100)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        compiled.timeline(dpi=100)  # type: ignore[call-arg]

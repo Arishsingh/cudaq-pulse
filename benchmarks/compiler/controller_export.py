@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Cost of checking and exporting large programs for a controller.
 
 Three programs, each compiled with controller limits so that compiling
@@ -43,7 +38,7 @@ target = TargetDescription(
     clock_ghz=1.0,
     qubits={i: Qubit(i, 5.0e9 + 1.0e6 * i, -2.0e8, 50.0, 30.0) for i in range(lines)},
 )
-dev = pulse.device({"target": target})
+dev = pulse.device(target)
 readers = lines // 2
 limits = Controller(
     clock_ghz=1.0,

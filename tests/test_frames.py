@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Frame changes on the timeline: their stamps, the changes no operation
 takes, which the export keeps as frame updates, and the frames the
 simulator plays each drive with against the controller export."""
@@ -37,7 +32,7 @@ _TARGET = TargetDescription(
     clock_ghz=_CLOCK_GHZ,
     qubits={i: Qubit(i, _FREQUENCY_HZ + 1.0e7 * i, -2.0e8, 50.0, 30.0) for i in range(2)},
 )
-_DEV = pulse.device({"target": _TARGET})
+_DEV = pulse.device(_TARGET)
 Q = _DEV.qudit_handles
 _PERSISTENT = ControlSystem(controllers=[Controller(persistent_frames=True)])
 

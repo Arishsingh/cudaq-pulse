@@ -1,9 +1,6 @@
 ..
-   Copyright (c) 2026 NVIDIA Corporation & Affiliates.
-   All rights reserved.
-
-   This source code and the accompanying materials are made available under
-   the terms of the Apache License 2.0 which accompanies this distribution.
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
 
 Pulse Kernels
 =============
@@ -116,8 +113,8 @@ them from a calibration the kernel closes over.
        wait(d, gap)
        drive(d, x)
 
-   fast = pulse.device({"target": "transmon_17q", "clock_ghz": 2.0})
-   slow = pulse.device({"target": "transmon_17q", "clock_ghz": 1.0})
+   fast = pulse.device("transmon_17q", clock_ghz=2.0)
+   slow = pulse.device("transmon_17q", clock_ghz=1.0)
    gap = 100 * pulse.ns
    x_then_wait.lower(fast.qudit_handles[0], gap)  # 40, 200, 40 cycles
    x_then_wait.lower(slow.qudit_handles[0], gap)  # 20, 100, 20 cycles

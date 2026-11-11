@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The calibration protocol of examples/21 end to end, over many seeds.
 
 The protocol is that of
@@ -84,8 +79,7 @@ def _bootstrap(values, stat, rng, n=2000):
 def _att_target():
     base = transmon_17q()
     qubit = base.qubits[0]
-    att = dataclasses.replace(
-        qubit,
+    att = qubit.replace(
         frequency_hz=4.13e9,
         anharmonicity_hz=-210e6,
         t1_us=160.0,
@@ -148,7 +142,7 @@ def _shares(result, shots):
 
 def adaptive_t1(n, seed):
     target = _att_target()
-    dev = pulse.device({"target": target})
+    dev = pulse.device(target)
     lowered = pulse.compile(att_paper, device=dev, control_system=P["control_system"]).lower(
         dev.qudit_handles[0]
     )
@@ -181,7 +175,7 @@ def adaptive_t1(n, seed):
 
 def binary_search(n, seed):
     target = transmon_17q()
-    dev = pulse.device({"target": target})
+    dev = pulse.device(target)
     lowered = pulse.compile(
         P["binary_search"], device=dev, control_system=P["control_system"]
     ).lower(dev.qudit_handles[0], 15)
@@ -216,7 +210,7 @@ def binary_search(n, seed):
 
 def chain(n, seed):
     target = transmon_17q()
-    dev = pulse.device({"target": target})
+    dev = pulse.device(target)
     lowered = pulse.compile(
         P["calibration_chain"], device=dev, control_system=P["control_system"]
     ).lower(dev.qudit_handles[0], 20_000.0 * CLOCK)
@@ -264,7 +258,7 @@ def chain(n, seed):
 
 def steps(seed):
     target = transmon_17q()
-    dev = pulse.device({"target": target})
+    dev = pulse.device(target)
     q = dev.qudit_handles[0]
     plant = P["chain_plant"](target)
     shots_per_step = {

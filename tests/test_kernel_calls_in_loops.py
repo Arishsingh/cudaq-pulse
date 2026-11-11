@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Kernels that call other kernels inside loops.
 
 A call inlines the callee into the caller's trace. A ``range()`` loop whose
@@ -52,7 +47,7 @@ def _qubits(n, qvec, dev=None):
 
 
 def _device(n):
-    return pulse.device({"target": _target(n)})
+    return pulse.device(_target(n))
 
 
 def _trace(kernel, n=1, qvec=False, args=()):

@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 include_guard(DIRECTORY)
 
@@ -60,34 +55,14 @@ add_custom_command(
 add_custom_target(CudaqPulseBuiltinsStub DEPENDS "${_cudaq_pulse_builtins_stub}")
 add_dependencies(_cudaq_pulse_native CudaqPulseBuiltinsStub)
 
-# The version comes from the git tags through setuptools-scm, configured in
-# pyproject.toml, for wheels and plain CMake builds alike. A CMake build reads
-# it at configure time, so re-run configure after tagging.
-if(SKBUILD)
-  set(CUDAQ_PULSE_PACKAGE_VERSION "${SKBUILD_PROJECT_VERSION_FULL}")
-else()
-  execute_process(
-    COMMAND "${Python3_EXECUTABLE}" -m setuptools_scm
-      --root "${CUDAQ_PULSE_SOURCE_DIR}"
-      --config "${CUDAQ_PULSE_SOURCE_DIR}/pyproject.toml"
-    OUTPUT_VARIABLE CUDAQ_PULSE_PACKAGE_VERSION
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-    RESULT_VARIABLE _cudaq_pulse_scm_result)
-  if(NOT _cudaq_pulse_scm_result EQUAL 0 OR CUDAQ_PULSE_PACKAGE_VERSION STREQUAL "")
-    message(STATUS "setuptools-scm could not determine the version (install the "
-      "`build` dependency group, or build from a git checkout); using 0.0.0+unknown")
-    set(CUDAQ_PULSE_PACKAGE_VERSION "0.0.0+unknown")
-  endif()
-endif()
-message(STATUS "cudaq-pulse version: ${CUDAQ_PULSE_PACKAGE_VERSION}")
-
 set(_cudaq_pulse_build_targets
-  cudaq-pulse-opt
   _cudaq_pulse_native
   _cudaq_pulse_native_stub
   CudaqPulsePythonStaging
   CudaqPulseSourceStamp)
+if(CUDAQ_PULSE_BUILD_OPT)
+  list(APPEND _cudaq_pulse_build_targets cudaq-pulse-opt)
+endif()
 
 set(_cudaq_pulse_runtime_libraries "")
 set(_cudaq_pulse_cudensitymat_versions "")
@@ -121,7 +96,7 @@ configure_file(
 add_custom_target(pulse DEPENDS ${_cudaq_pulse_build_targets})
 
 include(CudaqPulseNotices)
-set(_cudaq_pulse_shipped_binaries cudaq-pulse-opt _cudaq_pulse_native)
+set(_cudaq_pulse_shipped_binaries _cudaq_pulse_native)
 foreach(_major IN LISTS CUDAQ_PULSE_CUDA_MAJORS)
   list(APPEND _cudaq_pulse_shipped_binaries cudm_runtime_cu${_major})
 endforeach()

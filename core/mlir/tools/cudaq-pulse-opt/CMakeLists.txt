@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 set(LLVM_LINK_COMPONENTS Support)
 
@@ -14,6 +9,14 @@ get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 add_llvm_executable(cudaq-pulse-opt
   cudaq-pulse-opt.cpp
 )
+
+# --version prints the package's version (cmake/CudaqPulseVersion.cmake) and
+# the LLVM it was built with.
+file(CONFIGURE
+  OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/include/CudaqPulseOptVersion.h"
+  CONTENT "#define CUDAQ_PULSE_VERSION \"@CUDAQ_PULSE_PACKAGE_VERSION@\"\n#define CUDAQ_PULSE_LLVM_VERSION \"@LLVM_PACKAGE_VERSION@\"\n"
+  @ONLY)
+target_include_directories(cudaq-pulse-opt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/include")
 
 target_link_libraries(cudaq-pulse-opt PRIVATE
   CudaqPulsePulse
@@ -54,6 +57,8 @@ llvm_update_compile_flags(cudaq-pulse-opt)
 export_executable_symbols_for_plugins(cudaq-pulse-opt)
 mlir_check_all_link_libraries(cudaq-pulse-opt)
 
+# The cudaq-pulse-tools wheel (packaging/cudaq-pulse-tools) installs this
+# component into its scripts, which pip puts on PATH.
 if(SKBUILD)
   set(_cudaq_pulse_opt_destination "${SKBUILD_SCRIPTS_DIR}")
 else()
@@ -62,7 +67,7 @@ endif()
 install(
   PROGRAMS "$<TARGET_FILE:cudaq-pulse-opt>"
   DESTINATION "${_cudaq_pulse_opt_destination}"
-  COMPONENT CudaqPulse
+  COMPONENT CudaqPulseOpt
 )
 # install(TARGETS) would strip with `strip -u -r` on macOS, which keeps only
 # the symbols the driver itself references, and pass plugins could no longer
@@ -91,5 +96,11 @@ endif()
 install(CODE "
   if(CMAKE_INSTALL_DO_STRIP)${_cudaq_pulse_opt_strip}
   endif()"
-  COMPONENT CudaqPulse
+  COMPONENT CudaqPulseOpt
 )
+
+include(CudaqPulseNotices)
+cudaq_pulse_third_party_notices(
+  NOTICES "${CUDAQ_PULSE_SOURCE_DIR}/packaging/cudaq-pulse-tools/THIRD_PARTY_NOTICES"
+  COMPONENT CudaqPulseOpt
+  TARGETS cudaq-pulse-opt)

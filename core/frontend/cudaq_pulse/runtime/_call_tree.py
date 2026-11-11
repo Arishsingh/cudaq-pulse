@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Simulation of programs that call classical functions, or that read out
 through a readout model.
 
@@ -70,9 +65,10 @@ class ReadoutModel:
     For a qubit, its ``DispersiveReadout`` gives ``error_1to0`` (|1>
     reported 0) and ``error_0to1`` (|0> reported 1); without a readout it
     is ideal, and another readout is ``UnsupportedError``. With
-    ``decay=True`` relaxation during the readout window (``duration_ns``)
-    adds 1 - exp(-t / (2 T1)) to the |1> -> 0 error. Higher levels are
-    reported as themselves.
+    ``decay=True`` relaxation during the readout window (the
+    ``duration_ns`` of its ``READOUT`` calibration) adds
+    1 - exp(-t / (2 T1)) to the |1> -> 0 error. Higher levels are reported
+    as themselves.
     """
 
     def __init__(
@@ -97,7 +93,8 @@ class ReadoutModel:
                     "outcomes come from a DispersiveReadout's errors"
                 )
             to0, to1 = float(r.error_1to0), float(r.error_0to1)
-            window = r.duration_ns
+            pulse = q.calibrations.get("readout")
+            window = None if pulse is None else pulse.duration_ns
             if decay and q.t1_us > 0 and window is not None:
                 to0 = to0 + (1 - to0) * (1 - math.exp(-float(window) / (2e3 * q.t1_us)))
             if d >= 2:

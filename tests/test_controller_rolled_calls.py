@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Controller checks of rolled loops that call classical functions.
 
 A loop whose answers are used as values, or not at all, stays rolled, and
@@ -562,7 +557,7 @@ def test_a_long_rolled_loop_with_calls_on_a_control_system_is_checked_as_every_i
 ):
     from cudaq_pulse import _system
 
-    qpu = pulse.device({"target": ladder_target(4), "control_system": _systems()[system]})
+    qpu = pulse.device(ladder_target(4), control_system=_systems()[system])
     # Loops whose lines all move by one period are summarized on a system,
     # their answers' values and capabilities checked once. The scheduler may
     # run up to 16 iterations in each of the loop's, so that one is longer.

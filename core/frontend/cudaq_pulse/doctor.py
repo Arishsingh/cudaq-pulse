@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Report what this cudaq-pulse installation contains and whether it works.
 
     python -m cudaq_pulse.doctor                     # exit 0 only if GPU execution works
@@ -16,8 +11,11 @@
     python -m cudaq_pulse.doctor --system lab.json   # check a device file
     python -m cudaq_pulse.doctor --system lab.json --json
 
-The compiler check always runs; any failure there exits non-zero.
-``--system FILE`` instead runs the checks of ``pulse.device(FILE)`` and
+The compiler check always runs; any failure there exits non-zero. So does
+one of the cudaq-pulse-opt MLIR driver, from the cudaq-pulse-tools
+distribution, which an installed cudaq-pulse requires at its own version,
+and whose ``--version`` must print it.
+``--system FILE`` instead runs the checks of ``pulse.Device.load(FILE)`` and
 prints each problem as ``FILE:LINE:COLUMN: error: PATH: MESSAGE``, or with
 ``--json`` as one JSON object; it exits 1 if the file has a problem.
 ``--setup-editor`` instead shows the change to the mypy and ruff
@@ -51,24 +49,94 @@ __all__ = ["main"]
 _DISTRIBUTION = "cudaq-pulse"
 
 
-def _version() -> str:
+def _distribution(name: str) -> importlib.metadata.Distribution | None:
     try:
-        return importlib.metadata.version(_DISTRIBUTION)
+        return importlib.metadata.distribution(name)
     except importlib.metadata.PackageNotFoundError:
-        from . import __version__
-
-        return f"{__version__} (not installed as a distribution; source or build tree)"
+        return None
 
 
-def _wheel_tags() -> str:
+def _check_driver(write: Callable[[str], None], version: str | None) -> str | None:
+    """Locate and run cudaq-pulse-opt; return an error message on failure.
+
+    An installed cudaq-pulse needs the cudaq-pulse-tools distribution of its
+    version (pip installs it unless told ``--no-deps``); a source or build
+    tree is only reported.
+    """
+    import shutil
+
+    command, tools = "cudaq-pulse-opt", "cudaq-pulse-tools"
+    heading = f"MLIR driver ({command})"
+    on_path = shutil.which(command)
+    if version is None:
+        write(f"{heading}: {on_path or 'not on PATH'} (source or build tree; not checked)")
+        return None
+    install = f"pip install {tools}=={version}"
+    driver = _distribution(tools)
+    error = None
+    executable = None
+    if driver is None:
+        error = (
+            f"{tools} is not installed, and cudaq-pulse {version} requires it "
+            f"(installed with --no-deps?): {install}"
+        )
+    elif driver.version != version:
+        error = (
+            f"{tools} {driver.version} is installed, and cudaq-pulse {version} "
+            f"requires {version}: {install}"
+        )
+    else:
+        files = [f for f in driver.files or () if f.name == command]
+        executable = Path(str(driver.locate_file(files[0]))).resolve() if files else None
+        if executable is None or not executable.is_file():
+            error = (
+                f"the {tools} {version} distribution has no {command} executable: "
+                f"pip install --force-reinstall {tools}=={version}"
+            )
+    if error is not None or executable is None:
+        error = error or f"{command} has no executable"
+        write(f"{heading}: FAILED")
+        write(f"  {error}")
+        return error
+    import re
+    import subprocess
+
+    failure: str | None = None
+    llvm = ""
     try:
-        wheel = importlib.metadata.distribution(_DISTRIBUTION).read_text("WHEEL")
-    except importlib.metadata.PackageNotFoundError:
-        wheel = None
-    if not wheel:
-        return "none (not installed from a wheel)"
-    tags = [line.split(":", 1)[1].strip() for line in wheel.splitlines() if line.startswith("Tag:")]
-    return ", ".join(tags) or "unknown"
+        result = subprocess.run(
+            [str(executable), "--version"], capture_output=True, text=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        failure = f"{executable} --version failed: {exc}"
+    else:
+        output = result.stdout.strip()
+        printed = re.fullmatch(rf"{command} (\S+) \(LLVM (\S+)\)", output)
+        if result.returncode != 0:
+            output = result.stderr.strip() or output
+            failure = f"{executable} --version exited with {result.returncode}: {output}"
+        elif printed is None:
+            failure = (
+                f"{executable} --version printed {output!r}, not "
+                f"'{command} <version> (LLVM <version>)'"
+            )
+        elif printed.group(1) != version:
+            failure = (
+                f"{executable} reports version {printed.group(1)}, but its distribution is "
+                f"{version}: pip install --force-reinstall {tools}=={version}"
+            )
+        else:
+            llvm = printed.group(2)
+    if failure is not None:
+        write(f"{heading}: FAILED")
+        write(f"  {failure}")
+        return failure
+    write(f"{heading}: {version} (LLVM {llvm}) at {executable}")
+    if on_path is None:
+        write(f"  not on PATH; add {executable.parent} to PATH to run it by name")
+    elif Path(on_path).resolve() != executable:
+        write(f"  PATH runs another {command} first: {on_path}")
+    return None
 
 
 def _check_compiler() -> str | None:
@@ -279,12 +347,12 @@ def _problem_json(problem: Problem) -> dict[str, Any]:
 def _check_system(file: Path, as_json: bool, write: Callable[[str], None]) -> int:
     """Check the device or system file *file*, and that the backends of its
     controllers are installed; return the exit code."""
-    from ._device import device
+    from ._device import Device
 
     problems: tuple[Problem, ...] = ()
     summary: dict[str, Any] | None = None
     try:
-        dev = device(file)
+        dev = Device.load(file)
     except DeviceDefinitionError as error:
         problems = error.problems
     except OSError as error:
@@ -328,8 +396,8 @@ def _control_summary(system: Any, file: Path) -> tuple[dict[str, Any], tuple[Pro
         entry: dict[str, Any] = {
             "model": controller.model,
             "version": controller.version,
-            "drive_lines": list(controller.drive_lines),
-            "readout_lines": list(controller.readout_lines),
+            "drive_lines": [line.qudit for line in controller.drive_lines],
+            "readout_lines": [line.qudit for line in controller.readout_lines],
             "backend": controller.backend,
         }
         if controller.backend is not None:
@@ -406,7 +474,7 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
         "--system",
         type=Path,
         metavar="FILE",
-        help="check the device or system file FILE as pulse.device(FILE) does: every "
+        help="check the system file FILE as pulse.Device.load(FILE) does: every "
         "problem, its controllers and links, and whether their backends are installed",
     )
     parser.add_argument(
@@ -445,12 +513,26 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
     def write(line: str) -> None:
         print(line, file=stream)
 
-    write(f"cudaq-pulse {_version()}")
+    package = _distribution(_DISTRIBUTION)
+    if package is not None:
+        version = package.version
+    else:
+        from . import __version__
+
+        version = f"{__version__} (not installed as a distribution; source or build tree)"
+    write(f"cudaq-pulse {version}")
     write(
         f"Python {platform.python_version()} ({sys.implementation.name}) on "
         f"{platform.system()} {platform.machine()}"
     )
-    write(f"Wheel tags: {_wheel_tags()}")
+    wheel = package.read_text("WHEEL") if package is not None else None
+    if wheel:
+        tags = [
+            line.split(":", 1)[1].strip() for line in wheel.splitlines() if line.startswith("Tag:")
+        ]
+        write(f"Wheel tags: {', '.join(tags) or 'unknown'}")
+    else:
+        write("Wheel tags: none (not installed from a wheel)")
 
     compiler_error = _check_compiler()
     write(f"Compiler (MLIR JIT): {'ok' if compiler_error is None else 'FAILED'}")
@@ -460,11 +542,15 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
         compiler_error = "invalid MLIR context limits"
     if not _kernel_settings(write) and compiler_error is None:
         compiler_error = "invalid kernel settings"
+    driver_error = _check_driver(write, None if package is None else package.version)
 
     outcome = _diagnose_gpu(write)
     if compiler_error is not None:
         settings = compiler_error.startswith("invalid ")
         write(f"Result: FAILED, {compiler_error if settings else 'the compiler does not work'}.")
+        return 1
+    if driver_error is not None:
+        write("Result: FAILED, cudaq-pulse-opt does not work.")
         return 1
     return _exit_code(
         outcome,

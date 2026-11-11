@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Devices and runs in the reference conventions: amplitudes are Rabi rates."""
 
 import cudaq_pulse as pulse
@@ -46,7 +41,7 @@ def device(freqs_hz, alphas_hz, couplings=(), t1_us=0.0, t2_us=0.0, **qubit):
         },
         couplings=[Coupling((i, j), g) for i, j, g in couplings],
     )
-    return pulse.device({"target": target})
+    return pulse.device(target)
 
 
 def run(dev, kernel, *args, n=None, backend="cpu", levels=2, **simulate):

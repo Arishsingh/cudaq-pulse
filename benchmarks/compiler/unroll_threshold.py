@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Rolled against unrolled loops: the measurement behind the unroll threshold.
 
 Usage:
@@ -34,7 +29,7 @@ TARGET = TargetDescription(
         0: Qubit(0, 5.0e9, -300e6, 0.0, 0.0, drive=MicrowaveDrive(amplitude_scale_rad_per_ns=1.0))
     },
 )
-Q = pulse.device({"target": TARGET}).qudit_handles[0]
+Q = pulse.device(TARGET).qudit_handles[0]
 UNROLL_ALL = 10**9
 
 

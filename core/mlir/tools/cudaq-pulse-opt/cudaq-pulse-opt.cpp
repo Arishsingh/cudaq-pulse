@@ -1,10 +1,5 @@
-/*******************************************************************************
- * Copyright (c) 2026 NVIDIA Corporation & Affiliates.                         *
- * All rights reserved.                                                        *
- *                                                                             *
- * This source code and the accompanying materials are made available under    *
- * the terms of the Apache License 2.0 which accompanies this distribution.    *
- *******************************************************************************/
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -56,7 +51,16 @@
 
 #include "cudaq-pulse/Transforms/Passes.h"
 
+#include "CudaqPulseOptVersion.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+
 int main(int argc, char **argv) {
+  llvm::cl::SetVersionPrinter([](llvm::raw_ostream &os) {
+    os << "cudaq-pulse-opt " CUDAQ_PULSE_VERSION
+          " (LLVM " CUDAQ_PULSE_LLVM_VERSION ")\n";
+  });
+
   mlir::registerAllPasses();
   mlir::DialectRegistry registry;
   registry.insert<pulse::PulseDialect>();

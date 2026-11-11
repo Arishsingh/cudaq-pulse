@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Pickling targets, devices, handles, kernels, programs and errors, as
 process pools and caches on disk do."""
 
@@ -26,12 +21,13 @@ import numpy as np
 import pytest
 from cudaq_pulse import Controller, ControlSystem, _pickling, _source_stamp
 from cudaq_pulse.classical import Link
-from cudaq_pulse.controller import ControllerLimitError
+from cudaq_pulse.controller import ControllerLimitError, DriveLine
 from cudaq_pulse.kernel import _kernel
 from cudaq_pulse.kernel.ir_builder import SymbolicValueError
 from cudaq_pulse.targets import (
     Coupling,
-    Gate,
+    DragPulse,
+    FluxCZ,
     MicrowaveDrive,
     Qubit,
     ResidualZZ,
@@ -115,7 +111,9 @@ def idle(tau: float):
 
 _SHIPPED_DEVICE = pulse.device(_SHIPPED_TARGET)
 _SLOW_CONTROLLER = ControlSystem(controllers=[Controller(clock_ghz=1.0)])
-_DELAYED = ControlSystem(line_delays_ns={("drive", 0): 1.5})
+_DELAYED = ControlSystem(
+    controllers=[Controller(drive_lines=[DriveLine(0, delay_ns=1.5)], readout_lines=[0])]
+)
 
 
 def _programs():
@@ -156,8 +154,19 @@ def _views(program):
 
 
 def test_targets_and_their_parts_unpickle_equal_with_equal_hashes():
-    qubit = Qubit(3, 5.1e9, -300e6, 50.0, 30.0, label="D3", drive=MicrowaveDrive(x_amplitude=0.2))
-    coupling = Coupling((3, 4), 5e6, gate=Gate("cz", 40.0, interaction_frequency_hz=4.4e9))
+    qubit = Qubit(
+        3,
+        5.1e9,
+        -300e6,
+        50.0,
+        30.0,
+        label="D3",
+        drive=MicrowaveDrive(amplitude_scale_rad_per_ns=0.2),
+        calibrations={pulse.gates.X: DragPulse(duration_ns=40.0, sigma_ns=10.0)},
+        metadata={"fridge": "B", "fit": [1, 2.5]},
+    )
+    cz = FluxCZ(duration_ns=40.0, interaction_frequency_hz=4.4e9)
+    coupling = Coupling((3, 4), 5e6, calibrations={pulse.gates.CZ: cz})
     residual = ResidualZZ((3, 4), -1.5e4)
     shipped = _SHIPPED_DEVICE.target
     for value in (qubit, coupling, residual, LADDER.target, shipped):
@@ -167,6 +176,7 @@ def test_targets_and_their_parts_unpickle_equal_with_equal_hashes():
     assert back.qubits[0].drive == shipped.qubits[0].drive
     assert back.qubits[0].readout == shipped.qubits[0].readout
     assert back.couplings == shipped.couplings and back.residual_zz == shipped.residual_zz
+    assert back.qubits[0].calibrations == shipped.qubits[0].calibrations
 
 
 def test_targets_compare_by_content():
@@ -182,7 +192,7 @@ def test_targets_compare_by_content():
     [
         lambda: LADDER,
         lambda: pulse.device(_SHIPPED_TARGET),
-        lambda: pulse.device({"target": _SHIPPED_TARGET, "layout": [4, 5, 6], "clock_ghz": 1.0}),
+        lambda: pulse.device(_SHIPPED_TARGET, layout=[4, 5, 6], clock_ghz=1.0),
     ],
     ids=["ladder", "shipped", "config"],
 )
@@ -204,7 +214,7 @@ def test_a_device_unpickles_equal_and_is_built_once_per_process(make, monkeypatc
 
 def _shipped_and_uncalibrated():
     shipped = pulse.device(_SHIPPED_TARGET)
-    uncalibrated = pulse.device({"target": make_target(_SHIPPED_TARGET)})
+    uncalibrated = pulse.device(make_target(_SHIPPED_TARGET))
     assert shipped.calibration is not None and uncalibrated.calibration is None
     return shipped, uncalibrated
 
@@ -213,7 +223,7 @@ def test_a_device_and_its_target_without_the_calibration_are_two_devices():
     shipped, uncalibrated = _shipped_and_uncalibrated()
     assert shipped.fingerprint != uncalibrated.fingerprint and shipped != uncalibrated
     assert shipped.qudit_handles[0] != uncalibrated.qudit_handles[0]
-    named = pulse.device({"target": _SHIPPED_TARGET, "calibration": _SHIPPED_CALIBRATION})
+    named = pulse.device(_SHIPPED_TARGET, calibration=_SHIPPED_CALIBRATION)
     assert named == shipped and named.calibration == shipped.calibration
     # One kernel, called on each, returns each its own device.
     assert rabi.lower(shipped.qudit_handles[0], 0.1).target is shipped
@@ -281,7 +291,7 @@ def test_a_shipped_calibration_of_another_file_is_refused(monkeypatch):
 def test_a_calibration_of_its_own_values_pickles_by_value_once_per_pickle():
     shipped = pulse.device(_SHIPPED_TARGET).calibration
     mine = Calibration(shipped._data, name="mine")
-    device = pulse.device({"target": make_target(_SHIPPED_TARGET), "calibration": mine})
+    device = pulse.device(make_target(_SHIPPED_TARGET), calibration=mine)
     back = _round_trip(mine)
     assert back is not mine and back == mine and back.name == "mine"
     one = len(pickle.dumps(rabi.lower(device.qudit_handles[0], 0.1)))
@@ -297,15 +307,15 @@ def test_a_calibration_of_other_values_makes_another_device():
     data["cooldowns"]["2022-main"] = "edited"
     other = Calibration(data, name="mine")
     target = make_target(_SHIPPED_TARGET)
-    devices = [pulse.device({"target": target, "calibration": c}) for c in (same, other)]
+    devices = [pulse.device(target, calibration=c) for c in (same, other)]
     assert devices[0] != devices[1]
-    again = pulse.device({"target": target, "calibration": Calibration(shipped._data, name="m")})
+    again = pulse.device(target, calibration=Calibration(shipped._data, name="m"))
     assert again == devices[0]
 
 
 def test_handles_and_registers_unpickle_as_their_device_and_indices(monkeypatch):
     monkeypatch.setattr(_pickling, "_devices", {})
-    dev = pulse.device({"target": _SHIPPED_TARGET, "layout": [4, 5, 6]})
+    dev = pulse.device(_SHIPPED_TARGET, layout=[4, 5, 6])
     handles = dev.qudit_handles
     q, pair, picked, everything = _round_trip((handles[1], handles[0:2], handles[[2, 0]], handles))
     assert q == handles[1] and (q.index, q.logical) == (5, 1)
@@ -723,7 +733,7 @@ def _qpu(max_in_flight=1, **processor):
     system = pulse.ControlSystem(
         controllers=[*controllers, pulse.Controller()], links={"decoder": link}
     )
-    return pulse.device({"target": ladder_target(4), "control_system": system})
+    return pulse.device(ladder_target(4), control_system=system)
 
 
 _QPU = _qpu()
@@ -735,7 +745,7 @@ def _declared_clock():
         for k, clock in enumerate((2.4, 1.0))
     ]
     system = pulse.ControlSystem(controllers=controllers)
-    return pulse.device({"target": ladder_target(2), "control_system": system, "clock_ghz": 12.0})
+    return pulse.device(ladder_target(2), control_system=system, clock_ghz=12.0)
 
 
 def _multi_controller_programs():
@@ -890,7 +900,7 @@ def _limit_error():
     [
         lambda: ControllerLimitError([f"violation {k}" for k in range(13)]),
         _limit_error,
-        lambda: _raised(lambda: pulse.device({"target": _SHIPPED_TARGET, "layout": [99]})),
+        lambda: _raised(lambda: pulse.device(_SHIPPED_TARGET, layout=[99])),
         lambda: _raised(lambda: pulse.device(42)),
         lambda: SymbolicValueError("tau must be known", ("tau",), "a duration"),
         lambda: _raised(lambda: rabi.lower(0, 0.1)),

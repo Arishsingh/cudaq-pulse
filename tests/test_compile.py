@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Tests for compiling kernels: ``pulse.compile`` and ``kernel.lower``."""
 
 from __future__ import annotations
@@ -98,7 +93,7 @@ def _sparse_device():
     from cudaq_pulse.targets import Qubit, TargetDescription
 
     qubits = {i: Qubit(i, 5.0e9 + 1e8 * i, -300e6, 50.0, 30.0) for i in (0, 2)}
-    return pulse.device({"target": TargetDescription(name="sparse", qubits=qubits)})
+    return pulse.device(TargetDescription(name="sparse", qubits=qubits))
 
 
 @pulse.kernel
@@ -120,7 +115,7 @@ def test_a_qudit_the_target_lacks_is_refused_however_its_tables_were_made():
     from cudaq_pulse.compiler import CompileOptions, build
 
     options = CompileOptions.make()
-    dense = pulse.device({"target": pulse.device("transmon_17q").target})
+    dense = pulse.device(pulse.device("transmon_17q").target)
     for dev, lacking in ((_sparse_device(), (1, 5)), (dense, (17, 30))):
         kernel = pulse.kernel(_drive_one.__wrapped__)
         handles = dev.qudit_handles

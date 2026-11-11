@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The control system of a QPU: its controllers, their wiring and links.
 
 A ``Controller`` is one box: what it can play, the lines it drives and
@@ -16,14 +11,14 @@ the classical devices beside them (by name) and the limits that apply to
 all of them::
 
     controllers = [pulse.Controller(drive_lines=range(8), readout_lines=range(8))]
-    qpu = pulse.device({
-        "quantum_system": "transmon_17q",
-        "control_system": pulse.ControlSystem(controllers=controllers),
-    })
+    qpu = pulse.device(
+        "transmon_17q", control_system=pulse.ControlSystem(controllers=controllers)
+    )
     compiled = pulse.compile(kernel, device=qpu)
 
 ``Device.as_dict()`` writes a QPU as one JSON-serializable mapping (format
-``SYSTEM_FORMAT``), which ``pulse.device()`` reads back.
+``SYSTEM_FORMAT``), which ``Device.from_dict`` reads back (``Device.load`` from a
+file).
 """
 
 from __future__ import annotations
@@ -35,8 +30,11 @@ import re
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
+from functools import partial
+from itertools import repeat
+from operator import itemgetter
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ._errors import (
     DeviceDefinitionError,
@@ -56,17 +54,27 @@ if TYPE_CHECKING:
     from dataclasses import dataclass as _dataclass_when_used
     from fractions import Fraction
     from pathlib import Path
+    from typing import Self
 
     from . import _clocks
     from ._capability import Capability
     from ._device import Device
+    from ._op_classes import OpClass
+    from ._op_tables import OpCycles
     from .compiler import Lowered, _MachineModel
     from .controller import WaveformMemoryScope
     from .targets.base import TargetDescription
 else:
     from ._errors import _dataclass_when_used
 
-__all__ = ["SYSTEM_FORMAT", "ControlSystem", "Controller", "Processor"]
+__all__ = [
+    "SYSTEM_FORMAT",
+    "ControlSystem",
+    "Controller",
+    "DriveLine",
+    "Processor",
+    "ReadoutLine",
+]
 
 SYSTEM_FORMAT = "cudaq-pulse.system/1"
 
@@ -75,21 +83,158 @@ _PLAYED = frozenset({"drive", "readout"})
 _NEEDS = MappingProxyType({"drive": "play", "readout": "acquire", "wait": "wait"})
 
 
-def _lines(value: Iterable[Any], name: str) -> tuple[int, ...]:
+class _Line(tuple[int, float]):
+    """A line a controller plays: the qudit it drives or reads out (its
+    carrier index in the quantum system), and its calibrated delay in ns,
+    from cables and electronics, which the scheduler plays the line early
+    by. A line is read-only and compares by content; it is the pair
+    ``(qudit, delay_ns)``."""
+
+    __slots__ = ()
+    _role: ClassVar[str]
+
+    if TYPE_CHECKING:
+
+        @property
+        def qudit(self) -> int:
+            """The qudit it drives or reads out, by carrier index."""
+            ...
+
+        @property
+        def delay_ns(self) -> float:
+            """Its calibrated delay, in ns."""
+            ...
+
+    else:
+        qudit = property(itemgetter(0), doc="The qudit it drives or reads out, by carrier index.")
+        delay_ns = property(itemgetter(1), doc="Its calibrated delay, in ns.")
+
+    def __new__(cls, qudit: int, delay_ns: float | Time = 0.0) -> Self:
+        name = cls.__name__
+        if qudit.__class__ is not int:
+            if isinstance(qudit, bool) or not isinstance(qudit, int):
+                raise InvalidTypeError(
+                    f"{name} names a line by the carrier index of its qudit, got {qudit!r}; "
+                    "named and shared lines are not supported yet"
+                )
+            qudit = int(qudit)
+        if qudit < 0:
+            raise InvalidValueError(f"{name} has a negative carrier index {qudit}")
+        if delay_ns.__class__ is not float or not 0.0 <= delay_ns < math.inf:
+            delay_ns = _delay_ns(delay_ns, f"{name}({qudit}).delay_ns")
+        return tuple.__new__(cls, (qudit, delay_ns))
+
+    def __eq__(self, other: object) -> bool:
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        return tuple.__eq__(self, other)
+
+    def __ne__(self, other: object) -> bool:
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        return tuple.__ne__(self, other)
+
+    __hash__ = tuple.__hash__
+
+    def __repr__(self) -> str:
+        qudit, delay = self
+        return f"{type(self).__name__}({qudit}{f', delay_ns={delay!r}' if delay else ''})"
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), tuple(self))
+
+    def _data(self) -> int | dict[str, Any]:
+        """The line as a system file holds it: its qudit, or with a delay
+        ``{"qudit": 5, "delay_ns": 4.0}``."""
+        qudit, delay = self
+        return {"qudit": qudit, "delay_ns": delay} if delay else qudit
+
+
+class DriveLine(_Line):
+    """A drive line of a controller (``Controller.drive_lines``); see
+    ``ReadoutLine``. A bare carrier index in ``drive_lines`` is an undelayed
+    ``DriveLine``."""
+
+    __slots__ = ()
+    _role = "drive"
+
+
+class ReadoutLine(_Line):
+    """A readout line of a controller (``Controller.readout_lines``):
+    ``ReadoutLine(5, delay_ns=12.0)`` reads out qudit 5, its pulses played
+    12 ns early. A bare carrier index in ``readout_lines`` is an undelayed
+    ``ReadoutLine``."""
+
+    __slots__ = ()
+    _role = "readout"
+
+
+_QUDIT: Callable[[Any], int] = itemgetter(0)
+_DELAY: Callable[[Any], float] = itemgetter(1)
+# Lines given as carrier indices only.
+_PLAIN = frozenset({int})
+# By class, an undelayed line made from a (qudit, 0.0) pair.
+_UNDELAYED: dict[type[_Line], Callable[[tuple[int, float]], Any]] = {
+    cls: partial(tuple.__new__, cls) for cls in (DriveLine, ReadoutLine)
+}
+_NO_DELAY = repeat(0.0)
+
+
+def _lines_data(lines: Sequence[Any]) -> list[Any]:
+    """*lines* as a system file holds them: undelayed ones as carrier indices."""
+    if any(map(_DELAY, lines)):
+        return [line._data() for line in lines]
+    return list(map(_QUDIT, lines))
+
+
+def _delay_ns(given: Any, where: str) -> float:
+    """*given*, a line delay as a time or a number of ns, checked, in ns."""
+    from ._units import as_nanoseconds
+
+    ns = as_nanoseconds(given)
+    if isinstance(ns, bool) or not isinstance(ns, (int, float)) or not math.isfinite(ns):
+        raise InvalidValueError(f"{where} must be a number of ns or a time, got {given!r}")
+    if ns < 0:
+        raise InvalidValueError(
+            f"{where} is {ns} ns; delays cannot be negative: to play a line earlier, "
+            "delay every other line instead"
+        )
+    return float(ns)
+
+
+def _lines(value: Iterable[Any], name: str, cls: type[_Line]) -> tuple[Any, ...]:
+    """*value*, the lines ``Controller.<name>`` gives, as *cls* lines (a
+    bare carrier index is an undelayed one)."""
     if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
         raise InvalidTypeError(f"Controller.{name} is a sequence of carrier indices, got {value!r}")
-    lines = tuple(value)
-    for line in lines:
-        if isinstance(line, bool) or not isinstance(line, int):
-            raise InvalidTypeError(
-                f"Controller.{name} names a line by the carrier index of its qudit, "
-                f"got {line!r}; named and shared lines are not supported yet"
-            )
-        if line < 0:
-            raise InvalidValueError(f"Controller.{name} has a negative carrier index {line}")
-    if len(set(lines)) != len(lines):
-        raise InvalidValueError(f"Controller.{name} lists a carrier twice: {list(lines)}")
-    return lines
+    given = tuple(value)
+    if not given:
+        return given
+    if set(map(type, given)) <= _PLAIN and min(given) >= 0:
+        if len(set(given)) != len(given):
+            raise InvalidValueError(f"Controller.{name} lists a carrier twice: {list(given)}")
+        return tuple(map(_UNDELAYED[cls], zip(given, _NO_DELAY, strict=False)))
+    lines = []
+    for line in given:
+        if line.__class__ is not cls:
+            if isinstance(line, _Line):
+                raise InvalidTypeError(
+                    f"Controller.{name} holds {cls.__name__}s or carrier indices, got {line!r}"
+                )
+            if isinstance(line, bool) or not isinstance(line, int):
+                raise InvalidTypeError(
+                    f"Controller.{name} names a line by the carrier index of its qudit, "
+                    f"or as {cls.__name__}(qudit, delay_ns=...), got {line!r}; named and "
+                    "shared lines are not supported yet"
+                )
+            if line < 0:
+                raise InvalidValueError(f"Controller.{name} has a negative carrier index {line}")
+            line = tuple.__new__(cls, (int(line), 0.0))
+        lines.append(line)
+    carriers = list(map(_QUDIT, lines))
+    if len(set(carriers)) != len(carriers):
+        raise InvalidValueError(f"Controller.{name} lists a carrier twice: {carriers}")
+    return tuple(lines)
 
 
 def _cycles(value: Any, name: str) -> int:
@@ -115,24 +260,48 @@ _PROCESSOR_LIMITS = (
 )
 
 
-def _processor_ops() -> tuple[str, ...]:
-    """What a processor's cycles_per_op and unsupported name: the classes of
-    operations, and "loop", a rolled loop's counter and jump per iteration."""
-    from .controller import OP_CLASSES
+def _one_cycle() -> OpCycles:
+    from ._op_tables import _ONE_CYCLE
 
-    return (*OP_CLASSES, "loop")
+    return _ONE_CYCLE
 
 
-def _op_name(given: Any, field_name: str) -> str:
-    ops = _processor_ops()
-    if given in ops:
-        return str(given)
-    hint = _closest(str(given), ops)
+def _op_class(given: Any) -> Any:
+    """*given*, an operation ``Processor.unsupported`` names, as an ``OpClass``."""
+    from ._op_tables import _PROCESSOR_OPS
+
+    if isinstance(given, str) and given in _PROCESSOR_OPS:
+        if given.__class__ is str:
+            from ._op_classes import OpClass
+
+            return OpClass(given)
+        return given
+    hint = _closest(str(given), _PROCESSOR_OPS)
     raise InvalidValueError(
-        f"Processor.{field_name} names an unknown operation {given!r}"
+        f"Processor.unsupported names an unknown operation {given!r}"
         + (f" (did you mean {hint!r}?)" if hint else "")
-        + f"; the operations are {', '.join(ops)}"
+        + f"; the operations are {', '.join(_PROCESSOR_OPS)}"
     )
+
+
+def _processor_of(data: Mapping[str, Any]) -> Processor:
+    """The processor a description or a system file states as *data*, its
+    ``cycles_per_op`` a table of cycles by class name."""
+    from ._op_tables import _PROCESSOR_OPS, OpCycles
+
+    given = dict(data)
+    table = given.get("cycles_per_op")
+    if isinstance(table, Mapping):
+        for name in table:
+            if name not in _PROCESSOR_OPS:
+                hint = _closest(str(name), _PROCESSOR_OPS)
+                raise InvalidValueError(
+                    f"Processor.cycles_per_op names an unknown operation {name!r}"
+                    + (f" (did you mean {hint!r}?)" if hint else "")
+                    + f"; the operations are {', '.join(_PROCESSOR_OPS)}"
+                )
+        given["cycles_per_op"] = OpCycles(**table)
+    return Processor(**given)
 
 
 def _dispatch_keys(given: Any, owner: str) -> Mapping[str, int]:
@@ -167,12 +336,13 @@ class Processor:
     checked.
 
     ``clock_ghz``: its clock (``None``: the controller's, else the
-    program's). ``cycles_per_op``: the cycles of one operation of each class
-    of ``OP_CLASSES``, and of ``"loop"``, a rolled loop's counter and jump
-    per iteration; one cycle when not given. ``branch`` is an ``if`` or
-    ``else``. ``unsupported``: the operations it cannot run; a function that
-    uses one does not compile, except ``"loop"``: a processor without it
-    runs each loop unrolled, so its code is counted unrolled.
+    program's). ``cycles_per_op``: an ``OpCycles``, the cycles of one
+    operation of each class, and of ``loop``, a rolled loop's counter and
+    jump per iteration; one cycle when not given. ``branch`` is an ``if`` or
+    ``else``. ``unsupported``: the classes it cannot run (``OpClass``); a
+    function that uses one does not compile, except ``OpClass.LOOP``: a
+    processor without it runs each loop unrolled, so its code is counted
+    unrolled.
     ``max_concurrent_calls``: the calls it computes at once, from submission
     to the time the answer is due.
     ``max_ops_per_function`` and ``max_ops_total``: the operations one
@@ -189,8 +359,8 @@ class Processor:
 
     links: Sequence[int | str] = ("controller",)
     clock_ghz: float | None = None
-    cycles_per_op: Mapping[str, int] = field(default_factory=dict)
-    unsupported: Sequence[str] = ()
+    cycles_per_op: OpCycles = field(default_factory=_one_cycle)
+    unsupported: Sequence[OpClass] = ()
     max_concurrent_calls: int = 1
     max_ops_per_function: int | None = None
     max_ops_total: int | None = None
@@ -228,26 +398,20 @@ class Processor:
             raise InvalidValueError(
                 f"Processor.clock_ghz must be a positive number or None, got {clock!r}"
             )
-        if not isinstance(self.cycles_per_op, Mapping):
+        from ._op_tables import OpCycles
+
+        costs = self.cycles_per_op
+        if costs.__class__ is not OpCycles:
             raise InvalidTypeError(
-                f"Processor.cycles_per_op maps operations to cycles, got {self.cycles_per_op!r}"
+                "Processor.cycles_per_op is an OpCycles, as OpCycles(div=20); got "
+                f"{type(costs).__name__}"
             )
-        costs = {}
-        for op, cycles in self.cycles_per_op.items():
-            name = _op_name(op, "cycles_per_op")
-            if isinstance(cycles, bool) or not isinstance(cycles, int) or cycles < 0:
-                raise InvalidValueError(
-                    f"Processor.cycles_per_op[{name!r}] is a whole number of cycles >= 0, "
-                    f"got {cycles!r}"
-                )
-            costs[name] = cycles
-        object.__setattr__(self, "cycles_per_op", MappingProxyType(costs))
         if isinstance(self.unsupported, (str, bytes)) or not isinstance(self.unsupported, Iterable):
             raise InvalidTypeError(
                 f"Processor.unsupported is a list of operations, got {self.unsupported!r}"
             )
-        unsupported = tuple(dict.fromkeys(_op_name(op, "unsupported") for op in self.unsupported))
-        both = [op for op in unsupported if op in costs]
+        unsupported = tuple(dict.fromkeys(map(_op_class, self.unsupported)))
+        both = [str(op) for op in unsupported if costs[op] != 1]
         if both:
             raise InvalidValueError(
                 f"Processor.unsupported lists {both[0]!r}, which cycles_per_op gives a cost; "
@@ -293,12 +457,12 @@ class Processor:
         return "loop" not in self.unsupported
 
     def as_dict(self) -> dict[str, Any]:
-        """The processor as JSON-serializable data, which ``Processor(**data)``
-        reads back."""
+        """The processor as JSON-serializable data, as a system file holds it:
+        its ``cycles_per_op`` a table of the classes not 1 cycle."""
         data = {f.name: getattr(self, f.name) for f in fields(self)}
         data["links"] = list(self.links)
-        data["cycles_per_op"] = dict(self.cycles_per_op)
-        data["unsupported"] = list(self.unsupported)
+        data["cycles_per_op"] = self.cycles_per_op._given()
+        data["unsupported"] = [str(op) for op in self.unsupported]
         data["dispatch_keys"] = dict(self.dispatch_keys)
         return data
 
@@ -361,7 +525,7 @@ class Controller:
     up to 2**60 cycles. Exports list it only when it is set.
     ``max_fine_delay_ns``: the longest delay, below one grid step, each line
     can add to its output (0: none), a time or a number of ns; it plays the
-    part of a calibrated line delay (``ControlSystem.line_delays_ns``) that
+    part of a line's calibrated delay (``DriveLine``, ``ReadoutLine``) that
     whole grid steps cannot.
     ``alignment_tolerance_cycles``: how far its pulses may land from where
     they are meant to be on other controllers, and, without fine delay, how
@@ -382,9 +546,12 @@ class Controller:
     call holds the lines of each such controller that issues it, reads a
     measurement it sends or plays a pulse that uses its answer.
 
-    ``drive_lines`` and ``readout_lines`` are the carriers whose drive and
-    readout lines it plays (carrier indices of the quantum system); the only
-    controller of a system that lists none plays every line.
+    ``drive_lines`` and ``readout_lines`` are the drive and readout lines it
+    plays: ``DriveLine(5, delay_ns=4.0)`` and ``ReadoutLine(5,
+    delay_ns=12.0)``, each with its qudit (its carrier index in the quantum
+    system) and calibrated delay, or a bare carrier index for an undelayed
+    line (they read back as lines); the only controller of a system that
+    lists none plays every line.
     ``peer_latency_cycles`` is the time an outcome this controller reads
     takes to reach another controller, in this controller's own cycles: one
     number for every receiver, or a mapping from the receiving controller's
@@ -418,8 +585,8 @@ class Controller:
     waveform_memory: WaveformMemoryScope | str = "per_line"
     persistent_frames: bool = False
     blocks_on_calls: bool = False
-    drive_lines: Sequence[int] = ()
-    readout_lines: Sequence[int] = ()
+    drive_lines: Sequence[DriveLine | int] = ()
+    readout_lines: Sequence[ReadoutLine | int] = ()
     peer_latency_cycles: int | Mapping[int, int] = 0
     clock_skew_cycles: int = 0
     supports: Sequence[Capability | str] | None = None
@@ -500,8 +667,10 @@ class Controller:
                 f"Controller.max_instructions must be a positive int or None, got {size!r}"
             )
         object.__setattr__(self, "detectors", MappingProxyType(dict(self.detectors)))
-        object.__setattr__(self, "drive_lines", _lines(self.drive_lines, "drive_lines"))
-        object.__setattr__(self, "readout_lines", _lines(self.readout_lines, "readout_lines"))
+        object.__setattr__(self, "drive_lines", _lines(self.drive_lines, "drive_lines", DriveLine))
+        object.__setattr__(
+            self, "readout_lines", _lines(self.readout_lines, "readout_lines", ReadoutLine)
+        )
         peers = self.peer_latency_cycles
         if isinstance(peers, Mapping):
             object.__setattr__(
@@ -551,7 +720,7 @@ class Controller:
             if isinstance(item, Mapping):
                 # As a description or a system file states it.
                 try:
-                    item = Processor(**item)
+                    item = _processor_of(item)
                 except TypeError as error:
                     raise InvalidValueError(f"Controller.processors[{index}]: {error}") from None
             elif not isinstance(item, Processor):
@@ -592,8 +761,12 @@ class Controller:
             del data["persistent_frames"]
         if not self.blocks_on_calls:
             del data["blocks_on_calls"]
-        data["drive_lines"] = list(self.drive_lines)
-        data["readout_lines"] = list(self.readout_lines)
+        if self.drive_lines or self.readout_lines:
+            data["drive_lines"] = _lines_data(self.drive_lines)
+            data["readout_lines"] = _lines_data(self.readout_lines)
+        else:
+            data["drive_lines"] = []
+            data["readout_lines"] = []
         peers = self.peer_latency_cycles
         if not isinstance(peers, int):
             data["peer_latency_cycles"] = {str(k): v for k, v in sorted(peers.items())}
@@ -604,6 +777,12 @@ class Controller:
         else:
             del data["processors"]
         return data
+
+    @property
+    def _all_lines(self) -> tuple[_Line, ...]:
+        """Its drive lines, then its readout lines, each a line."""
+        lines: tuple[Any, ...] = (*self.drive_lines, *self.readout_lines)
+        return lines
 
     def supports_capability(self, capability: Capability) -> bool:
         """Whether the controller can do *capability*."""
@@ -654,14 +833,6 @@ def _one_controller(controller: Controller) -> ControlSystem:
         ) from None
     object.__setattr__(system._machine, "_bare", True)
     return system
-
-
-def _checked_delays(
-    delays: Mapping[tuple[str, int], float | Time],
-) -> Mapping[tuple[str, int], float]:
-    from ._clocks import checked_line_delays
-
-    return checked_line_delays(delays, "ControlSystem")
 
 
 def _known(owners: Iterable[int | None]) -> list[int]:
@@ -728,15 +899,8 @@ class ControlSystem:
     ``reference_clock_ghz`` is a clock every controller locks to, if they
     share one: each controller's clock must be a whole multiple of it, and
     without it each controller's start is known only to within one of its
-    own cycles. ``line_delays_ns`` are the calibrated delays of the lines
-    the controllers play, keyed by ``("drive", qudit)`` or
-    ``("readout", qudit)``, as times (``2 * pulse.ns``) or numbers of ns:
-    every operation on the line starts that much later than scheduled.
-    Whole steps of the line's grid move its operations, which are then
-    checked like any others; the rest is the line's ``fine_delay_ns`` in
-    the controller's program, which its controller must be able to add
-    (``Controller.max_fine_delay_ns``) or tolerate
-    (``Controller.alignment_tolerance_cycles``).
+    own cycles. The calibrated delay of each line is part of the line, as
+    its controller declares it (``DriveLine``, ``ReadoutLine``).
     """
 
     controllers: Sequence[Controller] = ()
@@ -745,10 +909,11 @@ class ControlSystem:
     max_concurrent_readouts: int = 2
     line_switch_penalty_cycles: int = 0
     reference_clock_ghz: float | None = None
-    line_delays_ns: Mapping[tuple[str, int], float | Time] = field(default_factory=dict)
     # Set by __post_init__, and declared for type checkers only: as fields
     # they would slow the first use of the class.
     if TYPE_CHECKING:
+        # (role, carrier) -> the delay in ns of each delayed line, in line order.
+        _line_delays: Mapping[tuple[str, int], float] = field(init=False)
         _machine: _MachineModel = field(init=False)
         _plays_everything: bool = field(init=False)
         # By link id and controller, the processor that runs its calls there.
@@ -801,11 +966,15 @@ class ControlSystem:
             raise InvalidValueError(
                 f"ControlSystem.reference_clock_ghz must be positive, got {ghz}"
             )
-        delays = self.line_delays_ns
+        delays = {
+            (line._role, line.qudit): line.delay_ns
+            for controller in controllers
+            for line in filter(_DELAY, controller._all_lines)
+        }
         object.__setattr__(
             self,
-            "line_delays_ns",
-            _checked_delays(delays) if delays else _NO_DELAYS,
+            "_line_delays",
+            MappingProxyType(dict(sorted(delays.items()))) if delays else _NO_DELAYS,
         )
         problems = _structure_problems(self, "")
         if problems:
@@ -843,8 +1012,11 @@ class ControlSystem:
                 {
                     (role, carrier): index
                     for index, controller in enumerate(controllers)
-                    for role in ("drive", "readout")
-                    for carrier in getattr(controller, f"{role}_lines")
+                    for role, lines in (
+                        ("drive", controller.drive_lines),
+                        ("readout", controller.readout_lines),
+                    )
+                    for carrier in map(_QUDIT, lines)
                 }
             ),
         )
@@ -855,7 +1027,7 @@ class ControlSystem:
             len(controllers) == 1
             or (
                 self.reference_clock_ghz is not None
-                and not self.line_delays_ns
+                and not self._line_delays
                 and not any(c.clock_skew_cycles for c in controllers)
             ),
         )
@@ -890,7 +1062,7 @@ class ControlSystem:
                 links=links,
                 controller=one,
                 reference_clock_ghz=self.reference_clock_ghz,
-                line_delays_ns=self.line_delays_ns,
+                _line_delays=self._line_delays,
                 _system=None if alone else self,
             ),
         )
@@ -904,7 +1076,6 @@ class ControlSystem:
                 self.max_concurrent_readouts,
                 self.line_switch_penalty_cycles,
                 self.reference_clock_ghz,
-                tuple(self.line_delays_ns.items()),
             )
         )
 
@@ -915,8 +1086,7 @@ class ControlSystem:
 
     def as_dict(self) -> dict[str, Any]:
         """The control system as JSON-serializable data; links name the
-        controllers they reach by index, and line delays are keyed by role,
-        then qudit."""
+        controllers they reach by index."""
         data = {
             "controllers": [c.as_dict() for c in self.controllers],
             "links": {
@@ -936,11 +1106,6 @@ class ControlSystem:
         }
         if self.reference_clock_ghz is not None:
             data["reference_clock_ghz"] = self.reference_clock_ghz
-        if self.line_delays_ns:
-            delays: dict[str, dict[str, float]] = {}
-            for (role, qudit), ns in self.line_delays_ns.items():
-                delays.setdefault(role, {})[str(qudit)] = ns
-            data["line_delays_ns"] = delays
         return data
 
     @property
@@ -1205,7 +1370,7 @@ class ControlSystem:
 
         if (
             self.reference_clock_ghz is not None
-            and not self.line_delays_ns
+            and not self._line_delays
             and not any(c.clock_skew_cycles for c in self.controllers)
         ):
             return []
@@ -1272,7 +1437,7 @@ class ControlSystem:
     ) -> float:
         """How far a line's delay is rounded to its grid, in its controller's
         cycles: 0 when the controller adds the rest as fine delay."""
-        ns = self.line_delays_ns.get((line["role"], line["qudit"]))
+        ns = self._line_delays.get((line["role"], line["qudit"]))
         controller = self.controllers[owner]
         if not ns or controller.max_fine_delay_ns > 0:
             return 0.0
@@ -1280,6 +1445,35 @@ class ControlSystem:
         step_ns = (1 if own is None else own.grid) / program_ghz
         rest = abs(ns - round(ns / step_ns) * step_ns)
         return 0.0 if rest < 1e-9 else rest * (program_ghz if own is None else own.clock_ghz)
+
+    def _undelayed(self) -> ControlSystem:
+        """The system with every line undelayed: what a program is traced
+        for, which other delays only schedule again. Made once."""
+        found: ControlSystem | None = self.__dict__.get("_undelayed_system")
+        if found is None:
+            if not self._line_delays:
+                return self
+            import dataclasses
+
+            controllers = [
+                dataclasses.replace(
+                    c,
+                    drive_lines=[line.qudit for line in c._all_lines if line._role == "drive"],
+                    readout_lines=[line.qudit for line in c._all_lines if line._role == "readout"],
+                )
+                for c in self.controllers
+            ]
+            links = {
+                name: link
+                if link.controllers is None
+                else dataclasses.replace(
+                    link, controllers=[controllers[self._index(c)] for c in link.controllers]
+                )
+                for name, link in self.links.items()
+            }
+            found = dataclasses.replace(self, controllers=controllers, links=links)
+            object.__setattr__(self, "_undelayed_system", found)
+        return found
 
     def _index(self, controller: Controller) -> int:
         for index, candidate in enumerate(self.controllers):
@@ -1775,7 +1969,8 @@ def _structure_problems(system: ControlSystem, prefix: str) -> list[Problem]:
     for role in ("drive_lines", "readout_lines"):
         first: dict[int, int] = {}
         for index, controller in enumerate(controllers):
-            for position, carrier in enumerate(getattr(controller, role)):
+            for position, line in enumerate(getattr(controller, role)):
+                carrier = line.qudit
                 if carrier in first:
                     problems.append(
                         Problem(
@@ -1788,23 +1983,6 @@ def _structure_problems(system: ControlSystem, prefix: str) -> list[Problem]:
                     )
                 else:
                     first[carrier] = index
-    if any(c.drive_lines or c.readout_lines for c in controllers):
-        played = {
-            (role[:-6], carrier)
-            for c in controllers
-            for role in ("drive_lines", "readout_lines")
-            for carrier in getattr(c, role)
-        }
-        for role, carrier in system.line_delays_ns:
-            if (role, carrier) not in played:
-                problems.append(
-                    Problem(
-                        f"delays qudit {carrier}'s {role} line, which no controller plays",
-                        path=f"{prefix}line_delays_ns",
-                        value=(role, carrier),
-                        fix=f"add {carrier} to the {role}_lines of the controller that plays it",
-                    )
-                )
     for index, controller in enumerate(controllers):
         peers = controller.peer_latency_cycles
         if isinstance(peers, Mapping):
@@ -1897,7 +2075,8 @@ def _wiring_problems(system: ControlSystem, target: TargetDescription) -> list[P
     for index, controller in enumerate(system.controllers):
         path = f"control_system.controllers[{index}]"
         for role in ("drive_lines", "readout_lines"):
-            for position, carrier in enumerate(getattr(controller, role)):
+            for position, line in enumerate(getattr(controller, role)):
+                carrier = line.qudit
                 if carrier not in carriers:
                     problems.append(
                         Problem(
@@ -1917,16 +2096,6 @@ def _wiring_problems(system: ControlSystem, target: TargetDescription) -> list[P
                         fix=f"it has qudits {_ranges(sorted(carriers))}",
                     )
                 )
-    for role, carrier in system.line_delays_ns:
-        if carrier not in carriers:
-            problems.append(
-                Problem(
-                    f"delays qudit {carrier}'s {role} line; the qudit is not in the quantum system",
-                    path="control_system.line_delays_ns",
-                    value=(role, carrier),
-                    fix=f"it has qudits {_ranges(sorted(carriers))}",
-                )
-            )
     return problems
 
 
@@ -2017,7 +2186,7 @@ def _parse_description(path: str) -> Controller:
                 "is wiring, which the installation gives",
                 f"pass it when loading: pulse.controller(name, {key}=...)",
             )
-        elif key not in known and key != "owner":
+        elif key not in known:
             hint = _closest(key, known)
             problem(key, "is not a controller field", f"did you mean {hint!r}?" if hint else "")
     for key in ("model", "version"):
@@ -2117,8 +2286,9 @@ _QUDIT_FIELDS = (
     "t2_echo_us",
     "thermal_population",
 )
-_COUPLING_FIELDS = ("qudits", "strength_hz", "gate")
-_GATE_FIELDS = ("name", "duration_ns", "buffer_ns", "interaction_frequency_hz")
+# Written only when a qudit gives them.
+_QUDIT_EXTRAS = ("calibrations", "metadata")
+_COUPLING_FIELDS = ("qudits", "strength_hz", "calibrations")
 _RESIDUAL_ZZ_FIELDS = ("qudits", "rate_hz")
 # The keys an entry must give, with the fix for each.
 _QUDITS_FIX = "give the indices of the two qudits, as [0, 1]"
@@ -2127,9 +2297,6 @@ _COUPLING_REQUIRED = MappingProxyType(
         "qudits": _QUDITS_FIX,
         "strength_hz": "give the strength in Hz, or null if it is not measured yet",
     }
-)
-_GATE_REQUIRED = MappingProxyType(
-    {"name": 'give the name of the gate, as "cz"', "duration_ns": "give how long it takes, in ns"}
 )
 _RESIDUAL_ZZ_REQUIRED = MappingProxyType(
     {"qudits": _QUDITS_FIX, "rate_hz": "give the ZZ rate in Hz"}
@@ -2150,7 +2317,6 @@ _CONTROL_KEYS = (
     "max_concurrent_readouts",
     "line_switch_penalty_cycles",
     "reference_clock_ghz",
-    "line_delays_ns",
 )
 _LINK_KEYS = (
     "fixed_ns",
@@ -2194,6 +2360,33 @@ def _component_data(member: str, component: Any) -> dict[str, Any] | None:
     return {"kind": kind, **dict(zip(component._fields, component._values, strict=True))}
 
 
+def _calibration_data(calibrations: Mapping[Any, Any]) -> list[dict[str, Any]]:
+    """Calibrations by gate as a system file holds them: one entry per
+    calibration, its gate, its transition if not (0, 1), and its fields."""
+    data = []
+    for key, pulse in calibrations.items():
+        gate, transition = key if key.__class__ is tuple else (key, None)
+        entry: dict[str, Any] = {"gate": str.__str__(gate)}
+        if transition is not None:
+            entry["transition"] = list(transition)
+        entry.update(zip(pulse._fields, pulse._values, strict=True))
+        data.append(entry)
+    return data
+
+
+def _qudit_data(q: Any) -> dict[str, Any]:
+    data = {
+        key: _component_data(key, value) if key in ("drive", "readout") else _plain(value)
+        for key in _QUDIT_FIELDS
+        for value in (getattr(q, key),)
+    }
+    if q.calibrations:
+        data["calibrations"] = _calibration_data(q.calibrations)
+    if q.metadata:
+        data["metadata"] = _plain(q.metadata)
+    return data
+
+
 def _model_kinds() -> dict[str, type]:
     """The simulation models a system file holds, by the kind it writes."""
     from .targets.models import SimulationModel, TransmonModel
@@ -2223,22 +2416,10 @@ def _quantum_data(target: TargetDescription) -> dict[str, Any]:
         "model": _model_data(target.model),
         "attribution": target.attribution,
         "clock_ghz": target.clock_ghz,
-        "qudits": [
-            {
-                key: _component_data(key, value) if key in ("drive", "readout") else _plain(value)
-                for key in _QUDIT_FIELDS
-                for value in (getattr(q, key),)
-            }
-            for q in sorted(target.qubits.values(), key=lambda q: q.index)
-        ],
+        "qudits": [_qudit_data(q) for q in sorted(target.qubits.values(), key=lambda q: q.index)],
         "couplings": [
-            {
-                "qudits": list(c.qudits),
-                "strength_hz": c.strength_hz,
-                "gate": None
-                if c.gate is None
-                else {key: _plain(getattr(c.gate, key)) for key in _GATE_FIELDS},
-            }
+            {"qudits": list(c.qudits), "strength_hz": c.strength_hz}
+            | ({"calibrations": _calibration_data(c.calibrations)} if c.calibrations else {})
             for c in target.couplings
         ],
         "residual_zz": [
@@ -2286,7 +2467,7 @@ def _config_systems(
     from ._device import _target
 
     problems.extend(_check_format(config))
-    reader = _Reader(None if source == "config" else source)
+    reader = _Reader(source if source.startswith("file ") else None)
     spec = config.get(key)
     if isinstance(spec, Mapping):
         target = reader.quantum_system(spec, key)
@@ -2372,11 +2553,14 @@ class _Reader:
             return None
         qudits: dict[int, Any] = {}
         for i, item in enumerate(system.get("qudits", ())):
-            entry = self.mapping(item, f"{path}.qudits[{i}]", _QUDIT_FIELDS)
+            where = f"{path}.qudits[{i}]"
+            entry = self.mapping(item, where, (*_QUDIT_FIELDS, *_QUDIT_EXTRAS))
             if entry is not None:
                 entry = {
-                    key: self.component(value, f"{path}.qudits[{i}].{key}", key)
+                    key: self.component(value, f"{where}.{key}", key)
                     if key in ("drive", "readout") and value is not None
+                    else self.calibrations(value, f"{where}.{key}", "qudit")
+                    if key == "calibrations"
                     else value
                     for key, value in entry.items()
                 }
@@ -2390,11 +2574,12 @@ class _Reader:
             entry = self.mapping(item, where, _COUPLING_FIELDS)
             if entry is None or self.missing(entry, where, _COUPLING_REQUIRED):
                 continue
-            gate = entry.get("gate")
-            if gate is not None and (gate := self.gate(gate, f"{where}.gate")) is None:
-                continue
             given = {k: entry[k] for k in ("qudits", "strength_hz")}
-            coupling = self.build(where, Coupling, **given, gate=gate)
+            if "calibrations" in entry:
+                given["calibrations"] = self.calibrations(
+                    entry["calibrations"], f"{where}.calibrations", "coupling"
+                )
+            coupling = self.build(where, Coupling, **given)
             if coupling is not None:
                 entries["couplings"].append((i, coupling))
         for i, item in enumerate(system.get("residual_zz", ())):
@@ -2442,13 +2627,48 @@ class _Reader:
             self.problem(path, str(error))
         return None
 
-    def gate(self, data: Any, path: str) -> Any:
-        from .targets.base import Gate
+    def calibrations(self, data: Any, path: str, owner: str) -> dict[Any, Any]:
+        """The calibrations of a qudit or coupling (*owner*), by gate (or
+        ``(gate, transition)``), from their entries in the file."""
+        from .targets.base import _CALIBRATION_TYPES, _COUPLING_GATES, _QUDIT_GATES
 
-        entry = self.mapping(data, path, _GATE_FIELDS)
-        if entry is None or self.missing(entry, path, _GATE_REQUIRED):
-            return None
-        return self.build(path, Gate, **{k: v for k, v in entry.items() if k in _GATE_FIELDS})
+        allowed = _QUDIT_GATES if owner == "qudit" else _COUPLING_GATES
+        found: dict[Any, Any] = {}
+        if not isinstance(data, list):
+            self.problem(
+                path,
+                f"must be a list of calibrations, got {type(data).__name__}",
+                data,
+                fix=f'give each as {{"gate": "{allowed[0]}", ...}}',
+            )
+            return found
+        for j, item in enumerate(data):
+            where = f"{path}[{j}]"
+            if not isinstance(item, Mapping):
+                self.problem(where, f"must be a mapping, got {type(item).__name__}", item)
+                continue
+            gate = item.get("gate")
+            if not (isinstance(gate, str) and gate in allowed):
+                self.problem(
+                    f"{where}.gate",
+                    f"is not a gate of a {owner}" if "gate" in item else "is missing",
+                    gate if "gate" in item else Problem.UNSET,
+                    fix=f"the gates of a {owner} are {', '.join(allowed)}",
+                )
+                continue
+            made = _CALIBRATION_TYPES[gate]
+            self.mapping(item, where, ("gate", "transition", *made._fields))
+            pulse = self.build(where, made, **{k: item[k] for k in made._fields if k in item})
+            if pulse is None:
+                continue
+            transition = item.get("transition")
+            if transition is None:
+                found[gate] = pulse
+            else:
+                found[(gate, tuple(transition) if isinstance(transition, list) else transition)] = (
+                    pulse
+                )
+        return found
 
     def missing(self, entry: Mapping[str, Any], path: str, required: Mapping[str, str]) -> bool:
         """Whether *entry* lacks a key of *required*, each noted as a problem
@@ -2492,28 +2712,27 @@ class _Reader:
                 except ValueError:
                     self.problem(f"{path}.{name}", "is keyed by integers", value)
                     return None
+        for name, cls in (("drive_lines", DriveLine), ("readout_lines", ReadoutLine)):
+            lines = given.get(name)
+            if isinstance(lines, list):
+                read = [self.line(item, f"{path}.{name}[{i}]", cls) for i, item in enumerate(lines)]
+                if None in read:
+                    return None
+                given[name] = read
         controller: Controller | None = self.build(path, Controller, **given)
         if controller is not None:
             _notice_version(controller, path if self.file is None else f"{self.file}: {path}")
         return controller
 
-    def line_delays(self, data: Any, path: str) -> dict[tuple[str, int], Any] | None:
-        """System-file line delays, ``{"drive": {"5": 4.0}}``, keyed as
-        ``ControlSystem.line_delays_ns`` takes them."""
-        roles = self.mapping(data, path, ("drive", "readout"))
-        if roles is None:
+    def line(self, data: Any, path: str, cls: type[_Line]) -> Any:
+        """A system file's line: a carrier index, or ``{"qudit": 5,
+        "delay_ns": 4.0}``."""
+        if not isinstance(data, Mapping):
+            return data
+        entry = self.mapping(data, path, ("qudit", "delay_ns"))
+        if entry is None or self.missing(entry, path, {"qudit": "give its qudit, as 5"}):
             return None
-        delays: dict[tuple[str, int], Any] = {}
-        for role, by_qudit in roles.items():
-            if not isinstance(by_qudit, Mapping):
-                self.problem(f"{path}.{role}", "maps qudits to delays in ns", by_qudit)
-                return None
-            for qudit, ns in by_qudit.items():
-                if not str(qudit).isdigit():
-                    self.problem(f"{path}.{role}", "is keyed by qudit indices", qudit)
-                    return None
-                delays[(role, int(qudit))] = ns
-        return delays
+        return self.build(path, cls, **entry)
 
     def control_system(self, data: Any, path: str) -> ControlSystem | None:
         system = self.mapping(data, path, _CONTROL_KEYS)
@@ -2549,11 +2768,6 @@ class _Reader:
             if link is not None:
                 links[name] = link
         rest = {k: system[k] for k in _CONTROL_KEYS[2:] if k in system}
-        if "line_delays_ns" in rest:
-            delays = self.line_delays(rest["line_delays_ns"], f"{path}.line_delays_ns")
-            if delays is None:
-                return None
-            rest["line_delays_ns"] = delays
         try:
             return ControlSystem(controllers=controllers, links=links, **rest)
         except DeviceDefinitionError as error:

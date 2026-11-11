@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Lowering loops whose lines move by different periods.
 
 The scheduler simulates such a loop's iterations until each group of lines
@@ -495,9 +490,7 @@ def _system() -> Any:
     a = pulse.Controller(drive_lines=[0, 1], readout_lines=[0, 1], model="box.a")
     b = pulse.Controller(drive_lines=[2, 3], readout_lines=[2, 3], model="box.b")
     system = pulse.ControlSystem(controllers=[a, b])
-    return pulse.device(
-        {"quantum_system": "transmon_17q", "layout": [0, 1, 2, 3], "control_system": system}
-    )
+    return pulse.device("transmon_17q", layout=[0, 1, 2, 3], control_system=system)
 
 
 def _outcome(kernel: Any, schedule: str, unroll_threshold: int, machine: str) -> Any:

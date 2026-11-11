@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 # Run the lit suite, including the pass-plugin test (test/Plugins), against
 # the cudaq-pulse-opt on PATH, as a wheel installs it: build
@@ -29,7 +24,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if ! opt="$(command -v cudaq-pulse-opt)"; then
-  echo "error: cudaq-pulse-opt is not on PATH; install the cudaq-pulse-opt wheel" >&2
+  echo "error: cudaq-pulse-opt is not on PATH; install the cudaq-pulse-tools wheel" >&2
   exit 1
 fi
 if [[ -z "$toolchain" ]]; then

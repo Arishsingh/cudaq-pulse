@@ -1,15 +1,7 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 include_guard(GLOBAL)
-
-set(CUDAQ_PULSE_LINK_MAP_DIR "${CMAKE_BINARY_DIR}/link-maps")
-file(MAKE_DIRECTORY "${CUDAQ_PULSE_LINK_MAP_DIR}")
 
 # cudaq_pulse_third_party_notices(NOTICES <file> COMPONENT <component>
 #                                 TARGETS <target>...)
@@ -17,11 +9,15 @@ file(MAKE_DIRECTORY "${CUDAQ_PULSE_LINK_MAP_DIR}")
 # Each target writes a linker map to link-maps/<target>.map, and installing
 # COMPONENT fails unless NOTICES is what tools/third-party-notices.py
 # generates and lists every third-party component those maps show linked.
+# Called from several directories, and the include guard keeps a variable
+# set at include time out of all but the first, so the directory is set here.
 function(cudaq_pulse_third_party_notices)
   cmake_parse_arguments(PARSE_ARGV 0 ARG "" "NOTICES;COMPONENT" "TARGETS")
+  set(_map_dir "${CMAKE_BINARY_DIR}/link-maps")
+  file(MAKE_DIRECTORY "${_map_dir}")
   set(_maps "")
   foreach(_target IN LISTS ARG_TARGETS)
-    set(_map "${CUDAQ_PULSE_LINK_MAP_DIR}/${_target}.map")
+    set(_map "${_map_dir}/${_target}.map")
     if(APPLE)
       target_link_options(${_target} PRIVATE "LINKER:-map,${_map}")
     else()

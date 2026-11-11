@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Exporting for, and running in, a virtual-time controller emulation."""
 
 from __future__ import annotations
@@ -115,6 +110,21 @@ def test_late_answers_take_the_timeout_arm_at_the_modelled_rate():
     due_ns = (call.due_cycles - call.submit_cycles) / low.target.clock_ghz
     assert due_ns == 500 + 1 / low.target.clock_ghz
     assert all(c.budget_ns == due_ns for shot in result.calls for c in shot)
+
+
+def test_a_transport_for_a_link_the_control_system_lacks_is_refused():
+    system = ControlSystem(links={"decoder": Link(fixed_ns=100)})
+    low = pulse.compile(feedback, control_system=system).lower(Q[0])
+    fast = emulation.Transport(fixed_ns=1)
+    emulation.emulate(low, transport={"decoder": fast, 0: fast}, service_time="none", seed=1)
+    with pytest.raises(pulse.InvalidValueError) as raised:
+        emulation.emulate(low, transport={"decodr": fast})
+    assert str(raised.value) == (
+        "transport names the link 'decodr', which the control system does not have; "
+        "did you mean 'decoder'? its links are decoder"
+    )
+    with pytest.raises(pulse.InvalidTypeError, match=r"transport\['decoder'\] must be a Transport"):
+        emulation.emulate(low, transport={"decoder": 100.0})
 
 
 @pytest.mark.parametrize("arrival_ns", [602, 603])

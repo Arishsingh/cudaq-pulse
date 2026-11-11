@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Conditions built from values known only when the program runs.
 
 Comparing such conditions with each other or with True and False, ``^``,
@@ -31,9 +26,7 @@ from tests._handles import Q
 
 PI_AMP = math.pi / 20  # square(40, PI_AMP) is a pi pulse at 2 GHz
 
-_DEVICE = pulse.device(
-    {"target": TargetDescription(name="sim", qubits={0: Qubit(0, 5e9, -2e8, 0.0, 0.0)})}
-)
+_DEVICE = pulse.device(TargetDescription(name="sim", qubits={0: Qubit(0, 5e9, -2e8, 0.0, 0.0)}))
 
 
 def _answers(n=5, x=0.05, b=1):

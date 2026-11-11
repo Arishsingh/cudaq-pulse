@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The on-controller calibration estimators against exact results and the
 papers' numbers.
 
@@ -23,6 +18,7 @@ import math
 import numpy as np
 import pytest
 from cudaq_pulse.classical import calibration as cal
+from cudaq_pulse.controller import OpCounts
 
 # ── Adaptive T1 ─────────────────────────────────────────────────────────────
 
@@ -216,4 +212,4 @@ def test_ramsey_phases_give_the_detuning(detuning):
 
 def test_counting_ones():
     assert cal.count_ones([1, 0, 1, 1, 0]) == 3
-    assert cal.count_ones.controller_cost(150) == {"popcount": 5, "add": 5}
+    assert cal.count_ones.controller_cost(150) == OpCounts(popcount=5, add=5)

@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Waits whose length comes from a classical answer: barriers and segments."""
 
 from __future__ import annotations
@@ -340,7 +335,7 @@ def test_a_wait_from_an_answer_and_a_float_runs_their_sum_clamped(tau):
     from cudaq_pulse.targets import Qubit, TargetDescription
 
     qubits = {i: Qubit(i, 5e9 + 1e8 * i, -2e8, 2.0, 0.0) for i in range(2)}
-    dev = pulse.device({"target": TargetDescription(name="decay", qubits=qubits)})
+    dev = pulse.device(TargetDescription(name="decay", qubits=qubits))
     q, p = dev.qudit_handles
     length = min(max(round(2.0 * 10.0 + tau), 8), 1000)
     low = pulse.compile(offset_by_tau, device=dev).lower(q, p, tau)

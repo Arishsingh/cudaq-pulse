@@ -1,9 +1,6 @@
 ..
-   Copyright (c) 2026 NVIDIA Corporation & Affiliates.
-   All rights reserved.
-
-   This source code and the accompanying materials are made available under
-   the terms of the Apache License 2.0 which accompanies this distribution.
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
 
 Writing a Controller Backend
 ============================
@@ -222,7 +219,7 @@ vocabulary of terms, whatever operations the compiler computes it with:
     its operands, ``"int"``, ``"float"`` or ``"bool"``. A ``const`` in a
     float term is that float, so ``{"const": 3}`` there is 3.0.
 
-``cudaq_pulse.controller.EXPRESSION_TERMS`` holds every term. A value
+``cudaq_pulse.controller.ExpressionTerm`` names every term. A value
 computed any other way is an ``UnsupportedError`` when the program is
 exported, never a term a backend has to guess at;
 ``cudaq_pulse.controller.evaluate_expression(expression, readouts,
@@ -413,7 +410,7 @@ Clocks
 ------
 
 A kernel counts time in cycles of the device's program clock,
-``Device.clock_ghz`` (a device config's ``"clock_ghz"``, else the
+``Device.clock_ghz`` (``pulse.device(..., clock_ghz=)``, else the
 target's); a duration written as a time converts to them when the kernel
 compiles (see :ref:`durations`). A controller may run its own clock,
 ``Controller.clock_ghz``, at a whole-cycle ratio of it; may start
@@ -566,10 +563,13 @@ never exported in program cycles.
 Line delays
 -----------
 
-Cables and electronics delay each line differently. The calibrated delays
-belong to the system, not to kernels: ``ControlSystem(line_delays_ns=...)``
-gives them by line, ``("drive", qudit)`` or ``("readout", qudit)``, as times
-(``2.3 * pulse.ns``) or numbers of ns, and every operation on a delayed line starts that much later than scheduled.
+Cables and electronics delay each line differently. The calibrated delay
+of a line belongs to the line, as its controller declares it:
+``DriveLine(5, delay_ns=4.0)`` and ``ReadoutLine(5, delay_ns=12.0)`` (from
+``cudaq_pulse.controller``) in the controller's ``drive_lines`` and
+``readout_lines``, as times (``2.3 * pulse.ns``) or numbers of ns; a bare
+carrier index is an undelayed line. Every operation on a delayed line starts
+that much later than scheduled.
 Whole :ref:`timesteps <timestep>` of the line move its operations, which
 are then checked against the controller's limits like any others; the rest,
 less than one timestep, is the line's ``fine_delay_ns`` in the export, for
@@ -579,18 +579,23 @@ rounds the delay to the nearest timestep if that is within its
 ``alignment_tolerance_cycles``, and otherwise the program fails to compile
 with an error naming the line, the rest and the fixes::
 
-    control_system = pulse.ControlSystem(
-        controllers=[pulse.Controller(clock_ghz=1.0, max_fine_delay_ns=1.0)],
-        line_delays_ns={("drive", 0): 2.3, ("readout", 0): 41.0},
+    from cudaq_pulse.controller import DriveLine, ReadoutLine
+
+    box = pulse.Controller(
+        clock_ghz=1.0,
+        max_fine_delay_ns=1.0,
+        drive_lines=[DriveLine(0, delay_ns=2.3), 1],
+        readout_lines=[ReadoutLine(0, delay_ns=41.0), 1],
     )
+    control_system = pulse.ControlSystem(controllers=[box])
     # The drive line of qudit 0 moves 2 ns (4 cycles of a 2 GHz program
     # clock) and plays with fine_delay_ns = 0.3.
 
-Compiling a kernel again with only other delays, such as a control system
-calibrated again, reuses its trace and optimized module and schedules it
-again, with the same result, byte for byte, as compiling it anew. A delay
-of a line no controller of the system plays, or of a qudit the quantum
-system lacks, is a ``DeviceDefinitionError``.
+In a system file a delayed line is ``{"qudit": 0, "delay_ns": 2.3}`` and an
+undelayed one its carrier index. Compiling a kernel again with only other
+delays, such as a control system calibrated again, reuses its trace and
+optimized module and schedules it again, with the same result, byte for
+byte, as compiling it anew.
 
 Waveform memory
 ---------------
@@ -739,13 +744,8 @@ same name:
    backends.register("text", TextBackend)
    backend = backends.get("text")
    dev = pulse.device(
-       {
-           "target": TargetDescription(
-               name="one-qubit",
-               qubits={0: Qubit(0, 5.0e9, -2.0e8, 50.0, 30.0)},
-           ),
-           "clock_ghz": 1.0,
-       }
+       TargetDescription(name="one-qubit", qubits={0: Qubit(0, 5.0e9, -2.0e8, 50.0, 30.0)}),
+       clock_ghz=1.0,
    )
    cal = {"x_duration": 40 * pulse.ns, "x_sigma": 10 * pulse.ns, "readout_duration": 200 * pulse.ns}
 

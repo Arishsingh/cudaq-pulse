@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The first use of each step loads only what the step needs.
 
 Each check runs a fresh interpreter and lists the heavy modules a path left
@@ -81,7 +76,7 @@ def test_devices_and_a_classical_program_load_no_heavy_module(tmp_path):
     code = (
         _PROGRAM
         + "p.device('transmon_generic:4')\n"
-        + "p.device({'target': 'transmon_17q', 'clock_ghz': 1.0})\n"
+        + "p.device('transmon_17q', clock_ghz=1.0)\n"
         + "low.mlir(); low.schedule; low.segments; low.classical_report; str(low)\n"
         + "low.generic.bind([])\n"
     )
@@ -120,8 +115,8 @@ def test_a_device_with_a_control_system_loads_no_heavy_module(tmp_path):
     code = (
         "import sys\nimport cudaq_pulse as p\n"
         "c = p.controller('reference.controller', drive_lines=[0, 1], readout_lines=[0, 1])\n"
-        "p.device({'quantum_system': 'transmon_17q', 'layout': [0, 1],\n"
-        "          'control_system': p.ControlSystem(controllers=[c])})\n"
+        "p.device('transmon_17q', layout=[0, 1],\n"
+        "         control_system=p.ControlSystem(controllers=[c]))\n"
     )
     assert _loaded(code, tmp_path) == []
 
@@ -174,7 +169,7 @@ def test_times_load_no_fractions(tmp_path):
         _PLAIN + "t = (0.1 * p.us + 3 * p.ns) / 7 - p.ns\n"
         "assert repr(t) == '13.7143 ns' and t < low.duration and t // p.ns == 13\n"
         "assert (t % p.ns) * 7 == 5 * p.ns and abs(-t) == t\n"
-        "dev2 = p.device({'target': 'transmon_17q', 'clock_ghz': 1.5})\n"
+        "dev2 = p.device('transmon_17q', clock_ghz=1.5)\n"
         "low2 = p.compile(k).lower(dev2.qudit_handles[0])\n"
         "assert low2.duration > 0 * p.ns\n"
     )

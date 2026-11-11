@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Readout, measurement, and measurement-conditioned feedback.
 
 Shows how to use readout channels and acquire IQ data, and how an ``if`` on a
@@ -128,7 +123,7 @@ if __name__ == "__main__":
     )
     # Start in (|0> + |1>) / sqrt(2): each outcome is equally likely, and
     # either way the qubit ends in |0>.
-    reset_demo = pulse.device({"target": target})
+    reset_demo = pulse.device(target)
     lowered = pulse.compile(active_reset, device=reset_demo).lower(reset_demo.qudit_handles[0])
     result = pulse.simulate(lowered, initial_state=[2**-0.5, 2**-0.5, 0.0], shots=1000, seed=7)
     for branch in result.branches:

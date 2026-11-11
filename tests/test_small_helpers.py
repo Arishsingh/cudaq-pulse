@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """A qudit by label, a coupling by its qudits, a program's duration and IR levels."""
 
 from __future__ import annotations
@@ -22,7 +17,7 @@ def test_a_qudit_by_its_label():
     assert dev.qudit("Z4").index == 16
     with pytest.raises(pulse.NotFoundError, match=r"no qudit labelled 'D10'; did you mean 'D1'\?"):
         dev.qudit("D10")
-    chip = pulse.device({"target": TRANSMON_17Q, "layout": [4, 5]})
+    chip = pulse.device(TRANSMON_17Q, layout=[4, 5])
     assert chip.qudit("D6") is chip.qudit_handles[1]
     with pytest.raises(pulse.NotFoundError, match="'D1' is carrier 0 of .* layout .* leaves out"):
         chip.qudit("D1")

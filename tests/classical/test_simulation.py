@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Simulating programs that call classical functions."""
 
 from __future__ import annotations
@@ -17,12 +12,12 @@ import cudaq_pulse as pulse
 import numpy as np
 import pytest
 from cudaq_pulse.classical import emulation
-from cudaq_pulse.targets import DispersiveReadout, Qubit, TargetDescription
+from cudaq_pulse.targets import DispersiveReadout, Qubit, ReadoutPulse, TargetDescription
 
 PI_AMP = math.pi / 20  # square(40, PI_AMP) is a pi pulse at 2 GHz
 
 
-def _device(t1_us=0.0, n=1, readout=None):
+def _device(t1_us=0.0, n=1, readout=None, calibrations=None):
     qubits = {
         i: Qubit(
             index=i,
@@ -31,10 +26,11 @@ def _device(t1_us=0.0, n=1, readout=None):
             t1_us=t1_us,
             t2_star_us=0.0,
             readout=readout,
+            calibrations=calibrations or {},
         )
         for i in range(n)
     }
-    return pulse.device({"target": TargetDescription(name="sim", qubits=qubits)})
+    return pulse.device(TargetDescription(name="sim", qubits=qubits))
 
 
 @pulse.classical(max_latency_ns=0)
@@ -288,7 +284,8 @@ def test_readout_errors_are_reported_and_seen_by_calls():
 
 
 def test_decay_during_readout_adds_to_the_one_to_zero_error():
-    dev = _device(t1_us=10.0, readout=DispersiveReadout(duration_ns=500.0))
+    window = {pulse.gates.READOUT: ReadoutPulse(duration_ns=500.0)}
+    dev = _device(t1_us=10.0, readout=DispersiveReadout(), calibrations=window)
     q = dev.qudit_handles[0]
 
     @pulse.kernel

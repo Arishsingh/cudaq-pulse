@@ -16,6 +16,23 @@ behavior may change in any 0.x release.
 
 ### Added
 
+- **Gate calibrations.** `pulse.gates` names the gates a device is
+  calibrated for (`X`, `X90`, `Y`, `Y90`, `READOUT`, `CZ`), and
+  `get_calibration(gate, transition=(0, 1))` gives each one's pulse: in a
+  kernel from a line, `get_drive_line(q).get_calibration(pulse.gates.X)` (a
+  `DragPulse`, which `drive(line, pulse)` plays) and
+  `get_readout_line(q).get_calibration(pulse.gates.READOUT)` (a
+  `ReadoutPulse`); outside one from a handle,
+  `dev.qudits[i].get_calibration(...)`, and from a coupling,
+  `dev.coupling(a, b).get_calibration(pulse.gates.CZ)` (a `FluxCZ`). A
+  qudit's `drive` and `readout` (`MicrowaveDrive`, `DispersiveReadout`)
+  hold its physics; its tuned pulses are its `calibrations`, by gate.
+  What a device does not publish is derived: an `X` amplitude from the
+  pulse's area, `X90` at half of it, `Y` and `Y90` at +90 degrees; an
+  unpublished `CZ`, `READOUT` or other transition is an error naming the
+  coupling or qudit. A qudit's `metadata` holds the user's own JSON
+  values, which the library never reads and which do not make two devices
+  differ; system files keep them.
 - **Pickling, for process pools and caches on disk.** Kernels pickle as
   functions do: by reference, or with cloudpickle (Ray, Dask) by value
   when defined in `__main__`, at the prompt or inside a function. Targets, devices, qudit handles and registers
@@ -32,7 +49,7 @@ behavior may change in any 0.x release.
   report, so a process pool re-raises them in the parent as they were
   raised. Targets now compare by content.
 - **Controllers with their own clocks.** Kernels count cycles of the
-  device's program clock, `"clock_ghz"` in the device config (or the
+  device's program clock, `pulse.device(..., clock_ghz=)` (or the
   target's). A controller whose clock is slower starts and times operations
   only every few program cycles: the scheduler puts each line's operations
   on its controller's grid and a `sync` on the grid its lines share, an
@@ -56,10 +73,9 @@ behavior may change in any 0.x release.
   plays, its peer latency, clock skew and alignment tolerance, its
   `supports`, `backend`, `model` and `version`) and `pulse.ControlSystem`
   (its controllers, its links by name, each `Link` with the `controllers`
-  it reaches). `pulse.device({"quantum_system": ..., "control_system":
-  ...})` checks the wiring against the quantum system and raises one
-  `DeviceDefinitionError` listing every problem; `"target"` still names the
-  quantum system. `compile(kernel, device=qpu)` checks every program against
+  it reaches). `pulse.device(quantum_system, control_system=...)` checks
+  the wiring against the quantum system and raises one
+  `DeviceDefinitionError` listing every problem. `compile(kernel, device=qpu)` checks every program against
   the system: a line on no controller, each controller's own limits, a
   capability (`pulse.Capability`) a controller lacks, and a call over a link
   that does not reach its controllers fail to compile.
@@ -71,10 +87,13 @@ behavior may change in any 0.x release.
   that does not plays it unrolled, and its limit error names the loop; unrolling adds pulses,
   not waveform memory, which holds each shape once. `rcp` keeps a branch
   on a readout the `feedback_latency_cycles` of the controllers that read out.
-  A control system's `line_delays_ns` (times or numbers of ns) and
-  `reference_clock_ghz` are its calibrated line delays and shared clock; new
-  delays alone schedule its programs again without tracing them. Without a
-  declared `"clock_ghz"`, a device's program clock is its fastest
+  A line's calibrated delay is part of its declaration,
+  `Controller(drive_lines=[DriveLine(5, delay_ns=4.0), 6],
+  readout_lines=[ReadoutLine(5, delay_ns=12.0)])` (times or numbers of ns;
+  a bare carrier index is an undelayed line), and a control system's
+  `reference_clock_ghz` is its shared clock; new delays alone schedule its
+  programs again without tracing them. Without a
+  declared `clock_ghz`, a device's program clock is its fastest
   controller clock when every other one divides it; clocks that do not
   divide evenly are a `DeviceDefinitionError` that lists the program clocks
   that work, and every controller clock must be a whole multiple of the
@@ -121,14 +140,18 @@ behavior may change in any 0.x release.
   of a system (of each controller, for a per-controller link). Compiling checks each function there: an operation in its
   `unsupported` list (named with its line), `max_ops_per_function`,
   `max_state_bytes_per_function`, `fixed_cost_only`, and its compute time at
-  the processor's `cycles_per_op` and `clock_ghz` against its
+  the processor's `cycles_per_op` (`pulse.controller.OpCycles(div=20)`, one
+  cycle per class not given) and `clock_ghz` against its
   `max_latency_ns`. It checks each processor's `max_ops_total`,
   `max_state_bytes_total`, `max_calls_per_shot`, `max_bytes_per_shot` and
-  `max_concurrent_calls` (default 1) across its functions. `"loop"` is a
-  processor operation too: its cost is a rolled loop's counter and jump per
-  iteration, and a processor without it runs loops unrolled, so their size
-  counts unrolled. `dispatch_keys={"name": key}` gives the functions a
-  processor runs fixed dispatch keys. `lowered.controller_usage` reports
+  `max_concurrent_calls` (default 1) across its functions. Operations come
+  in the classes of `pulse.controller.OpClass`; `OpClass.LOOP` is a rolled
+  loop's counter and jump per iteration, and a processor with it
+  `unsupported` runs loops unrolled, so their size counts unrolled.
+  `FunctionCost.ops` is an `OpCounts`, and a built-in's `controller_cost`
+  hook returns one. `pulse.controller.ExpressionTerm` names the terms of an
+  exported run-time expression. `dispatch_keys={"name": key}` gives the
+  functions a processor runs fixed dispatch keys. `lowered.controller_usage` reports
   each processor's functions and totals against its limits
   (`.within_limits`; `print` it for a table). A program over them does not
   compile: its `ControllerLimitError` carries the report as `usage`, every
@@ -140,8 +163,9 @@ behavior may change in any 0.x release.
   description installed with cudaq-pulse (or one given by path), parsed
   once, with the installation's wiring. `reference.controller` ships.
 - **System files.** `Device.as_dict()` writes a QPU as one mapping, format
-  `cudaq-pulse.system/1`, which `pulse.device()` reads back from a mapping
-  or a JSON file, reporting each problem with its line. A file written from
+  `cudaq-pulse.system/1`, which `pulse.Device.from_dict(data)` reads back,
+  and `pulse.Device.load(path)` from a JSON file, reporting each problem
+  with its line. A file written from
   another version of an installed description is noticed once
   (`UpgradeNotice`). `python -m cudaq_pulse.doctor --system FILE` checks a
   system file and whether its controllers' backends are installed.
@@ -409,8 +433,11 @@ behavior may change in any 0.x release.
   `max-readouts`, `readout-latency`, `switch-penalty`, `alap`).
 - **Devices and targets.** `pulse.device` is the one device getter: it
   describes a machine as a target plus a qudit layout, from a registered
-  target name (`pulse.device("transmon_17q")`), a config mapping
-  or file, or, with no argument, the process target. Devices compare by
+  target name (`pulse.device("transmon_17q")`) or a `TargetDescription`,
+  with `layout=`, `calibration=`, `cooldown=`, `control_system=` and
+  `clock_ghz=` keywords, or, with no argument, the process target; a string
+  is always a name, and `Device.load` / `Device.from_dict` read system
+  files. Devices compare by
   content and share compiled kernels, but handles of two devices, even
   equal ones, do not mix in one call or in a kernel compiled for one
   (`DeviceMismatchError`), and an empty `layout` is a
@@ -425,13 +452,13 @@ behavior may change in any 0.x release.
   `TransmonModel`); each model class declares its levels (3 for
   transmons), and `TransmonModel(levels={0: 4})` sets a qudit's own. No
   label changes the physics: targets have no `architecture`.
-  A coupling is `Coupling(qudits=(a, b), strength_hz, gate=None)`: the
+  A coupling is `Coupling(qudits=(a, b), strength_hz, calibrations={})`: the
   qudits it couples, in order (two in this release), the strength in Hz of
   the model's operator (g / 2 pi of the exchange), or `None` when it
   is not measured yet, which compiles, schedules and exports while
-  `simulate` refuses it by name, and the gate characterized on it, if any,
-  a `cudaq_pulse.targets.Gate(name, duration_ns, buffer_ns=None,
-  interaction_frequency_hz=None)`; the `transmon_17q` target gives its
+  `simulate` refuses it by name, and its tuned gates,
+  `{pulse.gates.CZ: FluxCZ(duration_ns, buffer_ns=None,
+  interaction_frequency_hz=None)}`; the `transmon_17q` target gives its
   published CZ values, and `cudaq_pulse.targets.transmon.CZ_LAYERS` the
   (auxiliary, data) pairs of each of its CZ time steps. A target's
   `residual_zz` lists `ResidualZZ(qudits, rate_hz)` entries, a static ZZ
@@ -452,8 +479,8 @@ behavior may change in any 0.x release.
   `python -m cudaq_pulse.doctor --system FILE [--json]` runs the same checks.
 - **Calibrations and the transmon model.** `cudaq_pulse.targets.Calibration`
   loads fitted values, each with its kind, source, uncertainty and cooldown,
-  apart from the published target, and a device config takes `"calibration"`
-  and `"cooldown"`. `cudaq_pulse.targets.transmon_model` computes
+  apart from the published target, and `pulse.device` takes `calibration=`
+  and `cooldown=`. `cudaq_pulse.targets.transmon_model` computes
   flux-tunable transmon levels and charge-coupled pairs from circuit values.
   The shipped `transmon_17q` calibration has one device-wide charge coupling,
   fitted to the measured `|11>`-`|20>` coupling of X2-D4, so the
@@ -692,14 +719,19 @@ behavior may change in any 0.x release.
   CPython: each target and calibration is built once.
 - **Dialects and tools.** The Pulse, Classical, QOp and CuDensityMat MLIR
   dialects with their lowerings to LLVM; `cudaq-pulse-opt`, the MLIR driver, which
-  also loads out-of-tree pass plugins; `python -m cudaq_pulse.doctor`, which
+  also loads out-of-tree pass plugins and whose `--version` prints the
+  cudaq-pulse version and the LLVM it was built with; `python -m cudaq_pulse.doctor`, which
   reports what an installation contains and whether GPU execution works.
 - **Packaging.** One abi3 wheel per platform for CPython 3.12 and newer:
   Linux x86_64 and aarch64 (manylinux_2_28) with the CUDA 12 and CUDA 13
   GPU runtimes, selected by the `[cu12]` or `[cu13]` extra, and macOS arm64
   (compiler only). The wheels link their own MLIR, so they need neither
   CUDA-Q nor an LLVM installation. Free-threaded CPython 3.14 (3.14t) has
-  its own wheel per platform, whose extension runs without the GIL. Each
+  its own wheel per platform, whose extension runs without the GIL.
+  `cudaq-pulse-opt` comes in a distribution of its own, `cudaq-pulse-tools`,
+  one `py3-none` wheel per platform for every Python, which
+  `pip install cudaq-pulse` installs automatically (`cudaq-pulse` requires
+  it at the same version). Each
   wheel carries its license files and `THIRD_PARTY_NOTICES`, generated from
   what its binaries link, with each third-party license's text.
 

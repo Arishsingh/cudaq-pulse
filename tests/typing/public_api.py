@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Type-checked use of the public API (mypy --strict in CI; not run by pytest).
 
 assert_type pins what users see; a wrong call is marked with the error code
@@ -22,15 +17,23 @@ import numpy as np
 from cudaq_pulse import Controller
 from cudaq_pulse.classical import Bits, ClassicalFunction, Pending
 from cudaq_pulse.compiler import CompileMetrics, ScheduledEvent
-from cudaq_pulse.controller import ControllerModule, ControllerNames, WaveformMemoryScope
+from cudaq_pulse.controller import (
+    ControllerModule,
+    ControllerNames,
+    DriveLine,
+    ExpressionTerm,
+    WaveformMemoryScope,
+)
 from cudaq_pulse.ops import Waveform
 from cudaq_pulse.targets import (
     Coupling,
     DispersiveReadout,
-    Gate,
+    DragPulse,
+    FluxCZ,
     MicrowaveDrive,
     Qubit,
     Readout,
+    ReadoutPulse,
     ResidualZZ,
     TargetDescription,
 )
@@ -45,7 +48,12 @@ assert_type(pulse.ops.wf_add(wave, wave), Waveform)
 
 dev = pulse.device("transmon_17q")
 assert_type(dev, pulse.Device)
-assert_type(pulse.device({"target": "transmon_17q"}), pulse.Device)
+assert_type(pulse.device("transmon_17q"), pulse.Device)
+assert_type(pulse.device("transmon_17q", layout=[4, 5], clock_ghz=1.0), pulse.Device)
+assert_type(pulse.Device.from_dict(dev.as_dict()), pulse.Device)
+assert_type(pulse.Device.load("qpu.json"), pulse.Device)
+pulse.device({"quantum_system": "transmon_17q"})  # type: ignore[arg-type]
+pulse.device("transmon_17q", [4, 5])  # type: ignore[call-arg]
 assert_type(dev.qudit_handles[0], pulse.Qudit)
 assert_type(dev.qudit_handles[0:2], pulse.Register)
 assert_type(dev.qudit_handles[[0, 1]], pulse.Register)
@@ -166,7 +174,7 @@ box = pulse.controller("reference.controller", drive_lines=[0, 1])
 assert_type(box, pulse.Controller)
 assert_type(pulse.Controller(instruction_cycles=2), Controller)
 assert_type(pulse.controller.FORMAT, str)
-assert_type(pulse.controller.EXPRESSION_TERMS, frozenset[str])
+assert_type(ExpressionTerm("select"), ExpressionTerm)
 assert_type(pulse.controller.evaluate_expression({"const": 1.0}), float | int | bool)
 assert_type(pulse.controller.unroll({"format": "cudaq-pulse.controller/2"}), dict[str, Any])
 assert_type(pulse.controller.sample_waveform({}, 40, samples_per_cycle=2.5), np.ndarray)
@@ -179,14 +187,27 @@ declared: ControllerNames = pulse.controller
 assert_type(pulse.controller, ControllerModule)
 control = pulse.ControlSystem(controllers=[box], links={"feedback": pulse.Link(controllers=[box])})
 assert_type(control.controllers, Sequence[pulse.Controller])
-pulse.ControlSystem(line_delays_ns={("drive", 0): 2 * pulse.ns, ("readout", 0): 1.5})
+delayed = pulse.Controller(
+    drive_lines=[pulse.controller.DriveLine(0, delay_ns=2 * pulse.ns), 1],
+    readout_lines=[pulse.controller.ReadoutLine(0, delay_ns=1.5)],
+)
+assert_type(delayed.drive_lines, Sequence[DriveLine | int])
+pulse.ControlSystem(line_delays_ns={("drive", 0): 1.5})  # type: ignore[call-arg]
 pulse.Link(fixed_ns=100 * pulse.ns, feedback_ns=20.0, per_controller=True)
 assert_type(box.supports_capability(pulse.Capability.BRANCH), bool)
-cores = pulse.Processor(links=("feedback",), cycles_per_op={"div": 20}, unsupported=["trig"])
+cores = pulse.Processor(
+    links=("feedback",),
+    cycles_per_op=pulse.controller.OpCycles(div=20),
+    unsupported=[pulse.controller.OpClass.TRIG],
+)
+assert_type(cores.cycles_per_op.div, int)
+pulse.Processor(cycles_per_op={"div": 20})  # type: ignore[arg-type]
+pulse.controller.OpCycles(dvi=20)  # type: ignore[call-arg]
+assert_type(pulse.controller.OpCounts(add=2).total, int)
 assert_type(cores.max_ops_total, int | None)
 assert_type(cores.dispatch_keys, Mapping[str, int])
 assert_type(pulse.Controller(processors=[cores]).processors, Sequence[pulse.Processor])
-qpu = pulse.device({"quantum_system": "transmon_17q", "control_system": control})
+qpu = pulse.device("transmon_17q", control_system=control)
 assert_type(qpu.control_system, pulse.ControlSystem | None)
 assert_type(qpu.as_dict(), dict[str, Any])
 pulse.compile(rabi, device=qpu, control_system=control)
@@ -195,28 +216,55 @@ pulse.controller(3)  # type: ignore[arg-type]
 
 readout = DispersiveReadout(frequency_hz=7.0e9, linewidth_hz=1.0e6)
 assert_type(readout.frequency_hz, float | None)
-assert_type(readout.photon_number, float)
+assert_type(readout.efficiency, float)
 assert_type(readout.replace(linewidth_hz=2.0e6), DispersiveReadout)
 DispersiveReadout(7.0e9)  # type: ignore[call-arg]
+DispersiveReadout(photon_number=4.0)  # type: ignore[call-arg]
 readout.linewidth_hz = 2.0e6  # type: ignore[misc]
-qudit = Qubit(0, 5.0e9, -2.0e8, 50.0, 30.0, drive=MicrowaveDrive(x_amplitude=0.2), readout=readout)
+MicrowaveDrive(x_amplitude=0.2)  # type: ignore[call-arg]
+
+# A qudit's tuned pulses are its calibrations, by gate; get_calibration gives
+# each as the type of its gate, on the qudit, a handle or a kernel's line.
+x = DragPulse(duration_ns=40.0, sigma_ns=10.0)
+assert_type(x.amplitude, float | None)
+assert_type(x.replace(amplitude=0.1), DragPulse)
+DragPulse(duration_ns=40.0)  # type: ignore[call-arg]
+qudit = Qubit(
+    0,
+    5.0e9,
+    -2.0e8,
+    50.0,
+    30.0,
+    drive=MicrowaveDrive(amplitude_scale_rad_per_ns=0.2),
+    readout=readout,
+    calibrations={pulse.gates.X: x, pulse.gates.READOUT: ReadoutPulse(duration_ns=300.0)},
+    metadata={"fridge": "B"},
+)
 assert_type(qudit.readout, Readout | None)
+assert_type(qudit.metadata, Mapping[str, Any])
+assert_type(qudit.get_calibration(pulse.gates.X), DragPulse)
+assert_type(qudit.get_calibration(pulse.gates.Y90, transition=(1, 2)), DragPulse)
+assert_type(qudit.get_calibration(pulse.gates.READOUT), ReadoutPulse)
+assert_type(qudit.replace(label="Q0"), Qubit)
+assert_type(qpu.qudits[0].get_calibration(pulse.gates.X90), DragPulse)
+gate: pulse.gates.Gate = pulse.gates.CZ
 
 # A coupling gives its qudits and strength (None: not measured yet), and its
-# gate is one object of typed fields; leaving a required field out, or
-# giving one the gate does not have, is a type error.
-cz = Gate("cz", 98.0, buffer_ns=15.0, interaction_frequency_hz=4.4e9)
+# CZ calibration is one object of typed fields; leaving a required field out,
+# or giving one it does not have, is a type error.
+cz = FluxCZ(duration_ns=98.0, buffer_ns=15.0, interaction_frequency_hz=4.4e9)
 assert_type(cz.duration_ns, float)
 assert_type(cz.interaction_frequency_hz, float | None)
-Gate("cz", 98.0, params={"cz_step": 1.0})  # type: ignore[call-arg]
-Gate("cz", 98.0, fidelity=0.99)  # type: ignore[call-arg]
-edge = Coupling((0, 1), 5.7e6, gate=cz)
+FluxCZ(duration_ns=98.0, fidelity=0.99)  # type: ignore[call-arg]
+FluxCZ()  # type: ignore[call-arg]
+edge = Coupling((0, 1), 5.7e6, calibrations={pulse.gates.CZ: cz})
 assert_type(edge.qudits, tuple[int, ...])
 assert_type(edge.strength_hz, float | None)
-assert_type(edge.gate, Gate | None)
+assert_type(edge.get_calibration(pulse.gates.CZ), FluxCZ)
+assert_type(qpu.coupling(qpu.qudits[13], qpu.qudits[0]), Coupling)
 Coupling((0, 1), None)
 Coupling((0, 1))  # type: ignore[call-arg]
-Gate("cz")  # type: ignore[call-arg]
+Coupling((0, 1), 5.7e6, gate=cz)  # type: ignore[call-arg]
 zz = ResidualZZ((0, 1), 1.5e4)
 assert_type(zz.rate_hz, float)
 ResidualZZ((0, 1), 1.5e4, zz_coupling=0.5)  # type: ignore[call-arg]

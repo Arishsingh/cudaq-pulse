@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Conditions on measurement results kept in a value: `x = s0 and not s1`,
 then `if x:`, compile to the ifs the condition written in the if gives."""
 
@@ -24,12 +19,10 @@ from cudaq_pulse.targets import Qubit, TargetDescription
 PI_AMP = math.pi / 20  # square(40, PI_AMP) is a pi pulse
 
 _DEVICE = pulse.device(
-    {
-        "target": TargetDescription(
-            name="three",
-            qubits={i: Qubit(i, 5e9 + 1e8 * i, -2e8, 0.0, 0.0) for i in range(3)},
-        )
-    }
+    TargetDescription(
+        name="three",
+        qubits={i: Qubit(i, 5e9 + 1e8 * i, -2e8, 0.0, 0.0) for i in range(3)},
+    )
 )
 
 

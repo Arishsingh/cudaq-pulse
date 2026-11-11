@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The shipped transmon_17q calibration and loading calibrations onto devices."""
 
 import hashlib
@@ -150,7 +145,7 @@ def test_flux_quanta_and_detuning_convert_both_ways(cal):
 
 
 def test_the_17_qubit_device_carries_the_shipped_calibration(cal):
-    dev = pulse.device({"target": "transmon_17q"})
+    dev = pulse.device("transmon_17q")
     assert dev.calibration == cal
     assert dev.target is transmon_17q()
 
@@ -221,8 +216,8 @@ def test_a_device_loads_a_calibration_from_its_config(tmp_path, cal):
         del entry["idle_frequencies_hz"]
     path = tmp_path / "custom.json"
     path.write_text(json.dumps(data))
-    base = pulse.device({"target": "transmon_17q"})
-    custom = pulse.device({"target": "transmon_17q", "calibration": str(path)})
+    base = pulse.device("transmon_17q")
+    custom = pulse.device("transmon_17q", calibration=str(path))
     assert custom.calibration.name == "custom" and custom != base
 
     def x2_d4(dev):
@@ -234,10 +229,8 @@ def test_a_device_loads_a_calibration_from_its_config(tmp_path, cal):
 
     assert x2_d4(custom) == pytest.approx(1.1 * x2_d4(base), rel=1e-9)
     with pytest.raises(ValueError, match="cooldown"):
-        pulse.device({"target": "transmon_17q", "cooldown": "2025-flux-tuning"})
-    other = pulse.device(
-        {"target": "transmon_17q", "calibration": "transmon_17q", "cooldown": "2025-flux-tuning"}
-    )
+        pulse.device("transmon_17q", cooldown="2025-flux-tuning")
+    other = pulse.device("transmon_17q", calibration="transmon_17q", cooldown="2025-flux-tuning")
     assert other.calibration.cooldown == "2025-flux-tuning"
 
 

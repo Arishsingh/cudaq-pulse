@@ -1,9 +1,6 @@
 ..
-   Copyright (c) 2026 NVIDIA Corporation & Affiliates.
-   All rights reserved.
-
-   This source code and the accompanying materials are made available under
-   the terms of the Apache License 2.0 which accompanies this distribution.
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
 
 GPU Execution
 =============
@@ -19,6 +16,11 @@ research and should not be treated as a production simulator.
 
 Installation
 ------------
+
+The wheels are attached to each release on the `GitHub releases page
+<https://github.com/NVIDIA/cudaq-pulse/releases>`_ (cudaq-pulse is coming to
+PyPI); ``pip`` installs the one for your platform from the release, as in
+:doc:`../getting_started`:
 
 .. code-block:: bash
 
@@ -190,7 +192,7 @@ To execute on a GPU (requires cuDensityMat runtime):
        drive_line = get_drive_line(qubit)
        drive(drive_line, square(duration, math.pi / 20.0))
 
-   dev = pulse.device({"target": target})
+   dev = pulse.device(target)
    pi_time = 20 * pulse.ns
    lowered = x_gate.lower(dev.qudit_handles[0], pi_time)
    result = pulse.simulate(lowered, backend="gpu", t_end=20.0, dt_ns=0.1, integrator="rk4")
@@ -245,8 +247,8 @@ qudit, with the levels the target's simulation model declares for it (three
 for a ``TransmonModel``) unless ``levels`` sets them. Drive envelopes are converted to X/Y Hamiltonian
 coefficients in radians per nanosecond; tone frequency and phase determine the
 rotating-frame detuning and quadrature. A target may supply
-``amplitude_scale_rad_per_ns`` explicitly, or pulse infers a scale from its
-calibrated Gaussian/DRAG pi-pulse parameters when available.
+``amplitude_scale_rad_per_ns`` explicitly, or pulse infers a scale from the
+amplitude of the qudit's ``X`` calibration when it publishes one.
 
 Target relaxation and dephasing data produce Lindblad collapse operators.
 A qudit whose ``thermal_population`` p is nonzero starts in its thermal

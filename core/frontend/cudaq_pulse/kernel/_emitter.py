@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """PulseIREmitter -- executes decoded kernel bytecode and emits pulse IR.
 
 Kernels are traced by running their canonical instruction stream (see
@@ -3605,6 +3600,10 @@ class PulseIREmitter:
                 return _Tones(self, chan.held)
             if name == "tone":
                 return chan.held.cells[1].value
+            if name == "get_calibration":
+                from ._line_calibration import LineCalibrations
+
+                return LineCalibrations(self, chan.held).get_calibration
         if value.vtype == "qref":
             from ._emit_errors import qudit_attribute_error
 
@@ -3612,7 +3611,9 @@ class PulseIREmitter:
         word = _TYPE_WORDS.get(value.vtype, value.vtype)
         article = "an" if word[0] in "aeiou" else "a"
         hint = "its attributes are" if value.vtype in _LINE_TYPES else "only a line has attributes,"
-        raise CompilationError(f"{article} {word} has no attribute {name!r}; {hint} tone and tones")
+        raise CompilationError(
+            f"{article} {word} has no attribute {name!r}; {hint} tone, tones and get_calibration"
+        )
 
     # ── Pulse IR emission ────────────────────────────────────────────
 
@@ -3691,9 +3692,9 @@ class PulseIREmitter:
                 except AttributeError:
                     bad = True
                 if bad:
-                    from ._emit_errors import operand_error
+                    from ._line_calibration import play_calibrated
 
-                    raise operand_error(fname, call_args)
+                    return play_calibrated(self, fname, call_args)
                 ca = a.chan
                 cc = c.chan
                 if (ca is not None and ca.value is not a) or (cc is not None and cc.value is not c):

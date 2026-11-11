@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The calibration protocol of examples/21 as programs: its steps simulated
 end to end with their estimators on the controller link, and the
 controller's limits on the whole chain. benchmarks/classical/
@@ -50,7 +45,7 @@ def _two_chains(q, p, t1_guess_cycles: float):
 
 
 def _device(target):
-    dev = pulse.device({"target": target})
+    dev = pulse.device(target)
     return dev, dev.qudit_handles[0]
 
 
@@ -74,8 +69,7 @@ def test_the_pi_train_corrects_a_drive_amplitude_error():
 def test_adaptive_t1_tracks_the_papers_device_on_the_controller():
     base = transmon_17q()
     qubit = base.qubits[0]
-    device_qubit = dataclasses.replace(
-        qubit,
+    device_qubit = qubit.replace(
         frequency_hz=4.13e9,
         anharmonicity_hz=-210e6,
         t1_us=160.0,
@@ -146,7 +140,7 @@ def test_the_chain_fits_the_declared_controller():
 def test_a_slower_controller_rejects_the_chain_at_compile_time():
     _, dev, q = _chain()
     processor = P["processor"]
-    slow = dataclasses.replace(processor, cycles_per_op={**processor.cycles_per_op, "exp": 400})
+    slow = dataclasses.replace(processor, cycles_per_op=processor.cycles_per_op.replace(exp=400))
     system = pulse.ControlSystem(
         controllers=[pulse.Controller(processors=[slow])], links=P["control_system"].links
     )

@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Closed-loop calibration with a compile pipeline in worker processes.
 
 Builds on ``20_adaptive_calibration.py``. An optimizer tunes the amplitude
@@ -231,9 +226,9 @@ def true_p1(program, plant, index):
 
 
 if __name__ == "__main__":
-    device = pulse.device({"target": target})
+    device = pulse.device(target)
     nominal = target.qubits[0]
-    true_qudit = dataclasses.replace(nominal, frequency_hz=nominal.frequency_hz + hidden_offset_hz)
+    true_qudit = nominal.replace(frequency_hz=nominal.frequency_hz + hidden_offset_hz)
     plant = dataclasses.replace(target, qubits={**target.qubits, 0: true_qudit})
 
     print("=== The program, compiled once ===")

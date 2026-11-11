@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Controller checks of rolled loops.
 
 The checks reason about a rolled loop once per body, with its trip count
@@ -31,7 +26,7 @@ from cudaq_pulse import Controller, ControlSystem, controller
 from cudaq_pulse.controller import ControllerLimitError, check
 
 from tests import _child
-from tests._handles import Q, ladder_target
+from tests._handles import Q, ladder_target, with_line_delays
 
 # The child's limits: a check of one body takes well under a second and a
 # few hundred MB.
@@ -803,18 +798,18 @@ def _systems() -> dict[str, Any]:
     ) -> Any:
         # A processor leaves a check with float values to each call.
         processors = [pulse.Processor(links=["cores"])] if cores else []
+        controllers = [
+            pulse.Controller(
+                drive_lines=[0, 1], readout_lines=[0, 1], processors=processors, **each
+            ),
+            pulse.Controller(
+                drive_lines=[2, 3], readout_lines=[2, 3], clock_skew_cycles=skew, **each
+            ),
+        ]
         return pulse.ControlSystem(
-            controllers=[
-                pulse.Controller(
-                    drive_lines=[0, 1], readout_lines=[0, 1], processors=processors, **each
-                ),
-                pulse.Controller(
-                    drive_lines=[2, 3], readout_lines=[2, 3], clock_skew_cycles=skew, **each
-                ),
-            ],
+            controllers=with_line_delays(controllers, delays or {}),
             links={"cores": pulse.Link()} if cores else {},
             reference_clock_ghz=reference,
-            line_delays_ns=delays or {},
         )
 
     one = pulse.Controller(
@@ -939,7 +934,7 @@ def test_a_long_rolled_loop_on_a_control_system_is_checked_as_every_iteration(
 ):
     from cudaq_pulse import _system
 
-    qpu = pulse.device({"target": ladder_target(4), "control_system": _systems()[system]})
+    qpu = pulse.device(ladder_target(4), control_system=_systems()[system])
     kernel = _across(trips)[name]
     kept: list[bool] = []
     summarized = _system.ControlSystem._summarized
@@ -982,8 +977,8 @@ def test_a_rolled_loop_of_10_15_iterations_across_controllers_is_checked_in_boun
         "def _controller(lines):\n"
         "    return pulse.Controller(drive_lines=lines, readout_lines=lines, instruction_cycles=4,"
         " min_idle_cycles=4)\n"
-        "qpu = pulse.device({'target': ladder_target(4), 'control_system': pulse.ControlSystem("
-        "controllers=[_controller([0, 1]), _controller([2, 3])], reference_clock_ghz=1.0)})\n"
+        "qpu = pulse.device(ladder_target(4), control_system=pulse.ControlSystem("
+        "controllers=[_controller([0, 1]), _controller([2, 3])], reference_clock_ghz=1.0))\n"
         "options = {'device': qpu}\n"
         "handles = (qpu.qudits[0], qpu.qudits[2])\n"
     )

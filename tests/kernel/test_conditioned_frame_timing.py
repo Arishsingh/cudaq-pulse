@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Frame ops in the arms of a measurement-conditioned if.
 
 An arm that only shifts or sets a tone's phase or frequency changes a value
@@ -240,7 +235,7 @@ _PAIRS = [
 
 
 def _lower(kernel, n, schedule):
-    device = pulse.device({"target": _target(n)})
+    device = pulse.device(_target(n))
     compiled = pulse.compile(kernel, passes=EVOLVE_PASSES, schedule=schedule)
     return compiled.lower(*_handles(device, [Q[i] for i in range(n)]))
 

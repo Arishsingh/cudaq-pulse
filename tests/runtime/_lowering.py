@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Lowering kernel calls on a test's own target, and GPU evolution of them."""
 
 from types import SimpleNamespace
@@ -40,7 +35,7 @@ def _handles(dev, args):
 
 def on(target, kernel, *args, passes=EVOLVE_PASSES):
     """The module of ``kernel(*args)`` on a device of *target*."""
-    dev = pulse.device({"target": target})
+    dev = pulse.device(target)
     return pulse.compile(kernel, passes=passes).lower(*_handles(dev, args))
 
 

@@ -17,9 +17,10 @@ linked MLIR, so `pip` is the only installer you need.
 
 ## Install
 
-Releases are published on the
-[GitHub releases page](https://github.com/NVIDIA/cudaq-pulse/releases), not on
-PyPI. `pip` picks the wheel for your platform from the release:
+The wheels are attached to each release on the
+[GitHub releases page](https://github.com/NVIDIA/cudaq-pulse/releases);
+cudaq-pulse is coming to PyPI. To install from a GitHub release, point `pip`
+at it, and `pip` picks the wheel for your platform:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -38,10 +39,14 @@ python -m cudaq_pulse.doctor
 ```
 
 Keep the version pin: it stops `pip` from choosing a different package of
-the same name from PyPI. The CUDA libraries and the other dependencies come
-from PyPI. You can also download the wheel for your platform from the release
-and install the file, `pip install ./cudaq_pulse-0.1.0-<platform>.whl`, or
-`pip install "./cudaq_pulse-0.1.0-<platform>.whl[cu12]"` for GPU simulation.
+the same name from PyPI. `cudaq-pulse-opt`, the MLIR driver, comes along
+automatically: it is in `cudaq-pulse-tools`, a wheel of its own on the
+release, one per platform for every Python, which `cudaq-pulse` requires at
+the same version. The CUDA
+libraries and the other dependencies come from PyPI. You can also download
+the two wheels for your platform from the release and install both files,
+`pip install ./cudaq_pulse-0.1.0-<platform>.whl ./cudaq_pulse_tools-0.1.0-<platform>.whl`,
+or with `"./cudaq_pulse-0.1.0-<platform>.whl[cu12]"` for GPU simulation.
 
 `[gpu]` is an alias for `[cu12]`. The `cu12` and `cu13` extras install into
 the same directories, so install only one of them per environment.
@@ -156,11 +161,35 @@ immediately with the reason, instead of skipping them.
 
 ## Build from source
 
-See [CONTRIBUTING.md](https://github.com/NVIDIA/cudaq-pulse/blob/main/CONTRIBUTING.md). In short, `pip install .` from a
-clone builds a wheel locally against the pinned, checksum-verified MLIR
+See [CONTRIBUTING.md](https://github.com/NVIDIA/cudaq-pulse/blob/main/CONTRIBUTING.md). In short,
+`pip install ./packaging/cudaq-pulse-tools .` from a clone builds the two
+wheels, `cudaq-pulse-tools` and `cudaq-pulse`, locally against the pinned, checksum-verified MLIR
 toolchain, which CMake downloads on supported platforms (or set `MLIR_DIR` to
 your own MLIR 22 build). Nothing else is built from source. Each GitHub
 release carries the wheels and the source distribution.
+
+## Notice and disclaimer
+
+NOTICE AND DISCLAIMER: This software automatically retrieves, accesses or interacts with external materials. Those retrieved materials are not distributed with this software and are governed solely by separate terms, conditions and licenses. You are solely responsible for finding, reviewing and complying with all applicable terms, conditions, and licenses, and for verifying the security, integrity and suitability of any retrieved materials for your specific use case. This software is provided "AS IS", without warranty of any kind. The author makes no representations or warranties regarding any retrieved materials, and assumes no liability for any losses, damages, liabilities or legal consequences from your use or inability to use this software or any retrieved materials. Use this software and the retrieved materials at your own risk.
+
+What installing and building retrieve:
+
+- The optional GPU extras install NVIDIA packages from PyPI under NVIDIA's
+  own licenses. `[cu12]` (and `[gpu]`, the same set) installs
+  [cudensitymat-cu12](https://pypi.org/project/cudensitymat-cu12/),
+  [nvidia-cuda-runtime-cu12](https://pypi.org/project/nvidia-cuda-runtime-cu12/),
+  [nvidia-cublas-cu12](https://pypi.org/project/nvidia-cublas-cu12/),
+  [nvidia-cusolver-cu12](https://pypi.org/project/nvidia-cusolver-cu12/),
+  [nvidia-cusparse-cu12](https://pypi.org/project/nvidia-cusparse-cu12/),
+  [nvidia-curand-cu12](https://pypi.org/project/nvidia-curand-cu12/) and
+  [nvidia-nvjitlink-cu12](https://pypi.org/project/nvidia-nvjitlink-cu12/);
+  `[cu13]` installs [cudensitymat-cu13](https://pypi.org/project/cudensitymat-cu13/)
+  and the CUDA runtime and libraries through
+  [cuda-toolkit](https://pypi.org/project/cuda-toolkit/).
+- Building from source downloads the pinned LLVM/MLIR 22.1.8 toolchain
+  archive (Apache-2.0 WITH LLVM-exception) from this repository's
+  [`mlir-toolchain-22.1.8` release](https://github.com/NVIDIA/cudaq-pulse/releases/tag/mlir-toolchain-22.1.8).
+- pip and uv install the Python dependencies listed in `pyproject.toml`.
 
 ## Current scope and limitations
 
@@ -190,6 +219,8 @@ release carries the wheels and the source distribution.
   bindings, and `cudaq-pulse-opt`
 - `core/runtime/` — cuDensityMat runtime library loaded by JIT-compiled code
 - `cmake/` — dependency, Python staging, testing, and documentation modules
+- `packaging/cudaq-pulse-tools/` — the `cudaq-pulse-tools` wheel
+  (`cudaq-pulse-opt`), built from this tree
 - `tools/` — MLIR toolchain build/fetch scripts and CI helpers
 - `test/` — lit and `FileCheck` compiler regression tests
 - `tests/` — pytest unit, workload, and GPU tests

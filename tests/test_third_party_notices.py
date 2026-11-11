@@ -1,14 +1,11 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """THIRD_PARTY_NOTICES generation from linker maps, and the wheel content
 check's license, notice, CUDA and GPL rules (source tree only)."""
 
 import importlib.util
+import io
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -179,11 +176,28 @@ def test_a_graft_needs_its_license_text(notices, tmp_path, capsys):
     assert not out.exists()
 
 
-def test_the_committed_notices_are_generated(notices):
-    text = (_ROOT / "THIRD_PARTY_NOTICES").read_text()
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("THIRD_PARTY_NOTICES", {"LLVM", "MLIR", "nanobind"}),
+        ("packaging/cudaq-pulse-tools/THIRD_PARTY_NOTICES", {"LLVM", "MLIR"}),
+    ],
+)
+def test_the_committed_notices_are_generated(notices, path, expected):
+    text = (_ROOT / path).read_text()
     listed = notices.listed_components(text)
-    assert {"LLVM", "MLIR", "nanobind"} <= listed
+    assert expected <= listed
     assert text == notices.render(listed)
+
+
+def test_the_driver_wheel_ships_the_license_texts_its_notices_need(notices):
+    package = _ROOT / "packaging" / "cudaq-pulse-tools"
+    listed = notices.listed_components((package / "THIRD_PARTY_NOTICES").read_text())
+    needed = {Path(notices._BY_NAME[name].license_file).name for name in listed}
+    shipped = {link.name for link in (package / "LICENSES").iterdir()}
+    assert shipped == needed
+    for link in (package / "LICENSES").iterdir():
+        assert link.read_text() == (_ROOT / "LICENSES" / link.name).read_text()
 
 
 _EXPRESSION = (
@@ -223,7 +237,12 @@ def _wheel(
         files[item] = ""
     for item in drop:
         del files[item]
-    metadata = ["Metadata-Version: 2.4", "Name: cudaq-pulse", "Version: 0.1.0"]
+    metadata = [
+        "Metadata-Version: 2.4",
+        "Name: cudaq-pulse",
+        "Version: 0.1.0",
+        "Requires-Dist: cudaq-pulse-tools==0.1.0",
+    ]
     if expression:
         metadata.append(f"License-Expression: {expression}")
     metadata += [
@@ -333,3 +352,115 @@ def test_license_expression_names_every_listed_license_and_no_gpl(tmp_path, chec
     assert any("names a GPL or LGPL license" in p for p in _problems(checker, path))
     path = _wheel(tmp_path, checker, expression="")
     assert "METADATA has no License-Expression" in _problems(checker, path)
+
+
+def _tools_wheel(tmp_path, checker, *, extra=(), drop=(), expression=None, texts=None):
+    dist_info = "cudaq_pulse_tools-0.1.0.dist-info"
+    package = _ROOT / "packaging" / "cudaq-pulse-tools"
+    files = {"cudaq_pulse_tools-0.1.0.data/scripts/cudaq-pulse-opt": "", f"{dist_info}/WHEEL": ""}
+    for name in checker._TOOLS_LICENSES:
+        files[f"{dist_info}/licenses/{name}"] = (package / name).read_text()
+    for name, text in (texts or {}).items():
+        files[f"{dist_info}/licenses/{name}"] = text
+    for item in extra:
+        files[item] = ""
+    for item in drop:
+        del files[item]
+    if expression is None:
+        expression = _EXPRESSION.replace(" AND BSD-3-Clause AND MIT", "")
+    metadata = ["Metadata-Version: 2.4", "Name: cudaq-pulse-tools", "Version: 0.1.0"]
+    metadata.append(f"License-Expression: {expression}")
+    metadata += [f"License-File: {f}" for f in checker._TOOLS_LICENSES]
+    files[f"{dist_info}/METADATA"] = "\n".join(metadata) + "\n\n"
+    files[f"{dist_info}/RECORD"] = ""
+    path = tmp_path / "cudaq_pulse_tools-0.1.0-py3-none-macosx_11_0_arm64.whl"
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in files.items():
+            info = zipfile.ZipInfo(name)
+            if name.endswith("/cudaq-pulse-opt"):
+                info.external_attr = 0o755 << 16
+            archive.writestr(info, content)
+    return path
+
+
+def test_a_complete_driver_wheel_passes(tmp_path, checker):
+    assert "THIRD_PARTY_NOTICES" in checker._TOOLS_LICENSES
+    assert "LICENSES/LLVM-LICENSE.txt" in checker._TOOLS_LICENSES
+    assert _problems(checker, _tools_wheel(tmp_path, checker)) == []
+
+
+def test_a_repaired_driver_wheel_may_list_its_directories(tmp_path, checker):
+    directories = [
+        "cudaq_pulse_tools-0.1.0.data/",
+        "cudaq_pulse_tools-0.1.0.data/scripts/",
+        "cudaq_pulse_tools-0.1.0.dist-info/",
+        "cudaq_pulse_tools-0.1.0.dist-info/licenses/",
+        "cudaq_pulse_tools-0.1.0.dist-info/licenses/LICENSES/",
+    ]
+    assert _problems(checker, _tools_wheel(tmp_path, checker, extra=directories)) == []
+    path = _tools_wheel(tmp_path, checker, extra=[*directories, "cudaq_pulse_tools/__init__.py"])
+    assert _problems(checker, path) == ["contains cudaq_pulse_tools/__init__.py"]
+
+
+@pytest.mark.parametrize("name", ["LICENSE", "NOTICE", "LICENSES/LLVM-LICENSE.txt"])
+def test_both_wheels_carry_the_repositorys_license_texts(tmp_path, checker, name):
+    package = _ROOT / "packaging" / "cudaq-pulse-tools"
+    assert (package / name).read_bytes() == (_ROOT / name).read_bytes()
+    path = _tools_wheel(tmp_path, checker, texts={name: (_ROOT / name).read_text() + "\n"})
+    item = f"cudaq_pulse_tools-0.1.0.dist-info/licenses/{name}"
+    assert f"{item} differs from the repository's {name}" in _problems(checker, path)
+
+
+def test_the_driver_wheel_needs_its_notices(tmp_path, checker):
+    notices_file = "cudaq_pulse_tools-0.1.0.dist-info/licenses/THIRD_PARTY_NOTICES"
+    assert f"missing {notices_file}" in _problems(
+        checker, _tools_wheel(tmp_path, checker, drop=[notices_file])
+    )
+    path = _tools_wheel(tmp_path, checker, expression=_EXPRESSION.replace(" AND Spencer-94", ""))
+    assert "License-Expression does not name Spencer-94 (regex (LLVM Support))" in _problems(
+        checker, path
+    )
+
+
+def test_the_driver_wheel_may_carry_only_listed_grafts(tmp_path, checker):
+    problems = _problems(
+        checker,
+        _tools_wheel(
+            tmp_path,
+            checker,
+            extra=[
+                "cudaq_pulse_tools.libs/libz-1a2b.so.1",
+                "cudaq_pulse_tools.libs/libcudart-1a2b.so.12",
+                "cudaq_pulse_tools.libs/libgmp-1a2b.so.10",
+            ],
+        ),
+    )
+    assert "THIRD_PARTY_NOTICES does not list zlib, which the wheel grafts" in problems
+    assert (
+        "bundles cudaq_pulse_tools.libs/libcudart-1a2b.so.12; CUDA libraries come from the extras"
+        in problems
+    )
+    assert "bundles cudaq_pulse_tools.libs/libgmp-1a2b.so.10, a GPL or LGPL library" in problems
+    assert not any(p.startswith("contains cudaq_pulse_tools.libs/") for p in problems)
+
+
+def _sdist(tmp_path, checker, requires):
+    path = tmp_path / "cudaq_pulse-0.1.0.tar.gz"
+    metadata = ["Metadata-Version: 2.4", "Name: cudaq-pulse", "Version: 0.1.0"]
+    metadata += [f"Requires-Dist: {r}" for r in requires]
+    files = {"PKG-INFO": "\n".join(metadata) + "\n\n", **dict.fromkeys(checker._LICENSES, "")}
+    with tarfile.open(path, "w:gz") as sdist:
+        for name, text in files.items():
+            info = tarfile.TarInfo(f"cudaq_pulse-0.1.0/{name}")
+            info.size = len(text.encode())
+            sdist.addfile(info, io.BytesIO(text.encode()))
+    return path
+
+
+def test_the_sdist_requires_the_driver_at_its_version(tmp_path, checker):
+    path = _sdist(tmp_path, checker, ["numpy>=2.0", "cudaq-pulse-tools==0.1.0"])
+    assert checker.check_sdist(path) == []
+    path = _sdist(tmp_path, checker, ["numpy>=2.0"])
+    assert checker.check_sdist(path) == [
+        f"{path.name}: requires [], expected exactly ['cudaq-pulse-tools==0.1.0']"
+    ]

@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """A toy controller backend: the smallest thing ``cudaq_pulse.backends`` loads.
 
 The toy controller runs at 1 GHz, issues one instruction every 2 cycles,
@@ -96,7 +91,7 @@ if __name__ == "__main__":
         name="toy-device",
         qubits={0: Qubit(index=0, frequency_hz=5e9, anharmonicity_hz=-2e8, t1_us=0, t2_star_us=0)},
     )
-    dev = pulse.device({"target": target, "clock_ghz": 1.0})
+    dev = pulse.device(target, clock_ghz=1.0)
     cal = {
         "x_duration": 40 * pulse.ns,
         "x_sigma": 10 * pulse.ns,

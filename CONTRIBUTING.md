@@ -129,8 +129,13 @@ MYPYPATH=build/dev/python mypy -p cudaq_pulse
 
 The hooks run the ruff linter and formatter, clang-format, whitespace and
 YAML/TOML checks, and a license-header check
-(`tools/check-license-headers.py`). New source files need the NVIDIA
-Apache-2.0 header used by their neighbors.
+(`tools/check-license-headers.py`). New source files start with these two
+lines, in the file's comment syntax (after a shebang line, if any):
+
+```text
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+```
 
 mypy runs in strict mode against the staged package, because it needs the
 type stub that the build generates for the native extension.
@@ -342,23 +347,37 @@ the installed extra; `CUDAQ_PULSE_CUDA=12|13` forces one.
 ## Build a wheel
 
 ```bash
-pip install .            # or: uv build --wheel
+pip install ./packaging/cudaq-pulse-tools .
+# or: uv build --wheel packaging/cudaq-pulse-tools && uv build --wheel
 ```
 
-This uses the same fetched toolchain. Wheels are compiler-only unless
-`CUDAQ_PULSE_ENABLE_GPU=ON` is set in the environment (as the release build
-does on Linux; see `[tool.cibuildwheel]` in `pyproject.toml`).
+There are two distributions. `cudaq-pulse-tools`
+(`packaging/cudaq-pulse-tools`) holds the command-line tools, for now the
+`cudaq-pulse-opt` MLIR driver alone, a `py3-none` wheel per platform that
+serves every Python; `cudaq-pulse` is the Python package and its extension,
+and requires `cudaq-pulse-tools` at exactly its own version, so
+`pip install .` alone finds no driver to install. Both are built from this tree and take their version
+from the same git tags: `CUDAQ_PULSE_BUILD_OPT=OFF` and
+`CUDAQ_PULSE_BUILD_PYTHON=OFF` select the half each one builds. Both use the
+same fetched toolchain. `cudaq-pulse-tools` has no sdist. Wheels are
+compiler-only unless `CUDAQ_PULSE_ENABLE_GPU=ON` is set in the environment
+(as the release build does on Linux; see `[tool.cibuildwheel]` in
+`pyproject.toml`).
 
-Every binary the wheel ships writes a linker map to
-`<build dir>/link-maps/`, and installing fails if `THIRD_PARTY_NOTICES` no
-longer lists the third-party code those maps show linked. After a change
-that links something new (an MLIR library, a toolchain bump), regenerate it
-and commit the result, with a license text in `LICENSES/` for any new
-component:
+Every binary a wheel ships writes a linker map to `<build dir>/link-maps/`,
+and installing fails if the wheel's `THIRD_PARTY_NOTICES` (the root one for
+`cudaq-pulse`, `packaging/cudaq-pulse-tools/THIRD_PARTY_NOTICES` for the
+driver) no longer lists the third-party code those maps show linked. After a
+change that links something new (an MLIR library, a toolchain bump),
+regenerate them and commit the result, with a license text in `LICENSES/`
+(and a link to it in `packaging/cudaq-pulse-tools/LICENSES/` if the driver
+needs it) for any new component:
 
 ```bash
 python tools/third-party-notices.py write --notices THIRD_PARTY_NOTICES \
-    --map build/dev/link-maps/_cudaq_pulse_native.map \
+    --map build/dev/link-maps/_cudaq_pulse_native.map
+python tools/third-party-notices.py write \
+    --notices packaging/cudaq-pulse-tools/THIRD_PARTY_NOTICES \
     --map build/dev/link-maps/cudaq-pulse-opt.map
 ```
 
@@ -412,12 +431,17 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   `-DCUDAQ_PULSE_FREE_THREADED=ON`, which declares the extension safe
   without the GIL, as the free-threaded wheels do). The `gpu` job
   builds with GPU support and runs the GPU tests (see [GPU CI](#gpu-ci)).
-- `wheels.yml`: cibuildwheel for `cp312-abi3` (3.12 and newer) and
-  `cp314-cp314t` (free-threaded 3.14, which has no stable ABI) on
+- `wheels.yml`: cibuildwheel for the `cudaq-pulse-tools` wheel (`py3-none`)
+  first, then the `cudaq-pulse` wheels for `cp312-abi3` (3.12 and newer) and
+  `cp314-cp314t` (free-threaded 3.14, which has no stable ABI), on
   manylinux_2_28 (x86_64, aarch64, with the CUDA 12 and CUDA 13 runtimes) and
-  macOS arm64 (compiler-only), plus an sdist. It then installs
-  the wheels in clean containers without a CUDA toolkit, and the 3.14t
-  wheels on the runners with the GIL required to stay off. `gpu-install-test`
+  macOS arm64 (compiler-only), plus an sdist. Each wheel is size-gated and
+  `tools/check-wheel-contents.py` checks both layouts. It then installs
+  both distributions from the built wheels alone (no index) in clean
+  containers without a CUDA toolkit, and the 3.14t wheels on the runners
+  with the GIL required to stay off; on the runners it also loads the
+  example pass plugin into the installed `cudaq-pulse-opt`
+  (`tools/ci/opt-plugin-test.sh`). `gpu-install-test`
   runs the GPU tests from the wheels (see [GPU CI](#gpu-ci)) and gates the
   release (see [Releases](#releases)).
 - `gpu-tests.yml`: the GPU tests, called by `ci.yml` and `wheels.yml`.
@@ -541,7 +565,7 @@ broken release is withdrawn, not replaced:
 3. Release the fix as a new version: `X.Y.(Z+1)` for a code fix, or
    `X.Y.Z.postN` for a packaging-only fix, with a `CHANGELOG.md` entry that
    names the withdrawn release.
-4. Once releases are on PyPI, also yank the broken version there
+4. Also yank the broken version on PyPI
    ([PEP 592](https://peps.python.org/pep-0592/)) with the issue link as
    the reason. Yanking hides it from new resolutions but keeps exact pins
    working; never delete files from PyPI.
@@ -552,17 +576,24 @@ withdrawal follows the coordinated disclosure.
 ## Releases
 
 Work lands on `staging`, where every workflow runs but nothing is published.
-Releases are GitHub releases only for now: nothing is uploaded to PyPI or
-TestPyPI.
+A release has two distributions, each with a wheel per platform:
+`cudaq-pulse-tools`, with the MLIR driver, uploaded first, and `cudaq-pulse`,
+which requires it at the same version, with the sdist. An index needs both, in
+that order. A release is published as a GitHub release first. Once index
+publishing is enabled (below), its wheels then go to TestPyPI for a
+pre-release (`vX.Y.Z{a,b,rc}N`) or to PyPI for a final release; until then,
+releases are on GitHub only. The sdist is only on the GitHub release.
 
 1. Tag a release candidate, for example `v0.1.0rc1`. `wheels.yml` builds and
-   tests the wheels and the sdist and publishes them as a GitHub pre-release.
+   tests the wheels and the sdist, publishes them as a GitHub pre-release and,
+   with index publishing enabled, uploads the wheels to TestPyPI.
 2. Squash `staging` into one commit on `main`, with the `staging` workflow
    triggers removed and the toolchain checksums in the lock file.
 3. Date the version's section in `CHANGELOG.md` (`## [0.1.0] - YYYY-MM-DD`).
    The next release's section, `## [X.Y.Z] - Unreleased`, starts with the
    first change after the tag.
-4. Tag `v0.1.0` on `main`.
+4. Tag `v0.1.0` on `main`; with index publishing enabled, its wheels go to
+   PyPI.
 
 Release notes come from `CHANGELOG.md`, not from the commit history:
 `tools/release-notes.py` prints the section for the version, and a
@@ -580,8 +611,21 @@ draft, every built file's version is checked against the tag and gets a
 signed build-provenance attestation (check one with
 `gh attestation verify <file> --repo NVIDIA/cudaq-pulse`), the assets are
 uploaded once (never replaced), and only then is the release published. The
-MLIR toolchain assets are write-once too. The end of `wheels.yml` records how
-PyPI and TestPyPI uploads will be re-enabled with trusted publishing.
+MLIR toolchain assets are write-once too.
+
+The `testpypi` and `pypi` jobs upload the same checked wheels with trusted
+publishing: the index accepts a short-lived token that GitHub issues to this
+repository's `wheels.yml` running in the `testpypi` or `pypi` environment,
+so the repository holds no index API token. Each of the two project names
+needs a trusted publisher on each index for that workflow and environment,
+and the environments' required reviewers approve every upload. GitHub
+creates an environment that does not exist yet without any protection, so
+the two jobs also need the repository variable `PYPI_PUBLISHING` set to
+`true`, which is set only after the trusted publishers and the protected
+environments exist; without it, a release is GitHub-only. The jobs run only
+for a `v*` tag of NVIDIA/cudaq-pulse, after `github-release` has published
+it: pushes to `staging` and manual runs on a branch never reach them. A
+re-run of a failed upload skips the files already on the index.
 
 ### GPU verification
 
@@ -608,3 +652,72 @@ No release is published without GPU verification of the tagged commit; the
 
   The attestation counts only on a manual run, only when it names the exact
   commit being released, and only when `gpu-install-test` did not run.
+
+## Developer Certificate of Origin
+
+Every commit in a pull request must be signed off. Signing off means adding
+a `Signed-off-by:` line with your name and email address at the end of the
+commit message:
+
+```text
+Signed-off-by: Jane Doe <jane.doe@example.com>
+```
+
+With it you certify that you can contribute the change under the project's
+open source license, as the Developer Certificate of Origin 1.1 states:
+
+```text
+Developer Certificate of Origin
+Version 1.1
+
+Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
+
+Everyone is permitted to copy and distribute verbatim copies of this
+license document, but changing it is not allowed.
+
+
+Developer's Certificate of Origin 1.1
+
+By making a contribution to this project, I certify that:
+
+(a) The contribution was created in whole or in part by me and I
+    have the right to submit it under the open source license
+    indicated in the file; or
+
+(b) The contribution is based upon previous work that, to the best
+    of my knowledge, is covered under an appropriate open source
+    license and I have the right under that license to submit that
+    work with modifications, whether created in whole or in part
+    by me, under the same open source license (unless I am
+    permitted to submit under a different license), as indicated
+    in the file; or
+
+(c) The contribution was provided directly to me by some other
+    person who certified (a), (b) or (c) and I have not modified
+    it.
+
+(d) I understand and agree that this project and the contribution
+    are public and that a record of the contribution (including all
+    personal information I submit with it, including my sign-off) is
+    maintained indefinitely and may be redistributed consistent with
+    this project or the open source license(s) involved.
+```
+
+Use your real name and the email address you commit with. `git commit -s`
+(`--signoff`) adds the line from `user.name` and `user.email`:
+
+```bash
+git config user.name "Jane Doe"
+git config user.email jane.doe@example.com
+git commit -s -m "Describe the change"
+```
+
+To sign off commits you already made, amend the last one, or rebase the
+branch onto the one your pull request targets (`<base>`) with every commit
+signed off, then update the pull request:
+
+```bash
+git commit --amend -s --no-edit         # the last commit
+git rebase --signoff <base>             # every commit since <base>
+git push --force-with-lease
+```

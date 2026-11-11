@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Benchmarks for the cudaq-pulse MLIR pipeline.
 
 Measures the median wall-clock time of each stage of compiling a kernel:
@@ -38,7 +33,7 @@ def _device(frequencies: dict[int, float]) -> pulse.Device:
     from cudaq_pulse.targets import Qubit, TargetDescription
 
     qubits = {q: Qubit(q, f, -300e6, 50.0, 30.0) for q, f in frequencies.items()}
-    return pulse.device({"target": TargetDescription(name="bench", qubits=qubits)})
+    return pulse.device(TargetDescription(name="bench", qubits=qubits))
 
 
 _STAGES = ("trace_ms", "ffi_ms", "passes_ms", "schedule_ms", "total_ms")

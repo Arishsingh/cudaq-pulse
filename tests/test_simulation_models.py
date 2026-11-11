@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """A target's simulation model, not a label, sets its qudits' levels and physics."""
 
 from __future__ import annotations
@@ -68,13 +63,13 @@ def test_levels_are_overridden_by_qudit():
 
 
 def test_the_model_sets_the_transition_table():
-    transmon = pulse.device({"target": _target()})
+    transmon = pulse.device(_target())
     assert transmon.transition_freq.shape == (3, 3, 3)
     assert transmon.transition_freq[1, 1, 2] == pytest.approx(5.1e9 - 300e6)
-    plain = pulse.device({"target": _target(SimulationModel)})
+    plain = pulse.device(_target(SimulationModel))
     assert plain.transition_freq.shape == (3, 2, 2)
     assert plain.transition_freq[1, 0, 1] == 5.1e9
-    mixed = pulse.device({"target": _target(TransmonModel(levels={0: 4, 2: 2}))})
+    mixed = pulse.device(_target(TransmonModel(levels={0: 4, 2: 2})))
     table = mixed.transition_freq
     assert table.shape == (3, 4, 4)
     assert table[0, 2, 3] == pytest.approx(5.0e9 - 2 * 300e6)
@@ -83,10 +78,10 @@ def test_the_model_sets_the_transition_table():
 
 
 def test_devices_of_different_models_are_different_devices():
-    devices = [pulse.device({"target": _target(m)}) for m in (TransmonModel, SimulationModel)]
+    devices = [pulse.device(_target(m)) for m in (TransmonModel, SimulationModel)]
     assert devices[0] != devices[1]
-    assert devices[0] == pulse.device({"target": _target(TransmonModel())})
-    assert devices[0] != pulse.device({"target": _target(TransmonModel(levels={0: 4}))})
+    assert devices[0] == pulse.device(_target(TransmonModel()))
+    assert devices[0] != pulse.device(_target(TransmonModel(levels={0: 4})))
 
 
 @pulse.kernel
@@ -103,7 +98,7 @@ def _drive_last(q):
     ],
 )
 def test_qudits_a_program_leaves_out_keep_the_levels_they_would_have(model, levels, expected):
-    device = pulse.device({"target": _target(model)})
+    device = pulse.device(_target(model))
     lowered = pulse.compile(_drive_last, device=device).lower(device.qudit_handles[2])
     result = pulse.simulate(lowered, levels=levels)
     assert result.qudits == (2,)

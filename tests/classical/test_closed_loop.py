@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Closed loops between shots: no recompiling, a parameter store, an
 estimate log, and tracking a drifting plant against its truth."""
 
@@ -64,7 +59,7 @@ def t1_shot(q, amplitude: float):
 
 
 def test_ten_thousand_iterations_run_without_compiling_again():
-    dev = pulse.device({"target": _target()})
+    dev = pulse.device(_target())
     q = dev.qudit_handles[0]
     compiled = pulse.compile(t1_shot, device=dev)
     start = time.perf_counter()

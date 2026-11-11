@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """A drifting device to calibrate against, with its true parameters recorded.
 
 ``DriftingPlant`` wraps one qubit of a target description and moves its
@@ -135,8 +130,7 @@ class DriftingPlant:
         base = self._target.qubits[self.qubit]
         scale = self._target.drive_amplitude_scale(self.qubit) * self.state.amplitude_scale
         drive = base.drive if base.drive is not None else MicrowaveDrive()
-        qubit = dataclasses.replace(
-            base,
+        qubit = base.replace(
             t1_us=self.state.t1_us,
             frequency_hz=base.frequency_hz + self.state.frequency_offset_hz,
             drive=drive.replace(amplitude_scale_rad_per_ns=scale),

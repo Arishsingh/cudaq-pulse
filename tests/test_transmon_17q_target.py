@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The Krinner et al. (2022) target against the paper's published structure."""
 
 from __future__ import annotations
@@ -124,10 +119,10 @@ def test_cz_layers_run_three_disjoint_gates_per_step(target):
     ]
     assert [list(layer) for layer in CZ_LAYERS] == published
     for c in target.couplings:
-        assert c.gate.name == "cz"
-        assert c.gate.interaction_frequency_hz is not None
-        assert 4.3e9 <= c.gate.interaction_frequency_hz <= 5.61e9
-        assert c.gate.duration_ns == 98.0 and c.gate.buffer_ns == 15.0
+        cz = c.get_calibration(pulse.gates.CZ)
+        assert cz.interaction_frequency_hz is not None
+        assert 4.3e9 <= cz.interaction_frequency_hz <= 5.61e9
+        assert cz.duration_ns == 98.0 and cz.buffer_ns == 15.0
 
 
 def test_gate_errors_reproduce_the_published_statistics():
@@ -216,7 +211,7 @@ def test_the_time_step_resolves_the_fastest_coupled_detuning():
         },
         couplings=[Coupling((0, 1), _k.COUPLING_11_20_HZ / math.sqrt(2.0))],
     )
-    dev = pulse.device({"target": pair})
+    dev = pulse.device(pair)
 
     @pulse.kernel
     def flip_and_idle(qa, qb):
@@ -245,5 +240,5 @@ def x90_alone(q):
 
 
 def test_a_generic_coupling_makes_no_gate_claims():
-    assert Coupling((0, 1), strength_hz=5e6).gate is None
-    assert all(c.gate is None for c in transmon_generic(3).couplings)
+    assert not Coupling((0, 1), strength_hz=5e6).calibrations
+    assert all(not c.calibrations for c in transmon_generic(3).couplings)

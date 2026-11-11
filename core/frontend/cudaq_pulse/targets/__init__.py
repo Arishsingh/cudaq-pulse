@@ -1,21 +1,18 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """QPU target definitions: Hamiltonians, decoherence models, connectivity."""
 
 from ._registry import UnknownTargetError, available_targets, register_target
 from .base import (
     Coupling,
     DispersiveReadout,
+    DragPulse,
     Drive,
-    Gate,
+    FluxCZ,
     MicrowaveDrive,
     Qubit,
     Readout,
+    ReadoutPulse,
     ResidualZZ,
     TargetDescription,
 )
@@ -31,8 +28,10 @@ __all__ = [
     "Drive",
     "MicrowaveDrive",
     "Coupling",
-    "Gate",
     "ResidualZZ",
+    "DragPulse",
+    "ReadoutPulse",
+    "FluxCZ",
     "SimulationModel",
     "TransmonModel",
     "Calibration",

@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Finding controller backends by their entry points, with a dummy backend."""
 
 from __future__ import annotations
@@ -62,7 +57,7 @@ def two_readouts(q, r):
 
 
 def _device():
-    return pulse.device({"target": ladder_target(4), "clock_ghz": 1.0})
+    return pulse.device(ladder_target(4), clock_ghz=1.0)
 
 
 def test_an_installed_backend_is_listed_without_being_imported(installed):

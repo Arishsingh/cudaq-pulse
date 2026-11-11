@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Following a drifting qudit by swapping in programs between batches.
 
 Builds on ``20_adaptive_calibration.py`` and ``24_pipelined_calibration.py``.
@@ -80,10 +75,8 @@ def fringe_top(qudit):
 def calibrated_device(offset_hz):
     """The device whose qudit frequency is the nominal one plus *offset_hz*."""
     nominal = target.qubits[qudit_index]
-    qudit = dataclasses.replace(nominal, frequency_hz=nominal.frequency_hz + offset_hz)
-    return pulse.device(
-        {"target": dataclasses.replace(target, qubits={**target.qubits, qudit_index: qudit})}
-    )
+    qudit = nominal.replace(frequency_hz=nominal.frequency_hz + offset_hz)
+    return pulse.device(dataclasses.replace(target, qubits={**target.qubits, qudit_index: qudit}))
 
 
 # ── The background worker ────────────────────────────────────────────────────

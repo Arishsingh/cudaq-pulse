@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Importing and compiling stay light; simulation loads its dependencies lazily."""
 
 import importlib
@@ -61,7 +56,7 @@ def test_a_device_config_without_a_control_system_loads_no_clock_modules(tmp_pat
         "    d = get_drive_line(q)\n"
         "    drive(d, square(40, 0.1))\n"
         "target = TargetDescription(name='t', qubits={0: Qubit(0, 5e9, -300e6, 50.0, 30.0)})\n"
-        "dev = p.device({'target': target})\n"
+        "dev = p.device(target)\n"
         "p.compile(k, device=dev).lower(dev.qudit_handles[0])\n"
         "print(sorted(m for m in ('cudaq_pulse._clocks', 'cudaq_pulse._system',"
         " 'cudaq_pulse.kernel._durations') if m in sys.modules))",

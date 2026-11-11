@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Estimators for calibrating while the QPU runs.
 
 Each estimator is a plain function whose state goes in and comes back out,
@@ -38,9 +33,13 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .._errors import InvalidValueError
 from .._units import Time, as_nanoseconds
+
+if TYPE_CHECKING:
+    from .._op_tables import OpCounts
 
 __all__ = [
     "GoldenSection",
@@ -524,9 +523,11 @@ def count_ones(bits: Sequence[int]) -> int:
     return total
 
 
-def _count_ones_cost(length: int) -> dict[str, int]:
+def _count_ones_cost(length: int) -> OpCounts:
+    from .._op_tables import OpCounts
+
     words = -(-length // 32)
-    return {"popcount": words, "add": words}
+    return OpCounts(popcount=words, add=words)
 
 
 count_ones.controller_cost = _count_ones_cost  # type: ignore[attr-defined]

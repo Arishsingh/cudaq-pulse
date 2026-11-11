@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Device calibrations: fitted circuit values, kept apart from published targets.
 
 A calibration file is JSON whose leaves are ``{value, units, kind, source,
@@ -299,7 +294,7 @@ class Calibration:
                 else:
                     strength = self.exchange_hz(name, *at)
                 if c.__class__ is Coupling:
-                    c = Coupling(c.qudits, strength, c.gate)
+                    c = Coupling(c.qudits, strength, c.calibrations)
                 else:
                     c = replace(c, strength_hz=strength)
             couplings.append(c)

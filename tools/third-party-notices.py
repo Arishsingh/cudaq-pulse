@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Write or check a THIRD_PARTY_NOTICES file from what the binaries link.
 
 Usage:
@@ -185,7 +180,7 @@ _NO_NOTICE_ARCHIVES = re.compile(
 )
 _ARCHIVE_MEMBER = re.compile(r"([^\s\[\]()]+\.a)(?:\[\d+\])?\(([^()\s]+)\)")
 
-_GRAFTED_DIR = re.compile(r"^[^/]+\.libs/|/\.dylibs/")
+GRAFTED_DIR = re.compile(r"^[^/]+\.libs/|/\.dylibs/")
 _GRAFTED = [
     (r"libz[.-]", "zlib"),
     (r"libzstd[.-]", "Zstandard"),
@@ -248,7 +243,7 @@ def grafted_components(names: list[str]) -> tuple[set[str], list[str]]:
     found: set[str] = set()
     problems: list[str] = []
     for item in names:
-        if not _GRAFTED_DIR.search(item) or item.endswith("/"):
+        if not GRAFTED_DIR.search(item) or item.endswith("/"):
             continue
         base = item.rsplit("/", 1)[-1]
         if GPL_LIBRARIES.search(item):

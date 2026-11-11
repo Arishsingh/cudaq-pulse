@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Adaptive calibration against a drifting device.
 
 Builds on ``19_classical_calls.py``. On qubit 0 of the 17-qubit transmon
@@ -117,7 +112,7 @@ def t1_shot(q, wait_ns: int):
 
 if __name__ == "__main__":
     target = transmon_17q()
-    dev = pulse.device({"target": target})
+    dev = pulse.device(target)
     q = dev.qudit_handles[0]
     qubit = target.qubits[0]
 
@@ -127,7 +122,7 @@ if __name__ == "__main__":
         target,
         qubits={
             **target.qubits,
-            0: dataclasses.replace(qubit, frequency_hz=qubit.frequency_hz + offset_hz),
+            0: qubit.replace(frequency_hz=qubit.frequency_hz + offset_hz),
         },
     )
     lowered = pulse.compile(binary_search, device=dev, control_system=control_system).lower(q, 2)

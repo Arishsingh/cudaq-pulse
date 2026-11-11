@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The step ``simulate`` keeps for each target: it follows every change of
 what the step depends on, holds no target alive and stays small."""
 
@@ -144,7 +139,7 @@ def test_what_a_kept_step_depends_on_cannot_change_in_place():
     with pytest.raises(dataclasses.FrozenInstanceError):
         target.couplings = (Coupling((0, 1), 5.0e6),)
     with pytest.raises(TypeError):
-        target.qubits[0] = dataclasses.replace(qubit, anharmonicity_hz=-400.0e6)
+        target.qubits[0] = qubit.replace(anharmonicity_hz=-400.0e6)
     model = TransmonModel(levels={0: 4})
     with pytest.raises(TypeError):
         model._levels[0] = 6

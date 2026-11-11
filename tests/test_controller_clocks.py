@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Clocks of a control system: the program clock its controllers give a
 device, and the reference clock they lock to."""
 
@@ -19,7 +14,7 @@ from cudaq_pulse import DeviceDefinitionError
 from cudaq_pulse.classical import Link
 from cudaq_pulse.controller import ControllerLimitError
 
-from tests._handles import ladder_target
+from tests._handles import ladder_target, with_line_delays
 
 
 def _system(*clocks, tolerance=0, **kwargs):
@@ -41,7 +36,7 @@ def _system(*clocks, tolerance=0, **kwargs):
 
 def _device(*clocks, system=None, **config):
     control = system or _system(*clocks)
-    return pulse.device({"target": ladder_target(4), "control_system": control, **config})
+    return pulse.device(ladder_target(4), control_system=control, **config)
 
 
 # ── The program clock ────────────────────────────────────────────────────────
@@ -86,7 +81,7 @@ def test_a_device_built_directly_derives_its_program_clock_too():
 
 def test_a_derived_program_clock_round_trips_through_the_system_file():
     device = _device(1.0, 0.5)
-    again = pulse.device(json.loads(json.dumps(device.as_dict())))
+    again = pulse.Device.from_dict(json.loads(json.dumps(device.as_dict())))
     assert again.clock_ghz == 1.0 and again == device
 
 
@@ -375,7 +370,7 @@ def test_each_lines_delay_is_split_by_its_own_controllers_fine_delay():
     ]
 
     def compiled(delays):
-        system = pulse.ControlSystem(controllers=controllers, line_delays_ns=delays)
+        system = pulse.ControlSystem(controllers=with_line_delays(controllers, delays))
         qpu = _device(system=system)
         return pulse.compile(feedback, device=qpu).lower(qpu.qudits[0])
 
@@ -905,7 +900,7 @@ def test_pulses_a_sync_lines_up_across_controllers_land_within_their_alignment_t
             ),
         ]
         system = pulse.ControlSystem(
-            controllers=controllers, reference_clock_ghz=reference, line_delays_ns=delays or {}
+            controllers=with_line_delays(controllers, delays or {}), reference_clock_ghz=reference
         )
         qpu = _device(system=system, clock_ghz=2.0)
         return pulse.compile(paired, device=qpu).lower(qpu.qudits[0], qpu.qudits[2])

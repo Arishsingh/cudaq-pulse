@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The process target, chosen outside user code.
 
 ``device()`` with no argument returns the device of the target named by
@@ -40,8 +35,9 @@ class NoTargetError(PulseError, RuntimeError):
 
 
 class UnknownTargetError(NotFoundError):
-    """A target name, given to ``device()``, in a device config or in ``CUDAQ_PULSE_TARGET``, is not
-    registered; the message lists the registered ones."""
+    """A target name, given to ``device()``, in a system file or in
+    ``CUDAQ_PULSE_TARGET``, is not registered; the message lists the
+    registered ones."""
 
 
 def _no_argument(name: str, factory: Callable[[], Any]) -> TargetFactory:

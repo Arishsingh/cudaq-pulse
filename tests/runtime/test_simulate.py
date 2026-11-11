@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Measurement and feedback simulation against analytic results.
 
 Every test runs the CPU reference; the GPU-marked tests check that the
@@ -107,7 +102,7 @@ def test_simulate_takes_the_kernel_and_its_arguments():
         d0 = get_drive_line(q0)
         drive(d0, square(40, amplitude))
 
-    dev = pulse.device({"target": _target()})
+    dev = pulse.device(_target())
     q = dev.qudit_handles[0]
     expected = pulse.simulate(rabi.lower(q, _PI), levels=2).density_matrix
     np.testing.assert_array_equal(pulse.simulate(rabi, q, _PI, levels=2).density_matrix, expected)
@@ -131,7 +126,7 @@ def _rabi_with_amplitude(q0, amplitude: float):
 
 @pytest.mark.parametrize("kind", ["kernel", "compiled", "with_parameters", "bound", "call"])
 def test_simulate_takes_a_kernel_or_a_program_compiled_already(kind):
-    dev = pulse.device({"target": _target()})
+    dev = pulse.device(_target())
     q = dev.qudit_handles[0]
     compiled = pulse.compile(_rabi_with_amplitude)
     generic = compiled.lower(q, _PI).generic
@@ -154,7 +149,7 @@ def test_simulate_binds_a_program_s_parameters_as_bind_does():
         wait(d0, gap, bounds=(0, 100))
         drive(d0, square(40, _PI))
 
-    dev = pulse.device({"target": _target()})
+    dev = pulse.device(_target())
     q = dev.qudit_handles[0]
     generic = pulse.compile(wait_for).lower(q, 10.0).generic
     assert generic is not None

@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The structured export format (/2) and limit checks that keep loops rolled."""
 
 from __future__ import annotations
@@ -27,7 +22,7 @@ _TARGET = TargetDescription(
     clock_ghz=2.0,
     qubits={i: Qubit(i, 5.0e9 + 1.0e7 * i, -2.0e8, 50.0, 30.0) for i in range(4)},
 )
-_DEV = pulse.device({"target": _TARGET})
+_DEV = pulse.device(_TARGET)
 Q = _DEV.qudit_handles
 
 

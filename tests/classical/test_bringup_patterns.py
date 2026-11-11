@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Patterns for calibrating while the QPU runs: N-way switches on an index,
 an on-device random source, hidden and exposed latency, and the converged
 pattern."""
@@ -31,7 +26,7 @@ def _device(**readout):
         t2_star_us=0.0,
         readout=DispersiveReadout(**readout),
     )
-    return pulse.device({"target": TargetDescription(name="sim", qubits={0: qubit})})
+    return pulse.device(TargetDescription(name="sim", qubits={0: qubit}))
 
 
 @pulse.classical(max_latency_ns=100)

@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Times with units: ``20 * pulse.ns`` in every duration, converted to cycles
 of the device's clock exactly when the kernel compiles."""
 
@@ -19,6 +14,7 @@ import numpy as np
 import pytest
 from cudaq_pulse import Controller, ControlSystem
 from cudaq_pulse.classical import Link
+from cudaq_pulse.controller import DriveLine
 
 from tests._handles import Q
 
@@ -521,8 +517,8 @@ def x_then_wait(q):
 
 
 def test_one_kernel_compiles_for_devices_with_different_clocks():
-    fast = pulse.device({"target": "transmon_17q", "clock_ghz": 2.0})
-    slow = pulse.device({"target": "transmon_17q", "clock_ghz": 1.0})
+    fast = pulse.device("transmon_17q", clock_ghz=2.0)
+    slow = pulse.device("transmon_17q", clock_ghz=1.0)
     on_fast = pulse.compile(x_then_wait, device=fast).lower(fast.qudit_handles[0])
     on_slow = pulse.compile(x_then_wait, device=slow).lower(slow.qudit_handles[0])
     assert _events(on_fast) == [("drive", 0, 40), ("wait", 40, 200), ("drive", 240, 40)]
@@ -594,7 +590,9 @@ def test_a_machine_takes_its_link_and_line_times_as_times():
     assert link.fixed_ns.__class__ is float and link.feedback_ns.__class__ is float
     limits = Controller(max_fine_delay_ns=2 * ns)
     assert limits == Controller(max_fine_delay_ns=2.0)
-    machine = ControlSystem(controllers=[limits], line_delays_ns={("drive", 0): 3 * ns})
-    assert machine.line_delays_ns == {("drive", 0): 3.0}
+    line = DriveLine(0, delay_ns=3 * ns)
+    assert line == DriveLine(0, delay_ns=3.0) and line.delay_ns.__class__ is float
+    system = ControlSystem(controllers=[Controller(drive_lines=[line])])
+    assert system._line_delays == {("drive", 0): 3.0}
     with pytest.raises(pulse.InvalidValueError, match="cannot be negative"):
-        ControlSystem(line_delays_ns={("drive", 0): -1 * ns})
+        DriveLine(0, delay_ns=-1 * ns)

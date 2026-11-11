@@ -1,22 +1,18 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Processors: the classical compute of a controller, and what a program
 uses of it (``Lowered.controller_usage``)."""
 
 from __future__ import annotations
 
 import json
+import pickle
 
 import cudaq_pulse as pulse
 import pytest
 from cudaq_pulse._controller_cost import analyze_callable
 from cudaq_pulse._errors import DeviceDefinitionError
-from cudaq_pulse.controller import ControllerLimitError
+from cudaq_pulse.controller import ControllerLimitError, OpClass, OpCounts, OpCycles
 
 TRANSMON_17Q = "transmon_17q"
 
@@ -77,9 +73,7 @@ def _qpu(*processors, model="box.a", links=("cores", "gpu")):
         drive_lines=[0, 1], readout_lines=[0, 1], processors=list(processors), model=model
     )
     system = pulse.ControlSystem(controllers=[box], links={name: pulse.Link() for name in links})
-    return pulse.device(
-        {"quantum_system": TRANSMON_17Q, "layout": [0, 1], "control_system": system}
-    )
+    return pulse.device(TRANSMON_17Q, layout=[0, 1], control_system=system)
 
 
 def _lower(kernel, *processors):
@@ -104,13 +98,11 @@ def _fails(kernel, *processors):
         ({"links": [-1]}, pulse.InvalidTypeError, "ids >= 0"),
         ({"links": ["a", "a"]}, pulse.InvalidValueError, "twice"),
         ({"clock_ghz": 0}, pulse.InvalidValueError, "clock_ghz must be a positive number"),
-        ({"cycles_per_op": {"dvi": 2}}, pulse.InvalidValueError, "did you mean 'div'"),
-        ({"cycles_per_op": {"div": -1}}, pulse.InvalidValueError, "whole number of cycles"),
-        ({"cycles_per_op": {"div": True}}, pulse.InvalidValueError, "whole number of cycles"),
+        ({"cycles_per_op": {"div": 2}}, pulse.InvalidTypeError, "is an OpCycles"),
         ({"unsupported": "div"}, pulse.InvalidTypeError, "list of operations"),
         ({"unsupported": ["lop"]}, pulse.InvalidValueError, "did you mean 'loop'"),
         (
-            {"unsupported": ["div"], "cycles_per_op": {"div": 9}},
+            {"unsupported": [OpClass.DIV], "cycles_per_op": OpCycles(div=9)},
             pulse.InvalidValueError,
             "supported or not",
         ),
@@ -130,18 +122,45 @@ def test_a_processor_checks_its_fields(fields, error, text):
         pulse.Processor(**fields)
 
 
+def test_the_costs_of_a_processor_are_typed_by_class():
+    cycles = OpCycles(div=20, loop=2)
+    assert (cycles.div, cycles.add, cycles[OpClass.LOOP]) == (20, 1, 2)
+    assert cycles == OpCycles(loop=2, div=20) and cycles != OpCycles(div=20)
+    assert repr(cycles) == "OpCycles(div=20, loop=2)" and OpCounts().total == 0
+    assert cycles.replace(div=4) == OpCycles(div=4, loop=2)
+    for wrong in (-1, True, 1.5):
+        with pytest.raises(pulse.InvalidValueError, match="OpCycles.div is a whole number"):
+            OpCycles(div=wrong)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="dvi"):
+        OpCycles(dvi=2)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="loop"):
+        OpCounts(loop=1)  # type: ignore[call-arg]
+    with pytest.raises(AttributeError):
+        cycles.div = 3  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        dict(cycles)  # type: ignore[call-overload]
+    assert pickle.loads(pickle.dumps(cycles)) == cycles
+    assert {str(op) for op in OpClass} == {*OpCounts._names, "loop"} == set(OpCycles._names)
+    with pytest.raises(
+        pulse.InvalidValueError, match=r"unknown operation 'dvi' \(did you mean 'div'"
+    ):
+        pulse.Controller(processors=[{"cycles_per_op": {"dvi": 2}}])
+
+
 def test_a_processor_is_frozen_hashable_and_reads_back_its_dict():
     cores = pulse.Processor(
         links=["cores"],
-        cycles_per_op={"div": 20, "loop": 2},
-        unsupported=["trig", "trig"],
+        cycles_per_op=OpCycles(div=20, loop=2),
+        unsupported=[OpClass.TRIG, "trig"],
         dispatch_keys={"_parity": 7},
     )
-    assert cores.links == ("cores",) and cores.unsupported == ("trig",) and cores.loops
-    assert not pulse.Processor(unsupported=["loop"]).loops
+    assert cores.links == ("cores",) and cores.unsupported == (OpClass.TRIG,) and cores.loops
+    assert type(cores.unsupported[0]) is OpClass
+    assert not pulse.Processor(unsupported=[OpClass.LOOP]).loops
     data = json.loads(json.dumps(cores.as_dict()))
-    assert pulse.Processor(**data) == cores
-    assert hash(pulse.Processor(**data)) == hash(cores)
+    assert data["cycles_per_op"] == {"div": 20, "loop": 2} and data["unsupported"] == ["trig"]
+    (back,) = pulse.Controller(processors=[data]).processors
+    assert back == cores and hash(back) == hash(cores)
     with pytest.raises(TypeError):
         cores.dispatch_keys["other"] = 1  # type: ignore[index]
 
@@ -196,11 +215,12 @@ def test_a_body_records_its_loops_unrolled_size_and_where_it_uses_each_operation
     cost = analyze_callable(_parity, {"bits": 4})
     # Rolled: the xor and the load, then the counter and the jump.
     assert cost.size == 4 and cost.iterations == 4 and cost.unrolled_size == 8
-    assert cost.ops == {"add": 8, "branch": 4, "load": 4}
+    assert cost.ops == OpCounts(add=8, branch=4, load=4)
     line = _parity.__code__.co_firstlineno
     assert cost.uses == {"add": f"_parity line {line + 3}", "load": f"_parity line {line + 3}"} | {
         "loop": f"_parity line {line + 2}"
     }
+    assert {type(op) for op in cost.uses} == {OpClass}
     # An inlined call is not a branch, and a helper's uses are its own lines.
     cost = analyze_callable(_scaled, {})
     assert set(cost.uses) == {"add", "div"}
@@ -211,10 +231,10 @@ def test_a_body_records_its_loops_unrolled_size_and_where_it_uses_each_operation
 def test_a_processor_prices_a_loop_by_its_loop_op_or_runs_it_unrolled():
     cost = analyze_callable(_parity, {"bits": 4})
     # Rolled: 4 xors, 4 loads and 4 iterations.
-    assert cost.processor_cycles({}, loops=True) == 12
-    assert cost.processor_cycles({"loop": 3}, loops=True) == 20
-    assert cost.processor_cycles({"loop": 3}, loops=False) == 8
-    assert cost.processor_cycles({"add": 2}, loops=True) == 16
+    assert cost.processor_cycles(OpCycles(), loops=True) == 12
+    assert cost.processor_cycles(OpCycles(loop=3), loops=True) == 20
+    assert cost.processor_cycles(OpCycles(loop=3), loops=False) == 8
+    assert cost.processor_cycles(OpCycles(add=2), loops=True) == 16
 
 
 # ── Checks ───────────────────────────────────────────────────────────────────
@@ -334,11 +354,9 @@ def test_a_call_over_a_processor_limit_carries_the_report_of_its_values():
     # Limits of a system without processors have no usage report.
     box = pulse.Controller(drive_lines=[0, 1], readout_lines=[0, 1], max_pulses=1)
     plain = pulse.device(
-        {
-            "quantum_system": TRANSMON_17Q,
-            "layout": [0, 1],
-            "control_system": pulse.ControlSystem(controllers=[box], links={"cores": pulse.Link()}),
-        }
+        TRANSMON_17Q,
+        layout=[0, 1],
+        control_system=pulse.ControlSystem(controllers=[box], links={"cores": pulse.Link()}),
     )
     with pytest.raises(ControllerLimitError) as raised:
         pulse.compile(corrected, device=plain).lower(plain.qudits[0])
@@ -354,7 +372,7 @@ def test_calls_computing_at_once_are_held_to_max_concurrent_calls():
 
 
 def test_a_slow_processor_misses_a_function_deadline():
-    slow = pulse.Processor(links=["cores"], clock_ghz=0.1, cycles_per_op={"load": 4})
+    slow = pulse.Processor(links=["cores"], clock_ghz=0.1, cycles_per_op=OpCycles(load=4))
     text = _fails(corrected, slow)
     assert "_parity computes for about 240 ns on processors[0]" in text
     assert "(24 cycles on its longest path), beyond its max_latency_ns=60" in text
@@ -418,14 +436,12 @@ def test_a_float_parameter_defers_the_processor_check_to_the_call():
 
 def test_a_system_without_processors_reports_every_function_off_board():
     qpu = pulse.device(
-        {
-            "quantum_system": TRANSMON_17Q,
-            "layout": [0, 1],
-            "control_system": pulse.ControlSystem(
-                controllers=[pulse.Controller(drive_lines=[0, 1], readout_lines=[0, 1])],
-                links={"cores": pulse.Link()},
-            ),
-        }
+        TRANSMON_17Q,
+        layout=[0, 1],
+        control_system=pulse.ControlSystem(
+            controllers=[pulse.Controller(drive_lines=[0, 1], readout_lines=[0, 1])],
+            links={"cores": pulse.Link()},
+        ),
     )
     usage = pulse.compile(corrected, device=qpu).lower(qpu.qudits[0]).controller_usage
     assert usage.controllers == () and usage.off_board == ("_parity",) and usage.within_limits
@@ -447,18 +463,18 @@ def test_a_description_states_its_processors_and_their_dispatch_keys(tmp_path):
     box = pulse.controller(str(path), drive_lines=[0, 1], readout_lines=[0, 1])
     cores, gpu = box.processors
     assert cores.dispatch_keys == {"_parity": 7, "_scaled": 8}
-    assert cores.cycles_per_op == {"div": 20}
+    assert cores.cycles_per_op == OpCycles(div=20)
     assert cores.unsupported == ("loop", "trig") and gpu.links == ("gpu",)
     system = pulse.ControlSystem(
         controllers=[box], links={"cores": pulse.Link(), "gpu": pulse.Link()}
     )
-    qpu = pulse.device({"quantum_system": TRANSMON_17Q, "layout": [0, 1], "control_system": system})
+    qpu = pulse.device(TRANSMON_17Q, layout=[0, 1], control_system=system)
     data = json.loads(json.dumps(qpu.as_dict()))
     assert data["control_system"]["controllers"][0]["processors"][0]["dispatch_keys"] == {
         "_parity": 7,
         "_scaled": 8,
     }
-    again = pulse.device(data)
+    again = pulse.Device.from_dict(data)
     assert again.control_system.controllers[0].processors == box.processors
     lowered = pulse.compile(both, device=again).lower(again.qudits[0])
     assert lowered.controller_usage.controllers[0].processors[0].clock_ghz == 0.5
@@ -471,8 +487,8 @@ def test_a_bad_processor_in_a_system_file_is_a_problem_with_its_path():
         controllers=[pulse.Controller(processors=[pulse.Processor(links=["cores"])])],
         links={"cores": pulse.Link()},
     )
-    qpu = pulse.device({"quantum_system": TRANSMON_17Q, "layout": [0, 1], "control_system": system})
+    qpu = pulse.device(TRANSMON_17Q, layout=[0, 1], control_system=system)
     data = qpu.as_dict()
     data["control_system"]["controllers"][0]["processors"][0]["unsupported"] = ["dvi"]
     with pytest.raises(DeviceDefinitionError, match="did you mean 'div'"):
-        pulse.device(data)
+        pulse.Device.from_dict(data)

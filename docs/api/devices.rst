@@ -1,9 +1,6 @@
 ..
-   Copyright (c) 2026 NVIDIA Corporation & Affiliates.
-   All rights reserved.
-
-   This source code and the accompanying materials are made available under
-   the terms of the Apache License 2.0 which accompanies this distribution.
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
 
 Device API
 ==========
@@ -79,9 +76,10 @@ control system (one number for every receiver; a receiver not listed: 0).
 
 A controller's ``processors`` run the classical functions called on their
 links. Compiling checks each function there (the operations it uses, its
-size, its state and its compute time at the processor's ``cycles_per_op``
-against its ``max_latency_ns``) and each processor's totals; a processor
-without ``"loop"`` runs loops unrolled, and their size is counted so.
+size, its state and its compute time at the processor's ``cycles_per_op``, an
+``OpCycles`` such as ``OpCycles(div=20)``, against its ``max_latency_ns``) and
+each processor's totals; a processor with ``OpClass.LOOP`` ``unsupported``
+runs loops unrolled, and their size is counted so.
 ``lowered.controller_usage`` is the report: ``print`` it for a table, or
 read ``.within_limits`` and ``.controllers[i].processors[j]``. In a
 description or a system file, a processor is a ``[[processors]]`` table,

@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Runtime qudits: a kernel's parameters annotated ``Qudit`` or ``Register``
 compile once and bind their qudits at each call; unannotated ones are
 static."""
@@ -78,9 +73,7 @@ def _plain(export):
 def _recalibrated(device, carrier, shift_hz):
     target = device.target
     qubits = dict(target.qubits)
-    qubits[carrier] = dataclasses.replace(
-        qubits[carrier], frequency_hz=qubits[carrier].frequency_hz + shift_hz
-    )
+    qubits[carrier] = qubits[carrier].replace(frequency_hz=qubits[carrier].frequency_hz + shift_hz)
     return Device(dataclasses.replace(target, qubits=qubits), name=device.name)
 
 

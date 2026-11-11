@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The CPU integrator's exact and kept propagators, and sampled paths.
 
 Stretches with a constant Lindbladian (idle waits, square pulses in their
@@ -217,7 +212,7 @@ def _adaptive_loop(q0, rounds: int):
 
 def test_a_long_adaptive_loop_follows_one_path_per_shot():
     target = _target(t1_us=5.0)
-    dev = pulse.device({"target": target})
+    dev = pulse.device(target)
     lowered = pulse.compile(_adaptive_loop, device=dev, control_system=_MACHINE).lower(
         dev.qudit_handles[0], 60
     )

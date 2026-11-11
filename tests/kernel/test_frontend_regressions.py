@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Regression tests for kernel-frontend correctness fixes."""
 
 from __future__ import annotations
@@ -192,7 +187,7 @@ def test_a_sync_over_many_lines_takes_an_extended_record(n):
 
 def test_a_sync_over_a_thousand_lines_compiles_schedules_and_exports():
     n = 1200
-    dev = pulse.device({"target": ladder_target(n)})
+    dev = pulse.device(ladder_target(n))
 
     @pulse.kernel
     def wide(qs):

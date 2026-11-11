@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """The simulated space holds the qudits a program uses, not every index up to
 the largest: a pair at indices 13 and 3 of the 17-qudit transmon_17q device is a
 two-mode problem, with the same physics as on a device of just those two."""
@@ -36,12 +31,12 @@ def _slice(indices):
 
     sliced = TargetDescription(
         name="transmon-17q-slice",
-        qubits={i: dataclasses.replace(target.qubits[q], index=i) for q, i in new.items()},
+        qubits={i: target.qubits[q].replace(index=i) for q, i in new.items()},
         couplings=renumbered(target.couplings),
         residual_zz=renumbered(target.residual_zz),
         clock_ghz=target.clock_ghz,
     )
-    return pulse.device({"target": sliced}).qudit_handles, new
+    return pulse.device(sliced).qudit_handles, new
 
 
 @pulse.kernel

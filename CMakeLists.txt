@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 # cudaq-pulse compiles against a prebuilt MLIR toolchain fetched by
 # tools/fetch-mlir-toolchain.py and links MLIR statically into its extension:
@@ -33,7 +28,19 @@ set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
 
 include(GNUInstallDirs)
 
-find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter Development.Module)
+# The two wheels each build one of these: cudaq-pulse the Python package and
+# cudaq-pulse-tools the cudaq-pulse-opt driver (packaging/cudaq-pulse-tools).
+option(CUDAQ_PULSE_BUILD_PYTHON "Build the cudaq_pulse Python package and its native extension" ON)
+option(CUDAQ_PULSE_BUILD_OPT "Build the cudaq-pulse-opt MLIR driver" ON)
+if(NOT CUDAQ_PULSE_BUILD_PYTHON AND NOT CUDAQ_PULSE_BUILD_OPT)
+  message(FATAL_ERROR "CUDAQ_PULSE_BUILD_PYTHON and CUDAQ_PULSE_BUILD_OPT are both OFF")
+endif()
+
+if(CUDAQ_PULSE_BUILD_PYTHON)
+  find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter Development.Module)
+else()
+  find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+endif()
 
 set(CUDAQ_PULSE_LLVM_VERSION "22.1.8")
 
@@ -168,16 +175,24 @@ include_directories(
 # Generate the three research-preview dialects.
 add_subdirectory(core/mlir/include/cudaq-pulse)
 
+include(CudaqPulseVersion)
+
 # Build the dialects, transforms, conversions, and optimizer driver.
 add_subdirectory(core/mlir)
-add_subdirectory(core/mlir/tools/cudaq-pulse-opt)
+if(CUDAQ_PULSE_BUILD_OPT)
+  add_subdirectory(core/mlir/tools/cudaq-pulse-opt)
+endif()
 
-# Resolve the optional GPU runtime plus the Python and nanobind dependencies.
-include(CudaqPulseDependencies)
-add_subdirectory(core/mlir/bindings)
+if(CUDAQ_PULSE_BUILD_PYTHON)
+  # Resolve the optional GPU runtime plus the Python and nanobind dependencies.
+  include(CudaqPulseDependencies)
+  add_subdirectory(core/mlir/bindings)
 
-# Stage the Python package and register the aggregate build/install target.
-include(CudaqPulsePython)
+  # Stage the Python package and register the aggregate build/install target.
+  include(CudaqPulsePython)
+else()
+  add_custom_target(pulse DEPENDS cudaq-pulse-opt)
+endif()
 
 # Keep test and documentation target definitions out of the package entrypoint.
 include(CudaqPulseTesting)

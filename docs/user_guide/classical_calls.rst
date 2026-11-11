@@ -1,9 +1,6 @@
 ..
-   Copyright (c) 2026 NVIDIA Corporation & Affiliates.
-   All rights reserved.
-
-   This source code and the accompanying materials are made available under
-   the terms of the Apache License 2.0 which accompanies this distribution.
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
 
 Classical Calls at QPU Runtime
 ==============================
@@ -372,9 +369,10 @@ it.
   them synthesized per shot from a
   dispersive readout model, at the true level of each readout, from the
   frequency of its tone and the amplitude of its pulse. It needs ``shots``.
-  The model reads each qubit's ``DispersiveReadout``: it puts the
-  resonator at its ``frequency_hz`` and scales the points by the pulse's
-  amplitude over its ``amplitude``; without the first every tone is on
+  The model reads each qubit's ``DispersiveReadout`` and its ``READOUT``
+  calibration (a ``ReadoutPulse``): it puts the resonator at the readout's
+  ``frequency_hz`` and scales the points by the pulse's amplitude over the
+  calibration's ``amplitude``; without the first every tone is on
   resonance, and without the second the amplitude does not change the
   points. A tone frequency or amplitude it
   needs and cannot compute where the readout plays (from constants, float
@@ -434,6 +432,8 @@ timeout arm, as does a decoder's ``NOT_READY`` (status 4, corrections not
 decoded yet); a call without a timeout that gets ``NOT_READY`` is an error.
 ``late_fraction`` is the fraction of the answers the program waits on that
 came late; calls it only sends, such as enqueues of syndromes, do not count.
+``transport`` is one ``Transport`` for every link, or one per link by name
+or id; a name the control system has no link for is an ``InvalidValueError``.
 
 .. code-block:: python
    :class: fragment
@@ -623,7 +623,7 @@ from the ``Processor`` of a controller that runs the functions on its
 
    processor = pulse.Processor(
        links=["controller"],
-       cycles_per_op={"div": 8, "sqrt": 8, "exp": 12, "log": 12, "trig": 12},
+       cycles_per_op=controller.OpCycles(div=8, sqrt=8, exp=12, log=12, trig=12),
        clock_ghz=0.25,       # 4 ns per cycle
        fixed_cost_only=True,
        max_ops_per_function=256,

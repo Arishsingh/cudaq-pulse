@@ -1,10 +1,5 @@
-# ============================================================================ #
-# Copyright (c) 2026 NVIDIA Corporation & Affiliates.                          #
-# All rights reserved.                                                         #
-#                                                                              #
-# This source code and the accompanying materials are made available under     #
-# the terms of the Apache License 2.0 which accompanies this distribution.     #
-# ============================================================================ #
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """A millisecond calibration chain that runs on the controller.
 
 After
@@ -108,7 +103,7 @@ wait_range_cycles = (
 # with these cycles per operation, up to one call per slot of its link at once.
 processor = pulse.Processor(
     links=["controller"],
-    cycles_per_op={"div": 8, "sqrt": 8, "exp": 12, "log": 12, "trig": 12, "popcount": 1},
+    cycles_per_op=controller.OpCycles(div=8, sqrt=8, exp=12, log=12, trig=12, popcount=1),
     clock_ghz=0.25,
     max_concurrent_calls=4,
     fixed_cost_only=True,
@@ -454,8 +449,7 @@ def chain_plant(target, t1_us=18.3, offset_hz=60e3, amplitude_scale=1.015):
     the drive, a drive-amplitude error and small readout errors."""
     qubit = target.qubits[0]
     scale = target.drive_amplitude_scale(0) * amplitude_scale
-    plant = dataclasses.replace(
-        qubit,
+    plant = qubit.replace(
         t1_us=t1_us,
         frequency_hz=qubit.frequency_hz + offset_hz,
         drive=qubit.drive.replace(amplitude_scale_rad_per_ns=scale),
@@ -468,8 +462,7 @@ def search_plant(target, offset_hz):
     """A device like the binary-search paper's: T2* 12 us, T1 80 us, and
     readout errors that give its fringe contrast of 0.6 between shots."""
     qubit = target.qubits[0]
-    plant = dataclasses.replace(
-        qubit,
+    plant = qubit.replace(
         t1_us=80.0,
         t2_star_us=12.0,
         thermal_population=0.0,
@@ -499,7 +492,7 @@ if __name__ == "__main__":
         "with the adaptive T1 tracker of Berritta et al., arXiv:2506.09576 (2025).\n"
     )
     target = transmon_17q()
-    dev = pulse.device({"target": target})
+    dev = pulse.device(target)
     q = dev.qudit_handles[0]
     plant = chain_plant(target)
 
@@ -562,7 +555,7 @@ if __name__ == "__main__":
     lowered = compiled.lower(q, 20_000.0 * clock_ghz)
     report = controller.resources(lowered)
     print(report)
-    slow = dataclasses.replace(processor, cycles_per_op={**processor.cycles_per_op, "exp": 400})
+    slow = dataclasses.replace(processor, cycles_per_op=processor.cycles_per_op.replace(exp=400))
     slow_system = pulse.ControlSystem(
         controllers=[pulse.Controller(processors=[slow])], links=links
     )
