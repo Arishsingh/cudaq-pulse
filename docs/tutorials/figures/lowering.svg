@@ -4,7 +4,7 @@
 -->
 <svg role="img" aria-labelledby="title desc" xmlns:xlink="http://www.w3.org/1999/xlink" width="407.52pt" height="166.53pt" viewBox="0 0 407.52 166.53" xmlns="http://www.w3.org/2000/svg" version="1.1">
  <title id="title">One program, lowered for the GPU and exported</title>
- <desc id="desc">The page's evolve_pair kernel at each level of its lowering for GPU simulation: Pulse MLIR, 21 operations; QOp, 82 operations; cuDensityMat, 226 operations; LLVM IR, 1845 operations, of them 182 calls into the cuDensityMat runtime. From the Pulse MLIR the same program also exports for a controller as 5 events.</desc>
+ <desc id="desc">The page's evolve_pair kernel at each level of its lowering for GPU simulation: Pulse MLIR, 21 operations; QOp, 82 operations; cuDensityMat, 122 operations; LLVM IR, 1641 operations, of them 88 calls into the cuDensityMat runtime. From the Pulse MLIR the same program also exports for a controller as 5 events.</desc>
  <defs>
   <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
  </defs>
@@ -146,19 +146,19 @@ z
     <text style="font-weight: 700; font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #3d6fa3" x="216.45" y="19.56" transform="rotate(-0 216.45 19.56)">cuDensityMat</text>
    </g>
    <g id="text_8">
-    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="216.45" y="31.26" transform="rotate(-0 216.45 31.26)">226 operations</text>
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="216.45" y="31.26" transform="rotate(-0 216.45 31.26)">122 operations</text>
    </g>
    <g id="text_9">
-    <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #5c636a" x="216.45" y="43.43" transform="rotate(-0 216.45 43.43)">cudm 181  arith 44</text>
+    <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #5c636a" x="216.45" y="43.43" transform="rotate(-0 216.45 43.43)">cudm 87  arith 34</text>
    </g>
    <g id="text_10">
     <text style="font-weight: 700; font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #3d6fa3" x="318.82" y="19.56" transform="rotate(-0 318.82 19.56)">LLVM IR</text>
    </g>
    <g id="text_11">
-    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="318.82" y="31.26" transform="rotate(-0 318.82 31.26)">182 llvm.call</text>
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="318.82" y="31.26" transform="rotate(-0 318.82 31.26)">88 llvm.call</text>
    </g>
    <g id="text_12">
-    <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #5c636a" x="318.82" y="42.71" transform="rotate(-0 318.82 42.71)">1845 operations</text>
+    <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #5c636a" x="318.82" y="42.71" transform="rotate(-0 318.82 42.71)">1641 operations</text>
    </g>
    <g id="text_13">
     <text style="font-weight: 700; font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #00796b" x="11.71" y="123.70" transform="rotate(-0 11.71 123.70)">controller export</text>

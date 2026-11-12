@@ -4,6 +4,7 @@
 // QOpToCuDensityMat conversion pass: lower qop dialect ops to cudm dialect ops
 // for GPU-accelerated quantum state evolution.
 
+#include "llvm/ADT/MapVector.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -32,13 +33,201 @@
 #define GET_OP_CLASSES
 #include "cudaq-pulse/Dialect/CuDensityMat/CuDensityMatOps.h.inc"
 
+#include <complex>
+#include <cstdlib>
+
 using namespace mlir;
 
 namespace {
 
+using Complex = std::complex<double>;
+
+/// The default `max-fused-dimension`. A fused block that acts on both sides
+/// of the density matrix is a superoperator of the block's dimension squared;
+/// larger ones cost cuDensityMat seconds of one-time setup per operator shape
+/// on some GPUs.
+constexpr int64_t kDefaultMaxFusedDimension = 16;
+
+/// A square matrix on an ordered list of modes: column-major, the first
+/// mode's index varying fastest, as cuDensityMat stores a dense elementary
+/// operator.
+struct Matrix {
+  int64_t dimension = 0;
+  SmallVector<Complex> values;
+
+  static Matrix zero(int64_t dimension) {
+    return {dimension, SmallVector<Complex>(dimension * dimension)};
+  }
+  static Matrix identity(int64_t dimension) {
+    Matrix result = zero(dimension);
+    for (int64_t i = 0; i < dimension; ++i)
+      result.at(i, i) = 1.0;
+    return result;
+  }
+  /// From column-major interleaved real and imaginary parts.
+  static Matrix interleaved(int64_t dimension, ArrayRef<double> data) {
+    Matrix result = zero(dimension);
+    for (size_t i = 0; i < result.values.size(); ++i)
+      result.values[i] = Complex(data[2 * i], data[2 * i + 1]);
+    return result;
+  }
+
+  Complex &at(int64_t row, int64_t column) {
+    return values[column * dimension + row];
+  }
+  Complex at(int64_t row, int64_t column) const {
+    return values[column * dimension + row];
+  }
+  SmallVector<double> data() const {
+    SmallVector<double> result;
+    result.reserve(2 * values.size());
+    for (Complex value : values) {
+      result.push_back(value.real());
+      result.push_back(value.imag());
+    }
+    return result;
+  }
+  Matrix adjoint() const {
+    Matrix result = zero(dimension);
+    for (int64_t row = 0; row < dimension; ++row)
+      for (int64_t column = 0; column < dimension; ++column)
+        result.at(column, row) = std::conj(at(row, column));
+    return result;
+  }
+  Matrix operator*(const Matrix &right) const {
+    Matrix result = zero(dimension);
+    for (int64_t column = 0; column < dimension; ++column)
+      for (int64_t k = 0; k < dimension; ++k) {
+        Complex factor = right.at(k, column);
+        if (factor == 0.0)
+          continue;
+        for (int64_t row = 0; row < dimension; ++row)
+          result.at(row, column) += at(row, k) * factor;
+      }
+    return result;
+  }
+  Matrix operator*(Complex scale) const {
+    Matrix result = *this;
+    for (Complex &value : result.values)
+      value *= scale;
+    return result;
+  }
+  Matrix &operator+=(const Matrix &other) {
+    for (size_t i = 0; i < values.size(); ++i)
+      values[i] += other.values[i];
+    return *this;
+  }
+  bool operator==(const Matrix &other) const {
+    return dimension == other.dimension && values == other.values;
+  }
+};
+
+/// The operator acting as `fast` on the fast index and as `slow` on the slow
+/// one (numpy.kron(slow, fast)).
+Matrix kron(const Matrix &slow, const Matrix &fast) {
+  const int64_t d = fast.dimension;
+  Matrix result = Matrix::zero(slow.dimension * d);
+  for (int64_t slowColumn = 0; slowColumn < slow.dimension; ++slowColumn)
+    for (int64_t slowRow = 0; slowRow < slow.dimension; ++slowRow) {
+      Complex factor = slow.at(slowRow, slowColumn);
+      if (factor == 0.0)
+        continue;
+      for (int64_t column = 0; column < d; ++column)
+        for (int64_t row = 0; row < d; ++row)
+          result.at(slowRow * d + row, slowColumn * d + column) =
+              factor * fast.at(row, column);
+    }
+  return result;
+}
+
+using Modes = SmallVector<int32_t, 4>;
+
+int64_t dimensionOf(ArrayRef<int32_t> modes, ArrayRef<int64_t> extents) {
+  int64_t dimension = 1;
+  for (int32_t mode : modes)
+    dimension *= extents[mode];
+  return dimension;
+}
+
+/// `matrix`, an operator on `sub`, as one on `modes` (both ascending, `sub`
+/// within `modes`): the identity on the other modes.
+Matrix embed(const Matrix &matrix, ArrayRef<int32_t> sub,
+             ArrayRef<int32_t> modes, ArrayRef<int64_t> extents) {
+  if (sub == modes)
+    return matrix;
+  const int64_t dimension = dimensionOf(modes, extents);
+  // Per mode of `modes`: its stride in `sub`'s index, or 0 if not in `sub`.
+  SmallVector<int64_t> subStride(modes.size(), 0);
+  int64_t stride = 1;
+  for (int32_t mode : sub) {
+    subStride[llvm::find(modes, mode) - modes.begin()] = stride;
+    stride *= extents[mode];
+  }
+  auto split = [&](int64_t index, int64_t &subIndex, int64_t &rest) {
+    subIndex = 0;
+    rest = 0;
+    int64_t restStride = 1;
+    for (auto [i, mode] : llvm::enumerate(modes)) {
+      int64_t digit = index % extents[mode];
+      index /= extents[mode];
+      if (subStride[i]) {
+        subIndex += digit * subStride[i];
+      } else {
+        rest += digit * restStride;
+        restStride *= extents[mode];
+      }
+    }
+  };
+  Matrix result = Matrix::zero(dimension);
+  for (int64_t column = 0; column < dimension; ++column) {
+    int64_t subColumn, restColumn;
+    split(column, subColumn, restColumn);
+    for (int64_t row = 0; row < dimension; ++row) {
+      int64_t subRow, restRow;
+      split(row, subRow, restRow);
+      if (restRow == restColumn)
+        result.at(row, column) = matrix.at(subRow, subColumn);
+    }
+  }
+  return result;
+}
+
+/// A qop leaf operator: the mode it acts on, its matrix and its adjoint's.
+struct Leaf {
+  int32_t mode = 0;
+  Matrix matrix;
+  Matrix adjoint;
+};
+
+/// A qop product: leaves in application order and a constant or callback
+/// coefficient.
+struct Product {
+  SmallVector<Operation *> leaves;
+  Modes modes;
+  Complex coefficient = 1.0;
+  qop::CallbackScalarOp callback;
+
+  /// The modes it acts on, ascending, if each factor acts on its own mode.
+  std::optional<Modes> distinctModes() const {
+    Modes sorted(modes);
+    llvm::sort(sorted);
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+      return std::nullopt;
+    return sorted;
+  }
+};
+
 struct QOpToCuDensityMatPass
     : public PassWrapper<QOpToCuDensityMatPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(QOpToCuDensityMatPass)
+
+  QOpToCuDensityMatPass() {
+    const char *fromEnvironment = std::getenv("CUDAQ_PULSE_GPU_OPERATORS");
+    if (fromEnvironment && *fromEnvironment)
+      operators = std::string(fromEnvironment);
+  }
+  QOpToCuDensityMatPass(const QOpToCuDensityMatPass &other)
+      : PassWrapper(other) {}
 
   StringRef getArgument() const final { return "qop-to-cudm"; }
   StringRef getDescription() const final {
@@ -52,9 +241,32 @@ struct QOpToCuDensityMatPass
     registry.insert<func::FuncDialect>();
   }
 
+  Option<std::string> operators{
+      *this, "operators",
+      llvm::cl::desc(
+          "How the Lindbladian becomes cuDensityMat terms: 'fused' sums the "
+          "constant Hamiltonian terms and dissipators on small groups of "
+          "modes into dense blocks; 'dense' makes every product its own "
+          "term (CUDAQ_PULSE_GPU_OPERATORS sets the default)"),
+      llvm::cl::init("fused")};
+  Option<int64_t> maxFusedDimension{
+      *this, "max-fused-dimension",
+      llvm::cl::desc("Largest dimension of a fused block on one side of the "
+                     "density matrix; a block on both sides needs its "
+                     "dimension squared within it. 0 fuses nothing"),
+      llvm::cl::init(kDefaultMaxFusedDimension)};
+
   void runOnOperation() override {
     auto module = getOperation();
     OpBuilder b(module.getContext());
+
+    if (operators != "fused" && operators != "dense") {
+      module.emitError("qop-to-cudm operators must be 'fused' or 'dense' "
+                       "(CUDAQ_PULSE_GPU_OPERATORS), not '")
+          << operators << "'";
+      return signalPassFailure();
+    }
+    const bool fuse = operators == "fused" && maxFusedDimension > 0;
 
     // Find @main
     func::FuncOp mainFunc;
@@ -163,18 +375,13 @@ struct QOpToCuDensityMatPass
     auto compositeOp = cudm::CreateOperatorOp::create(b, loc, operatorTy,
                                                       handle, modeExtentsAttr);
 
-    // 5. Walk qop.spin -> cudm.create_elementary_op for each Pauli leaf
-    DenseMap<Operation *, Value> spinToCudmElem;
-    DenseMap<Operation *, Value> spinToDaggerCudmElem;
-    SmallVector<Value> allElementaryOps;
+    // 5. The matrix of each leaf: a Pauli matrix for qop.spin, the data of
+    // a qop.matrix_leaf (dense, column-major, for qudits of more levels).
+    llvm::MapVector<Operation *, Leaf> leaves;
     module.walk([&](qop::SpinOp spin) {
-      b.setInsertionPoint(returnOp);
-      auto kind = spin.getKind();
-
-      // Map spin kind to 2x2 Pauli matrix data (dense, f64, real+imag
-      // interleaved)
+      // Column-major interleaved real and imaginary parts.
       SmallVector<double, 8> pauliData;
-      switch (kind) {
+      switch (spin.getKind()) {
       case qop::HandlerKind::SpinX:
         pauliData = {0, 0, 1, 0, 1, 0, 0, 0}; // [[0,1],[1,0]]
         break;
@@ -198,47 +405,21 @@ struct QOpToCuDensityMatPass
         spin.emitError("unsupported spin kind for cudm lowering");
         return;
       }
-
-      auto dataType = RankedTensorType::get({2, 2, 2}, b.getF64Type());
-      auto dataAttr = DenseFPElementsAttr::get(dataType, pauliData);
-      auto tensorVal = arith::ConstantOp::create(b, loc, dataAttr);
-
-      auto sparsityAttr =
-          cudm::SparsityAttr::get(b.getContext(), cudm::Sparsity::None);
-      SmallVector<int64_t> elemExtents = {2};
-
-      auto elemOp = cudm::CreateElementaryOpOp::create(
-          b, loc, elemOpTy, handle, tensorVal, sparsityAttr, dtypeAttr,
-          b.getDenseI64ArrayAttr(elemExtents), FlatSymbolRefAttr());
-
-      spinToCudmElem[spin.getOperation()] = elemOp;
-      allElementaryOps.push_back(elemOp);
-
+      int32_t mode = -1;
+      if (auto target = spin.getTarget().getDefiningOp<arith::ConstantOp>())
+        if (auto attr = dyn_cast<IntegerAttr>(target.getValue()))
+          mode = static_cast<int32_t>(attr.getInt());
       // Pauli operators are self-adjoint. Raising and lowering are each
-      // other's adjoints, so materialize the counterpart for C^dagger C in
-      // Lindblad anticommutator terms.
-      if (kind != qop::HandlerKind::SpinLowering &&
-          kind != qop::HandlerKind::SpinRaising) {
-        spinToDaggerCudmElem[spin.getOperation()] = elemOp;
-      } else {
-        SmallVector<double, 8> daggerData;
-        if (kind == qop::HandlerKind::SpinLowering)
-          daggerData = {0, 0, 1, 0, 0, 0, 0, 0};
-        else
-          daggerData = {0, 0, 0, 0, 1, 0, 0, 0};
-        auto daggerAttr = DenseFPElementsAttr::get(dataType, daggerData);
-        auto daggerTensor = arith::ConstantOp::create(b, loc, daggerAttr);
-        auto daggerElem = cudm::CreateElementaryOpOp::create(
-            b, loc, elemOpTy, handle, daggerTensor, sparsityAttr, dtypeAttr,
-            b.getDenseI64ArrayAttr(elemExtents), FlatSymbolRefAttr());
-        spinToDaggerCudmElem[spin.getOperation()] = daggerElem;
-        allElementaryOps.push_back(daggerElem);
-      }
+      // other's adjoints.
+      SmallVector<double, 8> adjointData = pauliData;
+      if (spin.getKind() == qop::HandlerKind::SpinLowering)
+        adjointData = {0, 0, 1, 0, 0, 0, 0, 0};
+      else if (spin.getKind() == qop::HandlerKind::SpinRaising)
+        adjointData = {0, 0, 0, 0, 1, 0, 0, 0};
+      leaves[spin.getOperation()] = {mode, Matrix::interleaved(2, pauliData),
+                                     Matrix::interleaved(2, adjointData)};
     });
-
-    // Dense single-mode matrices, for qudits with more than two levels.
     module.walk([&](qop::MatrixLeafOp leaf) {
-      b.setInsertionPoint(returnOp);
       auto constant = leaf.getData().getDefiningOp<arith::ConstantOp>();
       auto values = constant
                         ? dyn_cast<DenseFPElementsAttr>(constant.getValue())
@@ -264,41 +445,100 @@ struct QOpToCuDensityMatPass
           adjoint[2 * (column * d + row) + 1] =
               -data[2 * (row * d + column) + 1];
         }
-      auto sparsityAttr =
-          cudm::SparsityAttr::get(b.getContext(), cudm::Sparsity::None);
-      auto type = RankedTensorType::get({d, d, 2}, b.getF64Type());
-      auto make = [&](ArrayRef<double> tensor) -> Value {
-        auto value = arith::ConstantOp::create(
-            b, loc, DenseFPElementsAttr::get(type, tensor));
-        Value elementary = cudm::CreateElementaryOpOp::create(
-            b, loc, elemOpTy, handle, value, sparsityAttr, dtypeAttr,
-            b.getDenseI64ArrayAttr({d}), FlatSymbolRefAttr());
-        allElementaryOps.push_back(elementary);
-        return elementary;
-      };
-      Value elementary = make(data);
-      spinToCudmElem[leaf.getOperation()] = elementary;
-      spinToDaggerCudmElem[leaf.getOperation()] =
-          adjoint == data ? elementary : make(adjoint);
+      leaves[leaf.getOperation()] = {static_cast<int32_t>(leaf.getTargets()[0]),
+                                     Matrix::interleaved(d, data),
+                                     Matrix::interleaved(d, adjoint)};
     });
 
-    // 6. Lower qop products to reusable cuDensityMat operator terms.
-    struct ProductData {
-      SmallVector<Operation *> factors;
-      SmallVector<Value> elementaryOps;
-      SmallVector<int32_t> modes;
-      double coefficientReal = 1.0;
-      double coefficientImag = 0.0;
-      bool hasCallback = false;
+    SmallVector<Value> allElementaryOps;
+    auto createElementary = [&](const Matrix &matrix,
+                                ArrayRef<int64_t> extents) -> Value {
+      const int64_t d = matrix.dimension;
+      auto type = RankedTensorType::get({d, d, 2}, b.getF64Type());
+      SmallVector<double> data = matrix.data();
+      auto value = arith::ConstantOp::create(
+          b, loc, DenseFPElementsAttr::get(type, ArrayRef<double>(data)));
+      Value elementary = cudm::CreateElementaryOpOp::create(
+          b, loc, elemOpTy, handle, value,
+          cudm::SparsityAttr::get(b.getContext(), cudm::Sparsity::None),
+          dtypeAttr, b.getDenseI64ArrayAttr(extents), FlatSymbolRefAttr());
+      allElementaryOps.push_back(elementary);
+      return elementary;
     };
-    DenseMap<Operation *, ProductData> productData;
-    DenseMap<Operation *, Value> productToCudmTerm;
-    SmallVector<Value> allOperatorTerms;
-    bool conversionFailed = false;
+    // A leaf's elementary operator and that of its adjoint (the same one
+    // for a Hermitian leaf), made on first use.
+    DenseMap<Operation *, Value> leafElementary, leafAdjointElementary;
+    auto elementaryOf = [&](Operation *op) -> Value {
+      Value &elementary = leafElementary[op];
+      if (!elementary) {
+        const Leaf &leaf = leaves.find(op)->second;
+        elementary = createElementary(leaf.matrix, {leaf.matrix.dimension});
+      }
+      return elementary;
+    };
+    auto adjointElementaryOf = [&](Operation *op) -> Value {
+      Value &adjoint = leafAdjointElementary[op];
+      if (!adjoint) {
+        const Leaf &leaf = leaves.find(op)->second;
+        adjoint =
+            leaf.adjoint == leaf.matrix
+                ? elementaryOf(op)
+                : createElementary(leaf.adjoint, {leaf.adjoint.dimension});
+      }
+      return adjoint;
+    };
 
+    // 6. The qop products.
+    llvm::MapVector<Operation *, Product> products;
+    bool conversionFailed = false;
+    module.walk([&](qop::MakeProductOp op) {
+      Product product;
+      if (auto scalar =
+              op.getCoefficient().getDefiningOp<qop::ConstScalarOp>()) {
+        product.coefficient = Complex(scalar.getReal().convertToDouble(),
+                                      scalar.getImag().convertToDouble());
+      } else if (auto scalar = op.getCoefficient()
+                                   .getDefiningOp<qop::CallbackScalarOp>()) {
+        product.callback = scalar;
+      } else {
+        op.emitError("coefficient must be a qop constant or callback");
+        conversionFailed = true;
+        return;
+      }
+
+      for (Value factor : op.getFactors()) {
+        Operation *leaf = factor.getDefiningOp();
+        if (!isa_and_nonnull<qop::SpinOp, qop::MatrixLeafOp>(leaf)) {
+          op.emitError(
+              "only qop.spin and qop.matrix_leaf factors are supported");
+          conversionFailed = true;
+          return;
+        }
+        auto found = leaves.find(leaf);
+        if (found == leaves.end() || found->second.mode < 0 ||
+            found->second.mode >= quditCount) {
+          op.emitError("operator target must be a valid constant mode "
+                       "index");
+          conversionFailed = true;
+          return;
+        }
+        product.leaves.push_back(leaf);
+        product.modes.push_back(found->second.mode);
+      }
+      if (product.leaves.empty()) {
+        op.emitError("operator product must contain at least one factor");
+        conversionFailed = true;
+        return;
+      }
+      products[op.getOperation()] = std::move(product);
+    });
+    if (conversionFailed)
+      return signalPassFailure();
+
+    SmallVector<Value> allOperatorTerms;
     auto createTerm = [&](ArrayRef<Value> elementaryOps,
                           ArrayRef<int32_t> modes, ArrayRef<int32_t> dualities,
-                          double coefficientReal, double coefficientImag,
+                          Complex coefficient,
                           qop::CallbackScalarOp callback = {}) -> Value {
       auto term = cudm::CreateOpTermOp::create(b, loc, opTermTy, handle,
                                                modeExtentsAttr);
@@ -307,8 +547,9 @@ struct QOpToCuDensityMatPass
         callbackAttr = callback.getCallbackAttr();
       auto append = cudm::AppendElementaryProductOp::create(
           b, loc, handle, term, elementaryOps, b.getDenseI32ArrayAttr(modes),
-          b.getDenseI32ArrayAttr(dualities), b.getF64FloatAttr(coefficientReal),
-          b.getF64FloatAttr(coefficientImag), callbackAttr);
+          b.getDenseI32ArrayAttr(dualities),
+          b.getF64FloatAttr(coefficient.real()),
+          b.getF64FloatAttr(coefficient.imag()), callbackAttr);
       if (callback) {
         if (auto kind = callback->getAttr("cudm.callback_kind"))
           append->setAttr("cudm.callback_kind", kind);
@@ -318,97 +559,65 @@ struct QOpToCuDensityMatPass
       allOperatorTerms.push_back(term);
       return term;
     };
-
-    module.walk([&](qop::MakeProductOp product) {
-      b.setInsertionPoint(returnOp);
-      ProductData data;
-      qop::CallbackScalarOp callback;
-      if (auto scalar =
-              product.getCoefficient().getDefiningOp<qop::ConstScalarOp>()) {
-        data.coefficientReal = scalar.getReal().convertToDouble();
-        data.coefficientImag = scalar.getImag().convertToDouble();
-      } else if (auto scalar = product.getCoefficient()
-                                   .getDefiningOp<qop::CallbackScalarOp>()) {
-        callback = scalar;
-        data.hasCallback = true;
-      } else {
-        product.emitError("coefficient must be a qop constant or callback");
-        conversionFailed = true;
-        return;
+    auto appendTerm = [&](Value term, int32_t duality, Complex coefficient) {
+      cudm::OperatorAppendTermOp::create(
+          b, loc, handle, compositeOp, term, b.getI32IntegerAttr(duality),
+          b.getF64FloatAttr(coefficient.real()),
+          b.getF64FloatAttr(coefficient.imag()), FlatSymbolRefAttr());
+    };
+    // A product as a ket-side term of its leaves, made on first use.
+    DenseMap<Operation *, Value> productTerm;
+    auto termOf = [&](Operation *op) -> Value {
+      Value &term = productTerm[op];
+      if (!term) {
+        const Product &product = products.find(op)->second;
+        SmallVector<Value> elementaryOps;
+        for (Operation *leaf : product.leaves)
+          elementaryOps.push_back(elementaryOf(leaf));
+        SmallVector<int32_t> ketDualities(elementaryOps.size(), 0);
+        term = createTerm(elementaryOps, product.modes, ketDualities,
+                          product.coefficient, product.callback);
       }
-
-      for (Value factor : product.getFactors()) {
-        Operation *leaf = factor.getDefiningOp();
-        std::optional<int64_t> mode;
-        if (auto spin = dyn_cast_or_null<qop::SpinOp>(leaf)) {
-          auto target = spin.getTarget().getDefiningOp<arith::ConstantOp>();
-          if (auto attr = target ? dyn_cast<IntegerAttr>(target.getValue())
-                                 : IntegerAttr{})
-            mode = attr.getInt();
-        } else if (auto matrix = dyn_cast_or_null<qop::MatrixLeafOp>(leaf)) {
-          mode = matrix.getTargets()[0];
-        } else {
-          product.emitError(
-              "only qop.spin and qop.matrix_leaf factors are supported");
-          conversionFailed = true;
-          return;
-        }
-        auto elementary = spinToCudmElem.find(leaf);
-        if (elementary == spinToCudmElem.end() || !mode || *mode < 0 ||
-            *mode >= quditCount) {
-          product.emitError("operator target must be a valid constant mode "
-                            "index");
-          conversionFailed = true;
-          return;
-        }
-        data.factors.push_back(leaf);
-        data.elementaryOps.push_back(elementary->second);
-        data.modes.push_back(static_cast<int32_t>(*mode));
+      return term;
+    };
+    // The matrix of a product with distinct modes on `modes` (ascending),
+    // its factors applied in order.
+    auto matrixOf = [&](const Product &product, ArrayRef<int32_t> modes) {
+      Matrix result = Matrix::identity(dimensionOf(modes, modeExtents));
+      for (Operation *op : product.leaves) {
+        const Leaf &leaf = leaves.find(op)->second;
+        result = embed(leaf.matrix, {leaf.mode}, modes, modeExtents) * result;
       }
-      if (data.elementaryOps.empty()) {
-        product.emitError("operator product must contain at least one factor");
-        conversionFailed = true;
-        return;
+      return result * product.coefficient;
+    };
+
+    if (!fuse) {
+      // Every leaf and product in program order, as one term each.
+      for (auto &[op, leaf] : leaves) {
+        elementaryOf(op);
+        adjointElementaryOf(op);
       }
+      for (auto &entry : products)
+        termOf(entry.first);
+    }
 
-      SmallVector<int32_t> ketDualities(data.elementaryOps.size(), 0);
-      auto term =
-          createTerm(data.elementaryOps, data.modes, ketDualities,
-                     data.coefficientReal, data.coefficientImag, callback);
-      productData[product.getOperation()] = std::move(data);
-      productToCudmTerm[product.getOperation()] = term;
-    });
-    if (conversionFailed)
-      return signalPassFailure();
-
-    // 7. Build -i[H,rho]. A pure-state evolution only needs the ket action;
-    // a mixed-state evolution also needs the opposite-sign bra action.
     auto hamiltonian =
         lindblad.getHamiltonian().getDefiningOp<qop::MakeSumOp>();
     if (!hamiltonian) {
       lindblad.emitError("Hamiltonian must be represented by qop.make_sum");
       return signalPassFailure();
     }
+    SmallVector<Operation *> hamiltonianProducts;
     for (Value product : hamiltonian.getTerms()) {
-      auto term = productToCudmTerm.find(product.getDefiningOp());
-      if (term == productToCudmTerm.end()) {
+      if (!products.count(product.getDefiningOp())) {
         hamiltonian.emitError("contains an unsupported product term");
         return signalPassFailure();
       }
-      cudm::OperatorAppendTermOp::create(
-          b, loc, handle, compositeOp, term->second, b.getI32IntegerAttr(0),
-          b.getF64FloatAttr(0.0), b.getF64FloatAttr(-1.0), FlatSymbolRefAttr());
-      if (hasDissipation)
-        cudm::OperatorAppendTermOp::create(
-            b, loc, handle, compositeOp, term->second, b.getI32IntegerAttr(1),
-            b.getF64FloatAttr(0.0), b.getF64FloatAttr(1.0),
-            FlatSymbolRefAttr());
+      hamiltonianProducts.push_back(product.getDefiningOp());
     }
-
-    // 8. Build D[C](rho) = C rho C^dagger
-    //                         - 1/2 {C^dagger C, rho}.
     // Pulse-generated collapse operators contain one product each. Reject a
     // sum here rather than silently dropping the required cross terms.
+    SmallVector<Operation *> collapseProducts;
     for (Value collapse : lindblad.getCollapseOps()) {
       auto sum = collapse.getDefiningOp<qop::MakeSumOp>();
       if (!sum || sum.getTerms().size() != 1) {
@@ -416,52 +625,267 @@ struct QOpToCuDensityMatPass
             "each collapse operator must contain exactly one product");
         return signalPassFailure();
       }
-      auto product = sum.getTerms().front().getDefiningOp();
-      auto found = productData.find(product);
-      if (found == productData.end() || found->second.hasCallback) {
+      auto found = products.find(sum.getTerms().front().getDefiningOp());
+      if (found == products.end() || found->second.callback) {
         lindblad.emitError("collapse products must have constant coefficients");
         return signalPassFailure();
       }
-      const ProductData &data = found->second;
-      const double coefficientNorm =
-          data.coefficientReal * data.coefficientReal +
-          data.coefficientImag * data.coefficientImag;
+      collapseProducts.push_back(found->first);
+    }
 
-      SmallVector<Value> jumpOps(data.elementaryOps.begin(),
-                                 data.elementaryOps.end());
-      SmallVector<int32_t> jumpModes(data.modes.begin(), data.modes.end());
+    // D[C](rho) = C rho C^dagger - 1/2 {C^dagger C, rho}, as the two-sided
+    // C rho C^dagger term and, unless `withNorm` is false, the
+    // anticommutator.
+    auto appendDissipator = [&](Operation *op, bool withNorm) {
+      const Product &product = products.find(op)->second;
+      const double coefficientNorm = std::norm(product.coefficient);
+      SmallVector<Value> jumpOps;
+      for (Operation *leaf : product.leaves)
+        jumpOps.push_back(elementaryOf(leaf));
+      SmallVector<int32_t> jumpModes(product.modes.begin(),
+                                     product.modes.end());
       // C rho C^dagger: the bra-side product is the reversed sequence of
-      // adjoint factors, not a second copy of C. This distinction is essential
-      // for non-Hermitian collapse operators such as sigma-minus.
-      for (auto [factor, mode] :
-           llvm::reverse(llvm::zip(data.factors, data.modes))) {
-        auto dagger = spinToDaggerCudmElem.find(factor);
-        if (dagger == spinToDaggerCudmElem.end()) {
-          lindblad.emitError("could not form the adjoint of a collapse factor");
-          return signalPassFailure();
-        }
-        jumpOps.push_back(dagger->second);
+      // adjoint factors, not a second copy of C. This distinction is
+      // essential for non-Hermitian collapse operators such as sigma-minus.
+      for (auto [leaf, mode] :
+           llvm::reverse(llvm::zip(product.leaves, product.modes))) {
+        jumpOps.push_back(adjointElementaryOf(leaf));
         jumpModes.push_back(mode);
       }
-      SmallVector<int32_t> jumpDualities(data.elementaryOps.size(), 0);
-      jumpDualities.append(data.elementaryOps.size(), 1);
-      auto jumpTerm = createTerm(jumpOps, jumpModes, jumpDualities, 1.0, 0.0);
-      cudm::OperatorAppendTermOp::create(
-          b, loc, handle, compositeOp, jumpTerm, b.getI32IntegerAttr(0),
-          b.getF64FloatAttr(coefficientNorm), b.getF64FloatAttr(0.0),
-          FlatSymbolRefAttr());
-
-      // cuDensityMat composes an elementary product in application order. Its
-      // documented C * C.dag() construction is therefore represented by the
-      // same factor sequence as the two-sided term, with every factor acting
-      // on the ket side.
+      SmallVector<int32_t> jumpDualities(product.leaves.size(), 0);
+      jumpDualities.append(product.leaves.size(), 1);
+      appendTerm(createTerm(jumpOps, jumpModes, jumpDualities, 1.0), 0,
+                 coefficientNorm);
+      if (!withNorm)
+        return;
+      // cuDensityMat composes an elementary product in application order.
+      // Its documented C * C.dag() construction is therefore represented by
+      // the same factor sequence as the two-sided term, with every factor
+      // acting on the ket side.
       SmallVector<int32_t> normDualities(jumpOps.size(), 0);
-      auto normTerm = createTerm(jumpOps, jumpModes, normDualities, 1.0, 0.0);
+      auto normTerm = createTerm(jumpOps, jumpModes, normDualities, 1.0);
       for (int32_t duality : {0, 1})
-        cudm::OperatorAppendTermOp::create(
-            b, loc, handle, compositeOp, normTerm, b.getI32IntegerAttr(duality),
-            b.getF64FloatAttr(-0.5 * coefficientNorm), b.getF64FloatAttr(0.0),
-            FlatSymbolRefAttr());
+        appendTerm(normTerm, duality, -0.5 * coefficientNorm);
+    };
+
+    if (!fuse) {
+      // 7. -i[H,rho]. A pure-state evolution only needs the ket action; a
+      // mixed-state evolution also needs the opposite-sign bra action.
+      for (Operation *op : hamiltonianProducts) {
+        appendTerm(termOf(op), 0, Complex(0.0, -1.0));
+        if (hasDissipation)
+          appendTerm(termOf(op), 1, Complex(0.0, 1.0));
+      }
+      // 8. The dissipators.
+      for (Operation *op : collapseProducts)
+        appendDissipator(op, true);
+    } else {
+      // 7. The constant Hamiltonian terms and the dissipators that act on
+      // few enough levels become a few dense blocks: on both sides of the
+      // density matrix (superoperators) where their dimension squared fits
+      // maxFusedDimension, otherwise one-sided sums per group of modes.
+      // Time-dependent terms stay one term each.
+      const int64_t cap = maxFusedDimension;
+      auto fits = [&](ArrayRef<int32_t> modes, bool bothSides) {
+        const int64_t d = dimensionOf(modes, modeExtents);
+        return !modes.empty() && d <= cap && (!bothSides || d * d <= cap);
+      };
+      struct Group {
+        Modes modes;
+        SmallVector<size_t> members;
+      };
+      // The groups of `pieces` (each with its modes) by modes, a group
+      // whose modes are a strict subset of another's folded into it.
+      auto groupByModes = [](ArrayRef<Modes> pieces) {
+        SmallVector<Group> groups;
+        for (auto [i, modes] : llvm::enumerate(pieces)) {
+          auto group = llvm::find_if(
+              groups, [&](const Group &g) { return g.modes == modes; });
+          if (group != groups.end()) {
+            group->members.push_back(i);
+            continue;
+          }
+          groups.push_back({modes, {i}});
+        }
+        auto strictSubset = [](const Modes &sub, const Modes &super) {
+          return sub.size() < super.size() &&
+                 std::includes(super.begin(), super.end(), sub.begin(),
+                               sub.end());
+        };
+        SmallVector<size_t> targets;
+        for (auto [i, group] : llvm::enumerate(groups))
+          if (llvm::none_of(groups, [&](const Group &other) {
+                return strictSubset(group.modes, other.modes);
+              }))
+            targets.push_back(i);
+        for (Group &group : groups)
+          for (size_t target : targets)
+            if (strictSubset(group.modes, groups[target].modes)) {
+              groups[target].members.append(group.members);
+              group.members.clear();
+              break;
+            }
+        SmallVector<Group> result;
+        for (size_t target : targets)
+          result.push_back(std::move(groups[target]));
+        return result;
+      };
+
+      // Two-sided pieces: rho -> ket rho, rho bra, or ket rho bra.
+      struct SidedPiece {
+        Modes modes;
+        std::optional<Matrix> ket, bra;
+      };
+      SmallVector<SidedPiece> sided;
+      SmallVector<Operation *> remainingHamiltonian, remainingCollapse;
+      for (Operation *op : hamiltonianProducts) {
+        const Product &product = products.find(op)->second;
+        auto modes = product.distinctModes();
+        if (product.callback || !modes || !hasDissipation ||
+            !fits(*modes, true)) {
+          remainingHamiltonian.push_back(op);
+          continue;
+        }
+        Matrix matrix = matrixOf(product, *modes);
+        sided.push_back({*modes, matrix * Complex(0.0, -1.0), std::nullopt});
+        sided.push_back({*modes, std::nullopt, matrix * Complex(0.0, 1.0)});
+      }
+      for (Operation *op : collapseProducts) {
+        const Product &product = products.find(op)->second;
+        auto modes = product.distinctModes();
+        if (!modes || !fits(*modes, true)) {
+          remainingCollapse.push_back(op);
+          continue;
+        }
+        Matrix jump = matrixOf(product, *modes);
+        Matrix adjoint = jump.adjoint();
+        Matrix norm = adjoint * jump * Complex(-0.5);
+        sided.push_back({*modes, jump, adjoint});
+        sided.push_back({*modes, norm, std::nullopt});
+        sided.push_back({*modes, std::nullopt, norm});
+      }
+      if (!sided.empty()) {
+        SmallVector<Modes> pieceModes;
+        for (const SidedPiece &piece : sided)
+          pieceModes.push_back(piece.modes);
+        SmallVector<Group> groups = groupByModes(pieceModes);
+        llvm::sort(groups, [](const Group &left, const Group &right) {
+          return left.modes < right.modes;
+        });
+        // Windows: groups in mode order, each merged into the one before it
+        // when the two share a mode and the union still fits.
+        SmallVector<Group> windows;
+        for (Group &group : groups) {
+          if (!windows.empty()) {
+            Group &last = windows.back();
+            Modes merged(last.modes);
+            merged.append(group.modes);
+            llvm::sort(merged);
+            merged.erase(std::unique(merged.begin(), merged.end()),
+                         merged.end());
+            if (merged.size() < last.modes.size() + group.modes.size() &&
+                fits(merged, true)) {
+              last.modes = std::move(merged);
+              last.members.append(group.members);
+              continue;
+            }
+          }
+          windows.push_back(std::move(group));
+        }
+        // S = I (x) K + B (x) I + sum B_k (x) K_k for
+        // rho -> K rho + rho B + sum K_k rho B_k, the ket index fastest.
+        for (const Group &window : windows) {
+          const int64_t d = dimensionOf(window.modes, modeExtents);
+          Matrix ket = Matrix::zero(d), bra = Matrix::zero(d);
+          Matrix superoperator = Matrix::zero(d * d);
+          for (size_t member : window.members) {
+            const SidedPiece &piece = sided[member];
+            auto widen = [&](const Matrix &matrix) {
+              return embed(matrix, piece.modes, window.modes, modeExtents);
+            };
+            if (piece.ket && piece.bra)
+              superoperator += kron(widen(*piece.bra), widen(*piece.ket));
+            else if (piece.ket)
+              ket += widen(*piece.ket);
+            else
+              bra += widen(*piece.bra);
+          }
+          superoperator += kron(Matrix::identity(d), ket);
+          superoperator += kron(bra, Matrix::identity(d));
+          SmallVector<int64_t> extents;
+          Modes modes;
+          SmallVector<int32_t> dualities;
+          for (int32_t duality : {0, 1})
+            for (int32_t mode : window.modes) {
+              extents.push_back(modeExtents[mode]);
+              modes.push_back(mode);
+              dualities.push_back(duality);
+            }
+          Value elementary = createElementary(superoperator, extents);
+          appendTerm(createTerm({elementary}, modes, dualities, 1.0), 0, 1.0);
+        }
+      }
+
+      // One-sided pieces: the remaining constant terms on few enough levels,
+      // and the anticommutators of the remaining dissipators, summed per
+      // group of modes on each side.
+      struct OneSidedPiece {
+        Modes modes;
+        Matrix matrix;
+        Operation *product = nullptr; // a lone single-factor term
+      };
+      SmallVector<OneSidedPiece> norms;
+      DenseSet<Operation *> foldedNorms;
+      for (Operation *op : remainingCollapse) {
+        const Product &product = products.find(op)->second;
+        auto modes = product.distinctModes();
+        if (!modes || !fits(*modes, false))
+          continue;
+        Matrix jump = matrixOf(product, *modes);
+        norms.push_back({*modes, jump.adjoint() * jump * Complex(-0.5)});
+        foldedNorms.insert(op);
+      }
+      for (int32_t side : {0, 1}) {
+        if (side == 1 && !hasDissipation)
+          break;
+        const Complex sign(0.0, side == 0 ? -1.0 : 1.0);
+        SmallVector<OneSidedPiece> pieces(norms);
+        SmallVector<Operation *> separate;
+        for (Operation *op : remainingHamiltonian) {
+          const Product &product = products.find(op)->second;
+          auto modes = product.distinctModes();
+          if (product.callback || !modes || !fits(*modes, false)) {
+            separate.push_back(op);
+            continue;
+          }
+          pieces.push_back({*modes, matrixOf(product, *modes) * sign,
+                            product.leaves.size() == 1 ? op : nullptr});
+        }
+        SmallVector<Modes> pieceModes;
+        for (const OneSidedPiece &piece : pieces)
+          pieceModes.push_back(piece.modes);
+        for (const Group &group : groupByModes(pieceModes)) {
+          if (group.members.size() == 1 && pieces[group.members[0]].product) {
+            separate.push_back(pieces[group.members[0]].product);
+            continue;
+          }
+          Matrix sum = Matrix::zero(dimensionOf(group.modes, modeExtents));
+          for (size_t member : group.members)
+            sum += embed(pieces[member].matrix, pieces[member].modes,
+                         group.modes, modeExtents);
+          SmallVector<int64_t> extents;
+          for (int32_t mode : group.modes)
+            extents.push_back(modeExtents[mode]);
+          Value elementary = createElementary(sum, extents);
+          SmallVector<int32_t> ketDualities(group.modes.size(), 0);
+          appendTerm(createTerm({elementary}, group.modes, ketDualities, 1.0),
+                     side, 1.0);
+        }
+        for (Operation *op : separate)
+          appendTerm(termOf(op), side, sign);
+      }
+      for (Operation *op : remainingCollapse)
+        appendDissipator(op, !foldedNorms.contains(op));
     }
 
     // 9. cudm.evolve

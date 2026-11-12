@@ -114,6 +114,14 @@ runs pytest have it on through `tests/conftest.py`; run a subset with
 measures with it off. It is a development aid, not part of the stable
 interface.
 
+`CUDAQ_PULSE_GPU_OPERATORS` chooses how `qop-to-cudm` builds the GPU
+backend's operator, as its `operators` option: `fused`, the default, sums
+the static terms and dissipators into a few dense operators; `dense` lowers
+every product to its own term, as before fusion. Use it to tell whether a
+difference in a GPU simulation comes from the lowering; any other value fails
+the lowering. Like `CUDAQ_PULSE_VERIFY` it is a development aid, not part of
+the stable interface.
+
 The property tests use hypothesis profiles (`tests/property_settings.py`),
 chosen with `HYPOTHESIS_PROFILE`: `ci`, the default, is derandomized so every
 run checks the same examples; `dev` draws new examples; `nightly` draws ten

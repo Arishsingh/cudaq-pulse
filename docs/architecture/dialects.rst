@@ -178,7 +178,14 @@ CuDensityMat
 
 The cuDensityMat API as IR. ``qop-to-cudm`` turns the Lindbladian into a
 handle, states, elementary operators, operator terms and a composite operator,
-then a ``cudm.evolve`` with the chosen integrator. ``cudm-to-llvm`` lowers each
+then a ``cudm.evolve`` with the chosen integrator. The constant Hamiltonian
+terms and the dissipators that act on few levels become a few dense operators,
+as CUDA-Q builds them: where a group of modes is small enough, one
+superoperator on its ket and bra sides; otherwise one operator per group of
+modes on each side, which also takes the dissipators' anticommutators. Each
+time-dependent term stays a term of its own. The pass option
+``max-fused-dimension`` (16) bounds the size of a group, and
+``operators=dense`` makes every product its own term instead. ``cudm-to-llvm`` lowers each
 op to a call into the CUDA-Q Pulse cuDensityMat runtime (``cudm_init``,
 ``cudm_evolve`` and so on), which the JIT links when a program is simulated
 on the GPU.

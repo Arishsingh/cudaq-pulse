@@ -205,10 +205,12 @@ def test_systems_without_a_simulation_model_are_refused(backend):
 
 
 # The GPU path lowers the same pulse-to-qop operator to cuDensityMat terms:
-# rebuild H(t) from those terms and compare it with the CPU reference's.
+# rebuild H(t) = i K(t) from K, the sum of the terms on the ket side, and
+# compare it with the CPU reference's. The lowering may sum static terms into
+# one operator on several modes, with their -i.
 
 _CONSTANT = re.compile(r"(%\S+) = arith\.constant dense<(.*)> : tensor<(\d+)x\d+x2xf64>")
-_ELEMENTARY = re.compile(r"(%\S+) = cudm\.create_elementary_op %\S+, (%\S+) ")
+_ELEMENTARY = re.compile(r"(%\S+) = cudm\.create_elementary_op %\S+, (%\S+) \{(.*)\} :")
 _PRODUCT = re.compile(r"cudm\.append_elementary_product %\S+, (%\S+), ([^{]+)\{(.*)\} :")
 _APPEND = re.compile(r"cudm\.operator_append_term %\S+, %\S+, (%\S+) \{(.*)\} :")
 
@@ -218,43 +220,71 @@ def _attribute(attributes, name):
     return found.group(1) if found else None
 
 
+def _integers(attributes, name):
+    values = re.search(rf"{name} = array<i\d+: ([^>]*)>", attributes).group(1)
+    return [int(v) for v in values.split(",")]
+
+
 def _cudm_hamiltonian(text, dims):
-    """The Hamiltonian terms of the cuDensityMat operator: those appended
-    to the ket side with coefficient -i."""
+    """The terms of H = i K, K the cuDensityMat operator of a state-vector
+    evolution (every term on the ket side)."""
     matrices, elementary, products = {}, {}, {}
     for line in text.splitlines():
         if found := _CONSTANT.search(line):
-            d = int(found.group(3))
-            values = np.array(
-                [float(v) for v in re.findall(r"-?[\d.]+(?:[eE][-+]?\d+)?", found.group(2))]
-            )
+            d, data = int(found.group(3)), found.group(2)
+            if data.startswith('"0x'):
+                # A large constant prints as the hex of its little-endian doubles.
+                values = np.frombuffer(bytes.fromhex(data[3:-1]), dtype="<f8")
+            else:
+                values = np.array(
+                    [float(v) for v in re.findall(r"-?[\d.]+(?:[eE][-+]?\d+)?", data)]
+                )
             # Column-major: element [column][row].
             matrices[found.group(1)] = (values[0::2] + 1j * values[1::2]).reshape((d, d)).T
         elif found := _ELEMENTARY.search(line):
-            elementary[found.group(1)] = matrices[found.group(2)]
+            extents = _integers(found.group(3), "mode_extents")
+            elementary[found.group(1)] = (matrices[found.group(2)], len(extents))
         elif found := _PRODUCT.search(line):
             attributes = found.group(3)
-            modes = re.search(r"modes_acted_on = array<i32: ([^>]*)>", attributes).group(1)
+            modes = _integers(attributes, "modes_acted_on")
+            assert set(_integers(attributes, "duality")) == {0}
             names = [name.strip() for name in found.group(2).split(",") if name.strip()]
-            factors = [elementary[name] for name in names]
+            factors = []
+            for name in names:
+                matrix, count = elementary[name]
+                factors.append((matrix, modes[:count]))
+                modes = modes[count:]
             coefficient = float(_attribute(attributes, "coeff_real")) + 1j * float(
                 _attribute(attributes, "coeff_imag")
             )
             params = re.search(r"cudm\.callback_params = array<f64: ([^>]*)>", attributes)
             kind = _attribute(attributes, "cudm.callback_kind")
             callback = (int(kind), [float(p) for p in params.group(1).split(",")]) if kind else None
-            products.setdefault(found.group(1), []).append(
-                (coefficient, callback, [int(m) for m in modes.split(",")], factors)
-            )
+            products.setdefault(found.group(1), []).append((coefficient, callback, factors))
         elif found := _APPEND.search(line):
             attributes = found.group(2)
-            if (
-                int(_attribute(attributes, "duality")) != 0
-                or float(_attribute(attributes, "coeff_imag")) != -1.0
-            ):
-                continue
-            for coefficient, callback, modes, factors in products[found.group(1)]:
-                yield _full(dims, dict(zip(modes, factors, strict=True))), coefficient, callback
+            assert int(_attribute(attributes, "duality")) == 0
+            term = float(_attribute(attributes, "coeff_real")) + 1j * float(
+                _attribute(attributes, "coeff_imag")
+            )
+            for coefficient, callback, factors in products[found.group(1)]:
+                operator = np.eye(int(np.prod(dims)), dtype=complex)
+                for matrix, modes in factors:
+                    operator = _embedded(dims, matrix, modes) @ operator
+                yield operator, 1j * term * coefficient, callback
+
+
+def _embedded(dims, matrix, modes):
+    """*matrix*, on *modes* (the first one's index fastest), on every mode."""
+    n = len(dims)
+    tensor = matrix.reshape(tuple(dims[m] for m in modes) * 2, order="F")
+    rows, columns = list(range(n)), list(range(n, 2 * n))
+    operands = [tensor, [rows[m] for m in modes] + [columns[m] for m in modes]]
+    for mode in range(n):
+        if mode not in modes:
+            operands += [np.eye(dims[mode]), [rows[mode], columns[mode]]]
+    full = np.einsum(*operands, rows + columns)
+    return full.reshape((int(np.prod(dims)),) * 2, order="F")
 
 
 def _full(dims, on_mode):
@@ -286,8 +316,10 @@ def _at(terms, times):
     return total
 
 
+@pytest.mark.parametrize("operators", ["fused", "dense"])
 @pytest.mark.parametrize("levels", [2, 3])
-def test_gpu_lowering_builds_the_cpu_operator(levels):
+def test_gpu_lowering_builds_the_cpu_operator(levels, operators, monkeypatch):
+    monkeypatch.setenv("CUDAQ_PULSE_GPU_OPERATORS", operators)
     target = _pair(3.9e9, 5.9e9, g_hz=7.0e6, zz_hz=2.0e4)
 
     @pulse.kernel
@@ -307,7 +339,9 @@ def test_gpu_lowering_builds_the_cpu_operator(levels):
     pipeline = MLIRPipeline()
     text = pipeline.run_qop_to_cudm(pipeline.run_pulse_to_qop(module.print()))
     gpu_terms = list(_cudm_hamiltonian(text, dims))
-    assert len(gpu_terms) == len(cpu_terms)
+    # Fused, the static terms of both qudits are one operator on both modes.
+    on_both = re.search(r"create_elementary_op .*mode_extents = array<i64: \d+, \d+>", text)
+    assert bool(on_both) == (operators == "fused")
     cpu = _at(cpu_terms, times)
     assert np.abs(cpu).max() > 0.04
     np.testing.assert_allclose(_at(gpu_terms, times), cpu, atol=1e-12)
