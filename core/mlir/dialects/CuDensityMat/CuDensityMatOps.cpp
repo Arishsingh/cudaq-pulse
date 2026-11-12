@@ -53,14 +53,26 @@ LogicalResult AppendElementaryProductOp::verify() {
     return emitOpError("at least one elementary operator must be provided");
   auto modes = getModesActedOn();
   auto duality = getDuality();
-  if (modes.size() != getElemOps().size())
+  // An elementary operator acts on as many modes as it has extents; one made
+  // elsewhere acts on at least one.
+  size_t operatorModes = 0;
+  bool allKnown = true;
+  for (Value elementary : getElemOps()) {
+    if (auto create = elementary.getDefiningOp<CreateElementaryOpOp>())
+      operatorModes += create.getModeExtents().size();
+    else {
+      operatorModes += 1;
+      allKnown = false;
+    }
+  }
+  if (allKnown ? modes.size() != operatorModes : modes.size() < operatorModes)
     return emitOpError("modes_acted_on size (")
-           << modes.size() << ") must match number of elementary operators ("
-           << getElemOps().size() << ")";
-  if (duality.size() != getElemOps().size())
+           << modes.size() << ") must match the modes of its elementary "
+           << "operators (" << operatorModes << ")";
+  if (duality.size() != modes.size())
     return emitOpError("duality size (")
-           << duality.size() << ") must match number of elementary operators ("
-           << getElemOps().size() << ")";
+           << duality.size() << ") must match modes_acted_on size ("
+           << modes.size() << ")";
   return success();
 }
 

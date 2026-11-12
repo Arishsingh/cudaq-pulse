@@ -71,3 +71,32 @@ func.func @main_crank_nicolson() {
   cudm.destroy_handle %h : !cudm.handle
   return
 }
+
+// A superoperator on one qubit: one elementary operator on its ket and bra
+// sides takes an entry per mode in the mode and duality arrays.
+// CHECK-LABEL: func @superoperator_product
+func.func @superoperator_product() {
+  %h = cudm.init_handle : !cudm.handle
+  %data = arith.constant dense<0.0> : tensor<4x4x2xf64>
+  // CHECK: llvm.call @cudm_elementary_op_create
+  %e = cudm.create_elementary_op %h, %data {sparsity = #cudm<sparsity none>, data_type = #cudm<compute_type f64>, mode_extents = array<i64: 2, 2>} : !cudm.handle, tensor<4x4x2xf64> -> !cudm.elementary_op
+  %term = cudm.create_op_term %h {mode_extents = array<i64: 2>} : (!cudm.handle) -> !cudm.op_term
+  // CHECK: llvm.call @cudm_op_term_create
+  // CHECK: llvm.alloca %{{.*}} x f64
+  // CHECK: %[[OPS:.*]] = llvm.alloca %{{.*}} x !llvm.ptr
+  // CHECK-NEXT: %[[COUNT:.*]] = llvm.mlir.constant(2 : i64) : i64
+  // CHECK-NEXT: %[[MODES:.*]] = llvm.alloca %[[COUNT]] x i32
+  // CHECK-NEXT: %[[DUALITY:.*]] = llvm.alloca %[[COUNT]] x i32
+  // CHECK: %[[SECOND:.*]] = llvm.mlir.constant(1 : i64) : i64
+  // CHECK-NEXT: llvm.getelementptr %[[MODES]][%[[SECOND]]]
+  // CHECK-NOT: llvm.getelementptr %[[OPS]][%[[SECOND]]]
+  // CHECK: %[[BRA:.*]] = llvm.getelementptr %[[DUALITY]][%[[SECOND]]]
+  // CHECK-NEXT: %[[ONE_I32:.*]] = llvm.mlir.constant(1 : i32) : i32
+  // CHECK-NEXT: llvm.store %[[ONE_I32]], %[[BRA]]
+  // CHECK-NEXT: llvm.call @cudm_op_term_append(%{{.*}}, %{{.*}}, %[[OPS]], %[[MODES]], %[[DUALITY]],
+  cudm.append_elementary_product %h, %term, %e {modes_acted_on = array<i32: 0, 0>, duality = array<i32: 0, 1>, coeff_real = 1.0 : f64, coeff_imag = 0.0 : f64} : !cudm.handle, !cudm.op_term, !cudm.elementary_op
+  cudm.destroy_op_term %term : !cudm.op_term
+  cudm.destroy_elementary_op %e : !cudm.elementary_op
+  cudm.destroy_handle %h : !cudm.handle
+  return
+}

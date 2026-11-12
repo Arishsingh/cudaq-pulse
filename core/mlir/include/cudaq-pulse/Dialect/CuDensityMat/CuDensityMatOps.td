@@ -143,9 +143,11 @@ def CUDM_AppendElementaryProductOp
   let summary = "Append a product of elementary operators to a term";
   let description = [{
     Appends to a term the product of `elem_ops` on the modes
-    `modes_acted_on`, weighted by `coeff_real + i coeff_imag`. Each
-    `duality` entry says whether its operator acts on the ket (0) or the
-    bra (1) side of its mode. With `callback`,
+    `modes_acted_on`, weighted by `coeff_real + i coeff_imag`. An operator
+    on several modes takes that many consecutive entries of
+    `modes_acted_on`; a mode may appear twice in one operator, once on each
+    side. Each `duality` entry says whether its operator acts on the ket (0)
+    or the bra (1) side of that mode. With `callback`,
     the weight is also multiplied by that drive envelope at each time;
     the lowering carries the envelope's kind and parameters as
     attributes.

@@ -45,16 +45,26 @@ func.func @product_of_no_operators(%h: !cudm.handle, %term: !cudm.op_term) {
 
 // -----
 
-func.func @product_with_too_many_modes(%h: !cudm.handle, %term: !cudm.op_term, %e: !cudm.elementary_op) {
-  // expected-error @+1 {{'cudm.append_elementary_product' op modes_acted_on size (2) must match number of elementary operators (1)}}
-  cudm.append_elementary_product %h, %term, %e {modes_acted_on = array<i32: 0, 1>, duality = array<i32: 0>, coeff_real = 1.0 : f64, coeff_imag = 0.0 : f64} : !cudm.handle, !cudm.op_term, !cudm.elementary_op
+func.func @product_with_too_many_modes(%h: !cudm.handle, %term: !cudm.op_term, %t: tensor<2x2x2xf64>) {
+  %e = cudm.create_elementary_op %h, %t {sparsity = #cudm<sparsity none>, data_type = #cudm<compute_type f64>, mode_extents = array<i64: 2>} : !cudm.handle, tensor<2x2x2xf64> -> !cudm.elementary_op
+  // expected-error @+1 {{'cudm.append_elementary_product' op modes_acted_on size (2) must match the modes of its elementary operators (1)}}
+  cudm.append_elementary_product %h, %term, %e {modes_acted_on = array<i32: 0, 1>, duality = array<i32: 0, 0>, coeff_real = 1.0 : f64, coeff_imag = 0.0 : f64} : !cudm.handle, !cudm.op_term, !cudm.elementary_op
+  return
+}
+
+// -----
+
+func.func @product_missing_a_mode_of_its_operator(%h: !cudm.handle, %term: !cudm.op_term, %t: tensor<16x16x2xf64>) {
+  %e = cudm.create_elementary_op %h, %t {sparsity = #cudm<sparsity none>, data_type = #cudm<compute_type f64>, mode_extents = array<i64: 2, 2>} : !cudm.handle, tensor<16x16x2xf64> -> !cudm.elementary_op
+  // expected-error @+1 {{'cudm.append_elementary_product' op modes_acted_on size (1) must match the modes of its elementary operators (2)}}
+  cudm.append_elementary_product %h, %term, %e {modes_acted_on = array<i32: 0>, duality = array<i32: 0>, coeff_real = 1.0 : f64, coeff_imag = 0.0 : f64} : !cudm.handle, !cudm.op_term, !cudm.elementary_op
   return
 }
 
 // -----
 
 func.func @product_with_too_few_dualities(%h: !cudm.handle, %term: !cudm.op_term, %e: !cudm.elementary_op) {
-  // expected-error @+1 {{'cudm.append_elementary_product' op duality size (0) must match number of elementary operators (1)}}
+  // expected-error @+1 {{'cudm.append_elementary_product' op duality size (0) must match modes_acted_on size (1)}}
   cudm.append_elementary_product %h, %term, %e {modes_acted_on = array<i32: 0>, duality = array<i32>, coeff_real = 1.0 : f64, coeff_imag = 0.0 : f64} : !cudm.handle, !cudm.op_term, !cudm.elementary_op
   return
 }
