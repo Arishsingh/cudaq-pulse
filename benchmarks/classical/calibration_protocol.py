@@ -31,17 +31,17 @@ Every number here comes from pulse.simulate running the example's kernels,
 with the estimators as classical functions on the controller link, one
 sampled path per shot of the protocol:
 
-- adaptive T1 on a device like that of Berritta et al. (2025):
+- adaptive T1 on a quantum system like that of Berritta et al. (2025):
   fixed-frequency, T1 160 us, assignment errors 0.11 and 0.14, prior
   (3, 450 us), 50 shots; the paper reports 159 us, 68% interval
   [131, 202] us;
 - the frequency binary search, 15 shots without reset,
   from a 1 MHz prior over detunings drawn from it;
 - the calibration chain of Marciniak et al. (2026) on the
-  17-qubit transmon twin's qubit 0 at T1 = 18.3 us; the paper reports T1 =
+  transmon_surface17 quantum system's qubit 0 at T1 = 18.3 us; the paper reports T1 =
   18.3 +- 4.7 us from the decay estimator;
 - for each step on its own: compile time, simulation time per protocol
-  shot and per step, the step's time to decision on the device's timeline,
+  shot and per step, the step's time to decision on the quantum system's timeline,
   and the peak memory of simulating it.
 
     python benchmarks/classical/calibration_protocol.py [--att 400]
@@ -51,7 +51,6 @@ sampled path per shot of the protocol:
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import math
 import runpy
@@ -61,8 +60,8 @@ from pathlib import Path
 
 import cudaq_pulse as pulse
 import numpy as np
+from cudaq_pulse.quantum_systems import transmon_surface17
 from cudaq_pulse.runtime import _propagate
-from cudaq_pulse.targets import transmon_17q
 
 _EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "21_calibration_protocol.py"
 P = runpy.run_path(str(_EXAMPLE), run_name="calibration_protocol")
@@ -77,17 +76,17 @@ def _bootstrap(values, stat, rng, n=2000):
 
 
 def _att_target():
-    base = transmon_17q()
-    qubit = base.qubits[0]
-    att = qubit.replace(
+    base = transmon_surface17()
+    qudit = base.physical_qudits[0]
+    att = qudit.replace(
         frequency_hz=4.13e9,
         anharmonicity_hz=-210e6,
         t1_us=160.0,
         t2_star_us=100.0,
         thermal_population=0.0,
-        readout=qubit.readout.replace(error_1to0=0.11, error_0to1=0.14),
+        readout=qudit.readout.replace(error_1to0=0.11, error_0to1=0.14),
     )
-    return dataclasses.replace(base, qubits={**base.qubits, 0: att})
+    return base.replace(qudits={**base.physical_qudits, 0: att})
 
 
 tracked_t1 = P["tracked_t1"]
@@ -134,21 +133,20 @@ def step_tracked(q):
     tracked_t1(q, PI_AMP, 3.0, 3.0 * 20_000.0 * CLOCK, 0.03, 0.02, P["settle_time"])
 
 
-def _shares(result, shots):
+def _shares(result, shots_count):
     """Each path's last calls and its number of shots."""
     for branch in result.branches:
-        yield branch.calls, round(branch.probability * shots)
+        yield branch.calls, round(branch.probability * shots_count)
 
 
 def adaptive_t1(n, seed):
-    target = _att_target()
-    dev = pulse.device(target)
-    lowered = pulse.compile(att_paper, device=dev, control_system=P["control_system"]).lower(
-        dev.qudit_handles[0]
-    )
+    dev = _att_target()
+    lowered = pulse.compile(
+        att_paper, quantum_system=dev, control_system=P["control_system"]
+    ).lower(dev.qudits[0])
     start = time.perf_counter()
     result = pulse.simulate(
-        lowered, shots=n, seed=seed, branches="sampled", readout="model", levels=2
+        lowered, shots_count=n, seed=seed, branches="sampled", readout="model", levels=2
     )
     seconds = time.perf_counter() - start
     estimates, posteriors = [], []
@@ -174,11 +172,10 @@ def adaptive_t1(n, seed):
 
 
 def binary_search(n, seed):
-    target = transmon_17q()
-    dev = pulse.device(target)
+    dev = transmon_surface17()
     lowered = pulse.compile(
-        P["binary_search"], device=dev, control_system=P["control_system"]
-    ).lower(dev.qudit_handles[0], 15)
+        P["binary_search"], quantum_system=dev, control_system=P["control_system"]
+    ).lower(dev.qudits[0], 15)
     rng = np.random.default_rng(seed)
     errors, sigmas = [], []
     start = time.perf_counter()
@@ -186,8 +183,8 @@ def binary_search(n, seed):
         offset = float(rng.normal(0.0, 1e6))
         result = pulse.simulate(
             lowered,
-            plant=P["search_plant"](target, offset),
-            shots=1,
+            quantum_system=P["search_system"](dev, offset),
+            shots_count=1,
             seed=seed * 100_003 + k,
             branches="sampled",
             readout="model",
@@ -209,19 +206,18 @@ def binary_search(n, seed):
 
 
 def chain(n, seed):
-    target = transmon_17q()
-    dev = pulse.device(target)
+    dev = transmon_surface17()
     lowered = pulse.compile(
-        P["calibration_chain"], device=dev, control_system=P["control_system"]
-    ).lower(dev.qudit_handles[0], 20_000.0 * CLOCK)
-    plant = P["chain_plant"](target)
+        P["calibration_chain"], quantum_system=dev, control_system=P["control_system"]
+    ).lower(dev.qudits[0], 20_000.0 * CLOCK)
+    true_system = P["chain_system"](dev)
     rows = []
     start = time.perf_counter()
     for k in range(n):
         result = pulse.simulate(
             lowered,
-            plant=plant,
-            shots=1,
+            quantum_system=true_system,
+            shots_count=1,
             seed=seed * 7919 + k,
             branches="sampled",
             readout="model",
@@ -248,7 +244,7 @@ def chain(n, seed):
         }
     errors = np.array([row["readout errors"] for row in rows])
     out["readout errors"] = {
-        "plant": [0.03, 0.02],
+        "true_system": [0.03, 0.02],
         "mean": errors.mean(axis=0).tolist(),
         "note": "measured with a passive reset, as the adaptive tracker uses",
     }
@@ -257,10 +253,9 @@ def chain(n, seed):
 
 
 def steps(seed):
-    target = transmon_17q()
-    dev = pulse.device(target)
-    q = dev.qudit_handles[0]
-    plant = P["chain_plant"](target)
+    dev = transmon_surface17()
+    q = dev.qudits[0]
+    true_system = P["chain_system"](dev)
     shots_per_step = {
         "readout errors": (step_assignment, 2 * P["shots_per_setting"] + 1),
         "Ramsey frequency": (step_ramsey, 3 * P["shots_per_setting"]),
@@ -270,13 +265,21 @@ def steps(seed):
         "adaptive T1": (step_tracked, P["tracker_shots"]),
     }
     out = {}
-    for name, (kernel, shots) in shots_per_step.items():
+    for name, (kernel, shots_count) in shots_per_step.items():
         start = time.perf_counter()
-        lowered = pulse.compile(kernel, device=dev, control_system=P["control_system"]).lower(q)
+        lowered = pulse.compile(
+            kernel, quantum_system=dev, control_system=P["control_system"]
+        ).lower(q)
         compile_s = time.perf_counter() - start
         start = time.perf_counter()
         result = pulse.simulate(
-            lowered, plant=plant, shots=1, seed=seed, branches="sampled", readout="model", levels=2
+            lowered,
+            quantum_system=true_system,
+            shots_count=1,
+            seed=seed,
+            branches="sampled",
+            readout="model",
+            levels=2,
         )
         simulate_s = time.perf_counter() - start
         # Tracing allocations slows NumPy several times over: measure apart,
@@ -284,18 +287,24 @@ def steps(seed):
         _propagate.clear_cache()
         tracemalloc.start()
         pulse.simulate(
-            lowered, plant=plant, shots=1, seed=seed, branches="sampled", readout="model", levels=2
+            lowered,
+            quantum_system=true_system,
+            shots_count=1,
+            seed=seed,
+            branches="sampled",
+            readout="model",
+            levels=2,
         )
         peak = tracemalloc.get_traced_memory()[1]
         tracemalloc.stop()
         m = lowered.metrics
         out[name] = {
-            "shots": shots,
+            "shots_count": shots_count,
             "ops": m.op_count,
             "trace_ms": m.trace_ms,
             "compile_ms": compile_s * 1e3,
             "simulate_s": simulate_s,
-            "simulate_ms_per_shot": simulate_s / shots * 1e3,
+            "simulate_ms_per_shot": simulate_s / shots_count * 1e3,
             "time_to_decision_ms": result.times_ns[1] / 1e6,
             "simulate_peak_MB": peak / 2**20,
         }

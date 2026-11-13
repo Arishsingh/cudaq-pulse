@@ -25,19 +25,18 @@ from cudaq_pulse.controller import (
     WaveformMemoryScope,
 )
 from cudaq_pulse.ops import Waveform
-from cudaq_pulse.targets import (
+from cudaq_pulse.quantum_systems import (
     Coupling,
     DispersiveReadout,
     DragPulse,
     FluxCZ,
     MicrowaveDrive,
-    Qubit,
+    PhysicalQudit,
     Readout,
     ReadoutPulse,
     ResidualZZ,
-    TargetDescription,
 )
-from cudaq_pulse.targets.transmon import CZ_LAYERS
+from cudaq_pulse.quantum_systems.transmon import CZ_LAYERS
 
 wave = pulse.ops.gaussian(40, 0.1, 10.0)
 assert_type(wave, Waveform)
@@ -46,18 +45,20 @@ pulse.ops.wf_scale(0.5, wave)  # type: ignore[arg-type]
 pulse.ops.wf_scale(waveform=wave, scalar=0.5)  # type: ignore[call-arg]
 assert_type(pulse.ops.wf_add(wave, wave), Waveform)
 
-dev = pulse.device("transmon_17q")
-assert_type(dev, pulse.Device)
-assert_type(pulse.device("transmon_17q"), pulse.Device)
-assert_type(pulse.device("transmon_17q", layout=[4, 5], clock_ghz=1.0), pulse.Device)
-assert_type(pulse.Device.from_dict(dev.as_dict()), pulse.Device)
-assert_type(pulse.Device.load("qpu.json"), pulse.Device)
-pulse.device({"quantum_system": "transmon_17q"})  # type: ignore[arg-type]
-pulse.device("transmon_17q", [4, 5])  # type: ignore[call-arg]
-assert_type(dev.qudit_handles[0], pulse.Qudit)
-assert_type(dev.qudit_handles[0:2], pulse.Register)
-assert_type(dev.qudit_handles[[0, 1]], pulse.Register)
-assert_type(dev.qudit_handles[0:2][0], pulse.Qudit)
+dev = pulse.quantum_system("transmon_surface17")
+assert_type(dev, pulse.QuantumSystem)
+assert_type(pulse.quantum_system("transmon_surface17"), pulse.QuantumSystem)
+assert_type(
+    pulse.quantum_system("transmon_surface17", layout=[4, 5], clock_ghz=1.0), pulse.QuantumSystem
+)
+assert_type(pulse.QuantumSystem.from_dict(dev.as_dict()), pulse.QuantumSystem)
+assert_type(pulse.QuantumSystem.load("qpu.json"), pulse.QuantumSystem)
+pulse.quantum_system({"name": "transmon_surface17"})  # type: ignore[arg-type]
+pulse.quantum_system("transmon_surface17", [4, 5])  # type: ignore[call-arg, arg-type]
+assert_type(dev.qudits[0], pulse.Qudit)
+assert_type(dev.qudits[0:2], pulse.Register)
+assert_type(dev.qudits[[0, 1]], pulse.Register)
+assert_type(dev.qudits[0:2][0], pulse.Qudit)
 
 
 @pulse.kernel
@@ -73,36 +74,47 @@ def idle(q: pulse.Qudit) -> None:
 # A kernel keeps the signature of its function: calls are checked against it.
 kernels: list[pulse.Kernel[...]] = [rabi, idle]
 assert_type(rabi.cache_info().size, int)
-rabi(dev.qudit_handles[0])  # type: ignore[call-arg]
-rabi(dev.qudit_handles[0], 0.5, 1)  # type: ignore[call-arg]
-rabi(dev.qudit_handles[0], amp="high")  # type: ignore[arg-type]
-rabi.lower(dev.qudit_handles[0], ampl=0.5)  # type: ignore[call-arg]
+rabi(dev.qudits[0])  # type: ignore[call-arg]
+rabi(dev.qudits[0], 0.5, 1)  # type: ignore[call-arg]
+rabi(dev.qudits[0], amp="high")  # type: ignore[arg-type]
+rabi.lower(dev.qudits[0], ampl=0.5)  # type: ignore[call-arg]
 
-lowered = rabi.lower(dev.qudit_handles[0], 0.5)
-assert_type(lowered, pulse.Lowered)
+
+@pulse.kernel
+def spread(tau: float, *qudits: pulse.Qudit, amp: float = 0.1) -> None:
+    pass
+
+
+spread(1.0)
+spread(1.0, *dev.qudits[0:3], amp=0.2)
+assert_type(spread.lower(1.0, dev.qudits[0], dev.qudits[1]), pulse.ScheduledKernel)
+spread(1.0, dev.qudits[0:2])  # type: ignore[arg-type]
+
+lowered = rabi.lower(dev.qudits[0], 0.5)
+assert_type(lowered, pulse.ScheduledKernel)
 assert_type(lowered.mlir(), str)
 assert_type(lowered.mlir("llvm"), str)
 assert_type(lowered.metrics, CompileMetrics)
 assert_type(lowered.schedule, Sequence[ScheduledEvent])
 assert_type(lowered.arguments, tuple[float, ...])
 
-compiled = pulse.compile(rabi, schedule="asap", device=dev)
+compiled = pulse.compile(rabi, schedule="asap", quantum_system=dev)
 compiled_kernels: list[pulse.CompiledKernel[...]] = [compiled]
-assert_type(compiled.lower(dev.qudit_handles[0], 0.5), pulse.Lowered)
-compiled(dev.qudit_handles[0])  # type: ignore[call-arg]
+assert_type(compiled.lower(dev.qudits[0], 0.5), pulse.ScheduledKernel)
+compiled(dev.qudits[0])  # type: ignore[call-arg]
 assert_type(compiled.parameters, tuple[str, ...])
 pulse.compile(rabi, schedule=1)  # type: ignore[arg-type]
 
 # Loaded lazily at runtime, but fully typed for checkers.
-assert_type(pulse.simulate(lowered, shots=10), pulse.SimulationResult)
+assert_type(pulse.simulate(lowered, shots_count=10), pulse.SimulationResult)
 # Every module has a generic one, which binds a call's new values.
-assert_type(lowered.generic, pulse.Lowered)
+assert_type(lowered.generic, pulse.ScheduledKernel)
 assert_type(pulse.simulate(lowered.generic, 0.7), pulse.SimulationResult)
-assert_type(lowered.generic.bind([0.7]), pulse.Lowered)
+assert_type(lowered.generic.bind([0.7]), pulse.ScheduledKernel)
 # Times take units or numbers of ns.
 assert_type(pulse.simulate(lowered, t_end=40 * pulse.ns, dt_ns=0.5), pulse.SimulationResult)
-assert_type(pulse.simulate(rabi, dev.qudit_handles[0], 0.5), pulse.SimulationResult)
-assert_type(pulse.simulate(compiled, dev.qudit_handles[0], 0.5), pulse.SimulationResult)
+assert_type(pulse.simulate(rabi, dev.qudits[0], 0.5), pulse.SimulationResult)
+assert_type(pulse.simulate(compiled, dev.qudits[0], 0.5), pulse.SimulationResult)
 
 
 # pulse.classical is a module at run time; checkers see a callable decorator,
@@ -159,7 +171,7 @@ scale_3: ClassicalFunction[[list[float], float], tuple[list[float], float]] = _s
 assert_type(_scale.specialize(x=3).submit([1.0], 2.0).result(), tuple[list[float], float])
 assert_type(table.submit([0, 1]).result(), float)
 assert_type(pulse.classical.random_index(4), ClassicalFunction[[], int])
-assert_type(pulse.classical.function_id("decode"), int)
+assert_type(pulse.classical.dispatch_key("decode"), int)
 functions: list[ClassicalFunction[..., Any]] = [decode, _scale, table]
 decode.submit(0.5)  # type: ignore[arg-type]
 decode.submit([1], [0])  # type: ignore[call-arg]
@@ -192,6 +204,11 @@ delayed = pulse.Controller(
     readout_lines=[pulse.controller.ReadoutLine(0, delay_ns=1.5)],
 )
 assert_type(delayed.drive_lines, Sequence[DriveLine | int])
+feedline = pulse.controller.ReadoutLine([0, 1, 2, 3], delay_ns=12.0, max_concurrent_tones=4)
+assert_type(feedline.qudits, tuple[int, ...])
+assert_type(feedline.max_concurrent_tones, int)
+assert_type(pulse.controller.DriveLine(range(4)).qudits, tuple[int, ...])
+pulse.controller.ReadoutLine([0, 1], 12.0, 2)  # type: ignore[call-arg]
 pulse.ControlSystem(line_delays_ns={("drive", 0): 1.5})  # type: ignore[call-arg]
 pulse.Link(fixed_ns=100 * pulse.ns, feedback_ns=20.0, per_controller=True)
 assert_type(box.supports_capability(pulse.Capability.BRANCH), bool)
@@ -207,11 +224,11 @@ assert_type(pulse.controller.OpCounts(add=2).total, int)
 assert_type(cores.max_ops_total, int | None)
 assert_type(cores.dispatch_keys, Mapping[str, int])
 assert_type(pulse.Controller(processors=[cores]).processors, Sequence[pulse.Processor])
-qpu = pulse.device("transmon_17q", control_system=control)
+qpu = pulse.quantum_system("transmon_surface17", control_system=control)
 assert_type(qpu.control_system, pulse.ControlSystem | None)
 assert_type(qpu.as_dict(), dict[str, Any])
-pulse.compile(rabi, device=qpu, control_system=control)
-pulse.compile(rabi, device=qpu, control_system=box)
+pulse.compile(rabi, quantum_system=qpu, control_system=control)
+pulse.compile(rabi, quantum_system=qpu, control_system=box)
 pulse.controller(3)  # type: ignore[arg-type]
 
 readout = DispersiveReadout(frequency_hz=7.0e9, linewidth_hz=1.0e6)
@@ -229,12 +246,12 @@ x = DragPulse(duration_ns=40.0, sigma_ns=10.0)
 assert_type(x.amplitude, float | None)
 assert_type(x.replace(amplitude=0.1), DragPulse)
 DragPulse(duration_ns=40.0)  # type: ignore[call-arg]
-qudit = Qubit(
+qudit = PhysicalQudit(
     0,
     5.0e9,
-    -2.0e8,
     50.0,
     30.0,
+    anharmonicity_hz=-2.0e8,
     drive=MicrowaveDrive(amplitude_scale_rad_per_ns=0.2),
     readout=readout,
     calibrations={pulse.gates.X: x, pulse.gates.READOUT: ReadoutPulse(duration_ns=300.0)},
@@ -245,7 +262,7 @@ assert_type(qudit.metadata, Mapping[str, Any])
 assert_type(qudit.get_calibration(pulse.gates.X), DragPulse)
 assert_type(qudit.get_calibration(pulse.gates.Y90, transition=(1, 2)), DragPulse)
 assert_type(qudit.get_calibration(pulse.gates.READOUT), ReadoutPulse)
-assert_type(qudit.replace(label="Q0"), Qubit)
+assert_type(qudit.replace(label="Q0"), PhysicalQudit)
 assert_type(qpu.qudits[0].get_calibration(pulse.gates.X90), DragPulse)
 gate: pulse.gates.Gate = pulse.gates.CZ
 
@@ -268,14 +285,14 @@ Coupling((0, 1), 5.7e6, gate=cz)  # type: ignore[call-arg]
 zz = ResidualZZ((0, 1), 1.5e4)
 assert_type(zz.rate_hz, float)
 ResidualZZ((0, 1), 1.5e4, zz_coupling=0.5)  # type: ignore[call-arg]
-pair = TargetDescription(
+pair = pulse.quantum_system(
     name="pair",
-    qubits={0: Qubit(0, 5.0e9, -2.5e8, 50.0, 30.0)},
+    qudits={0: PhysicalQudit(0, 5.0e9, 50.0, 30.0, anharmonicity_hz=-2.5e8)},
     couplings=[edge],
     residual_zz=[zz],
 )
-TargetDescription(name="pair", crosstalk=[zz])  # type: ignore[call-arg]
+pulse.quantum_system(name="pair", crosstalk=[zz])  # type: ignore[call-arg]
 assert_type(CZ_LAYERS, tuple[tuple[tuple[int, int], ...], ...])
 assert_type(pair.coupling_map, list[tuple[int, ...]])
-assert_type(pair.coupling(0, 1), Coupling)
-TargetDescription(name="pair", architecture="transmon")  # type: ignore[call-arg]
+assert_type(pair.coupling(pair.qudits[0], pair.qudits[1]), Coupling)
+pulse.quantum_system(name="pair", architecture="transmon")  # type: ignore[call-arg]

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Clocks of a control system: the program clock its controllers give a
-device, and the reference clock they lock to."""
+quantum system, and the reference clock they lock to."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import json
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
-from cudaq_pulse import DeviceDefinitionError
+from cudaq_pulse import QuantumSystemDefinitionError
 from cudaq_pulse.classical import Link
 from cudaq_pulse.controller import ControllerLimitError
 
@@ -36,7 +36,7 @@ def _system(*clocks, tolerance=0, **kwargs):
 
 def _device(*clocks, system=None, **config):
     control = system or _system(*clocks)
-    return pulse.device(ladder_target(4), control_system=control, **config)
+    return ladder_target(4, control_system=control, **config)
 
 
 # ── The program clock ────────────────────────────────────────────────────────
@@ -52,7 +52,7 @@ def test_the_program_clock_is_the_fastest_controller_clock_the_others_divide():
 
 
 def test_uneven_controller_clocks_need_a_declared_program_clock():
-    with pytest.raises(DeviceDefinitionError) as caught:
+    with pytest.raises(QuantumSystemDefinitionError) as caught:
         _device(2.4, 1.0)
     [problem] = caught.value.problems
     assert problem.path == "clock_ghz"
@@ -66,23 +66,23 @@ def test_uneven_controller_clocks_need_a_declared_program_clock():
 
 
 def test_a_declared_program_clock_has_a_whole_cycle_ratio_to_every_controller():
-    with pytest.raises(DeviceDefinitionError, match="no whole-cycle ratio") as caught:
+    with pytest.raises(QuantumSystemDefinitionError, match="no whole-cycle ratio") as caught:
         _device(1.0, 0.5, clock_ghz=3.1415926)
     assert [p.path for p in caught.value.problems] == ["clock_ghz"]
     assert _device(1.0, 0.5, clock_ghz=2.0).clock_ghz == 2.0
 
 
 def test_a_device_built_directly_derives_its_program_clock_too():
-    target = ladder_target(4)
-    assert pulse.Device(target, name="t", control_system=_system(1.0, 0.5)).clock_ghz == 1.0
-    with pytest.raises(DeviceDefinitionError, match="do not divide evenly"):
-        pulse.Device(target, name="t", control_system=_system(2.4, 1.0))
+    target = ladder_target(4)._description
+    assert pulse.QuantumSystem(target, name="t", control_system=_system(1.0, 0.5)).clock_ghz == 1.0
+    with pytest.raises(QuantumSystemDefinitionError, match="do not divide evenly"):
+        pulse.QuantumSystem(target, name="t", control_system=_system(2.4, 1.0))
 
 
 def test_a_derived_program_clock_round_trips_through_the_system_file():
-    device = _device(1.0, 0.5)
-    again = pulse.Device.from_dict(json.loads(json.dumps(device.as_dict())))
-    assert again.clock_ghz == 1.0 and again == device
+    quantum_system = _device(1.0, 0.5)
+    again = pulse.QuantumSystem.from_dict(json.loads(json.dumps(quantum_system.as_dict())))
+    assert again.clock_ghz == 1.0 and again == quantum_system
 
 
 # ── The reference clock ──────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ def test_a_derived_program_clock_round_trips_through_the_system_file():
 
 def test_every_controller_clock_is_a_whole_multiple_of_the_reference_clock():
     assert _device(1.0, 0.5, system=_system(1.0, 0.5, reference_clock_ghz=0.25)).clock_ghz == 1.0
-    with pytest.raises(DeviceDefinitionError) as caught:
+    with pytest.raises(QuantumSystemDefinitionError) as caught:
         _device(system=_system(1.0, None, reference_clock_ghz=0.3))
     paths = [p.path for p in caught.value.problems]
     # The second runs on the program clock, 1 GHz: neither is a multiple.
@@ -142,15 +142,16 @@ def mixed(a, b):
 @pytest.mark.parametrize("schedule", SCHEDULES)
 def test_every_operation_starts_and_ends_on_its_own_controllers_grid(schedule):
     qpu = _mixed()
-    lowered = pulse.compile(mixed, schedule=schedule, device=qpu).lower(
+    lowered = pulse.compile(mixed, schedule=schedule, quantum_system=qpu).lower(
         qpu.qudits[0], qpu.qudits[2]
     )
     events = [e for e in lowered.schedule if e.kind in ("drive", "readout", "wait")]
-    assert {e.qubit for e in events} == {0, 2}
-    assert all(e.start % _grid(e.qubit) == 0 and e.end % _grid(e.qubit) == 0 for e in events)
+    assert {e.qudit for e in events} == {0, 2}
+    assert all(e.start % _grid(e.qudit) == 0 and e.end % _grid(e.qudit) == 0 for e in events)
     text = lowered.mlir()
-    assert "pulse.drive_line_grid = array<i64: 2, 2, 4, 4>" in text
-    assert "pulse.line_grid = 4 : i64" in text
+    assert "#pulse.line<drive, qudits = [2], controller = 1>" in text
+    assert "#pulse.controller<grid_cycles = 2, " in text
+    assert "#pulse.controller<grid_cycles = 4, " in text
 
 
 @pulse.kernel
@@ -165,10 +166,10 @@ def back_to_back(a, b):
 
 def test_each_line_keeps_its_own_controllers_finer_grid():
     qpu = _mixed()
-    lowered = pulse.compile(back_to_back, schedule="asap", passes=[], device=qpu).lower(
+    lowered = pulse.compile(back_to_back, schedule="asap", passes=[], quantum_system=qpu).lower(
         qpu.qudits[0], qpu.qudits[2]
     )
-    starts = {(e.qubit, e.start) for e in lowered.schedule if e.kind == "drive"}
+    starts = {(e.qudit, e.start) for e in lowered.schedule if e.kind == "drive"}
     assert starts == {(0, 0), (0, 2), (2, 0), (2, 4)}
 
 
@@ -195,24 +196,26 @@ def shaped_anywhere(q: pulse.Qudit):
 def test_a_runtime_qudits_one_schedule_is_on_every_controllers_grid():
     # Compiled once for any qudit, its lines start where every grid meets...
     qpu = _mixed()
-    compiled = pulse.compile(twice, schedule="asap", passes=[], device=qpu)
+    compiled = pulse.compile(twice, schedule="asap", passes=[], quantum_system=qpu)
     for qudit in (0, 2):
         lowered = compiled.lower(qpu.qudits[qudit])
         assert [e.start for e in lowered.schedule if e.kind == "drive"] == [0, 4]
     # ...and each call checks its lengths on the grid of the controller it binds.
-    short = pulse.compile(short_twice, schedule="asap", passes=[], device=qpu)
+    short = pulse.compile(short_twice, schedule="asap", passes=[], quantum_system=qpu)
     assert [e.start for e in short.lower(qpu.qudits[0]).schedule if e.kind == "drive"] == [0, 4]
     with pytest.raises(ControllerLimitError, match="line d2 moves in timesteps of 4 cycles"):
         short(qpu.qudits[2])
     # Which rate the samples need depends on the qudit.
     with pytest.raises(pulse.CompilationError, match="runtime qudit's line"):
-        pulse.compile(shaped_anywhere, device=qpu).lower(qpu.qudits[0])
+        pulse.compile(shaped_anywhere, quantum_system=qpu).lower(qpu.qudits[0])
 
 
 def test_a_sync_meets_on_every_lines_grid():
     qpu = _mixed()
-    lowered = pulse.compile(mixed, schedule="asap", device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
-    drives = [e for e in lowered.schedule if e.kind == "drive" and e.qubit == 0]
+    lowered = pulse.compile(mixed, schedule="asap", quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[2]
+    )
+    drives = [e for e in lowered.schedule if e.kind == "drive" and e.qudit == 0]
     # Qudit 2's line is busy until 8 + 16 = 24 and qudit 0's until 40; the
     # sync meets at 40, a step of both grids.
     assert drives[1].start == 40
@@ -239,11 +242,11 @@ def calls_a_block(a, b):
 @pytest.mark.parametrize("schedule", ("asap", "alap"))
 def test_a_kernel_with_its_own_schedule_is_placed_on_its_lines_grid(schedule):
     qpu = _mixed()
-    lowered = pulse.compile(calls_a_block, schedule=schedule, device=qpu).lower(
+    lowered = pulse.compile(calls_a_block, schedule=schedule, quantum_system=qpu).lower(
         qpu.qudits[0], qpu.qudits[2]
     )
     drives = [e for e in lowered.schedule if e.kind == "drive"]
-    assert all(e.start % _grid(e.qubit) == 0 for e in drives)
+    assert all(e.start % _grid(e.qudit) == 0 for e in drives)
 
 
 @pulse.classical(max_latency_ns=60, link="controller")
@@ -264,7 +267,9 @@ def with_a_call(q):
 def test_classical_calls_keep_each_controllers_lines_on_its_grid(schedule):
     qpu = _mixed(links=LINKS)
     for qudit in (0, 2):
-        lowered = pulse.compile(with_a_call, schedule=schedule, device=qpu).lower(qpu.qudits[qudit])
+        lowered = pulse.compile(with_a_call, schedule=schedule, quantum_system=qpu).lower(
+            qpu.qudits[qudit]
+        )
         assert all(
             e.start % _grid(qudit) == 0 for e in lowered.schedule if e.kind in ("drive", "readout")
         )
@@ -283,7 +288,7 @@ def off_grid(q):
 def test_a_length_off_its_controllers_grid_fails_to_compile_naming_the_line_and_the_fix():
     qpu = _mixed()
     with pytest.raises(ControllerLimitError) as caught:
-        pulse.compile(off_grid, device=qpu).lower(qpu.qudits[0])
+        pulse.compile(off_grid, quantum_system=qpu).lower(qpu.qudits[0])
     drive, wait = caught.value.violations
     assert drive == (
         "line d0 moves in timesteps of 2 cycles; 41 cycles isn't a whole number of "
@@ -292,7 +297,7 @@ def test_a_length_off_its_controllers_grid_fails_to_compile_naming_the_line_and_
     )
     assert wait.startswith("line d0 moves in timesteps of 2 cycles; 5 cycles isn't")
     with pytest.raises(ControllerLimitError, match="line d2 moves in timesteps of 4 cycles"):
-        pulse.compile(off_grid, device=qpu).lower(qpu.qudits[2])
+        pulse.compile(off_grid, quantum_system=qpu).lower(qpu.qudits[2])
 
 
 @pulse.classical(max_latency_ns=60, link="controller")
@@ -312,7 +317,7 @@ def test_a_wait_from_an_answer_has_its_bounds_on_every_controllers_grid():
     qpu = _mixed(links=LINKS)
     # Qudit 0's own grid is 2, but every later op on every line moves by it.
     with pytest.raises(pulse.CompilationError) as caught:
-        pulse.compile(answer_wait_off_grid, device=qpu).lower(qpu.qudits[0])
+        pulse.compile(answer_wait_off_grid, quantum_system=qpu).lower(qpu.qudits[0])
     assert "move in timesteps of 4 cycles; its bounds (6, 402) aren't whole" in str(caught.value)
 
 
@@ -326,7 +331,7 @@ def variable_wait(q, tau: float):
 
 def test_a_variable_wait_off_its_controllers_grid_fails_at_the_call():
     qpu = _mixed()
-    compiled = pulse.compile(variable_wait, device=qpu)
+    compiled = pulse.compile(variable_wait, quantum_system=qpu)
     assert [e.start for e in compiled.lower(qpu.qudits[2], 6.0).schedule if e.kind == "drive"] == [
         0,
         20,
@@ -357,7 +362,7 @@ def test_rcp_waits_each_readers_feedback_latency_in_program_cycles():
         ),
     ]
     qpu = _device(system=pulse.ControlSystem(controllers=controllers), clock_ghz=2.0)
-    lowered = pulse.compile(feedback, schedule="rcp", device=qpu).lower(qpu.qudits[2])
+    lowered = pulse.compile(feedback, schedule="rcp", quantum_system=qpu).lower(qpu.qudits[2])
     readout, drive = (e for e in lowered.schedule if e.kind in ("readout", "drive"))
     # 10 cycles at 0.5 GHz are 40 of the program's.
     assert drive.start >= readout.end + 40
@@ -372,7 +377,7 @@ def test_each_lines_delay_is_split_by_its_own_controllers_fine_delay():
     def compiled(delays):
         system = pulse.ControlSystem(controllers=with_line_delays(controllers, delays))
         qpu = _device(system=system)
-        return pulse.compile(feedback, device=qpu).lower(qpu.qudits[0])
+        return pulse.compile(feedback, quantum_system=qpu).lower(qpu.qudits[0])
 
     assert compiled({("drive", 0): 2.3}).fine_delays[("drive", 0)] == pytest.approx(0.3)
     with pytest.raises(pulse.CompilationError, match="the controller has no fine delay"):
@@ -405,7 +410,7 @@ def _samples(lowered):
 
 def test_custom_samples_the_envelope_at_the_rate_of_the_line_that_plays_it():
     qpu = _mixed()
-    lowered = pulse.compile(shaped_on_both, device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
+    lowered = pulse.compile(shaped_on_both, quantum_system=qpu).lower(qpu.qudits[0], qpu.qudits[2])
     drives = [e for e in lowered.schedule if e.kind == "drive"]
     assert [e.duration_cycles for e in drives] == [8, 8]
     text = lowered.mlir()
@@ -427,9 +432,9 @@ def held_for_two_cycles(q):
 def test_a_custom_envelope_is_simulated_at_its_own_controllers_rate():
     # On qudit 0's controller at 1 GHz, each sample is held for two cycles.
     qpu = _mixed()
-    lowered = pulse.compile(shaped, device=qpu).lower(qpu.qudits[0])
+    lowered = pulse.compile(shaped, quantum_system=qpu).lower(qpu.qudits[0])
     plain = _device(None, None)
-    held = pulse.compile(held_for_two_cycles, device=plain).lower(plain.qudits[0])
+    held = pulse.compile(held_for_two_cycles, quantum_system=plain).lower(plain.qudits[0])
     a = pulse.simulate(lowered).density_matrix
     b = pulse.simulate(held).density_matrix
     np.testing.assert_allclose(a, b, atol=1e-12)
@@ -449,9 +454,9 @@ def scaled_custom(q):
 
 def test_sample_arrays_play_only_on_lines_of_the_rate_they_were_made_for():
     qpu = _mixed()
-    assert pulse.compile(made_for_one_ghz, device=qpu).lower(qpu.qudits[0]).schedule
+    assert pulse.compile(made_for_one_ghz, quantum_system=qpu).lower(qpu.qudits[0]).schedule
     with pytest.raises(pulse.CompilationError) as caught:
-        pulse.compile(made_for_one_ghz, device=qpu).lower(qpu.qudits[2])
+        pulse.compile(made_for_one_ghz, quantum_system=qpu).lower(qpu.qudits[2])
     message = str(caught.value)
     assert message.startswith(
         "drive(): the waveform on the drive line of qudit 2 holds samples made for 1 GHz, "
@@ -462,7 +467,7 @@ def test_sample_arrays_play_only_on_lines_of_the_rate_they_were_made_for():
 
 def test_a_waveform_made_of_custom_is_made_again_at_its_lines_rate():
     qpu = _mixed()
-    lowered = pulse.compile(scaled_custom, device=qpu).lower(qpu.qudits[2])
+    lowered = pulse.compile(scaled_custom, quantum_system=qpu).lower(qpu.qudits[2])
     assert "rate = array<i64: 1, 4>" in lowered.mlir()
     assert [e.duration_cycles for e in lowered.schedule if e.kind == "drive"] == [8]
 
@@ -476,15 +481,17 @@ def _timed(program):
 
 def test_each_controller_exports_its_part_of_the_program_in_its_own_cycles():
     qpu = _mixed()
-    lowered = pulse.compile(mixed, schedule="asap", device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
+    lowered = pulse.compile(mixed, schedule="asap", quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[2]
+    )
     with pytest.raises(ValueError) as caught:
-        lowered.export_controller()
+        lowered.export_to_controller()
     assert str(caught.value) == (
         "the program plays lines of 2 controllers (controllers[0], controllers[1]); "
         "pass controller= (0 to 1) to export one controller's program"
     )
     for index, qudit, cycles in ((0, 0, 2), (1, 2, 4)):
-        program = lowered.export_controller(controller=index)
+        program = lowered.export_to_controller(controller=index)
         assert program["controller"] == index
         assert program["clock_ghz"] == (1.0, 0.5)[index] and program["program_clock_ghz"] == 2.0
         assert program["limits"] == qpu.control_system.controllers[index].as_dict()
@@ -492,7 +499,7 @@ def test_each_controller_exports_its_part_of_the_program_in_its_own_cycles():
             qudit
         }
         mine = [e for e in lowered.schedule if e.kind in ("drive", "readout", "wait")]
-        mine = [e for e in mine if e.qubit == qudit]
+        mine = [e for e in mine if e.qudit == qudit]
         assert [(e["start_cycles"], e["duration_cycles"]) for e in _timed(program)] == [
             (e.start // cycles, e.duration_cycles // cycles) for e in mine
         ]
@@ -502,9 +509,9 @@ def test_each_controller_exports_its_part_of_the_program_in_its_own_cycles():
         assert sync["lines"] and set(sync["lines"]) <= ids
         json.dumps(program)
     with pytest.raises(ValueError, match=r"controller=2, and the program's control system has 2"):
-        lowered.export_controller(controller=2)
+        lowered.export_to_controller(controller=2)
     with pytest.raises(TypeError, match="index of a controller"):
-        lowered.export_controller(controller="1")  # type: ignore[arg-type]
+        lowered.export_to_controller(controller="1")  # type: ignore[arg-type]
 
 
 @pulse.kernel
@@ -521,13 +528,13 @@ def mixed_retuned(a, b):
 
 def test_each_controller_exports_the_run_time_tones_of_its_own_lines():
     qpu = _mixed()
-    lowered = pulse.compile(mixed_retuned, device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
-    first, second = (lowered.export_controller(controller=index) for index in (0, 1))
+    lowered = pulse.compile(mixed_retuned, quantum_system=qpu).lower(qpu.qudits[0], qpu.qudits[2])
+    first, second = (lowered.export_to_controller(controller=index) for index in (0, 1))
     [drive] = [e for e in first["events"] if e["kind"] == "drive"]
     assert first["runtime_tones"] == {
         str(drive["tone"]): {
             "line": drive["line"],
-            "reset_frequency_hz": qpu.target.frequencies[0],
+            "reset_frequency_hz": qpu.frequencies[0],
             "reset_phase": 0.0,
         }
     }
@@ -536,26 +543,28 @@ def test_each_controller_exports_the_run_time_tones_of_its_own_lines():
 
 def test_a_program_on_one_controller_exports_without_naming_it():
     qpu = _mixed(links=LINKS)
-    lowered = pulse.compile(with_a_call, device=qpu).lower(qpu.qudits[2])
-    program = lowered.export_controller()
+    lowered = pulse.compile(with_a_call, quantum_system=qpu).lower(qpu.qudits[2])
+    program = lowered.export_to_controller()
     assert program["controller"] == 1 and program["clock_ghz"] == 0.5
-    assert program == lowered.export_controller(controller=1)
+    assert program == lowered.export_to_controller(controller=1)
     drive = next(e for e in program["events"] if e["kind"] == "drive")
     assert drive["duration_cycles"] == 2 and drive["waveform"]["params"]["duration"] == 2.0
     # The other controller takes no part: no lines, events or calls.
-    other = lowered.export_controller(controller=0)
+    other = lowered.export_to_controller(controller=0)
     assert other["lines"] == [] and other["events"] == [] and other["calls"] == []
 
 
 def test_samples_at_a_rate_of_each_controllers_clock():
     qpu = _mixed()
-    lowered = pulse.compile(mixed, schedule="asap", device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
-    program = lowered.export_controller(sample_rate_ghz=1.0, controller=1)
+    lowered = pulse.compile(mixed, schedule="asap", quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[2]
+    )
+    program = lowered.export_to_controller(sample_rate_ghz=1.0, controller=1)
     first = next(e for e in program["events"] if e["kind"] == "drive")
     assert len(first["samples"]["re"]) == 2 * first["duration_cycles"]
     with pytest.raises(ValueError, match="whole multiple of the 0.5 GHz clock"):
-        lowered.export_controller(sample_rate_ghz=0.75, controller=1)
-    assert lowered.export_controller(sample_rate_ghz=1.0, controller=0)["events"]
+        lowered.export_to_controller(sample_rate_ghz=0.75, controller=1)
+    assert lowered.export_to_controller(sample_rate_ghz=1.0, controller=0)["events"]
 
 
 @pulse.kernel
@@ -569,8 +578,10 @@ def read_then_correct(a, b):
 
 def test_a_call_is_submitted_by_its_measuring_controller_and_answered_to_its_taker():
     qpu = _mixed(links=LINKS)
-    lowered = pulse.compile(read_then_correct, device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
-    first, second = (lowered.export_controller(controller=k) for k in (0, 1))
+    lowered = pulse.compile(read_then_correct, quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[2]
+    )
+    first, second = (lowered.export_to_controller(controller=k) for k in (0, 1))
     assert [e["kind"] for e in first["events"]] == ["readout", "submit"]
     assert [e["kind"] for e in second["events"]] == ["answer", "drive"]
     answer, drive = second["events"]
@@ -586,10 +597,12 @@ def test_a_call_is_submitted_by_its_measuring_controller_and_answered_to_its_tak
 
 def test_each_controllers_emulation_export_is_its_part_in_its_cycles():
     qpu = _mixed(links=LINKS)
-    lowered = pulse.compile(read_then_correct, device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
+    lowered = pulse.compile(read_then_correct, quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[2]
+    )
     with pytest.raises(ValueError, match="pass controller="):
-        lowered.export_emulation()
-    first, second = (lowered.export_emulation(controller=k) for k in (0, 1))
+        lowered.export_to_emulator()
+    first, second = (lowered.export_to_emulator(controller=k) for k in (0, 1))
     assert first["controller"] == 0 and first["clock_ghz"] == 1.0
     assert second["controller"] == 1 and second["clock_ghz"] == 0.5
     assert [e["kind"] for e in first["events"]] == ["readout", "submit"]
@@ -610,8 +623,8 @@ def answer_wait(q):
 
 def test_a_run_time_wait_is_exported_in_its_controllers_cycles():
     qpu = _mixed(links=LINKS)
-    lowered = pulse.compile(answer_wait, device=qpu).lower(qpu.qudits[2])
-    wait = next(e for e in lowered.export_controller()["events"] if e["kind"] == "wait")
+    lowered = pulse.compile(answer_wait, quantum_system=qpu).lower(qpu.qudits[2])
+    wait = next(e for e in lowered.export_to_controller()["events"] if e["kind"] == "wait")
     assert (wait["min_cycles"], wait["max_cycles"]) == (2, 100)
     assert wait["length"]["op"] == "controller_cycles" and wait["length"]["den"] == 4
 
@@ -620,24 +633,26 @@ def test_a_run_time_frame_change_is_placed_in_its_controllers_cycles():
     from tests.test_controller import retuned_by_answer, retuned_by_answer_changes
 
     qpu = _mixed(links={"default": Link(fixed_ns=10)})
-    lowered = pulse.compile(retuned_by_answer, device=qpu).lower(qpu.qudits[2])
-    program = lowered.export_controller()
+    lowered = pulse.compile(retuned_by_answer, quantum_system=qpu).lower(qpu.qudits[2])
+    program = lowered.export_to_controller()
     assert program["clock_ghz"] == 0.5
     assert len(retuned_by_answer_changes(program["events"])) == 6
 
 
 def test_each_controller_exports_the_reference_clock():
     qpu = _mixed(reference_clock_ghz=0.25)
-    lowered = pulse.compile(mixed, device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
+    lowered = pulse.compile(mixed, quantum_system=qpu).lower(qpu.qudits[0], qpu.qudits[2])
     for index in (0, 1):
-        assert lowered.export_controller(controller=index)["reference_clock_ghz"] == 0.25
+        assert lowered.export_to_controller(controller=index)["reference_clock_ghz"] == 0.25
 
 
 def test_drives_of_one_waveform_have_its_times_in_their_controllers_cycles():
     qpu = _mixed()
-    lowered = pulse.compile(mixed, device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
+    lowered = pulse.compile(mixed, quantum_system=qpu).lower(qpu.qudits[0], qpu.qudits[2])
     # The two gaussians of 40 program cycles at 2 GHz, on a 1 GHz controller.
-    drives = [e for e in lowered.export_controller(controller=0)["events"] if e["kind"] == "drive"]
+    drives = [
+        e for e in lowered.export_to_controller(controller=0)["events"] if e["kind"] == "drive"
+    ]
     assert len(drives) == 2
     for drive in drives:
         assert drive["duration_cycles"] == 20
@@ -646,13 +661,15 @@ def test_drives_of_one_waveform_have_its_times_in_their_controllers_cycles():
 
 def test_a_controller_faster_than_the_program_clock_counts_more_cycles():
     qpu = _device(4.0, 1.0, clock_ghz=2.0)
-    lowered = pulse.compile(shaped_twice_plain, device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
-    program = lowered.export_controller(controller=0)
+    lowered = pulse.compile(shaped_twice_plain, quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[2]
+    )
+    program = lowered.export_to_controller(controller=0)
     assert program["clock_ghz"] == 4.0 and program["program_clock_ghz"] == 2.0
     drive = next(e for e in program["events"] if e["kind"] == "drive")
     assert drive["duration_cycles"] == 16 and drive["waveform"]["params"]["duration"] == 16.0
     drive = next(
-        e for e in lowered.export_controller(controller=1)["events"] if e["kind"] == "drive"
+        e for e in lowered.export_to_controller(controller=1)["events"] if e["kind"] == "drive"
     )
     assert drive["duration_cycles"] == 4
 
@@ -667,12 +684,14 @@ def shaped_twice_plain(a, b):
 
 def test_a_one_controller_device_exports_as_before():
     qpu = _device(0.5)
-    lowered = pulse.compile(mixed, schedule="asap", device=qpu).lower(qpu.qudits[0], qpu.qudits[1])
-    program = lowered.export_controller()
-    assert "controller" not in program and program == lowered.export_controller(controller=0)
-    assert "controller" not in lowered.export_emulation()
+    lowered = pulse.compile(mixed, schedule="asap", quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[1]
+    )
+    program = lowered.export_to_controller()
+    assert "controller" not in program and program == lowered.export_to_controller(controller=0)
+    assert "controller" not in lowered.export_to_emulator()
     with pytest.raises(ValueError, match="has one controller"):
-        lowered.export_controller(controller=1)
+        lowered.export_to_controller(controller=1)
 
 
 # ── Budgets between controllers ──────────────────────────────────────────────
@@ -714,7 +733,7 @@ def _forwarding(reference=None, skew=0, tolerance=0):
 
 
 def _gap(qpu, schedule="rcp"):
-    lowered = pulse.compile(branch_across, schedule=schedule, device=qpu).lower(
+    lowered = pulse.compile(branch_across, schedule=schedule, quantum_system=qpu).lower(
         qpu.qudits[0], qpu.qudits[2]
     )
     readout, drive = (e for e in lowered.schedule if e.kind in ("readout", "drive"))
@@ -746,7 +765,7 @@ def test_an_outcome_sent_to_another_controller_is_budgeted_with_both_start_uncer
 def test_an_outcome_used_on_its_own_controller_needs_only_its_feedback_latency():
     qpu = _forwarding()
     with pytest.raises(ControllerLimitError) as caught:
-        pulse.compile(feedback, schedule="asap", device=qpu).lower(qpu.qudits[0])
+        pulse.compile(feedback, schedule="asap", quantum_system=qpu).lower(qpu.qudits[0])
     [message] = caught.value.violations
     assert "needs 3 cycles of feedback latency" in message
 
@@ -762,7 +781,9 @@ def _call_across(reference=None, reach_both=True):
 
 
 def _due(qpu, b=2):
-    lowered = pulse.compile(read_then_correct, device=qpu).lower(qpu.qudits[0], qpu.qudits[b])
+    lowered = pulse.compile(read_then_correct, quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[b]
+    )
     [call] = lowered.classical_report()
     return call.due_cycles - call.submit_cycles
 
@@ -798,7 +819,7 @@ def branch_on_both(a, b):
 @pytest.mark.parametrize("schedule", ["rcp", "alap_rcp"])
 def test_rcp_waits_for_an_outcome_only_as_long_as_it_takes_to_reach_each_controller(schedule):
     qpu = _forwarding(tolerance=1)
-    lowered = pulse.compile(branch_on_both, schedule=schedule, device=qpu).lower(
+    lowered = pulse.compile(branch_on_both, schedule=schedule, quantum_system=qpu).lower(
         qpu.qudits[0], qpu.qudits[2]
     )
     readout = next(e for e in lowered.schedule if e.kind == "readout")
@@ -809,7 +830,7 @@ def test_rcp_waits_for_an_outcome_only_as_long_as_it_takes_to_reach_each_control
     assert mine.start - readout.end == (6 if schedule == "rcp" else 16)
     assert other.start - readout.end == 16
     # One controller's program waits its own feedback latency alone.
-    lowered = pulse.compile(feedback, schedule=schedule, device=qpu).lower(qpu.qudits[0])
+    lowered = pulse.compile(feedback, schedule=schedule, quantum_system=qpu).lower(qpu.qudits[0])
     readout, drive = (e for e in lowered.schedule if e.kind in ("readout", "drive"))
     assert drive.start - readout.end == 6
 
@@ -831,7 +852,7 @@ def test_rcp_waits_for_an_outcome_a_pulse_computes_with_to_reach_its_controller(
     qpu = _forwarding()
 
     def gap(b):
-        lowered = pulse.compile(chosen_across, schedule="rcp", device=qpu).lower(
+        lowered = pulse.compile(chosen_across, schedule="rcp", quantum_system=qpu).lower(
             qpu.qudits[0], qpu.qudits[b]
         )
         readout, drive = (e for e in lowered.schedule if e.kind in ("readout", "drive"))
@@ -840,7 +861,7 @@ def test_rcp_waits_for_an_outcome_a_pulse_computes_with_to_reach_its_controller(
     assert gap(1) == 6
     assert gap(2) == 16
     # Scheduled too early, the check names it.
-    early = pulse.compile(chosen_across, schedule="asap", device=qpu)
+    early = pulse.compile(chosen_across, schedule="asap", quantum_system=qpu)
     with pytest.raises(ControllerLimitError, match="computes with the readout of controllers"):
         early.lower(qpu.qudits[0], qpu.qudits[2])
 
@@ -857,7 +878,7 @@ def test_rcp_keeps_pulses_of_two_controllers_on_one_lane_apart_by_their_start_un
     def second_start(b, reference=None):
         system = _system(1.0, 0.5, max_concurrent_drives=1, reference_clock_ghz=reference)
         qpu = _device(system=system, clock_ghz=2.0)
-        lowered = pulse.compile(two_drives, schedule="rcp", device=qpu).lower(
+        lowered = pulse.compile(two_drives, schedule="rcp", quantum_system=qpu).lower(
             qpu.qudits[0], qpu.qudits[b]
         )
         first, second = (e for e in lowered.schedule if e.kind == "drive")
@@ -903,7 +924,7 @@ def test_pulses_a_sync_lines_up_across_controllers_land_within_their_alignment_t
             controllers=with_line_delays(controllers, delays or {}), reference_clock_ghz=reference
         )
         qpu = _device(system=system, clock_ghz=2.0)
-        return pulse.compile(paired, device=qpu).lower(qpu.qudits[0], qpu.qudits[2])
+        return pulse.compile(paired, quantum_system=qpu).lower(qpu.qudits[0], qpu.qudits[2])
 
     with pytest.raises(ControllerLimitError) as caught:
         compiled()

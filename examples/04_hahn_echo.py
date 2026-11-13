@@ -12,9 +12,9 @@ import numpy as np
 
 
 @pulse.kernel
-def hahn_echo(qubit, sigma, amp_half_pi, amp_pi, tau):
+def hahn_echo(qudit, sigma, amp_half_pi, amp_pi, tau):
     """Hahn echo: pi/2_X - tau - pi_X - tau - pi/2_X."""
-    drive_line = get_drive_line(qubit)
+    drive_line = get_drive_line(qudit)
 
     dur_half_pi = 4 * sigma
     dur_pi = 4 * sigma
@@ -39,9 +39,9 @@ def hahn_echo(qubit, sigma, amp_half_pi, amp_pi, tau):
 
 
 @pulse.kernel
-def cpmg_echo(qubit, sigma, amp_half_pi, amp_pi, tau, n_refocus):
+def cpmg_echo(qudit, sigma, amp_half_pi, amp_pi, tau, refocus_count):
     """CPMG dynamical decoupling: pi/2_X - [tau - pi_Y - tau]^n - pi/2_X."""
-    drive_line = get_drive_line(qubit)
+    drive_line = get_drive_line(qudit)
 
     dur_half_pi = 4 * sigma
     dur_pi = 4 * sigma
@@ -52,7 +52,7 @@ def cpmg_echo(qubit, sigma, amp_half_pi, amp_pi, tau, n_refocus):
     # Initial pi/2 about X
     drive(drive_line, half_pi_envelope)
 
-    for _i in range(n_refocus):
+    for _i in range(refocus_count):
         wait(drive_line, tau)
         # pi about Y = phase shift of pi/2 then pi_X
         shift_phase(drive_line.tone, np.pi / 2)
@@ -65,8 +65,8 @@ def cpmg_echo(qubit, sigma, amp_half_pi, amp_pi, tau, n_refocus):
 
 
 def cycles(time):
-    """*time* in cycles of the device's program clock."""
-    return time / pulse.ns * dev.clock_ghz
+    """*time* in cycles of the quantum system's program clock."""
+    return time / pulse.ns * qs.clock_ghz
 
 
 def main():
@@ -76,25 +76,25 @@ def main():
     tau = 250 * pulse.ns
 
     print("=== Hahn Echo ===")
-    compiled_kernel = pulse.compile(hahn_echo, device=dev).lower(
-        dev.qudit_handles[0], sigma, amp_half_pi, amp_pi, tau
+    scheduled = pulse.compile(hahn_echo, quantum_system=qs).lower(
+        qs.qudits[0], sigma, amp_half_pi, amp_pi, tau
     )
     total_hahn = 2 * (4 * sigma) + 4 * sigma + 2 * tau
     print(f"  Expected duration: {cycles(total_hahn):.0f} clock cycles")
-    print(compiled_kernel.mlir())
-    print(f"  Compile metrics: {compiled_kernel.metrics}")
+    print(scheduled.mlir())
+    print(f"  Compile metrics: {scheduled.metrics}")
 
     print("\n=== CPMG-4 Echo ===")
-    n_refocus = 4
-    compiled_kernel = pulse.compile(cpmg_echo, device=dev).lower(
-        dev.qudit_handles[0], sigma, amp_half_pi, amp_pi, tau, n_refocus
+    refocus_count = 4
+    scheduled = pulse.compile(cpmg_echo, quantum_system=qs).lower(
+        qs.qudits[0], sigma, amp_half_pi, amp_pi, tau, refocus_count
     )
-    total_cpmg = 2 * (4 * sigma) + n_refocus * (4 * sigma + 2 * tau)
+    total_cpmg = 2 * (4 * sigma) + refocus_count * (4 * sigma + 2 * tau)
     print(f"  Expected duration: {cycles(total_cpmg):.0f} clock cycles")
-    print(compiled_kernel.mlir())
-    print(f"  Compile metrics: {compiled_kernel.metrics}")
+    print(scheduled.mlir())
+    print(f"  Compile metrics: {scheduled.metrics}")
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
+    qs = pulse.quantum_system("transmon_surface17")
     main()

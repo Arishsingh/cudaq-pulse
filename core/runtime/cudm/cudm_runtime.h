@@ -38,13 +38,18 @@ CudmStatus cudm_destroy(CudmHandle handle);
 
 // State management
 CudmStatus cudm_state_alloc(CudmHandle handle, CudmState *state,
-                            const int64_t *mode_extents, int32_t num_modes,
+                            const int64_t *mode_extents, int32_t mode_count,
                             int32_t purity, int32_t data_type);
 CudmStatus cudm_state_destroy(CudmState state);
 CudmStatus cudm_state_capture(CudmState state);
 // Use `data` (`size` bytes, in the layout cudm_state_capture produces) as the
 // initial value of the next state allocated on this thread instead of |0>.
-CudmStatus cudm_set_initial_state(const void *data, int64_t size);
+// With `count` above 1 the next run on this thread (the next cudm_init)
+// evolves a batch of `count` states under one operator: `data` holds them
+// one after another, each of its states holds `count`, and
+// cudm_state_capture gives them in the same order.
+CudmStatus cudm_set_initial_state(const void *data, int64_t size,
+                                  int64_t count);
 int64_t cudm_last_result_size(void);
 CudmStatus cudm_last_result_copy(void *destination, int64_t destination_size);
 const char *cudm_last_error_message(void);
@@ -55,7 +60,8 @@ CudmStatus cudm_workspace_destroy(CudmWorkspace ws);
 
 // Operator management
 CudmStatus cudm_operator_create(CudmHandle handle, CudmOperator *op,
-                                const int64_t *mode_extents, int32_t num_modes);
+                                const int64_t *mode_extents,
+                                int32_t mode_count);
 CudmStatus cudm_operator_destroy(CudmOperator op);
 
 // Elementary operator
@@ -64,17 +70,17 @@ CudmStatus cudm_elementary_op_create(CudmHandle handle,
                                      const void *tensor_data,
                                      int64_t tensor_value_count,
                                      const int64_t *mode_extents,
-                                     int32_t num_modes, int32_t data_type);
+                                     int32_t mode_count, int32_t data_type);
 CudmStatus cudm_elementary_op_destroy(CudmElementaryOp elem_op);
 
 // Operator term
 CudmStatus cudm_op_term_create(CudmHandle handle, CudmOpTerm *term,
-                               const int64_t *mode_extents, int32_t num_modes);
+                               const int64_t *mode_extents, int32_t mode_count);
 CudmStatus cudm_op_term_append(CudmHandle handle, CudmOpTerm term,
                                const CudmElementaryOp *elementary_ops,
                                const int32_t *modes_acted_on,
                                const int32_t *duality,
-                               int32_t num_elementary_ops, double coeff_real,
+                               int32_t elementary_op_count, double coeff_real,
                                double coeff_imag, int32_t callback_kind,
                                const double *callback_parameters,
                                int32_t callback_parameter_count);
@@ -92,7 +98,7 @@ CudmStatus cudm_operator_append(CudmHandle handle, CudmOperator op,
 // signature is that of a CUDA-Q Realtime host-call handler.
 typedef void (*CudmClassicalHandler)(const void *request, void *answer,
                                      size_t slot_bytes);
-CudmStatus cudm_classical_register(CudmHandle handle, uint32_t function_id,
+CudmStatus cudm_classical_register(CudmHandle handle, uint32_t dispatch_key,
                                    CudmClassicalHandler handler);
 // Send `request` to the run's handler for its function id and check the
 // answer it writes to `answer` (`answer_capacity` bytes): its magic, and the
@@ -101,12 +107,12 @@ CudmStatus cudm_classical_call(CudmHandle handle, const void *request,
                                int64_t request_bytes, void *answer,
                                int64_t answer_capacity, int64_t *answer_bytes);
 
-// Time evolution over [t_start, t_end] in num_steps equal steps.
+// Time evolution over [t_start, t_end] in step_count equal steps.
 // The `integrator` code matches the CuDensityMat dialect IntegratorKind enum:
 //   2 = rk1, 3 = rk2, 4 = rk4, 5 = magnus, 6 = crank_nicolson.
 CudmStatus cudm_evolve(CudmHandle handle, CudmOperator op, CudmState state_in,
                        CudmState state_out, CudmWorkspace ws, double t_start,
-                       double t_end, int64_t num_steps, int32_t integrator);
+                       double t_end, int64_t step_count, int32_t integrator);
 
 #ifdef __cplusplus
 }

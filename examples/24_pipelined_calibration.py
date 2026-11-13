@@ -3,8 +3,8 @@
 """Closed-loop calibration with a compile pipeline in worker processes.
 
 Builds on ``20_adaptive_calibration.py``. An optimizer tunes the amplitude
-and the detuning of a pi pulse on one qudit of the 17-qudit transmon twin
-(``transmon_17q``), measured through a train of 9 pi pulses, which adds up
+and the detuning of a pi pulse on one qudit of the 17-qudit
+``transmon_surface17`` quantum system, measured through a train of 9 pi pulses, which adds up
 both errors. Each batch runs a few of its suggestions; their results update
 it and it suggests the next batch. Two loops are compared:
 
@@ -24,7 +24,7 @@ default too.
 What is simulated: the QPU is a stand-in process. It takes a prepared batch,
 spends a fixed time on it (an assumed 50 us per shot), and returns counts
 drawn from ``pulse.simulate`` of each program against a "true" qudit whose
-frequency is 1.5 MHz off the device description's. A real controller would
+frequency is 1.5 MHz off the quantum system's. A real controller would
 load the export; the stand-in only checks that it has events. The compile,
 the pickling, the hand-offs between processes, the workers' binding and
 exporting and the optimizer's run time are real. The best detuning is not
@@ -35,7 +35,6 @@ settings, written in NumPy.
 """
 
 import concurrent.futures
-import dataclasses
 import math
 import multiprocessing
 import pickle
@@ -43,15 +42,15 @@ import time
 
 import cudaq_pulse as pulse
 import numpy as np
-from cudaq_pulse.targets import TargetDescription, transmon_17q
+from cudaq_pulse.quantum_systems import transmon_surface17
 
-target = transmon_17q()
+quantum_system = transmon_surface17()
 pulse_duration = 40 * pulse.ns
 pulse_sigma = 10 * pulse.ns
 # A pi pulse rotates by pi: the Gaussian's area (ns) times the drive's rad/ns
 # per unit amplitude.
 area_ns = (pulse_sigma / pulse.ns) * math.sqrt(2 * math.pi) * math.erf(2 / math.sqrt(2))
-pi_amplitude = math.pi / (area_ns * target.drive_amplitude_scale(0))
+pi_amplitude = math.pi / (area_ns * quantum_system.drive_amplitude_scale(0))
 
 # An odd number of pi pulses ends in |1>; amplitude and frequency errors add up along it.
 repetitions = 9
@@ -59,13 +58,13 @@ amplitudes = pi_amplitude * np.linspace(0.85, 1.15, 25)
 detunings_hz = np.linspace(-2e6, 6e6, 25)
 settings = np.array([(a, d) for a in amplitudes for d in detunings_hz])
 settings_per_batch = 8
-shots = 100
+shots_count = 100
 shot_time = 50 * pulse.us  # the stand-in QPU's repetition period
-batch_time = settings_per_batch * shots * shot_time
+batch_time = settings_per_batch * shots_count * shot_time
 batches = 20
 workers = 4
 sample_rate_ghz = 2.0
-hidden_offset_hz = 1.5e6  # the true qudit's frequency minus the device's
+hidden_offset_hz = 1.5e6  # the true qudit's frequency minus the quantum system's
 
 
 @pulse.kernel
@@ -128,7 +127,7 @@ class ThompsonSampler:
 
 # ── Worker processes: bind and export ────────────────────────────────────────
 
-worker_program: dict[str, pulse.Lowered] = {}
+worker_program: dict[str, pulse.ScheduledKernel] = {}
 
 
 def receive_program(program):
@@ -139,21 +138,21 @@ def prepare(setting):
     """One setting bound into the compiled program, and its controller export."""
     amplitude, detuning_hz = setting
     bound = worker_program["generic"].bind([amplitude, detuning_hz])
-    return bound, bound.export_controller(sample_rate_ghz=sample_rate_ghz)
+    return bound, bound.export_to_controller(sample_rate_ghz=sample_rate_ghz)
 
 
 # ── The stand-in QPU ─────────────────────────────────────────────────────────
 
-qpu_state: dict[str, TargetDescription] = {}
+qpu_state: dict[str, pulse.QuantumSystem] = {}
 
 
-def power_on(plant):
-    qpu_state["plant"] = plant
+def power_on(true_system):
+    qpu_state["true_system"] = true_system
 
 
-def excited_population(program, plant):
-    """P(1) at the end of *program*, simulated against *plant* with three levels."""
-    result = pulse.simulate(program, levels=3, dt_ns=0.25, plant=plant)
+def excited_population(program, true_system):
+    """P(1) at the end of *program*, simulated against *true_system* with three levels."""
+    result = pulse.simulate(program, levels=3, dt_ns=0.25, quantum_system=true_system)
     return min(max(result.level_population(1), 0.0), 1.0)
 
 
@@ -164,8 +163,10 @@ def run_batch(prepared, seed):
     counts = []
     for program, controller_program in prepared:
         assert controller_program["events"], "a controller would load these events"
-        counts.append(int(rng.binomial(shots, excited_population(program, qpu_state["plant"]))))
-    ends = start + len(prepared) * shots * (shot_time / pulse.s)
+        counts.append(
+            int(rng.binomial(shots_count, excited_population(program, qpu_state["true_system"])))
+        )
+    ends = start + len(prepared) * shots_count * (shot_time / pulse.s)
     overran = time.monotonic() - ends
     time.sleep(max(0.0, -overran))
     return counts, (start, time.monotonic()), max(0.0, overran)
@@ -198,7 +199,7 @@ def calibrate(pool, qpu, pipelined):
         counts, span, overran = running.result()
         spans.append(span)
         overruns.append(overran)
-        optimizer.observe(indices, np.array(counts) / shots)
+        optimizer.observe(indices, np.array(counts) / shots_count)
         if last:
             break
         if upcoming is None:
@@ -220,21 +221,20 @@ def calibrate(pool, qpu, pipelined):
     }
 
 
-def true_p1(program, plant, index):
-    """P(1) of grid setting *index*, simulated exactly against *plant*."""
-    return excited_population(program.bind(list(settings[index])), plant)
+def true_p1(program, true_system, index):
+    """P(1) of grid setting *index*, simulated exactly against *true_system*."""
+    return excited_population(program.bind(list(settings[index])), true_system)
 
 
 if __name__ == "__main__":
-    device = pulse.device(target)
-    nominal = target.qubits[0]
+    nominal = quantum_system.physical_qudits[0]
     true_qudit = nominal.replace(frequency_hz=nominal.frequency_hz + hidden_offset_hz)
-    plant = dataclasses.replace(target, qubits={**target.qubits, 0: true_qudit})
+    true_system = quantum_system.replace(qudits={**quantum_system.physical_qudits, 0: true_qudit})
 
     print("=== The program, compiled once ===")
     started = time.perf_counter()
-    compiled = pulse.compile(pi_train, device=device)
-    program = compiled.lower(device.qudit_handles[0], repetitions, pi_amplitude, 0.0).generic
+    compiled = pulse.compile(pi_train, quantum_system=quantum_system)
+    program = compiled.lower(quantum_system.qudits[0], repetitions, pi_amplitude, 0.0).generic
     print(
         f"  compiled in {1e3 * (time.perf_counter() - started):.2f} ms "
         f"(the first compile in a process); float parameters {program.parameters}"
@@ -242,12 +242,12 @@ if __name__ == "__main__":
     print(f"  sent to each worker as {len(pickle.dumps(program)):,} pickled bytes")
     started = time.perf_counter()
     for setting in settings[:50]:
-        program.bind(list(setting)).export_controller(sample_rate_ghz=sample_rate_ghz)
+        program.bind(list(setting)).export_to_controller(sample_rate_ghz=sample_rate_ghz)
     print(
         f"  binding and exporting one setting: {1e3 * (time.perf_counter() - started) / 50:.3f} ms"
     )
     print(
-        f"  a batch is {settings_per_batch} settings x {shots} shots x {shot_time} "
+        f"  a batch is {settings_per_batch} settings x {shots_count} shots x {shot_time} "
         f"= {batch_time / pulse.ms:.0f} ms on the QPU"
     )
 
@@ -257,7 +257,7 @@ if __name__ == "__main__":
         workers, mp_context=spawn, initializer=receive_program, initargs=(program,)
     )
     qpu = concurrent.futures.ProcessPoolExecutor(
-        1, mp_context=spawn, initializer=power_on, initargs=(plant,)
+        1, mp_context=spawn, initializer=power_on, initargs=(true_system,)
     )
     results = {}
     with pool, qpu:
@@ -289,11 +289,11 @@ if __name__ == "__main__":
         amplitude, detuning_hz = settings[r["best"]]
         print(
             f"  best setting: amplitude {amplitude / pi_amplitude:.3f} x nominal, detuning "
-            f"{detuning_hz / 1e6:+.2f} MHz, true P(1) {true_p1(program, plant, r['best']):.4f}"
+            f"{detuning_hz / 1e6:+.2f} MHz, true P(1) {true_p1(program, true_system, r['best']):.4f}"
         )
 
     print("\n=== Comparison ===")
-    exact = [true_p1(program, plant, i) for i in range(len(settings))]
+    exact = [true_p1(program, true_system, i) for i in range(len(settings))]
     amplitude, detuning_hz = settings[int(np.argmax(exact))]
     print(
         f"  best on the whole grid (simulated exactly): P(1) {max(exact):.4f} at "

@@ -31,10 +31,10 @@ Infrastructure stays behind the ``pulse.`` prefix:
        drive_line = get_drive_line(qubit)
        drive(drive_line, gaussian(duration, 0.5, sigma))
 
-   dev = pulse.device("transmon_17q")
+   qs = pulse.quantum_system("transmon_surface17")
    duration = 32 * pulse.ns
    sigma = 8 * pulse.ns
-   rabi_oscillation(dev.qudit_handles[0], duration, sigma)
+   rabi_oscillation(qs.qudits[0], duration, sigma)
 
 Defining a Kernel
 -----------------
@@ -59,10 +59,10 @@ Defining a Kernel
 The kernels on this page read their pulse durations from this ``cal``; see
 :ref:`durations`.
 
-Qudit arguments are **qudit handles** of a device: ``dev.qudit_handles[i]``
-for one qudit, and ``dev.qudit_handles[0:4]`` or ``dev.qudit_handles[[0, 2]]``
+Qudit arguments are **qudit handles** of a quantum system: ``qs.qudits[i]``
+for one qudit, and ``qs.qudits[0:4]`` or ``qs.qudits[[0, 2]]``
 for a register, which a kernel indexes and iterates like a list. The kernel
-runs on the device of its handles; see :doc:`devices`. How arguments bind,
+runs on the quantum system of its handles; see :doc:`quantum_systems`. How arguments bind,
 which of them the kernel is specialized on, and what a call returns are
 described in :doc:`compilation`.
 
@@ -72,14 +72,42 @@ described in :doc:`compilation`.
    def two(q0, q1, amplitude: float):
        ...
 
-   reg = dev.qudit_handles[0:2]
+   reg = qs.qudits[0:2]
    two(reg[0], reg[1], 0.3)
 
-Qudits always come from a device: a kernel takes them as parameters, and a
-call passes the device's handles (``dev.qudit_handles[i]``, or a register
-``dev.qudit_handles[0:4]``). A call without handles raises
-``NoDeviceError``, unless the kernel was compiled for a device with
-``pulse.compile(k, device=dev)``.
+A ``*qudits`` parameter takes any number of qudits, one argument each. In
+the kernel it is a register of the call's qudits, so it indexes, slices,
+iterates, has a ``len()`` and passes on to another kernel as ``*qudits``;
+parameters after it are keyword-only:
+
+.. code-block:: python
+
+   @pulse.kernel
+   def x_all(amplitude: float, *qudits: pulse.Qudit, sigma=cal["x_sigma"]):
+       for q in qudits:
+           drive(get_drive_line(q), gaussian(cal["x_duration"], amplitude, sigma))
+
+   @pulse.kernel
+   def x_then_measure_first(*qudits: pulse.Qudit):
+       x_all(0.5, *qudits)
+       first = get_readout_line(qudits[0])
+       sync(first, *[get_drive_line(q) for q in qudits])
+       readout(first, square(cal["readout_duration"], 0.05))
+
+   x_all(0.3, qs.qudits[0], qs.qudits[2])
+   x_then_measure_first(*qs.qudits[0:4])
+
+Annotated ``Qudit``, the qudits are runtime, as for a ``Register``
+parameter: one compilation serves every call with the same number of
+qudits. Unannotated, the kernel is specialized on which qudits it gets. A
+call may pass none, as with an empty register; ``*qudits`` takes only qudit
+handles, so unpack a register into it (``*reg``). See :doc:`compilation`.
+
+Qudits always come from a quantum system: a kernel takes them as parameters, and a
+call passes the quantum system's handles (``qs.qudits[i]``, or a register
+``qs.qudits[0:4]``). A call without handles raises
+``NoQuantumSystemError``, unless the kernel was compiled for a quantum system with
+``pulse.compile(k, quantum_system=qs)``.
 
 The kernel language (``get_drive_line``, ``drive``, ``gaussian``, ...) lives
 in ``cudaq_pulse.ops``; inside a kernel its names are used bare, as above.
@@ -89,13 +117,13 @@ in ``cudaq_pulse.ops``; inside a kernel its names are used bare, as above.
 Durations: cycles or times
 --------------------------
 
-A kernel counts time in cycles of the device's clock (``dev.clock_ghz``).
+A kernel counts time in cycles of the quantum system's clock (``qs.clock_ghz``).
 A duration (a waveform's length or flat top, a ``wait`` and its bounds, a
 ``pulse.round_duration`` length) is either an ``int`` number of cycles or a time
 with units: ``20 * pulse.ns``, ``4 * pulse.us``, also ``pulse.ms`` and
 ``pulse.s``. A time converts to cycles exactly when the kernel compiles,
-for the device it compiles for, so a kernel whose durations are times
-runs unchanged on devices with different clocks. Shape parameters
+for the quantum system it compiles for, so a kernel whose durations are times
+runs unchanged on quantum systems with different clocks. Shape parameters
 (``sigma``, DRAG ``beta``) take cycles, fractional too, or times.
 
 Keep durations out of the kernel body: pass them as arguments, or read
@@ -113,11 +141,11 @@ them from a calibration the kernel closes over.
        wait(d, gap)
        drive(d, x)
 
-   fast = pulse.device("transmon_17q", clock_ghz=2.0)
-   slow = pulse.device("transmon_17q", clock_ghz=1.0)
+   fast = pulse.quantum_system("transmon_surface17", clock_ghz=2.0)
+   slow = pulse.quantum_system("transmon_surface17", clock_ghz=1.0)
    gap = 100 * pulse.ns
-   x_then_wait.lower(fast.qudit_handles[0], gap)  # 40, 200, 40 cycles
-   x_then_wait.lower(slow.qudit_handles[0], gap)  # 20, 100, 20 cycles
+   x_then_wait.lower(fast.qudits[0], gap)  # 40, 200, 40 cycles
+   x_then_wait.lower(slow.qudits[0], gap)  # 20, 100, 20 cycles
 
 - A plain float in a duration is an error, since it could be cycles or
   nanoseconds; the error shows both spellings::
@@ -211,7 +239,9 @@ program op after op, every iteration of its loops (the longer arm of an
 ``if``), and a program longer than that is a ``CompilationError`` at the
 op or loop that passes it. A wait whose length a float sets counts at its
 lowest length; a call whose values make the program longer is a
-``ValueError`` when it binds them.
+``ValueError`` when it binds them. A line's ``delay_ns`` counts too: a
+delay longer than 2**60 cycles, or one that takes the scheduled program
+past them, is a ``CompilationError``.
 
 **For loops over Python values** known when the kernel is traced: lists,
 tuples, dictionaries, ``enumerate()``, ``zip()``, ``reversed()``, a qubit
@@ -260,6 +290,11 @@ held in lists stay threaded through the loop:
            x = drag(cal["x_duration"], 0.5, cal["x_sigma"], cal["x_beta"])
            drive(drive_line, x)
 
+An ``if`` on the answer of a classical call is kept the same way
+(``if correction:``, ``if flip[0]:``, or the in-time flag of
+``result(timeout=...)``), and ``and``, ``or`` and ``not`` combine answers
+and measurement results in one condition; see :doc:`classical_calls`.
+
 Both branches are traced, and lines and tones they rebind become the
 results of the region. Both branches must continue after the ``if``. A
 number the branches set differently holds, after the ``if``, the value of
@@ -279,11 +314,11 @@ the branch that ran:
            amp = 0.0
        drive(drive_line, square(40, amp))
 
-The number is one value the measurement selects. On a target that takes it
+The number is one value the measurement selects. On a quantum system that takes it
 at run time (an amplitude, a phase or a frequency), every op given it, or a
 waveform made from it, reads that value. Otherwise, and always for a
 duration or a waveform's shape, each such op runs in each branch with that
-branch's value, as if it were written in both. No target takes a selected
+branch's value, as if it were written in both. No quantum system takes a selected
 value at run time yet. Either way the op waits for the measurement, and
 the program schedules and simulates the same. A name assigned in only one branch, with no value
 before the ``if``, has none after it: reading it raises a
@@ -388,13 +423,13 @@ runtime parameters, so a sweep over a delay compiles once:
        sync(d, r)
        readout(r, square(cal["readout_duration"], 0.05))
 
-   q = dev.qudit_handles[0]
+   q = qs.qudits[0]
    compiled_echo = pulse.compile(echo)
    for tau in np.linspace(0, 10_000, 1000):  # nanoseconds
        compiled_echo.lower(q, tau)  # one compilation for the whole sweep
 
 - Each call computes the length from its values, in clock cycles (here
-  nanoseconds times ``dev.clock_ghz``), and rounds it to the nearest cycle,
+  nanoseconds times ``qs.clock_ghz``), and rounds it to the nearest cycle,
   ties up (``floor(x + 0.5)``): 99.5 cycles is 100, 99.49 is 99.
 - The call's schedule is exactly that of the kernel compiled with that
   length: ``sync``, ALAP and ASAP placement, loops, branches and called
@@ -407,8 +442,8 @@ runtime parameters, so a sweep over a delay compiles once:
   only has to be non-negative. A call whose length is not finite, is
   negative or falls outside the bounds raises ``ValueError`` naming the
   kernel, the expression and the value, before anything runs.
-- Without values (``pulse.compile(k, device=dev).schedule`` of a kernel that
-  only has float parameters, or ``lowered.generic``) the module is scheduled
+- Without values (``pulse.compile(k, quantum_system=qs).schedule`` of a kernel that
+  only has float parameters, or ``scheduled.generic``) the module is scheduled
   with every such wait at its lowest length, 0 unless ``bounds`` says
   otherwise.
 - A length that needs more than arithmetic (``int(tau)``, ``tau // 2``,
@@ -416,6 +451,12 @@ runtime parameters, so a sweep over a delay compiles once:
   A literal or static length is not rounded: it must be an ``int`` or a
   time that is a whole number of cycles (see :ref:`durations`), and
   ``bounds`` checks it while tracing.
+
+A float argument of a call is a number: a NaN given to ``k(...)``,
+``lower(...)`` or ``bind(...)`` raises ``InvalidValueError`` (a
+``ValueError``) naming the argument when it is bound, and an infinity
+does where the program is used (run, simulated, exported or printed).
+NaN in classical data is allowed (see :doc:`classical_calls`).
 
 Operations check their arguments when they are traced. Passing a tone
 where a line belongs, a number where a waveform belongs, or a readout line
@@ -446,8 +487,9 @@ and will raise ``CompilationError``:
   patterns work)
 - Assignments to globals and to attributes (``obj.x = ...``), class
   definitions, ``async`` code and star imports
-- ``if`` conditions on anything that is only known at runtime other than a
-  measurement result
+- Ordering comparisons (``<``, ``>``, ``<=``, ``>=``) of measurement
+  results or boolean answers, which are known only when the program runs;
+  combine them with ``and``, ``or`` and ``not``
 
 The error names the construct and, where there is one, what to write
 instead.

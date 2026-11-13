@@ -10,15 +10,15 @@ Every error cudaq-pulse raises on purpose derives from ``PulseError``, so
 ``except cudaq_pulse.PulseError`` catches them all. Each also has the
 built-in base of its kind of error, so ``except ValueError`` or ``except
 RuntimeError`` catches it as it would the built-in one: ``InvalidValueError``
-is a ``ValueError``, ``NotFoundError`` and ``UnknownTargetError`` are
-``KeyError``\ s, ``IndexOutOfRangeError`` is an ``IndexError``, and ``CompilationError`` and ``NoTargetError`` are
+is a ``ValueError``, ``NotFoundError`` and ``UnknownQuantumSystemError`` are
+``KeyError``\ s, ``IndexOutOfRangeError`` is an ``IndexError``, and ``CompilationError`` and ``NoProcessQuantumSystemError`` are
 ``RuntimeError``\ s.
 
 .. autoexception:: cudaq_pulse.PulseError
    :members: problems, location
 
 An error that finds several problems at once, such as
-``DeviceDefinitionError``, lists each as a ``Problem`` in ``problems``:
+``QuantumSystemDefinitionError``, lists each as a ``Problem`` in ``problems``:
 
 .. autoclass:: cudaq_pulse.Problem
 
@@ -51,18 +51,18 @@ Running
 
 .. autoexception:: cudaq_pulse.InternalError
 
-Devices and targets
--------------------
+Quantum systems
+---------------------------
 
-.. autoexception:: cudaq_pulse.DeviceDefinitionError
+.. autoexception:: cudaq_pulse.QuantumSystemDefinitionError
 
-.. autoexception:: cudaq_pulse.NoDeviceError
+.. autoexception:: cudaq_pulse.NoQuantumSystemError
 
-.. autoexception:: cudaq_pulse.NoTargetError
+.. autoexception:: cudaq_pulse.NoProcessQuantumSystemError
 
-.. autoexception:: cudaq_pulse.DeviceMismatchError
+.. autoexception:: cudaq_pulse.QuantumSystemMismatchError
 
-.. autoexception:: cudaq_pulse.targets.UnknownTargetError
+.. autoexception:: cudaq_pulse.quantum_systems.UnknownQuantumSystemError
 
 GPU simulation
 --------------

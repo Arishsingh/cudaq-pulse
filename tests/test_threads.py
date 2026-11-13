@@ -120,7 +120,7 @@ def _together(n, work):
 
 
 def test_concurrent_first_loads_build_each_target_and_calibration_once(monkeypatch):
-    from cudaq_pulse.targets import calibration, transmon
+    from cudaq_pulse.quantum_systems import calibration, transmon
 
     monkeypatch.setattr(transmon, "_BUILT", {})
     monkeypatch.setattr(calibration, "_LOADED", {})
@@ -140,13 +140,13 @@ def test_concurrent_first_loads_build_each_target_and_calibration_once(monkeypat
         return found
 
     monkeypatch.setattr(calibration, "_indexed", counted)
-    targets = _together(16, lambda i: transmon.transmon_17q())
+    targets = _together(16, lambda i: transmon._described_surface17())
     assert len(loads) == 1
     assert all(t is targets[0] for t in targets)
 
 
 def test_registering_targets_while_others_resolve(monkeypatch):
-    from cudaq_pulse.targets import _registry
+    from cudaq_pulse.quantum_systems import _registry
 
     monkeypatch.setattr(_registry, "_factories", dict(_registry._registry()))
     monkeypatch.setattr(_registry, "_resolved", {})
@@ -154,13 +154,13 @@ def test_registering_targets_while_others_resolve(monkeypatch):
     def work(i):
         for round in range(200):
             if i % 2:
-                _registry.register_target(f"stress_{i}_{round}", lambda arg: None)
+                _registry.register_quantum_system(f"stress_{i}_{round}", lambda arg: None)
             else:
-                assert "transmon_generic" in pulse.targets.available_targets()
-                assert _registry.make_target("transmon_generic:2").n_qubits == 2
+                assert "transmon_lattice" in pulse.quantum_systems.available_quantum_systems()
+                assert _registry.make_quantum_system("transmon_lattice:2").qudit_count == 2
 
     _together(8, work)
-    names = pulse.targets.available_targets()
+    names = pulse.quantum_systems.available_quantum_systems()
     assert all(f"stress_{i}_{r}" in names for i in (1, 3, 5, 7) for r in range(200))
 
 

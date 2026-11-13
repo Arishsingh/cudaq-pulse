@@ -15,7 +15,7 @@ Functions and links
 
 .. autofunction:: cudaq_pulse.classical.external
 
-.. autofunction:: cudaq_pulse.classical.function_id
+.. autofunction:: cudaq_pulse.classical.dispatch_key
 
 .. autoclass:: cudaq_pulse.classical.ClassicalDecorator
 
@@ -60,11 +60,14 @@ Wire format
 .. automodule:: cudaq_pulse.classical.wire
    :members: schema, encode_request, decode_request, encode_answer, decode_answer, native, HEADER_BYTES, REQUEST_MAGIC, RESPONSE_MAGIC
 
-QEC decoders
-------------
+CUDA-Q QEC decoders
+-------------------
 
-.. automodule:: cudaq_pulse.classical.qec
-   :members: Decoder, enqueue_syndromes, enqueue_syndromes_mapped, get_corrections, reset_decoder
+``pulse.classical`` also takes CUDA-Q QEC's real-time decoding functions,
+``cudaq_qec.qec.enqueue_syndromes``, ``get_corrections`` and
+``reset_decoder``, with the options above (``max_latency_ns`` is 0 unless
+given for the calls that answer nothing); see :ref:`the user guide
+<cudaq-qec-decoders>`.
 
 Emulation
 ---------
@@ -82,10 +85,4 @@ Loops between shots
 -------------------
 
 .. automodule:: cudaq_pulse.classical.loop
-   :members:
-
-Drifting devices
-----------------
-
-.. automodule:: cudaq_pulse.runtime.drift
    :members:

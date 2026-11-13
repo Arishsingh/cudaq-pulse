@@ -21,8 +21,8 @@ import subprocess
 import cudaq_pulse as pulse
 
 _PRELUDE = """
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d, %t = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d, %t = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %amp = arith.constant 0.1 : f64
   %zero = arith.constant 0.0 : f64
 """
@@ -48,7 +48,7 @@ programs = {
             line="%d",
             wf="%wf",
             tone="%t",
-            attrs=" {start_cycles = 0 : i64, duration_cycles = 40 : i64}",
+            attrs=" <{start_cycles = 0 : i64, duration_cycles = 40 : i64}>",
         )
     }
   %d2, %t2 = {
@@ -56,7 +56,7 @@ programs = {
             line="%d1",
             wf="%wf",
             tone="%t1",
-            attrs=" {start_cycles = 20 : i64, duration_cycles = 40 : i64}",
+            attrs=" <{start_cycles = 20 : i64, duration_cycles = 40 : i64}>",
         )
     }
 """,
@@ -105,11 +105,11 @@ def main():
 
     print("=== the same check on a kernel ===")
     try:
-        pulse.compile(zero_length, device=dev).lower(dev.qudit_handles[0])
+        pulse.compile(zero_length, quantum_system=qs).lower(qs.qudits[0])
     except RuntimeError as error:
         print(error)
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
+    qs = pulse.quantum_system("transmon_surface17")
     main()

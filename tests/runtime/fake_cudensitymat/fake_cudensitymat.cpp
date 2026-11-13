@@ -5,7 +5,9 @@
 // operator action is a scalar model: L(t) rho = s(t) rho, where s(t) sums,
 // over every appended term and product, the coefficients times the value of
 // the product's scalar callback at t. That keeps the runtime's integrators,
-// state handling and callback table real while needing no GPU.
+// state handling and callback table real while needing no GPU. A batched
+// state holds its members one after another, and each member takes the
+// callbacks' value and the scaling factor for its own index.
 
 #include <cudensitymat.h>
 
@@ -33,6 +35,7 @@ struct FakeCudmElementary {};
 struct FakeCudmState {
   size_t size = 0;
   Complex *data = nullptr;
+  size_t batch = 1;
 };
 
 struct FakeCudmTerm {
@@ -45,20 +48,20 @@ struct FakeCudmOperator {
 
 namespace {
 
-cudensitymatStatus_t scalarAt(const FakeCudmOperator *op, double time,
-                              Complex &value) {
-  value = 0.0;
+cudensitymatStatus_t scalarsAt(const FakeCudmOperator *op, double time,
+                               std::vector<Complex> &values) {
+  std::fill(values.begin(), values.end(), Complex{});
+  std::vector<cuDoubleComplex> samples(values.size());
   for (const auto &[term, termCoefficient] : op->terms) {
     for (const Product &product : term->products) {
-      Complex factor = 1.0;
-      if (product.callback) {
-        cuDoubleComplex sample{};
-        if (product.callback(time, 1, 0, nullptr, CUDA_C_64F, &sample,
-                             nullptr) != 0)
-          return CUDENSITYMAT_STATUS_INVALID_VALUE;
-        factor = Complex(sample.x, sample.y);
-      }
-      value += termCoefficient * product.coefficient * factor;
+      std::fill(samples.begin(), samples.end(), make_cuDoubleComplex(1.0, 0.0));
+      if (product.callback &&
+          product.callback(time, static_cast<int64_t>(samples.size()), 0,
+                           nullptr, CUDA_C_64F, samples.data(), nullptr) != 0)
+        return CUDENSITYMAT_STATUS_INVALID_VALUE;
+      for (size_t member = 0; member < values.size(); ++member)
+        values[member] += termCoefficient * product.coefficient *
+                          Complex(samples[member].x, samples[member].y);
     }
   }
   return CUDENSITYMAT_STATUS_SUCCESS;
@@ -100,12 +103,11 @@ cudensitymatStatus_t cudensitymatDestroy(cudensitymatHandle_t handle) {
   return CUDENSITYMAT_STATUS_SUCCESS;
 }
 
-cudensitymatStatus_t cudensitymatCreateState(const cudensitymatHandle_t,
-                                             cudensitymatStatePurity_t purity,
-                                             int32_t numSpaceModes,
-                                             const int64_t spaceModeExtents[],
-                                             int64_t, cudaDataType_t dataType,
-                                             cudensitymatState_t *state) {
+cudensitymatStatus_t
+cudensitymatCreateState(const cudensitymatHandle_t,
+                        cudensitymatStatePurity_t purity, int32_t numSpaceModes,
+                        const int64_t spaceModeExtents[], int64_t batchSize,
+                        cudaDataType_t dataType, cudensitymatState_t *state) {
   if (dataType != CUDA_C_64F)
     return CUDENSITYMAT_STATUS_INVALID_VALUE;
   size_t size = 1;
@@ -113,7 +115,8 @@ cudensitymatStatus_t cudensitymatCreateState(const cudensitymatHandle_t,
     size *= static_cast<size_t>(spaceModeExtents[i]);
   if (purity == CUDENSITYMAT_STATE_PURITY_MIXED)
     size *= size;
-  *state = new FakeCudmState{size, nullptr};
+  const size_t batch = batchSize > 1 ? static_cast<size_t>(batchSize) : 1;
+  *state = new FakeCudmState{size * batch, nullptr, batch};
   return CUDENSITYMAT_STATUS_SUCCESS;
 }
 
@@ -153,10 +156,10 @@ cudensitymatStatus_t cudensitymatStateInitializeZero(const cudensitymatHandle_t,
 cudensitymatStatus_t cudensitymatStateComputeAccumulation(
     const cudensitymatHandle_t, const cudensitymatState_t stateIn,
     cudensitymatState_t stateOut, const void *scalingFactors, cudaStream_t) {
-  const Complex factor =
-      toComplex(*static_cast<const cuDoubleComplex *>(scalingFactors));
+  const auto *factors = static_cast<const cuDoubleComplex *>(scalingFactors);
+  const size_t member = stateOut->size / stateOut->batch;
   for (size_t i = 0; i < stateOut->size; ++i)
-    stateOut->data[i] += factor * stateIn->data[i];
+    stateOut->data[i] += toComplex(factors[i / member]) * stateIn->data[i];
   return CUDENSITYMAT_STATUS_SUCCESS;
 }
 
@@ -260,15 +263,19 @@ cudensitymatStatus_t cudensitymatOperatorPrepareAction(
 }
 
 cudensitymatStatus_t cudensitymatOperatorComputeAction(
-    const cudensitymatHandle_t, cudensitymatOperator_t op, double time, int64_t,
-    int32_t, const double *, const cudensitymatState_t stateIn,
-    cudensitymatState_t stateOut, cudensitymatWorkspaceDescriptor_t,
-    cudaStream_t) {
-  Complex scalar;
-  if (auto status = scalarAt(op, time, scalar))
+    const cudensitymatHandle_t, cudensitymatOperator_t op, double time,
+    int64_t batchSize, int32_t, const double *,
+    const cudensitymatState_t stateIn, cudensitymatState_t stateOut,
+    cudensitymatWorkspaceDescriptor_t, cudaStream_t) {
+  if (static_cast<size_t>(batchSize > 1 ? batchSize : 1) != stateIn->batch ||
+      stateIn->batch != stateOut->batch)
+    return CUDENSITYMAT_STATUS_INVALID_VALUE;
+  std::vector<Complex> scalars(stateIn->batch);
+  if (auto status = scalarsAt(op, time, scalars))
     return status;
+  const size_t member = stateOut->size / stateOut->batch;
   for (size_t i = 0; i < stateOut->size; ++i)
-    stateOut->data[i] += scalar * stateIn->data[i];
+    stateOut->data[i] += scalars[i / member] * stateIn->data[i];
   return CUDENSITYMAT_STATUS_SUCCESS;
 }
 
@@ -276,8 +283,8 @@ cudensitymatStatus_t fakeCudmLastOperatorScalar(double time,
                                                 cuDoubleComplex *value) {
   if (!lastOperator)
     return CUDENSITYMAT_STATUS_INVALID_VALUE;
-  Complex scalar;
-  auto status = scalarAt(lastOperator, time, scalar);
-  *value = make_cuDoubleComplex(scalar.real(), scalar.imag());
+  std::vector<Complex> scalars(1);
+  auto status = scalarsAt(lastOperator, time, scalars);
+  *value = make_cuDoubleComplex(scalars[0].real(), scalars[0].imag());
   return status;
 }

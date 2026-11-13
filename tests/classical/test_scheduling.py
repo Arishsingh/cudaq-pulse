@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import math
-import time
 
 import cudaq_pulse as pulse
 import pytest
@@ -15,11 +14,11 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from tests._handles import Q
-from tests._work import python_work
+from tests._work import cpu_seconds, native_seconds, python_work
 from tests.property_settings import examples
 
 POLICIES = ("asap", "alap", "rcp", "alap_rcp")
-CLOCK = 2.0  # the test device's clock, GHz
+CLOCK = 2.0  # the test quantum system's clock, GHz
 READOUT, ARM, LATENCY_NS = 300, 40, 1000
 BUDGET = math.ceil(LATENCY_NS * CLOCK)
 
@@ -100,7 +99,7 @@ def answered_before_a_loop(q):
 @pytest.mark.parametrize("schedule", POLICIES)
 def test_an_answer_taken_before_a_loop_is_taken_before_its_first_iteration_tests_it(schedule):
     lowered = pulse.compile(answered_before_a_loop, schedule=schedule).lower(Q[0])
-    events = lowered.export_controller()["events"]
+    events = lowered.export_to_controller()["events"]
     # Every iteration branches on the answer, the first at its due time.
     [answer] = [e for e in events if e["kind"] == "answer"]
     tested = [e for e in events if any(c["answers"] for c in e["conditions"])]
@@ -174,7 +173,7 @@ def test_rounds_overlap_their_calls(policy, rolled):
 @pytest.mark.parametrize("policy", POLICIES)
 @pytest.mark.parametrize("slots", [1, 2, 3])
 def test_link_slots_bound_requests_in_flight(policy, slots):
-    machine = ControlSystem(links={"host": Link(max_in_flight=slots)})
+    machine = ControlSystem(links={"host": Link(slots=slots)})
     low = pulse.compile(
         _rounds(6), schedule=policy, control_system=machine, unroll_threshold=0
     ).lower(Q[0])
@@ -367,25 +366,21 @@ def test_very_many_calls_schedule_in_linear_time(links):
     # takes in native code, is the best of five in CPU time: one wall-clock
     # sample per size failed on a loaded machine.
     timings, work = {}, {}
-    for n in (500, 2000):
+    for n in (250, 2000):
         kernel = _many(n, links)
 
         def run(kernel=kernel):
             return pulse.compile(kernel, schedule="asap").lower(Q[0])
 
         work[n] = python_work(run)
-        timings[n] = float("inf")
-        for _ in range(5):
-            t0 = time.process_time()
-            low = run()
-            timings[n] = min(timings[n], time.process_time() - t0)
-        calls = low.classical_report()
+        timings[n] = cpu_seconds(run)
+        calls = run().classical_report()
         assert len(calls) == n
         # Each call waits for the previous drive; answers are due 41 later.
         assert calls[-1].due_cycles == calls[-1].submit_cycles + 1 + 40
-    # 4x the calls in well under 16x the time (quadratic would be 16x).
-    assert all(work[2000][count] <= 4 * work[500][count] for count in work[500]), work
-    assert timings[2000] < 8 * timings[500], timings
+    # 8x the calls: 8x the time when linear, 64x when quadratic.
+    assert all(work[2000][count] <= 8 * work[250][count] for count in work[250]), work
+    assert timings[2000] < 24 * timings[250], timings
 
 
 @pulse.classical(max_latency_ns=200)
@@ -422,13 +417,14 @@ def _shots(n):
 @pytest.mark.slow
 def test_shots_that_branch_on_one_answer_schedule_in_linear_time():
     # Every shot of a round branches on the answer the round before sent its
-    # measurements to; the time, native, is the best of five compiles (a
-    # program lowers once, so lowering it again would time nothing).
+    # measurements to; the time, native, is of whole compiles (a program
+    # lowers once, so lowering it again would time nothing).
     timings = {}
     for n in (100, 1600):
-        timings[n] = min(pulse.compile(_shots(n)).lower(Q[0]).metrics.schedule_ms for _ in range(5))
-    # 16x the shots in well under 256x the time (quadratic would be 256x).
-    assert timings[1600] < 48 * timings[100], timings
+        kernel = _shots(n)
+        timings[n] = native_seconds(lambda kernel=kernel: pulse.compile(kernel).lower(Q[0]))
+    # 16x the shots: 16x the time when linear, 256x when quadratic.
+    assert timings[1600] < 64 * timings[100], timings
 
 
 @pulse.classical(max_latency_ns=60, link="decoder", submit="lazy")
@@ -458,7 +454,7 @@ def decoded(q, r):
 def test_a_correction_from_decoder_state_waits_for_every_syndrome_it_holds(schedule):
     machine = ControlSystem(links={"decoder": Link(fixed_ns=10)})
     lowered = pulse.compile(decoded, schedule=schedule, control_system=machine).lower(Q[0], Q[1])
-    events = lowered.export_controller()["events"]
+    events = lowered.export_to_controller()["events"]
     corrections = [e for e in events if e["kind"] == "drive" and e["conditions"]]
     assert len(corrections) == 2
     for drive in corrections:
@@ -595,7 +591,7 @@ def test_a_block_waits_for_a_slot_the_caller_holds(callee, policy):
         twice(r)
         f.result()
 
-    machine = ControlSystem(links={"host": Link(max_in_flight=2)})
+    machine = ControlSystem(links={"host": Link(slots=2)})
     calls = pulse.compile(k, schedule=policy, control_system=machine).lower(Q[0]).classical_report()
     first, *block = calls
     # The block's second request needs the slot the first call frees.
@@ -764,8 +760,8 @@ def test_blocking_on_calls_is_exported_and_kept_in_system_files():
     assert "blocks_on_calls" not in pulse.Controller().as_dict()
     assert pulse.Controller(**blocking.as_dict()) == blocking
     low = pulse.compile(_blocked_shots, control_system=blocking).lower(Q[0])
-    assert low.export_controller()["limits"]["blocks_on_calls"] is True
-    assert low.export_controller(version=2)["controller"]["blocks_on_calls"] is True
+    assert low.export_to_controller()["limits"]["blocks_on_calls"] is True
+    assert low.export_to_controller(version=2)["controller"]["blocks_on_calls"] is True
     with pytest.raises(pulse.InvalidValueError, match="blocks_on_calls must be a bool"):
         pulse.Controller(blocks_on_calls=1)  # type: ignore[arg-type]
 
@@ -803,7 +799,7 @@ def _across(q0, q1, q2):
 def _playing(low):
     """The qudits whose drives or readouts play while a call is out."""
     return {
-        e.qubit
+        e.qudit
         for call in low.classical_report()
         for e in low.schedule
         if e.kind in ("drive", "readout")

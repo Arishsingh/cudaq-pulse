@@ -10,11 +10,11 @@
 
 // CHECK-LABEL: func.func @t1(%arg0: f64)
 func.func @t1(%tau: f64) {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q {qubit = 0 : i64}
-      : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %rt0 = pulse.get_readout_line %q {qubit = 0 : i64}
-      : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q
+      : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %rt0 = pulse.get_readout_line %q
+      : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %c200 = arith.constant 200 : i64
   %amp = arith.constant 0.3 : f64
@@ -34,17 +34,17 @@ func.func @t1(%tau: f64) {
   %len = pulse.duration_from_int %n : (i64) -> !pulse.duration
   // CHECK: = pulse.wait %
   // CHECK-SAME: duration_cycles = 16
+  // CHECK-SAME: start_cycles = 40
   // CHECK-SAME: pulse.max_cycles = 4000
   // CHECK-SAME: pulse.min_cycles = 16
   // CHECK-SAME: pulse.variable_wait
-  // CHECK-SAME: start_cycles = 40
   %d2 = pulse.wait %d1, %len {pulse.variable_wait, pulse.min_cycles = 16 : i64, pulse.max_cycles = 4000 : i64}
       : (!pulse.drive_line, !pulse.duration) -> !pulse.drive_line
   %s:2 = pulse.sync %d2, %r0 : !pulse.drive_line, !pulse.readout_line
       -> !pulse.drive_line, !pulse.readout_line
   // CHECK: = pulse.readout %
   // CHECK-SAME: start_cycles = 56
-  %r1, %rt1, %res = pulse.readout %s#1, %m, %rt0, "iq"
+  %r1, %rt1, %res = pulse.readout %s#1, %m, %rt0, iq
       : !pulse.readout_line, !pulse.waveform, !pulse.tone
       -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   return
@@ -55,12 +55,12 @@ func.func @t1(%tau: f64) {
 
 // CHECK-LABEL: func.func @two_lines(%arg0: f64)
 func.func @two_lines(%tau: f64) {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %p = pulse.qudit_alloc : !pulse.qref
-  %a0, %at = pulse.get_drive_line %q {qubit = 0 : i64}
-      : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %b0, %bt = pulse.get_drive_line %p {qubit = 1 : i64}
-      : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %p = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %a0, %at = pulse.get_drive_line %q
+      : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %b0, %bt = pulse.get_drive_line %p
+      : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c20 = arith.constant 20 : i64
   %amp = arith.constant 0.3 : f64
   %zero = arith.constant 0.0 : f64
@@ -89,9 +89,9 @@ func.func @two_lines(%tau: f64) {
 
 // ROUNDTRIP-LABEL: func.func @bound()
 func.func @bound() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q {qubit = 0 : i64}
-      : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q
+      : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %amp = arith.constant 0.3 : f64
   %zero = arith.constant 0.0 : f64

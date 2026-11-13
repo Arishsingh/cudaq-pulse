@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A custom check written in Python, run on a compiled kernel's schedule.
 
-``Lowered.schedule`` lists every drive, readout and wait with its
+``ScheduledKernel.schedule`` lists every drive, readout and wait with its
 line, qubit and scheduled time, so a pass that inspects the schedule is a
 plain Python function. This one enforces a hardware limit the scheduler
 does not know about: at most ``max_drives`` drive lines may play at once.
@@ -16,10 +16,12 @@ import cudaq_pulse as pulse
 cal = {"x_duration": 20 * pulse.ns, "x_sigma": 5 * pulse.ns, "drag_beta": 0.25 * pulse.ns}
 
 
-def concurrent_drive_violations(compiled: pulse.Lowered, max_drives: int) -> list[tuple[int, int]]:
+def concurrent_drive_violations(
+    scheduled: pulse.ScheduledKernel, max_drives: int
+) -> list[tuple[int, int]]:
     """Return (time, active drives) wherever more than *max_drives* overlap."""
     edges = []
-    for event in compiled.schedule:
+    for event in scheduled.schedule:
         if event.kind == "drive" and event.duration_cycles:
             edges.append((event.start, 1))
             edges.append((event.end, -1))
@@ -42,9 +44,9 @@ def parallel_x(qs):
 
 
 def main() -> None:
-    args = [dev.qudit_handles[:4]]
+    args = [qs.qudits[:4]]
 
-    asap = pulse.compile(parallel_x, schedule="asap", device=dev).lower(*args)
+    asap = pulse.compile(parallel_x, schedule="asap", quantum_system=qs).lower(*args)
     print("ASAP violations of a 2-drive limit:", concurrent_drive_violations(asap, 2))
 
     rcp = pulse.compile(
@@ -56,5 +58,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
+    qs = pulse.quantum_system("transmon_surface17")
     main()

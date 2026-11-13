@@ -51,6 +51,8 @@ from tests.kernel.ir_corpus import (
     tone_list_loop,
 )
 
+_guard = importlib.import_module("cudaq_pulse.kernel._guard")
+
 pytestmark = pytest.mark.benchmark
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -87,10 +89,10 @@ def _best(
 
 def _assert_flat(what: str, runs: dict[int, Callable[[], object]]) -> None:
     """The run of each size in *runs* does the same Python work, and the
-    largest takes less than FLAT_LOOP_LIMIT times the smallest's time."""
+    largest takes less than FLAT_LOOP_LIMIT times the smallest's CPU time."""
     small, large = min(runs), max(runs)
     work = {n: python_work(runs[n]) for n in (small, large)}
-    seconds = {n: _best(runs[n], 20) for n in (small, large)}
+    seconds = {n: _best(runs[n], 20, clock=time.process_time) for n in (small, large)}
     assert work[large] == work[small], (what, work)
     assert seconds[large] < seconds[small] * FLAT_LOOP_LIMIT, (what, seconds)
 
@@ -128,13 +130,13 @@ def _compile_time_workloads():
     return {name: (k, n, f) for name, k, n, f in module.WORKLOADS}
 
 
-def _kernel_ir(kernel, n_qubits: int) -> Callable[[], object]:
-    return lambda: python_ir(kernel, *[Q[i] for i in range(n_qubits)])
+def _kernel_ir(kernel, qudit_count: int) -> Callable[[], object]:
+    return lambda: python_ir(kernel, *[Q[i] for i in range(qudit_count)])
 
 
 # A fresh compiled kernel holds no specializations, so these compile.
-def _compile(kernel, n_qubits: int) -> Callable[[], object]:
-    return lambda: pulse.compile(kernel).lower(*[Q[i] for i in range(n_qubits)])
+def _compile(kernel, qudit_count: int) -> Callable[[], object]:
+    return lambda: pulse.compile(kernel).lower(*[Q[i] for i in range(qudit_count)])
 
 
 def _fused(kernel, n: int) -> Callable[[], object]:
@@ -146,7 +148,7 @@ def _packed_trace(kernel, n: int) -> Callable[[], object]:
     fn = kernel.__wrapped__
 
     def run():
-        builder = PackedIRBuilder(name="k", clock_ghz=2.0, qubit_freq_hz=freq)
+        builder = PackedIRBuilder(name="k", clock_ghz=2.0, qudit_freq_hz=freq)
         _trace_kernel_with_builder(fn, builder, [Q[0:n]])
 
     return run
@@ -156,9 +158,9 @@ def _cases() -> dict[str, Callable[[], object]]:
     workloads = _compile_time_workloads()
     cases = {}
     for name in ("bell", "qaoa4", "dd_cpmg8", "vqe_hea"):
-        kernel, n_qubits, _ = workloads[name]
-        cases[f"tier1_{name}_trace"] = _kernel_ir(kernel, n_qubits)
-        cases[f"tier1_{name}_compile"] = _compile(kernel, n_qubits)
+        kernel, qudit_count, _ = workloads[name]
+        cases[f"tier1_{name}_trace"] = _kernel_ir(kernel, qudit_count)
+        cases[f"tier1_{name}_compile"] = _compile(kernel, qudit_count)
     for n in (8, 512):
         cases[f"dd_loop_n{n}"] = _kernel_ir(dd_loop(n), 1)
         cases[f"dd_loop_n{n}_compile"] = _compile(dd_loop(n), 1)
@@ -172,7 +174,7 @@ def _cases() -> dict[str, Callable[[], object]]:
     cases["parametric_compile"] = lambda: pulse.compile(parametric).lower(Q[0], 0.5, 2)
     cases["parametric_trace"] = lambda: _trace_kernel_with_builder(
         parametric.__wrapped__,
-        PackedIRBuilder(name="p", clock_ghz=2.0, qubit_freq_hz={0: 5e9}),
+        PackedIRBuilder(name="p", clock_ghz=2.0, qudit_freq_hz={0: 5e9}),
         [Q[0], Parameter("amp", 0, "f64"), Parameter("n", 1, "i64")],
     )
     return cases
@@ -200,10 +202,10 @@ def test_compile_time_within_baseline(ratios, request):
 
 
 def test_building_the_module_costs_less_than_tracing_the_kernel():
-    kernel, n_qubits, _ = _compile_time_workloads()["bell"]
+    kernel, qudit_count, _ = _compile_time_workloads()["bell"]
     best = {"trace_ms": float("inf"), "ffi_ms": float("inf")}
     for _ in range(50):
-        metrics = _compile(kernel, n_qubits)().metrics
+        metrics = _compile(kernel, qudit_count)().metrics
         for stage in best:
             best[stage] = min(best[stage], getattr(metrics, stage))
     assert best["ffi_ms"] < best["trace_ms"], best
@@ -251,11 +253,11 @@ def test_retained_loop_compile_work_is_flat():
             assert retained[0][count] <= unrolled[count], (make.__name__, count)
 
 
-def _half_unused(n_qubits: int):
+def _half_unused(qudit_count: int):
     @pulse.kernel
-    def kernel(qubits):
-        for q in range(n_qubits):
-            line = get_drive_line(qubits[q])
+    def kernel(qudits):
+        for q in range(qudit_count):
+            line = get_drive_line(qudits[q])
             if q % 2 == 0:
                 drive(line, square(20, 0.1))
 
@@ -271,7 +273,7 @@ def test_verify_does_constant_work_per_unused_line(tmp_path):
     opt = shutil.which("cudaq-pulse-opt", path=str(_BUILD_BIN)) or shutil.which("cudaq-pulse-opt")
     if opt is None:
         missing("cudaq-pulse-opt", "cudaq-pulse-opt is not built or on PATH")
-    wide = pulse.device(ladder_target(2000)).qudit_handles
+    wide = ladder_target(2000).qudits
     for n in (500, 2000):
         module = tmp_path / f"half_unused_{n}.mlir"
         module.write_text(pulse.compile(_half_unused(n), passes=()).lower(wide[0:n]).mlir())
@@ -284,7 +286,7 @@ def test_verify_does_constant_work_per_unused_line(tmp_path):
         ).stderr
         warnings = re.findall(r"^\S+: warning: (.*)$", stderr, re.M)
         assert warnings == [
-            f"drive line allocated but never used (qubit {q})" for q in range(1, n, 2)
+            f"drive line allocated but never used (qudit {q})" for q in range(1, n, 2)
         ]
         # The message, the source line and its caret: nothing attached.
         assert stderr.count("\n") == 3 * len(warnings), stderr[:2000]
@@ -304,7 +306,9 @@ def test_compiling_a_kernel_that_reads_a_dict_is_flat_in_its_size():
         )
         kernel = pulse.kernel(namespace["kernel"])
         compiled = pulse.compile(kernel)
-        compiled.lower(Q[0])
+        # Past the call that upgrades the guard: a call measures the steady state.
+        for _ in range(1 + _guard.UPGRADE_AFTER):
+            compiled.lower(Q[0])
         return lambda: pulse.compile(kernel).lower(Q[0]), lambda: compiled.lower(Q[0])
 
     # Copying a million entries, or hashing them, takes some 10 ms.
@@ -315,12 +319,12 @@ def test_compiling_a_kernel_that_reads_a_dict_is_flat_in_its_size():
 
 @pytest.mark.scaling
 def test_a_wide_sync_traces_in_linear_time():
-    wide = pulse.device(ladder_target(4000)).qudit_handles
+    wide = ladder_target(4000).qudits
 
     def program(n: int):
         @pulse.kernel
-        def kernel(qubits):
-            lines = [get_drive_line(q) for q in qubits]
+        def kernel(qudits):
+            lines = [get_drive_line(q) for q in qudits]
             sync(*lines)
             for line in lines:
                 drive(line, square(8, 0.1))
@@ -328,11 +332,7 @@ def test_a_wide_sync_traces_in_linear_time():
         return lambda: pulse.compile(kernel).lower(wide[0:n])
 
     # Eight times the lines: about 8x the time when linear, 64x when not.
-    runs = {n: program(n) for n in (500, 4000)}
-    work = {n: python_work(run) for n, run in runs.items()}
-    times = {n: min(run().metrics.trace_ms for _ in range(5)) for n, run in runs.items()}
-    assert all(work[4000][count] <= 8 * work[500][count] for count in work[500]), work
-    assert times[4000] < 16 * times[500], times
+    _assert_linear("trace", {n: program(n) for n in (500, 4000)}, 16)
 
 
 @pytest.mark.scaling
@@ -357,7 +357,7 @@ def test_a_long_program_is_exported_and_checked_in_linear_time():
     limits = Controller(
         instruction_cycles=2,
         detectors={0: 0},
-        max_tones_per_line=2,
+        max_frequencies_per_line=2,
         waveform_memory_samples=10**9,
         feedback_latency_cycles=1,
     )
@@ -382,7 +382,7 @@ def test_a_long_program_is_exported_and_checked_in_linear_time():
         return compiled.lower(Q[0])
 
     # Eight times the events: about 8x the time when linear, 64x when not.
-    runs = {n: program(n).export_controller for n in (500, 4000)}
+    runs = {n: program(n).export_to_controller for n in (500, 4000)}
     _assert_linear("export", runs, 8 * TOLERANCE)
 
 
@@ -422,7 +422,10 @@ def _sweep(compiled, sweep: list[float], monkeypatch) -> None:
 @pytest.mark.scaling
 def test_a_rolled_loop_is_checked_and_exported_rolled_in_constant_time():
     limits = Controller(
-        instruction_cycles=2, detectors={0: 0}, max_tones_per_line=2, waveform_memory_samples=10**9
+        instruction_cycles=2,
+        detectors={0: 0},
+        max_frequencies_per_line=2,
+        waveform_memory_samples=10**9,
     )
     machine = ControlSystem(controllers=[limits])
 
@@ -445,8 +448,8 @@ def test_a_rolled_loop_is_checked_and_exported_rolled_in_constant_time():
         kernel = program(n)
         compiles[n] = lambda k=kernel: pulse.compile(k, control_system=machine).lower(Q[0])
         lowered = compiles[n]()
-        exports[n] = lambda m=lowered: m.export_controller(version=2)
-        size[n] = len(json.dumps(lowered.export_controller(version=2)))
+        exports[n] = lambda m=lowered: m.export_to_controller(version=2)
+        size[n] = len(json.dumps(lowered.export_to_controller(version=2)))
     # The same cost at any trip count when the loop stays rolled.
     _assert_flat("compile", compiles)
     _assert_flat("export", exports)
@@ -526,8 +529,8 @@ def test_exporting_a_call_again_does_not_specialize_again():
 
     compiled = pulse.compile(pulses, unroll_threshold=100_000)
     values = iter(1e-3 * k for k in range(1, 10**6))
-    new = _best(lambda: compiled.lower(Q[0], next(values)).export_controller(), 20)
-    again = _best(lambda: compiled.lower(Q[0], 0.5).export_controller(), 20)
+    new = _best(lambda: compiled.lower(Q[0], next(values)).export_to_controller(), 20)
+    again = _best(lambda: compiled.lower(Q[0], 0.5).export_to_controller(), 20)
     assert compiled.lower(Q[0], 0.5)._concrete() is compiled.lower(Q[0], 0.5)._concrete()
     # Specializing is most of an export of new values: about 3x the time.
     assert again < new / 1.5, (again, new)
@@ -561,7 +564,7 @@ _SIMULATE_PAIRS = """
 import json, resource, sys
 import cudaq_pulse as pulse
 
-q = pulse.device("transmon_17q").qudit_handles
+q = pulse.quantum_system("transmon_surface17").qudits
 
 
 @pulse.kernel
@@ -617,7 +620,7 @@ def _classical_benchmarks():
 @pytest.mark.scaling
 def test_calls_compile_schedule_and_report_in_linear_time():
     bench = _classical_benchmarks()
-    q = bench._device().qudit_handles[0]
+    q = bench._device().qudits[0]
     compiles, reports = {}, {}
     for n in (1000, 8000):
         kernel = bench.many_calls(n, 4)
@@ -628,15 +631,15 @@ def test_calls_compile_schedule_and_report_in_linear_time():
     # 8x the calls: linear is 8x, quadratic 64x.
     _assert_linear("compile", compiles, 16)
     _assert_linear("report", reports, 16)
-    events_s = _best(lambda m=lowered: m.schedule, 5)
-    assert events_s < _best(lowered.classical_report, 5) * 4
+    events_s = _best(lambda m=lowered: m.schedule, 5, clock=time.process_time)
+    assert events_s < _best(lowered.classical_report, 5, clock=time.process_time) * 4
 
 
 def test_a_cached_kernel_that_calls_lowers_in_microseconds():
     bench = _classical_benchmarks()
     dev = bench._device()
-    q = dev.qudit_handles[0]
-    compiled = pulse.compile(bench.decoded_reset, device=dev)
+    q = dev.qudits[0]
+    compiled = pulse.compile(bench.decoded_reset, quantum_system=dev)
     compiled.lower(q)
     per_call = _best(lambda: [compiled.lower(q) for _ in range(100)], 5) / 100
     assert compiled.cache_info().compiled == 1
@@ -646,9 +649,9 @@ def test_a_cached_kernel_that_calls_lowers_in_microseconds():
 def test_a_call_adds_little_to_simulation_on_the_same_timeline():
     bench = _classical_benchmarks()
     dev = bench._device(t1_us=20.0)
-    q = dev.qudit_handles[0]
-    plain = pulse.compile(bench.waiting_reset, device=dev).lower(q)
-    called = pulse.compile(bench.decoded_reset, device=dev).lower(q)
+    q = dev.qudits[0]
+    plain = pulse.compile(bench.waiting_reset, quantum_system=dev).lower(q)
+    called = pulse.compile(bench.decoded_reset, quantum_system=dev).lower(q)
     plus = [2**-0.5, 2**-0.5]
     a = _best(lambda: pulse.simulate(plain, initial_state=plus, levels=2, dt_ns=0.5), 3, 0)
     b = _best(lambda: pulse.simulate(called, initial_state=plus, levels=2, dt_ns=0.5), 3, 0)
@@ -662,7 +665,7 @@ def test_compiling_calls_takes_little_memory_per_call():
     import tracemalloc
 
     bench = _classical_benchmarks()
-    q = bench._device().qudit_handles[0]
+    q = bench._device().qudits[0]
     peaks = {}
     for n in (500, 4000):
         kernel = bench.many_calls(n, 1)
@@ -699,7 +702,7 @@ def test_walking_a_long_program_along_a_path_is_linear():
         lowered = _measured_line(n)
         module = lowered._concrete().simulation_module(*lowered.options.schedule_args())
         walks[n] = lambda m=module: m.next_measurement([])
-        exports[n] = lowered.export_controller
+        exports[n] = lowered.export_to_controller
     # 8x the ops: linear is 8x, quadratic 64x.
     _assert_linear("walk", walks, 16)
     _assert_linear("export", exports, 16)
@@ -712,9 +715,9 @@ def test_a_long_idle_simulates_in_constant_time():
         drive(d, square(40, 0.157))
         wait(d, wait_cycles)
 
-    dev = pulse.device(ladder_target(1))
-    compiled = pulse.compile(idle, device=dev)
-    q = dev.qudit_handles[0]
+    dev = ladder_target(1)
+    compiled = pulse.compile(idle, quantum_system=dev)
+    q = dev.qudits[0]
     short, long = compiled.lower(q, 2_000), compiled.lower(q, 400_000)
     times = {
         name: _best(lambda m=m: pulse.simulate(m), 3, 0)
@@ -748,12 +751,14 @@ def test_an_adaptive_loop_of_fifty_rounds_simulates_one_path_per_shot():
             wait(d, w, bounds=(40, 200_000))
 
     machine = ControlSystem(links={"controller": Link(fixed_ns=4, feedback_ns=8)})
-    dev = pulse.device(ladder_target(1))
-    lowered = pulse.compile(rounds, device=dev, control_system=machine).lower(
-        dev.qudit_handles[0], 50
+    dev = ladder_target(1)
+    lowered = pulse.compile(rounds, quantum_system=dev, control_system=machine).lower(
+        dev.qudits[0], 50
     )
     seconds = _best(
-        lambda: pulse.simulate(lowered, shots=1, seed=1, branches="sampled", dt_ns=0.125), 2, 0
+        lambda: pulse.simulate(lowered, shots_count=1, seed=1, branches="sampled", dt_ns=0.125),
+        2,
+        0,
     )
     # Following all 2^50 paths is out of reach; one path takes about 0.1 s.
     assert seconds < 2.0, seconds

@@ -40,16 +40,17 @@ func.func @custom_samples_longer_than_an_i64() {
 
 // -----
 
-func.func @qvec_of_fewer_results_than_qudits() {
-  // expected-error @+1 {{'pulse.qvec_alloc' op allocates 3 qudits, but returns 1 references}}
-  %q = pulse.qvec_alloc 3 : !pulse.qref
+func.func @qudit_without_an_index() {
+  // expected-error @+1 {{'pulse.qudit_alloc' op requires attribute 'qudit'}}
+  %q = pulse.qudit_alloc : !pulse.qudit
   return
 }
 
 // -----
 
-func.func @qvec_of_three_qudits() {
-  %q:3 = pulse.qvec_alloc 3 : !pulse.qref, !pulse.qref, !pulse.qref
+func.func @qudit_of_a_negative_index() {
+  // expected-error @+1 {{'pulse.qudit_alloc' op attribute 'qudit' failed to satisfy constraint: 64-bit signless integer attribute whose value is non-negative}}
+  %q = pulse.qudit_alloc {qudit = -1 : i64} : !pulse.qudit
   return
 }
 
@@ -91,5 +92,13 @@ func.func @sync_that_swaps_its_lines(%a: !pulse.drive_line, %b: !pulse.readout_l
 // A sync may join lines of both kinds.
 func.func @sync_of_a_drive_and_a_readout_line(%a: !pulse.drive_line, %b: !pulse.readout_line) {
   %s:2 = pulse.sync %a, %b : !pulse.drive_line, !pulse.readout_line -> !pulse.drive_line, !pulse.readout_line
+  return
+}
+
+// -----
+
+func.func @start_of_the_wrong_type(%d0: !pulse.drive_line, %t0: !pulse.tone, %w: !pulse.waveform) {
+  // expected-error @+1 {{invalid properties {start_cycles = 1.000000e+00 : f64} for op pulse.drive: expected a number of cycles, an i64}}
+  %d1, %t1 = pulse.drive %d0, %w, %t0 <{start_cycles = 1.0 : f64}> : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
   return
 }

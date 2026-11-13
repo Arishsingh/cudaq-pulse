@@ -55,7 +55,7 @@ def test_header_layout_and_magics():
 
     request = wire.encode_request(fn, (), request_id=7, timestamp=2**40)
     magic, fid, length, rid, ts = struct.unpack("<IIIIQ", request)
-    key = classical.function_id("probe")
+    key = classical.dispatch_key("probe")
     assert (magic, fid, length, rid, ts) == (wire.REQUEST_MAGIC, key, 0, 7, 2**40)
     assert wire.decode_request(fn, request)[0] == 7
     moved = wire.encode_request(fn, (), dispatch_key=3)
@@ -172,7 +172,7 @@ def test_round_trips():
 
 def test_cudaqx_decoder_ids():
     for name, fid in FIXTURE["cudaqx_decoder"]["function_ids"].items():
-        assert classical.function_id(name) == fid
+        assert classical.dispatch_key(name) == fid
 
 
 _C_HANDLER = r"""
@@ -231,7 +231,7 @@ def test_a_native_handler_drives_a_simulation(handler_library):
             drive(f, square(40, PI_AMP))
 
     dev = _device(n=5)
-    low = pulse.compile(k, device=dev).lower(*dev.qudit_handles[:5])
+    low = pulse.compile(k, quantum_system=dev).lower(*dev.qudits[:5])
     import numpy as np
 
     rho0 = np.zeros(32)
@@ -292,4 +292,5 @@ def test_fixture_matches_cudaqx_sources():
         assert re.search(rf"\b{name} = {value}\b", text)
     assert "sizeof(EnqueueRequestPayload) == 32" in text
     assert "sizeof(GetCorrectionsRequestPayload) == 17" in text
+    assert "sizeof(GetLogicalMeasurementsRequestPayload) == 25" in text
     assert "sizeof(ResetRequestPayload) == 8" in text

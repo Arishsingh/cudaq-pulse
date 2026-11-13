@@ -10,7 +10,7 @@ One ancilla measures the parity of four data qubits, round after round:
   4. readout of the ancilla, with a conditional reset,
   5. dynamical decoupling (XY4) on the data qubits while they wait.
 
-Each step is a kernel. ``single_qubit_layer`` and ``xy4`` are declared with
+Each step is a kernel. ``single_qudit_layer`` and ``xy4`` are declared with
 ``schedule="asap"``, and ``measure_and_reset`` with ``schedule="alap"``:
 each is scheduled on its own with that policy, then placed whole by the
 cycle's ALAP schedule. So the layer's pulses always start together, the
@@ -21,12 +21,18 @@ is scheduled together with the cycle.
 ``compile(..., flatten_schedules=True)`` schedules the same program as one
 ALAP schedule, for comparison: the layer's pulses are then pushed apart, each
 up to the cross-resonance pulse that needs its tone.
+
+Why cross-resonance on ``transmon_surface17``: that quantum system runs its
+stabilizer cycle with flux-pulsed CZs, and flux lines are not modeled yet (its
+``FluxCZ`` calibrations do not play). Cross-resonance needs only drive lines,
+so the cycle here is written with it. The amplitudes and durations are
+illustrative, not calibrated for the quantum system.
 """
 
 import cudaq_pulse as pulse
 
 rounds = 2
-data_qubits = 4
+data_qudits = 4
 cal = {
     "x_duration": 20 * pulse.ns,
     "x_sigma": 5 * pulse.ns,
@@ -39,7 +45,7 @@ cal = {
 
 
 @pulse.kernel(schedule="asap")
-def single_qubit_layer(lines, tones):
+def single_qudit_layer(lines, tones):
     """A sqrt(X) on every data qubit, all starting together."""
     for i in range(len(lines)):
         drive(
@@ -75,29 +81,29 @@ def xy4(line, tone, tau):
 
 
 @pulse.kernel
-def stabilizer_cycle(qubits):
-    ancilla = get_drive_line(qubits[0])
-    readout_line = get_readout_line(qubits[0])
+def stabilizer_cycle(qudits):
+    ancilla = get_drive_line(qudits[0])
+    readout_line = get_readout_line(qudits[0])
     lines, tones = [], []
-    for q in qubits[1:]:
+    for q in qudits[1:]:
         line = get_drive_line(q)
         lines.append(line)
         tones.append(line.tone)
 
     for _ in range(rounds):
-        single_qubit_layer(lines, tones)
-        for i in range(data_qubits):
+        single_qudit_layer(lines, tones)
+        for i in range(data_qudits):
             cross_resonance(ancilla, tones[i])
-        single_qubit_layer(lines, tones)
+        single_qudit_layer(lines, tones)
         measure_and_reset(ancilla, readout_line)
-        for i in range(data_qubits):
+        for i in range(data_qudits):
             xy4(lines[i], tones[i], cal["dd_tau"])
 
 
-def first_round(compiled: pulse.Lowered) -> dict[int, list[tuple[str, int, int]]]:
+def first_round(scheduled: pulse.ScheduledKernel) -> dict[int, list[tuple[str, int, int]]]:
     """The first round's (kind, start, duration) on each line."""
     per_line: dict[int, list[tuple[str, int, int]]] = {}
-    for event in compiled.schedule:
+    for event in scheduled.schedule:
         per_line.setdefault(event.line, []).append(
             (event.kind, event.start, event.end - event.start)
         )
@@ -105,10 +111,10 @@ def first_round(compiled: pulse.Lowered) -> dict[int, list[tuple[str, int, int]]
     return {line: events[: events_per_round[line]] for line, events in per_line.items()}
 
 
-def report(label: str, compiled: pulse.Lowered) -> None:
-    timeline = first_round(compiled)
+def report(label: str, scheduled: pulse.ScheduledKernel) -> None:
+    timeline = first_round(scheduled)
     data_lines = sorted(timeline)[2:]
-    makespan = max(e.end for e in compiled.schedule)
+    makespan = max(e.end for e in scheduled.schedule)
     print(f"\n  --- {label} ---")
     print(f"    makespan: {makespan} clock cycles")
     layer = [timeline[line][0][1] for line in data_lines]
@@ -120,15 +126,15 @@ def report(label: str, compiled: pulse.Lowered) -> None:
 
 
 def main():
-    dev = pulse.device("transmon_17q")
-    qubits = [dev.qudit_handles[: 1 + data_qubits]]
+    qs = pulse.quantum_system("transmon_surface17")
+    qudits = [qs.qudits[: 1 + data_qudits]]
     report(
         "per-kernel schedules",
-        stabilizer_cycle.lower(*qubits),
+        stabilizer_cycle.lower(*qudits),
     )
     report(
         "flattened into one ALAP schedule",
-        pulse.compile(stabilizer_cycle, flatten_schedules=True).lower(*qubits),
+        pulse.compile(stabilizer_cycle, flatten_schedules=True).lower(*qudits),
     )
 
 

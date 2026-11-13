@@ -8,17 +8,17 @@
 // RUN: cudaq-pulse-opt --pulse-schedule-asap --pulse-classical-check --pulse-verify %s > /dev/null
 // RUN: cudaq-pulse-opt --pulse-schedule-alap --pulse-classical-check --pulse-verify %s > /dev/null
 
-module attributes {pulse.clock_ghz = 2.0 : f64} {
+module attributes {pulse.control_system = #pulse.control_system<clock_period_fs = 500000>} {
 
-classical.callable @decode {function_id = 3007678287 : i64, device = 0 : i64,
+classical.callable @decode {dispatch_key = 3007678287 : i64, device = 0 : i64,
     args = ["bits:1"], results = ["bits:1"], latency_min_ns = 500.0,
     latency_nominal_ns = 900.0, latency_max_ns = 1500.0, mode = "bounded",
     submit = "eager"}
-classical.callable @est {function_id = 2023343271 : i64, device = 0 : i64,
+classical.callable @est {dispatch_key = 2023343271 : i64, device = 0 : i64,
     args = ["iq:1"], results = ["f64"], latency_min_ns = 0.0,
     latency_nominal_ns = 1000.0, latency_max_ns = 1500.0, mode = "bounded",
     submit = "lazy"}
-classical.callable @track {function_id = 2067622972 : i64, device = 1 : i64,
+classical.callable @track {dispatch_key = 2067622972 : i64, device = 1 : i64,
     args = ["f64"], results = ["f64"], latency_min_ns = 0.0,
     latency_nominal_ns = 10.0, latency_max_ns = 50.0, mode = "blocking",
     submit = "eager"}
@@ -27,20 +27,20 @@ classical.callable @track {function_id = 2067622972 : i64, device = 1 : i64,
 // starts there under both policies, and the eager submission stays at 300.
 // CHECK-LABEL: func.func @feedback
 // CHECK: pulse.readout {{.*}}start_cycles = 0
-// CHECK: classical.submit {{.*}}classical.budget_cycles = 3000 : i64{{.*}}classical.submit_cycles = 1 : i64{{.*}}duration_cycles = 1 : i64, start_cycles = 300 : i64}
+// CHECK: classical.submit {{.*}}<{duration_cycles = 1 : i64, start_cycles = 300 : i64}> {{.*}}classical.budget_cycles = 3000 : i64{{.*}}classical.submit_cycles = 1 : i64
 // CHECK: classical.wait {{.*}}duration_cycles = 0 : i64, start_cycles = 3301 : i64}
 // CHECK: pulse.drive {{.*}}start_cycles = 3301 : i64
 func.func @feedback() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c300 = arith.constant 300 : i64
   %c40 = arith.constant 40 : i64
   %a = arith.constant 0.05 : f64
   %z = arith.constant 0.0 : f64
   %ro = pulse.square %c300, %a, %z : i64, f64, f64 -> !pulse.waveform
   %x = pulse.square %c40, %a, %z : i64, f64, f64 -> !pulse.waveform
-  %r1, %rt1, %m = pulse.readout %r0, %ro, %rt0, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+  %r1, %rt1, %m = pulse.readout %r0, %ro, %rt0, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   %l0 = classical.get_link {device = 0 : i64} : !classical.link
   %l1, %f = classical.submit %l0, @decode(%m) : (!pulse.measurement) -> (!classical.link, !classical.future)
   %fix = classical.wait %f, @decode : i1
@@ -65,11 +65,11 @@ func.func @feedback() {
 // ASAP: pulse.drive {{.*}}start_cycles = 3301 : i64
 // ALAP: pulse.drive {{.*}}start_cycles = 4960 : i64
 func.func @parameter() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %p = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %p = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c300 = arith.constant 300 : i64
   %c40 = arith.constant 40 : i64
   %c5000 = arith.constant 5000 : i64
@@ -78,7 +78,7 @@ func.func @parameter() {
   %long = pulse.square %c5000, %a, %z : i64, f64, f64 -> !pulse.waveform
   %e1, %u1 = pulse.drive %e0, %long, %u0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
   %ro = pulse.square %c300, %a, %z : i64, f64, f64 -> !pulse.waveform
-  %r1, %rt1, %m = pulse.readout %r0, %ro, %rt0, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+  %r1, %rt1, %m = pulse.readout %r0, %ro, %rt0, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   %l0 = classical.get_link {device = 0 : i64} : !classical.link
   %l1, %f = classical.submit %l0, @est(%m) : (!pulse.measurement) -> (!classical.link, !classical.future)
   %amp = classical.wait %f, @est : f64
@@ -92,13 +92,13 @@ func.func @parameter() {
 // CHECK: classical.submit {{.*}}start_cycles = 300 : i64}
 // CHECK: classical.submit {{.*}}start_cycles = 301 : i64}
 func.func @link_order() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c300 = arith.constant 300 : i64
   %a = arith.constant 0.05 : f64
   %z = arith.constant 0.0 : f64
   %ro = pulse.square %c300, %a, %z : i64, f64, f64 -> !pulse.waveform
-  %r1, %rt1, %m = pulse.readout %r0, %ro, %rt0, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+  %r1, %rt1, %m = pulse.readout %r0, %ro, %rt0, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   %l0 = classical.get_link {device = 0 : i64} : !classical.link
   %l1, %f = classical.submit %l0, @decode(%m) : (!pulse.measurement) -> (!classical.link, !classical.future)
   %l2, %g = classical.submit %l1, @decode(%m) : (!pulse.measurement) -> (!classical.link, !classical.future)
@@ -114,20 +114,20 @@ func.func @link_order() {
 // CHECK: pulse.drive {{.*}}start_cycles = 0 : i64
 // ASAP: pulse.drive {{.*}}start_cycles = 0 : i64
 // ALAP: pulse.drive {{.*}}start_cycles = 101 : i64
-// CHECK: classical.wait {{.*}}classical.blocking{{.*}}start_cycles = 141 : i64}
+// CHECK: classical.wait {{.*}}start_cycles = 141 : i64}> {{.*}}classical.blocking
 // CHECK: pulse.drive {{.*}}start_cycles = 141 : i64
 func.func @barrier() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %p = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %p = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %a = arith.constant 0.05 : f64
   %z = arith.constant 0.0 : f64
   %x = pulse.square %c40, %a, %z : i64, f64, f64 -> !pulse.waveform
   %e1, %u1 = pulse.drive %e0, %x, %u0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
-  %o = pulse.qudit_alloc : !pulse.qref
-  %g0, %v0 = pulse.get_drive_line %o : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %o = pulse.qudit_alloc {qudit = 2 : i64} : !pulse.qudit
+  %g0, %v0 = pulse.get_drive_line %o : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %g1, %v1 = pulse.drive %g0, %x, %v0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
   %l0 = classical.get_link {device = 1 : i64} : !classical.link
   %t = pulse.get_current_time %e1 : !pulse.drive_line -> !pulse.timepoint

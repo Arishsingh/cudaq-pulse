@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Runtime qudits: one compile for every qudit of a device.
+"""Runtime qudits: one compile for every qudit of a quantum system.
 
 A kernel parameter annotated ``pulse.Qudit`` is bound at each call, so the
-kernel compiles once and serves any qudit, and a recalibrated device, without compiling again.
+kernel compiles once and serves any qudit, and a recalibrated quantum system, without compiling again.
 Frequencies the kernel needs beyond a qudit's own drive frequency are
-ordinary float parameters: the host reads them from the device and passes
+ordinary float parameters: the host reads them from the quantum system and passes
 them in, and each call binds them.
 """
 
@@ -25,12 +25,12 @@ def excite_to_two(qudit: pulse.Qudit, f12_hz: float):
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
+    qs = pulse.quantum_system("transmon_surface17")
 
     for i in range(4):
-        f12_hz = float(dev.transition_freq[i, 1, 2])
-        lowered = excite_to_two.lower(dev.qudit_handles[i], f12_hz)
-        drives = [e for e in lowered.export_controller()["events"] if e["kind"] == "drive"]
+        f12_hz = float(qs.transition_freq[i, 1, 2])
+        scheduled = excite_to_two.lower(qs.qudits[i], f12_hz)
+        drives = [e for e in scheduled.export_to_controller()["events"] if e["kind"] == "drive"]
         tones = ", ".join(f"{e['frequency_hz'] / 1e9:.4f}" for e in drives)
         print(f"qudit {i}: drive tones {tones} GHz")
 

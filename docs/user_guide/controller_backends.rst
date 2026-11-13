@@ -17,7 +17,7 @@ installable distribution.
 Exporting a program
 -------------------
 
-``Lowered.export_controller()`` returns a compiled kernel as JSON-serializable
+``ScheduledKernel.export_to_controller()`` returns a compiled kernel as JSON-serializable
 data. Its ``format`` is ``"cudaq-pulse.controller/1"``
 (``cudaq_pulse.controller.FORMAT``): the schema's name and, after the slash,
 its major version. Within one version keys and event kinds may be added, but
@@ -25,15 +25,15 @@ none is removed or changes meaning, so a backend ignores keys it does not
 know and refuses event kinds it does not know; a change that would break a
 backend gets a new version.
 
-At the top level, ``target`` and ``clock_ghz`` name the device and its
-clock, ``schedule`` the schedule policy, ``qudits`` the device qudits the
+At the top level, ``quantum_system`` and ``clock_ghz`` name the quantum system and its
+clock, ``schedule`` the schedule policy, ``qudits`` the quantum system qudits the
 program uses, ``lines`` each line's index, ``role`` (``"drive"`` or
 ``"readout"``) and qudit (and, with line delays, its ``fine_delay_ns``;
 see below), and ``limits`` the controller limits it was
 checked against (``null`` without). ``events`` lists every drive, readout,
 wait, sync, classical call and frame update in program order, once per loop
 iteration and both arms of a branch. ``segments``, ``calls``, ``links`` and
-``manifest`` are those of ``Lowered.export_emulation()`` (see
+``manifest`` are those of ``ScheduledKernel.export_to_emulator()`` (see
 :doc:`classical_calls`).
 
 A kernel with list or qudit parameters compiles once for every call, and
@@ -89,7 +89,7 @@ Drives and readouts also have:
     ``sample_rate_ghz``); and its overall complex amplitude,
     ``{"re": ..., "im": ...}``. Times in parameters are in cycles.
 ``samples``
-    With ``export_controller(sample_rate_ghz=...)``, a whole multiple of the
+    With ``export_to_controller(sample_rate_ghz=...)``, a whole multiple of the
     clock, the envelope sampled at that rate, ``{"re": [...], "im":
     [...]}``. ``cudaq_pulse.controller.sample_waveform`` computes the same
     samples for one waveform.
@@ -284,7 +284,7 @@ of NaN and ``x > 0.1`` does not. There is no JSON schema; this section and
 The structured format
 ---------------------
 
-``export_controller(version=2)`` gives format
+``export_to_controller(version=2)`` gives format
 ``"cudaq-pulse.controller/2"``, which grows with a program's operations
 rather than with its executions, as a sequencer runs it. It is written for a
 controller on the program clock, in :ref:`timesteps <timestep>` of any
@@ -294,7 +294,7 @@ length; for one on its own clock, or with line delays, export
 ``events``
     Each event's ``kind`` is one of ``cudaq_pulse.Event``, named for what a
     controller does whatever the modality: ``"play"`` (a ``/1`` drive),
-    ``"acquire"`` (a readout), ``"wait"``, ``"sync"``, ``"loop"``,
+    ``"readout"`` (a ``/1`` readout), ``"wait"``, ``"sync"``, ``"loop"``,
     ``"call"`` (a ``/1`` submit), ``"answer"`` and ``"frame_update"``. An
     event in a branch keeps its kind and lists its ``conditions``, and phase
     and frequency changes are in the ``tones`` of the events that play
@@ -311,7 +311,7 @@ length; for one on its own clock, or with line delays, export
     iteration that differs from the rest is exported before its loop; a
     loop that does not repeat is exported once per iteration, as in ``/1``.
 ``waveforms``
-    Each distinct waveform expression once; a play or acquire gives the
+    Each distinct waveform expression once; a play or readout gives the
     index of its own in ``waveform``. With ``sample_rate_ghz``, ``samples``
     holds each one's samples, in the same order. Each also has ``id``, 16
     hex digits that depend on its expression alone, so they stay the same
@@ -338,7 +338,7 @@ length; for one on its own clock, or with line delays, export
     ``max_state_bytes_total``, ``max_calls_per_shot``,
     ``max_bytes_per_shot``, ``fixed_cost_only`` and ``dispatch_keys``.
 ``quantum_system``
-    In place of ``target``: the name of the quantum system the program is
+    In place of ``quantum_system``: the name of the quantum system the program is
     for.
 ``sample_rate_ghz``
     Beside ``clock_ghz``, always a number: the rate at which the
@@ -355,9 +355,29 @@ length; for one on its own clock, or with line delays, export
 ``links``
     Each link with ``send_ns``, ``bandwidth_bytes_per_ns``,
     ``answer_delay_ns`` and ``slots`` for ``Link.fixed_ns``,
-    ``bytes_per_ns``, ``feedback_ns`` and ``max_in_flight``.
+    ``bytes_per_ns``, ``feedback_ns`` and ``slots``.
 ``lines``
-    Each line's ``qudits``, a list.
+    Each line's ``qudits``, a list, in the order the program first uses the
+    lines. A shared line (see `Shared lines`_) is listed once, with every
+    qudit it reaches and its ``max_concurrent_tones``, which a dedicated line
+    does not have.
+Events on a shared line
+    A play, readout, wait or frame update on a shared line has, after its
+    ``line``, its ``tone_slot`` (0 to the line's ``max_concurrent_tones``
+    minus 1: the tone it plays, which a controller maps to one of the line's
+    oscillators) and ``qudits``, the one qudit it is for. Tones that play at
+    the same time have different slots. Slots are given from the program
+    alone, so every export of it gives the same: a line playing one tone at
+    once gives every event slot 0; else each qudit keeps one slot for the
+    whole program when the line has enough for the qudits whose events
+    overlap (lowest free slot first, in the order of their first events);
+    else each tone takes the lowest free slot in start order, which a
+    rolled loop cannot hold (``UnsupportedError``: unroll it, or give the
+    line more tones). A sync lists each of its lines once; ``runtime_tones``
+    and ``frame_state`` entries name the line and, on a shared line, the
+    ``qudits`` (and ``tone_slot``) of their tone. On dedicated lines none of
+    these keys are present, and a program that plays no shared line exports
+    as it does on a system without them.
 Played events and frame updates
     ``tones``, a list of the tones the event plays (a frame update's
     frame), each with its ``frequency_hz``, its ``phase_rad`` in the loops'
@@ -371,7 +391,7 @@ Segments in a rolled loop
 Values known at run time
     As in ``/1``, and only where a value is computed from a readout or an
     answer: ``tone``, ``frame_updates`` and ``phase_offset_rad`` on a play
-    or acquire, ``length``, ``min_cycles`` and ``max_cycles`` on a wait, and
+    or readout, ``length``, ``min_cycles`` and ``max_cycles`` on a wait, and
     ``operands`` on a call; an expression's ``readout`` and ``answer`` are
     places, like other references, and resolve to the latest execution of
     that place before the event, so a rolled body refers to its own
@@ -409,9 +429,9 @@ order they first appear.
 Clocks
 ------
 
-A kernel counts time in cycles of the device's program clock,
-``Device.clock_ghz`` (``pulse.device(..., clock_ghz=)``, else the
-target's); a duration written as a time converts to them when the kernel
+A kernel counts time in cycles of the quantum system's program clock,
+``QuantumSystem.clock_ghz`` (``pulse.quantum_system(..., clock_ghz=)``, else the
+quantum system's own); a duration written as a time converts to them when the kernel
 compiles (see :ref:`durations`). A controller may run its own clock,
 ``Controller.clock_ghz``, at a whole-cycle ratio of it; may start
 and time operations only every ``Controller.cycles_per_timestep`` of
@@ -455,9 +475,9 @@ Without one, each controller's start is known only to within one of its own
 cycles, which budgets between controllers count.
 
 Each ``pulse.Controller`` of a control system may run its own clock.
-Without a declared ``"clock_ghz"`` the device's program clock is the
+Without a declared ``"clock_ghz"`` the quantum system's program clock is the
 fastest controller clock when it is a whole multiple of every other; clocks
-that are not are a ``DeviceDefinitionError`` listing the program clocks
+that are not are a ``QuantumSystemDefinitionError`` listing the program clocks
 that would work, never one picked for you. Every line is then scheduled on
 the timesteps of the controller that plays it, and checked against that
 controller's limits in its own cycles. A sync, and a wait whose length
@@ -472,7 +492,7 @@ plays it, the waveforms made from it too; samples given to
 on a runtime qudit's line, whose rate depends on the call, ``custom()`` is
 a compile error when the controllers' rates differ.
 
-Each controller gets its own program: ``lowered.export_controller(controller=k)``
+Each controller gets its own program: ``scheduled.export_to_controller(controller=k)``
 is controller ``k``'s part, in its own cycles, with ``"controller": k``,
 its ``lines`` and ``limits``, and the events it takes part in: those on its
 lines, a sync with only its lines, the submit of a call whose measurements
@@ -483,11 +503,11 @@ program that plays the lines of more than one controller needs
 ``controller=``; one on a single controller exports it without, and one
 that plays no lines is exported by the controller that makes its calls.
 A controller the program does not use exports a valid empty program: no
-lines, events or calls. ``export_emulation(controller=k)`` gives the same
+lines, events or calls. ``export_to_emulator(controller=k)`` gives the same
 part for an emulator.
 
 A link is shared by default: every controller it reaches sends its
-requests to one instance, which holds ``max_in_flight`` requests for all
+requests to one instance, which holds ``slots`` requests for all
 of them. A link that each controller has its own instance of, a decoder
 beside each controller for example, is declared per controller:
 
@@ -495,7 +515,7 @@ beside each controller for example, is declared per controller:
 
    import cudaq_pulse as pulse
 
-   links = {"decoder": pulse.Link(fixed_ns=10, max_in_flight=1, per_controller=True)}
+   links = {"decoder": pulse.Link(fixed_ns=10, slots=1, per_controller=True)}
 
 or ``per_controller = true`` in the link's table of a system file
 (``[control_system.links.decoder]``). Each controller's calls over it then
@@ -510,8 +530,8 @@ When the scheduler cannot tell a call's controller (it reads no
 measurement and its answer is unused, or leaves the kernel), the link's
 calls share one set of slots, as on a shared link. Each controller may
 place the link on one of its own processors; ``controller_usage`` counts
-each instance's calls on its controller's processor, and
-``resources(lowered).links`` has a row per instance.
+each instance's calls on its controller's processor, and its ``links``
+have a row per instance.
 
 Times between controllers are budgeted with how well each one's start is
 known: its ``clock_skew_cycles``, plus one of its own cycles without a
@@ -597,6 +617,72 @@ delays, such as a control system calibrated again, reuses its trace and
 optimized module and schedules it again, with the same result, byte for
 byte, as compiling it anew.
 
+Shared lines
+------------
+
+A line may reach several qudits: a readout feedline multiplexing the
+readout of the qudits along it, or a drive line combining several drive
+tones. ``ReadoutLine([0, 1, 2, 3], max_concurrent_tones=4, delay_ns=12.0)``
+reads out qudits 0 to 3 and plays up to four tones at once; a line reaching
+one qudit, ``ReadoutLine(5)`` or ``ReadoutLine([5])``, is dedicated, as
+before. ``max_concurrent_tones`` is 1 by default, and at most the qudits
+the line reaches. Every line has ``qudits``, a tuple, and
+``max_concurrent_tones``; only a dedicated line has ``qudit``, which is an
+error on a shared one. A qudit is reached by at most one line of each kind
+in the control system: a second one is an error (choosing between lines is
+not supported yet).
+
+A kernel is written as for dedicated lines: ``get_readout_line(q)`` of a
+qudit on the feedline gives one of its tones, for ``q``, with ``q``'s
+frequency, and each call gives a line of its own::
+
+    from cudaq_pulse.controller import ReadoutLine
+
+    box = pulse.Controller(
+        drive_lines=[0, 1, 2, 3],
+        readout_lines=[ReadoutLine([0, 1, 2, 3], max_concurrent_tones=4)],
+    )
+
+    @pulse.kernel
+    def measure(a, b, c, d):
+        lines = [get_readout_line(a), get_readout_line(b), get_readout_line(c), get_readout_line(d)]
+        sync(lines[0], lines[1], lines[2], lines[3])
+        for line in lines:
+            readout(line, square(400, 0.05))
+
+The compiler checks every line that reaches more than one qudit, whatever
+its ``max_concurrent_tones``, for the tones it plays at once: more than
+``max_concurrent_tones`` drives or readouts on it overlapping in time is a
+``ControllerLimitError`` naming the line, the cycle and the qudits (with
+one tone at once, its qudits' pulses must not overlap at all). Pulses in
+the two arms of one branch never play together. The scheduler does not
+move pulses to keep within it: play some after the others end, with a
+sync between them. A dedicated line is never checked for it, and a
+program on dedicated lines costs nothing more to compile or export.
+
+The other limits of a ``Controller`` apply as follows on a shared line.
+Per tone, as each tone is its own sequencer: the spacing of its operations
+(``instruction_cycles``, ``min_idle_cycles``) and ``max_amplitude`` (the
+sum of concurrent tones is not checked yet). Per physical line: its
+waveform memory (``waveform_memory_samples`` with ``"per_line"``, the
+distinct shapes of all its tones) and ``max_frequencies_per_line`` (the distinct
+tone frequencies of all its tones). ``max_pulses`` counts every drive and
+readout, as on dedicated lines. A kernel with runtime qudits compiles on
+shared lines, and each call is checked for the tones at once when it binds
+its qudits.
+
+Format ``/2`` of the export lists a shared line once, with its
+``max_concurrent_tones``, and gives each event on it a ``tone_slot`` and
+the ``qudits`` it is for (see `The structured format`_); format ``/1``, which has one
+qudit per line, raises ``UnsupportedError`` for a program that plays a
+shared line. Format ``/2`` does not take line delays yet, so a program on a
+delayed shared line compiles and simulates but does not export yet. The
+simulator plays each tone on its own qudit. In a system file a shared line
+is ``{"qudits": [0, 1, 2, 3], "max_concurrent_tones": 4, "delay_ns": 12.0}``,
+without the keys at their defaults. ``examples/transmon/transmon_surface17_multiplexed_readout.py``
+reads out the four X-check ancillas of ``transmon_surface17`` on one
+feedline.
+
 Waveform memory
 ---------------
 
@@ -629,7 +715,7 @@ Controller limits
 ``Controller`` states what a controller can play, in its own clock
 cycles: its clock, how
 closely two operations on one line can follow each other, its waveform
-memory and tones per line, which detector reads each qudit and how long a
+memory and distinct frequencies per line, which detector reads each qudit and how long a
 readout holds it, the least feedback latency from a readout to an operation
 that branches on it, whether it can stop waiting for an answer after a
 timeout, and the most drives and readouts in one program. Given to
@@ -640,7 +726,7 @@ each violated limit. A limit that only some values of a ``float``
 parameter exceed, such as the tones a frequency shift adds or the memory
 a waveform width takes, is checked when a call supplies the values, once
 per distinct values, so a call that compiles also exports.
-``cudaq_pulse.controller.check(lowered, limits)`` returns the violations
+``cudaq_pulse.controller.check(compiled, limits)`` returns the violations
 without raising. A control system without controllers checks nothing
 more.
 
@@ -667,7 +753,7 @@ A backend is an object with a ``name`` and three methods, the
 control system to compile for (a ``ControlSystem``, or its one
 ``Controller``), ``emit(program)`` takes an
 exported program and returns the controller's, and ``run(artifact,
-shots=...)`` runs it. ``formats``, if present, lists the export formats it
+shots_count=...)`` runs it. ``formats``, if present, lists the export formats it
 reads. A program it cannot emit it refuses with
 ``IncompatibleBackendError``.
 
@@ -677,7 +763,7 @@ artifact back as one list of events per controller program, each a mapping
 with its ``kind`` (``cudaq_pulse.Event``, or the ``/1`` name), ``line``
 (the link of a call or answer), ``start_cycles`` and optionally
 ``duration_cycles``, every execution in program order.
-``emulate(artifact, shots=...)`` runs it on the backend's emulator and
+``emulate(artifact, shots_count=...)`` runs it on the backend's emulator and
 gives each shot's measurement outcomes, in the order the measurements end.
 
 This one emits one line of text per drive and readout:
@@ -714,8 +800,8 @@ This one emits one line of text per drive and readout:
                )
            return played
 
-       def run(self, artifact: Any, *, shots: int = 1) -> list[list[str]]:
-           return [list(artifact) for _ in range(shots)]
+       def run(self, artifact: Any, *, shots_count: int = 1) -> list[list[str]]:
+           return [list(artifact) for _ in range(shots_count)]
 
 Its distribution registers it under its name in the
 ``cudaq_pulse.backends`` entry-point group, naming the backend class or any
@@ -739,13 +825,12 @@ same name:
 
    import cudaq_pulse as pulse
    from cudaq_pulse import backends
-   from cudaq_pulse.targets import Qubit, TargetDescription
+   from cudaq_pulse.quantum_systems import PhysicalQudit
 
    backends.register("text", TextBackend)
    backend = backends.get("text")
-   dev = pulse.device(
-       TargetDescription(name="one-qubit", qubits={0: Qubit(0, 5.0e9, -2.0e8, 50.0, 30.0)}),
-       clock_ghz=1.0,
+   qs = pulse.quantum_system(
+       name="one-qubit", qudits={0: PhysicalQudit(0, 5.0e9, 50.0, 30.0, anharmonicity_hz=-2.0e8)}, clock_ghz=1.0
    )
    cal = {"x_duration": 40 * pulse.ns, "x_sigma": 10 * pulse.ns, "readout_duration": 200 * pulse.ns}
 
@@ -759,9 +844,9 @@ same name:
        readout(readout_line, square(cal["readout_duration"], 0.05))
 
 
-   compiled = pulse.compile(drive_and_measure, device=dev, control_system=backend.control_system())
-   program = compiled.lower(dev.qudit_handles[0]).export_controller()
-   print(backend.run(backend.emit(program), shots=1))
+   compiled = pulse.compile(drive_and_measure, quantum_system=qs, control_system=backend.control_system())
+   program = compiled.lower(qs.qudits[0]).export_to_controller()
+   print(backend.run(backend.emit(program), shots_count=1))
    # [['0 drive line 0 gaussian at 5e+09 Hz', '40 readout line 1 square at 5e+09 Hz']]
 
 Validating a backend
@@ -801,10 +886,10 @@ which gives the emitted programs back, one list of events per controller
 ``duration_cycles``, every execution in program order), the number of
 programs and the timing and order of plays, acquisitions, calls and answers
 on each line must match the controller program, and the pulses must respect
-the controller's limits. With ``emulate(artifact, shots=...)``, which gives
+the controller's limits. With ``emulate(artifact, shots_count=...)``, which gives
 each shot's measurement outcomes in the order they end, the fraction of 1s
 of each must match ``cudaq_pulse.simulate`` within ``tolerance`` (0.05 by
-default) plus three standard errors of the ``shots``. Validating imports
+default) plus three standard errors of the ``shots_count``. Validating imports
 nothing until it is called.
 
 Errors

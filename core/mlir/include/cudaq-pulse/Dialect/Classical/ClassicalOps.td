@@ -8,6 +8,7 @@
 include "cudaq-pulse/Dialect/Classical/ClassicalDialect.td"
 include "cudaq-pulse/Dialect/Classical/ClassicalTypes.td"
 include "mlir/IR/OpBase.td"
+include "cudaq-pulse/Dialect/Pulse/PulseTiming.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
@@ -19,8 +20,8 @@ def Classical_CallableOp : ClassicalOp<"callable", [Symbol]> {
   let description = [{
     The schema and timing of one classical function.
 
-    - `function_id`: the 32-bit FNV-1a hash of `sym_name`, which identifies
-      the function on the wire. With `function_id_override` it may be any
+    - `dispatch_key`: the 32-bit FNV-1a hash of `sym_name`, which identifies
+      the function on the wire. With `dispatch_key_override` it may be any
       32-bit value instead.
     - `device`: the id of the link the requests travel on.
     - `args`, `results`: one type descriptor per argument and result, in
@@ -54,7 +55,7 @@ def Classical_CallableOp : ClassicalOp<"callable", [Symbol]> {
   }];
   let arguments = (ins
     SymbolNameAttr:$sym_name,
-    I64Attr:$function_id,
+    I64Attr:$dispatch_key,
     I64Attr:$device,
     StrArrayAttr:$args,
     StrArrayAttr:$results,
@@ -65,7 +66,7 @@ def Classical_CallableOp : ClassicalOp<"callable", [Symbol]> {
     StrAttr:$submit,
     OptionalAttr<F64Attr>:$timeout_ns,
     OptionalAttr<F64Attr>:$deadline_ns,
-    UnitAttr:$function_id_override,
+    UnitAttr:$dispatch_key_override,
     OptionalAttr<F64Attr>:$reaction_deadline_ns
   );
   let assemblyFormat = "$sym_name attr-dict";
@@ -96,15 +97,16 @@ def Classical_SubmitOp : ClassicalOp<"submit",
     request takes to send. It returns the link and a future that becomes
     available when the answer is due.
   }];
-  let arguments = (ins
+  let arguments = !con((ins
     Classical_LinkType:$link,
     FlatSymbolRefAttr:$callee,
     Variadic<AnyType>:$args
-  );
+  ),
+                       PulseTimingArgs);
   let results = (outs Classical_LinkType:$updated_link,
                       Classical_FutureType:$future);
   let assemblyFormat = [{
-    $link `,` $callee `(` $args `)` attr-dict `:` functional-type($args, results)
+    $link `,` $callee `(` $args `)` `` custom<Timing>("getOperationName()", $start_cycles, $duration_cycles, $period_cycles) attr-dict `:` functional-type($args, results)
   }];
 }
 
@@ -122,10 +124,11 @@ def Classical_WaitOp : ClassicalOp<"wait",
     gives a leading `i1`, false when no answer came within the timeout;
     scheduling then budgets the timeout instead of the maximum latency.
   }];
-  let arguments = (ins Classical_FutureType:$future, FlatSymbolRefAttr:$callee,
-                       OptionalAttr<F64Attr>:$timeout_ns);
+  let arguments = !con((ins Classical_FutureType:$future, FlatSymbolRefAttr:$callee,
+                       OptionalAttr<F64Attr>:$timeout_ns),
+                       PulseTimingArgs);
   let results = (outs Variadic<AnyType>:$values);
-  let assemblyFormat = "$future `,` $callee attr-dict `:` type($values)";
+  let assemblyFormat = "$future `,` $callee `` custom<Timing>(\"getOperationName()\", $start_cycles, $duration_cycles, $period_cycles, $timeout_ns) attr-dict `:` type($values)";
 }
 
 #endif // CUDAQ_PULSE_DIALECT_CLASSICAL_OPS

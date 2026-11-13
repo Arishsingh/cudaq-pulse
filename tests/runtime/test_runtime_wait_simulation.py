@@ -15,9 +15,9 @@ import math
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
+from cudaq_pulse.quantum_systems import MicrowaveDrive, PhysicalQudit
 from cudaq_pulse.runtime import _jit as jit
 from cudaq_pulse.runtime import simulate as simulate_module
-from cudaq_pulse.targets import MicrowaveDrive, Qubit, TargetDescription
 
 from tests.runtime.test_gpu_backend_logic import _CpuStandIn
 
@@ -31,10 +31,10 @@ _T1_US = 0.2
 _DT_NS = 0.25
 TOLERANCE = 1e-12
 
-_TARGET = TargetDescription(
+_TARGET = pulse.quantum_system(
     name="wait-sweep",
-    qubits={
-        0: Qubit(
+    qudits={
+        0: PhysicalQudit(
             index=0,
             frequency_hz=5.0e9,
             anharmonicity_hz=-200.0e6,
@@ -45,7 +45,7 @@ _TARGET = TargetDescription(
         )
     },
 )
-Q = pulse.device(_TARGET).qudit_handles
+Q = _TARGET.qudits
 
 
 def t1(q, tau: float):

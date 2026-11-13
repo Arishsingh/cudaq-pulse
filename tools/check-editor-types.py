@@ -6,8 +6,8 @@ Usage: python tools/check-editor-types.py --python PYTHON [--pyright PYRIGHT]
 
 PYTHON is an environment with cudaq-pulse installed from a wheel or with
 ``cmake --install BUILD --component CudaqPulse``, as a user has it. From an
-empty project directory, pyright runs in "off" mode (the default of Pylance
-and Cursor) and in "standard" mode over every file of examples/ and the
+empty project directory, pyright runs in "off" mode (the default of Pylance,
+in VS Code and VS Code-based editors) and in "standard" mode over every file of examples/ and the
 Python code blocks of each docs page, joined in order into one module, and
 must report nothing. A probe with a typo and a misused operation must still
 report exactly those. Exits 1 listing every unexpected diagnostic.
@@ -25,6 +25,9 @@ import textwrap
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
+# Examples that call CUDA-Q QEC, which installs on Linux only and has no
+# types for its native functions (cudaq_qec.qec), so no editor sees them.
+_UNTYPED_DEPENDENCIES = {"27_realtime_decoding.py"}
 
 _PROBE = """\
 import cudaq_pulse as pulse
@@ -115,6 +118,7 @@ def main() -> int:
         sources = {
             f"examples__{p.relative_to(examples).as_posix().replace('/', '__')}": p.read_text()
             for p in sorted(examples.rglob("*.py"))
+            if p.name not in _UNTYPED_DEPENDENCIES
         }
         sources.update(docs_modules(_ROOT / "docs"))
         sources["probe.py"] = _PROBE

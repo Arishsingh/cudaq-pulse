@@ -20,12 +20,12 @@ cal = {
 
 
 @pulse.kernel
-def phase_rotation_demo(qubit):
+def phase_rotation_demo(qudit):
     """Drive X, then shift tone by pi/2 to drive Y, then by pi to drive -X.
 
     Illustrates how phase shifts rotate the drive axis on the Bloch sphere.
     """
-    drive_line = get_drive_line(qubit)
+    drive_line = get_drive_line(qudit)
 
     pi2_pulse = gaussian(cal["x_duration"], 0.25, cal["x_sigma"])
 
@@ -42,13 +42,13 @@ def phase_rotation_demo(qubit):
 
 
 @pulse.kernel
-def set_phase_vs_shift_phase(qubit):
+def set_phase_vs_shift_phase(qudit):
     """Contrast between set_phase (absolute) and shift_phase (relative).
 
     set_phase resets the tone to a fixed angle regardless of history.
     shift_phase accumulates relative to the current phase.
     """
-    drive_line = get_drive_line(qubit)
+    drive_line = get_drive_line(qudit)
     envelope = gaussian(cal["x_duration"], 0.3, cal["x_sigma"])
 
     shift_phase(drive_line.tone, math.pi / 4)
@@ -62,27 +62,27 @@ def set_phase_vs_shift_phase(qubit):
 
 
 @pulse.kernel
-def chirped_drive(qubit, n_steps, total_shift_hz):
+def chirped_drive(qudit, step_count, total_shift_hz):
     """Frequency-chirped pulse: step the drive frequency across the pulse.
 
     Useful for spectroscopy sweeps compiled as a single kernel.
     """
-    drive_line = get_drive_line(qubit)
-    step_size = total_shift_hz / n_steps
+    drive_line = get_drive_line(qudit)
+    step_size = total_shift_hz / step_count
 
-    for _i in range(n_steps):
+    for _i in range(step_count):
         drive(drive_line, square(cal["step_duration"], 0.1))
         shift_frequency(drive_line.tone, step_size)
 
 
 @pulse.kernel
-def sideband_modulation(qubit):
+def sideband_modulation(qudit):
     """Use set_frequency to park the drive tone at a sideband.
 
     Common in flux-tunable transmon architectures where the drive
     line needs to address different transition frequencies.
     """
-    drive_line = get_drive_line(qubit)
+    drive_line = get_drive_line(qudit)
 
     set_frequency(drive_line.tone, 5.0e9)
     drive(drive_line, gaussian(cal["x_duration"], 0.25, cal["x_sigma"]))
@@ -93,23 +93,21 @@ def sideband_modulation(qubit):
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
+    qs = pulse.quantum_system("transmon_surface17")
     print("=== Phase Rotation (4 x pi/2 = full circle) ===")
-    compiled_kernel = pulse.compile(phase_rotation_demo, device=dev).lower(dev.qudit_handles[0])
-    print(compiled_kernel.mlir())
+    scheduled = pulse.compile(phase_rotation_demo, quantum_system=qs).lower(qs.qudits[0])
+    print(scheduled.mlir())
 
     print("\n=== set_phase vs shift_phase ===")
-    compiled_kernel = pulse.compile(set_phase_vs_shift_phase, device=dev).lower(
-        dev.qudit_handles[0]
-    )
-    print(compiled_kernel.mlir())
+    scheduled = pulse.compile(set_phase_vs_shift_phase, quantum_system=qs).lower(qs.qudits[0])
+    print(scheduled.mlir())
 
     print("\n=== Chirped Drive (10 steps, 50 MHz sweep) ===")
-    compiled_kernel = pulse.compile(chirped_drive, device=dev).lower(dev.qudit_handles[0], 10, 50e6)
-    print(compiled_kernel.mlir())
-    print(f"  Compile metrics: {compiled_kernel.metrics}")
+    scheduled = pulse.compile(chirped_drive, quantum_system=qs).lower(qs.qudits[0], 10, 50e6)
+    print(scheduled.mlir())
+    print(f"  Compile metrics: {scheduled.metrics}")
 
     print("\n=== Sideband Modulation ===")
-    compiled_kernel = pulse.compile(sideband_modulation, device=dev).lower(dev.qudit_handles[0])
-    print(compiled_kernel.mlir())
-    print(f"  Compile metrics: {compiled_kernel.metrics}")
+    scheduled = pulse.compile(sideband_modulation, quantum_system=qs).lower(qs.qudits[0])
+    print(scheduled.mlir())
+    print(f"  Compile metrics: {scheduled.metrics}")

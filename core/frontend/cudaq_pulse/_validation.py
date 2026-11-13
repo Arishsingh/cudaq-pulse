@@ -42,14 +42,14 @@ from .ops import (
     sync,
     wait,
 )
-from .targets import Qubit, TargetDescription
+from .quantum_systems import PhysicalQudit
 
 if TYPE_CHECKING:
-    from .compiler import Lowered
+    from .compiler import ScheduledKernel
 
 # The kinds whose timing and order a backend reports and is checked on: the
 # others (waits, syncs, loops) follow from them.
-_TIMED = frozenset({Event.PLAY, Event.ACQUIRE, Event.CALL, Event.ANSWER})
+_TIMED = frozenset({Event.PLAY, Event.READOUT, Event.CALL, Event.ANSWER})
 _QUDITS = 2
 
 
@@ -179,7 +179,7 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
 
     return {
         Event.PLAY: plays,
-        Event.ACQUIRE: acquires,
+        Event.READOUT: acquires,
         Event.WAIT: waits,
         Event.SYNC: syncs,
         Event.LOOP: loops,
@@ -279,12 +279,14 @@ def _one(system: ControlSystem) -> Controller | None:
 def _device(system: ControlSystem) -> Any:
     limits = _one(system)
     clock = limits.clock_ghz if limits is not None and limits.clock_ghz else 1.0
-    target = TargetDescription(
+    return pulse.quantum_system(
         name="validation",
+        qudits={
+            i: PhysicalQudit(i, 5.0e9 + 1.5e8 * i, 50.0, 30.0, anharmonicity_hz=-2.5e8)
+            for i in range(_QUDITS)
+        },
         clock_ghz=clock,
-        qubits={i: Qubit(i, 5.0e9 + 1.5e8 * i, -2.5e8, 50.0, 30.0) for i in range(_QUDITS)},
     )
-    return pulse.device(target)
 
 
 def _formats(backend: Backend) -> list[str]:
@@ -341,14 +343,14 @@ def _limits(limits: Controller | None, emitted: Mapping[Any, list[tuple[Any, ...
     if limits is None:
         return None
     played = sum(
-        1 for events in emitted.values() for e in events if e[0] in (Event.PLAY, Event.ACQUIRE)
+        1 for events in emitted.values() for e in events if e[0] in (Event.PLAY, Event.READOUT)
     )
     # A controller that runs loops holds a rolled body once, and emits it
     # once per iteration.
     if limits.max_pulses is not None and not limits._runs_loops and played > limits.max_pulses:
         return f"emitted {played} pulses; the controller plays at most {limits.max_pulses}"
     for line, events in emitted.items():
-        starts = sorted(e[1] for e in events if e[0] in (Event.PLAY, Event.ACQUIRE))
+        starts = sorted(e[1] for e in events if e[0] in (Event.PLAY, Event.READOUT))
         for a, b in zip(starts, starts[1:], strict=False):
             if b - a < limits.instruction_cycles:
                 return (
@@ -358,7 +360,7 @@ def _limits(limits: Controller | None, emitted: Mapping[Any, list[tuple[Any, ...
     return None
 
 
-def _simulated(lowered: Lowered) -> list[float]:
+def _simulated(lowered: ScheduledKernel) -> list[float]:
     """The probability of outcome 1 of each measurement, in end-time order."""
     result = pulse.simulate(lowered)
     p = [0.0] * len(result.measurements)
@@ -370,19 +372,19 @@ def _simulated(lowered: Lowered) -> list[float]:
 
 
 def _emulation(
-    backend: Backend, artifact: Any, lowered: Lowered, shots: int, tolerance: float
+    backend: Backend, artifact: Any, lowered: ScheduledKernel, shots_count: int, tolerance: float
 ) -> str | None:
     """How the backend's emulator differs from the simulator, or None."""
-    rows = [list(row) for row in backend.emulate(artifact, shots=shots)]  # type: ignore[attr-defined]
+    rows = [list(row) for row in backend.emulate(artifact, shots_count=shots_count)]  # type: ignore[attr-defined]
     expected = _simulated(lowered)
-    if len(rows) != shots:
-        return f"the emulator returned {len(rows)} shots, expected {shots}"
+    if len(rows) != shots_count:
+        return f"the emulator returned {len(rows)} shots, expected {shots_count}"
     if any(len(row) != len(expected) for row in rows):
         return f"the emulator reports a shot without {len(expected)} measurements"
     for k, p in enumerate(expected):
-        mean = sum(1 for row in rows if row[k] == 1) / shots
+        mean = sum(1 for row in rows if row[k] == 1) / shots_count
         # The tolerance, widened by three standard errors of the shots.
-        allowed = tolerance + 3.0 * math.sqrt(p * (1.0 - p) / shots)
+        allowed = tolerance + 3.0 * math.sqrt(p * (1.0 - p) / shots_count)
         if abs(mean - p) > allowed:
             return (
                 f"measurement {k}: the emulator gives 1 in {mean:.3f} of shots, "
@@ -396,9 +398,9 @@ def _emit(
     backend: Backend,
     name: str,
     program: dict[str, Any],
-    lowered: Lowered,
+    lowered: ScheduledKernel,
     limits: Controller | None,
-    shots: int,
+    shots_count: int,
     tolerance: float,
 ) -> bool:
     """Emit one program and check it; whether the backend emitted it."""
@@ -429,7 +431,7 @@ def _emit(
             report._add("FAIL", name, problem)
             return True
     if getattr(backend, "emulate", None) is not None:
-        problem = _emulation(backend, artifact, lowered, shots, tolerance)
+        problem = _emulation(backend, artifact, lowered, shots_count, tolerance)
         if problem is not None:
             report._add("FAIL", name, problem)
             return True
@@ -440,7 +442,7 @@ def _emit(
 def validate(
     backend: Backend,
     controller: Controller | None = None,
-    shots: int = 1000,
+    shots_count: int = 1000,
     tolerance: float = 0.05,
 ) -> _Report:
     """See ``cudaq_pulse.backends.validate``."""
@@ -453,18 +455,18 @@ def validate(
     first: dict[str, Any] | None = None
     for kind, kernel in _corpus().items():
         try:
-            compiled = pulse.compile(kernel, device=dev, control_system=system)
-            lowered = compiled.lower(*dev.qudit_handles[:_QUDITS])
+            compiled = pulse.compile(kernel, quantum_system=dev, control_system=system)
+            lowered = compiled.lower(*dev.qudits[:_QUDITS])
         except ControllerLimitError as e:
             report._add("SKIP", str(kind), f"exceeds the controller's limits: {e.violations[0]}")
             continue
         for fmt in formats:
             version = 1 if fmt == FORMAT else 2
             name = f"{kind} (/{version})" if tagged else str(kind)
-            program = lowered.export_controller(version=version)
+            program = lowered.export_to_controller(version=version)
             first = first or program
             emitted += _emit(
-                report, backend, name, program, lowered, _one(system), shots, tolerance
+                report, backend, name, program, lowered, _one(system), shots_count, tolerance
             )
     if first is not None:
         for name, (make, what) in _PROBES.items():
@@ -493,7 +495,7 @@ def validate(
 def opted_in(
     descriptions: Iterable[tuple[str, Mapping[str, Any], Controller]],
     get: Callable[[str], Backend],
-    shots: int = 1000,
+    shots_count: int = 1000,
     tolerance: float = 0.05,
 ) -> list[tuple[str, _Report]]:
     """The CI hook: for each controller description, its name, its parsed
@@ -504,5 +506,5 @@ def opted_in(
     for name, table, controller in descriptions:
         chosen = table.get("backend")
         if chosen:
-            out.append((name, validate(get(chosen), controller, shots, tolerance)))
+            out.append((name, validate(get(chosen), controller, shots_count, tolerance)))
     return out

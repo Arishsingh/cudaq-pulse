@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Simulation of pulse programs that measure and branch on the outcome.
 
-The program evolves in segments between measurements. A measurement of
+The program evolves in intervals between measurements. A measurement of
 qudit ``q`` at the end of its readout projects the state onto each level
 ``k`` of ``q``; each outcome continues along its own path, where branches on
 that measurement take the arm the outcome selects. Summing the unnormalized
@@ -10,9 +10,9 @@ state of every path gives the ensemble
 
     rho' = sum_m U_m P_m rho P_m^dagger U_m^dagger
 
-exactly, and with ``shots`` the branch weights also sample per-shot records.
+exactly, and with ``shots_count`` the branch weights also sample per-shot records.
 
-Segments are lowered by the native pipeline (pulse -> qop) along the path,
+Intervals are lowered by the native pipeline (pulse -> qop) along the path,
 then evolved either by a NumPy reference integrator (``backend="cpu"``) or
 by the cuDensityMat runtime (``backend="gpu"``), from the projected state.
 """
@@ -49,12 +49,14 @@ except ImportError:  # pragma: no cover - CPython builds without the _blake2 mod
     from hashlib import blake2b as _blake2b
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     import numpy.typing as npt
 
     from .._device import Qudit
-    from ..compiler import Lowered
+    from ..compiler import ScheduledKernel
     from ..kernel._kernel import CompiledKernel, Kernel
-    from ..targets.models import SimulationModel
+    from ..quantum_systems.models import SimulationModel
     from ._calls import CallRecord
 
 __all__ = ["Branch", "BranchCoverage", "Measurement", "SimulationResult", "simulate"]
@@ -70,13 +72,13 @@ class BranchCoverage(StrEnum):
 
     #: Every outcome of every measurement: the exact ensemble.
     ALL = "all"
-    #: Only the outcomes the shots draw, at most ``shots`` branches.
+    #: Only the outcomes the shots draw, at most ``shots_count`` branches.
     SAMPLED = "sampled"
 
 
 @dataclass(frozen=True)
 class Measurement:
-    """One execution of a readout: which one, on which (device) qudit, and
+    """One execution of a readout: which one, on which (quantum system) qudit, and
     when."""
 
     readout: int
@@ -118,7 +120,7 @@ class Branch:
 class SimulationResult:
     """The ensemble final state, and per-shot records if shots were taken.
 
-    The state spans the qudits the program uses, ``qudits`` (device
+    The state spans the qudits the program uses, ``qudits`` (quantum system
     indices, increasing), with ``dims[i]`` levels on ``qudits[i]``;
     ``density_matrix`` is indexed with ``qudits[0]`` as the least
     significant digit. Qudits the program does not use are left out, with
@@ -146,7 +148,7 @@ class SimulationResult:
         """The probability of each level of *qudit*, from level 0 up: the
         diagonal of its reduced density matrix, summing to 1.
 
-        *qudit* is a device qudit index or a qudit handle, one of
+        *qudit* is a quantum system qudit index or a qudit handle, one of
         ``qudits``; it may be left out when the result models one qudit."""
         mode = self._mode(qudit)
         dims = self.dims
@@ -168,7 +170,7 @@ class SimulationResult:
         return populations[level]
 
     def _mode(self, qudit: int | Qudit | None) -> int:
-        """The position in ``qudits`` of *qudit*, a device index or handle."""
+        """The position in ``qudits`` of *qudit*, a quantum system index or handle."""
         qudits = self.qudits
         if qudit is None:
             if len(qudits) == 1:
@@ -185,12 +187,12 @@ class SimulationResult:
 
 
 def simulate(
-    program: Kernel[...] | CompiledKernel[...] | Lowered,
+    program: Kernel[...] | CompiledKernel[...] | ScheduledKernel,
     /,
     *args: Any,
     levels: int | dict[int, int] | None = None,
     initial_state: npt.ArrayLike | None = None,
-    shots: int | None = None,
+    shots_count: int | None = None,
     seed: int | None = None,
     backend: str = "cpu",
     t_end: float | Time | None = None,
@@ -200,10 +202,11 @@ def simulate(
     handlers: Mapping[str, Callable[..., Any]] | None = None,
     readout: str = "ideal",
     latency_branching: bool = False,
-    plant: Any = None,
+    quantum_system: Any = None,
     branches: BranchCoverage | str = BranchCoverage.ALL,
+    reset_time: Time | None = None,
 ) -> SimulationResult:
-    """Simulate one kernel call on the target it is compiled for.
+    """Simulate one kernel call on the quantum system it is compiled for.
 
     ``simulate(kernel, *args)`` compiles the call as ``kernel.lower(*args)``
     does and simulates it, as ``compile(kernel)`` takes the kernel first and
@@ -224,21 +227,21 @@ def simulate(
         other parameters. For a module with run-time parameters, their
         values, in the order of ``program.parameters``.
     levels:
-        Levels per qudit. By default each qudit has the levels its target's
-        simulation model declares for it (``TargetDescription.model``; 3 for
-        a ``TransmonModel``); an int sets every qudit's, and a dict by device
+        Levels per qudit. By default each qudit has the levels its quantum system's
+        simulation model declares for it (``QuantumSystem.model``; 3 for
+        a ``TransmonModel``); an int sets every qudit's, and a dict by quantum system
         qudit index sets those it names. A transmon with three or more
         levels includes its anharmonicity.
     initial_state:
         A state vector or density matrix over ``lowered.qudits``, the
         qudits the program uses, with the first the least significant
         digit (the layout of ``SimulationResult.density_matrix``). By default each qudit starts in
-        its thermal mixture: its excited level holds the target's
+        its thermal mixture: its excited level holds the quantum system's
         ``thermal_population`` p, and higher levels follow the same
         Boltzmann ratio p / (1 - p) per level (``|0...0>`` when every p is
         0). T1 then relaxes it back there, with downward and upward rates
         (1 - p) / T1 and p / T1, whatever the initial state.
-    shots:
+    shots_count:
         Sample this many per-shot measurement records: a positive int.
         ``None`` (the default) samples none.
     seed:
@@ -288,15 +291,16 @@ def simulate(
         points synthesized per shot at each readout's true level, from its
         tone's frequency and its pulse's amplitude (``IQModel``; with
         ``"model_with_decay"``, relaxation during the window too); it needs
-        ``shots``, and each shot from the call on is simulated as its own
+        ``shots_count``, and each shot from the call on is simulated as its own
         trajectory.
-    plant:
-        A target description to simulate instead of the device the program
-        was compiled for: its qubits' frequencies, T1, T2, thermal
+    quantum_system:
+        A ``QuantumSystem`` to simulate instead of the one the program
+        was compiled for: its qudits' frequencies, T1, T2, thermal
         populations, drive strength and readout parameters apply, while the
-        program (its tones and pulses) stays as compiled. This is how a
-        drifting device is simulated without compiling again; see
-        ``cudaq_pulse.runtime.drift``.
+        program (its tones and pulses) stays as compiled. A system with
+        parameter drift (``cudaq_pulse.quantum_systems.drift``) plays its
+        true values, ``true_qudits``, whether it is this one or the one the
+        program is compiled for, and the call advances its drift time.
     latency_branching:
         With a timeout, branch on whether the answer came in time with the
         probability of the function's latency model; by default, without
@@ -305,17 +309,32 @@ def simulate(
     branches:
         ``"all"`` (the default) follows every outcome of every measurement,
         so the state is the exact ensemble. ``"sampled"`` follows only the
-        outcomes the shots draw: at most ``shots`` branches, so a program
+        outcomes the shots draw: at most ``shots_count`` branches, so a program
         that measures many times inside one shot (an adaptive loop of
-        readouts and calls) costs time linear in its measurements, not
-        exponential. The state is then the average over the shots'
+        readouts and calls) does not cost time exponential in its
+        measurements. A loop that waits each round on a variable or blocking
+        wait costs the same host time per round at any length; other programs
+        with calls are scheduled again whole after each answer, so their host
+        time per interval grows with the rounds before it. The state is then
+        the average over the shots'
         branches, and ``result.branches`` gives each one's share of the
-        shots. It needs ``shots``. A ``BranchCoverage`` or its string.
+        shots. It needs ``shots_count``. A ``BranchCoverage`` or its string.
+    reset_time:
+        The time between shots, after each run of the program, as
+        ``200 * pulse.us``: a system with parameter drift advances its drift
+        time by ``shots_count`` (or one) times the program's duration plus
+        this. By default 5 times the longest calibrated T1 of the program's
+        qudits, a passive reset. It changes nothing else, and nothing for a
+        system without drift. A call whose shots take longer than the
+        shortest correlation time of the drift models is split into chunks
+        of whole shots, each at least that long, and each plays the true
+        values at its start; the result merges them, weighted by shots, with
+        the records in shot order.
     """
-    from ..compiler import Lowered
+    from ..compiler import ScheduledKernel
     from ..kernel._kernel import CompiledKernel, Kernel
 
-    if isinstance(program, Lowered):
+    if isinstance(program, ScheduledKernel):
         if not args:
             lowered = program
         elif program.parameters:
@@ -335,11 +354,35 @@ def simulate(
             "simulate(lowered.generic, 0.5), or the module of one call; "
             f"got {type(program).__name__}"
         )
+    if reset_time is not None:
+        options: dict[str, Any] = {
+            "levels": levels,
+            "initial_state": initial_state,
+            "shots_count": shots_count,
+            "seed": seed,
+            "backend": backend,
+            "t_start": 0.0,
+            "t_end": t_end,
+            "dt_ns": dt_ns,
+            "integrator": integrator,
+            "dephasing": dephasing,
+            "handlers": handlers,
+            "readout": readout,
+            "latency_branching": latency_branching,
+            "branches": branches,
+        }
+        system = lowered.quantum_system if quantum_system is None else quantum_system
+        if getattr(system, "_drift", False) is True:
+            return system._simulated(_simulate_lowered, lowered, reset_time, options)  # type: ignore[no-any-return]
+        from ..quantum_systems.drift import _reset_ns
+
+        _reset_ns(reset_time, lowered, system)
+        return _simulate_lowered(lowered, quantum_system=quantum_system, **options)
     return _simulate_lowered(
         lowered,
         levels=levels,
         initial_state=initial_state,
-        shots=shots,
+        shots_count=shots_count,
         seed=seed,
         backend=backend,
         t_end=t_end,
@@ -349,17 +392,17 @@ def simulate(
         handlers=handlers,
         readout=readout,
         latency_branching=latency_branching,
-        plant=plant,
+        quantum_system=quantum_system,
         branches=branches,
     )
 
 
 def _simulate_lowered(
-    lowered: Lowered,
+    lowered: ScheduledKernel,
     *,
     levels: int | dict[int, int] | None = None,
     initial_state: npt.ArrayLike | None = None,
-    shots: int | None = None,
+    shots_count: int | None = None,
     seed: int | None = None,
     backend: str = "cpu",
     t_start: float = 0.0,
@@ -370,16 +413,16 @@ def _simulate_lowered(
     handlers: Mapping[str, Callable[..., Any]] | None = None,
     readout: str = "ideal",
     latency_branching: bool = False,
-    plant: Any = None,
+    quantum_system: Any = None,
     branches: BranchCoverage | str = BranchCoverage.ALL,
 ) -> SimulationResult:
-    if shots is not None and (shots.__class__ is not int or shots < 1):
-        shots = _positive_int("shots", shots)
+    if shots_count is not None and (shots_count.__class__ is not int or shots_count < 1):
+        shots_count = _positive_int("shots_count", shots_count)
     if branches not in ("all", "sampled"):
         raise InvalidValueError(f"unknown branches {branches!r}; choose 'all' or 'sampled'")
-    if branches == "sampled" and not shots:
+    if branches == "sampled" and not shots_count:
         raise InvalidValueError(
-            "branches='sampled' follows the branches of the shots; pass shots >= 1"
+            "branches='sampled' follows the branches of the shots; pass shots_count >= 1"
         )
     if backend not in ("cpu", "gpu"):
         raise InvalidValueError(f"unknown backend {backend!r}; choose 'cpu' or 'gpu'")
@@ -389,7 +432,8 @@ def _simulate_lowered(
         raise InvalidValueError(
             f"unknown readout {readout!r}; choose 'ideal', 'model' or 'model_with_decay'"
         )
-    t_end = as_nanoseconds(t_end)
+    if t_end is not None:
+        t_end = as_nanoseconds(t_end)
     if integrator not in _VALID_INTEGRATORS:
         raise InvalidValueError(
             f"Unknown integrator {integrator!r}. "
@@ -401,11 +445,27 @@ def _simulate_lowered(
             f"({', '.join(lowered.parameters)}); pass their values, as in "
             "simulate(program, 0.5), or lower the kernel with them"
         )
-    device = lowered.target
-    target = device.target if plant is None else _check_plant(lowered, plant)
+    compiled_for = lowered.quantum_system
+    if quantum_system is None:
+        if compiled_for._drift:
+            options = compiled_for._options(locals())
+            return compiled_for._simulated(_simulate_lowered, lowered, None, options)  # type: ignore[no-any-return]
+        target = compiled_for._description
+    else:
+        target = _check_quantum_system(lowered, quantum_system)
+        if quantum_system._drift:
+            options = quantum_system._options(locals())
+            return quantum_system._simulated(_simulate_lowered, lowered, None, options)  # type: ignore[no-any-return]
     try:
         step = _STEPS.get(
-            (id(device.target), id(target), device.clock_ghz, lowered.qudits, levels, dt_ns)
+            (
+                id(compiled_for._description),
+                id(target),
+                compiled_for.clock_ghz,
+                lowered.qudits,
+                levels,
+                dt_ns,
+            )
         )
     except TypeError:  # levels by qudit, a dict: unhashable, and never kept
         step = None
@@ -419,19 +479,18 @@ def _simulate_lowered(
             target,
             levels=levels,
             initial_state=initial_state,
-            shots=shots,
+            shots_count=shots_count,
             seed=seed,
             backend=backend,
             t_start=t_start,
             t_end=t_end,
             dt_ns=step,
             integrator=integrator,
-            clock_ghz=device.clock_ghz,
+            clock_ghz=compiled_for.clock_ghz,
             dephasing=dephasing,
             handlers=handlers,
             readout=readout,
             latency_branching=latency_branching,
-            plant=plant is not None,
             sampled=branches == "sampled",
         )
     except _DivergedError as e:
@@ -439,7 +498,10 @@ def _simulate_lowered(
 
 
 def _step(
-    lowered: Lowered, target: Any, levels: int | dict[int, int] | None, dt_ns: float | Time | None
+    lowered: ScheduledKernel,
+    target: Any,
+    levels: int | dict[int, int] | None,
+    dt_ns: float | Time | None,
 ) -> float:
     """The integration step of a simulation of *lowered* on *target*: *dt_ns*,
     checked, or the default step; kept in ``_STEPS`` unless it warns or its
@@ -457,11 +519,18 @@ def _step(
         # warns, as the default step keeps, at every call.
         fastest, source = _fastest(target, lowered.qudits, levels)
         if fastest and fastest * step > _MAX_HZ_NS:
-            _warn_coarse_step(target, source, fastest, step, lowered.target.clock_ghz)
+            _warn_coarse_step(target, source, fastest, step, lowered.quantum_system.clock_ghz)
             return step
     if levels.__class__ is not dict and target.model.__class__ in _read_only_models():
-        compiled = lowered.target.target
-        key = (id(compiled), id(target), lowered.target.clock_ghz, lowered.qudits, levels, dt_ns)
+        compiled = lowered.quantum_system._description
+        key = (
+            id(compiled),
+            id(target),
+            lowered.quantum_system.clock_ghz,
+            lowered.qudits,
+            levels,
+            dt_ns,
+        )
         _remember(key, step, compiled, target)
     return step
 
@@ -491,7 +560,7 @@ def _forget(target_id: int, _: Any = None) -> None:
 
 
 def _read_only_models() -> tuple[type, ...]:
-    from ..targets.models import TransmonModel
+    from ..quantum_systems.models import TransmonModel
 
     return (TransmonModel,)
 
@@ -501,7 +570,7 @@ def _read_only_models() -> tuple[type, ...]:
 # runs none of the checks that made it. Every input of the step is in the
 # key or fixed with an object whose id is: targets, their qubits and
 # couplings are frozen, and the models kept (_read_only_models) are
-# read-only, with immutable classes. A device may change its target or
+# read-only, with immutable classes. A quantum system may change its target or
 # clock, both read into the key at each call. An entry holds no object; it
 # is dropped when either target is freed (_forget, before the id can be
 # reused), and the cache is emptied when it holds _MAX_STEPS. Each read and
@@ -525,16 +594,21 @@ def _simulation_model(target: Any) -> Callable[..., SimulationResult]:
     return model._simulate
 
 
-def _check_plant(lowered: Lowered, plant: Any) -> Any:
-    """*plant*, a target description that defines every qudit of *lowered*."""
-    from ..targets import TargetDescription
+def _check_quantum_system(lowered: ScheduledKernel, quantum_system: Any) -> Any:
+    """The description of *quantum_system*, which defines every qudit of *lowered*."""
+    from .._device import QuantumSystem
 
-    if not isinstance(plant, TargetDescription):
-        raise InvalidTypeError(f"plant must be a TargetDescription, got {type(plant).__name__}")
-    missing = [q for q in lowered.qudits if q not in plant.qubits]
+    if not isinstance(quantum_system, QuantumSystem):
+        raise InvalidTypeError(
+            f"quantum_system must be a QuantumSystem, got {type(quantum_system).__name__}"
+        )
+    quantum_system = quantum_system._description
+    missing = [q for q in lowered.qudits if q not in quantum_system.qudits]
     if missing:
-        raise InvalidValueError(f"the plant does not define qudits {missing} that the program uses")
-    return plant
+        raise InvalidValueError(
+            f"the quantum system does not define qudits {missing} that the program uses"
+        )
+    return quantum_system
 
 
 _DEFAULT_STEP_NS = 0.05
@@ -542,30 +616,30 @@ _STEPS_PER_PERIOD = 20
 
 
 def _default_step(
-    lowered: Lowered, target: Any = None, levels: int | dict[int, int] | None = None
+    lowered: ScheduledKernel, target: Any = None, levels: int | dict[int, int] | None = None
 ) -> float:
     """The integration step: 0.05 ns, or 20 steps per period of the fastest
     frequency the simulation holds (see ``_fastest``), rounded down to a
     whole fraction of a clock cycle.
 
-    Couplings turn at the detuning of the compiled device's qudits; levels
+    Couplings turn at the detuning of the compiled quantum system's qudits; levels
     at the spread of the simulated *target*'s (the compiled one by default)."""
-    compiled = lowered.target.target
+    compiled = lowered.quantum_system._description
     active = lowered.qudits
     fastest = _level_spread(compiled if target is None else target, active, levels)[0]
     if len(active) > 1:
-        qubits = compiled.qubits
+        qudits = compiled.qudits
         for c in compiled.couplings:
             a, b = c.qudits
             if a in active and b in active:
-                detuning = abs(qubits[a].frequency_hz - qubits[b].frequency_hz)
+                detuning = abs(qudits[a].frequency_hz - qudits[b].frequency_hz)
                 if detuning > fastest:
                     fastest = detuning
     step = _DEFAULT_STEP_NS
     if fastest > 0:
         step = min(step, 1e9 / (_STEPS_PER_PERIOD * fastest))
     # A whole number of steps per clock cycle keeps pulse edges on the grid.
-    cycle = 1.0 / lowered.target.clock_ghz
+    cycle = 1.0 / lowered.quantum_system.clock_ghz
     return cycle / math.ceil(cycle / step - 1e-9)
 
 
@@ -585,7 +659,7 @@ def _level_spread(
         else:
             d = int(levels)
         if d > 2:
-            offsets = _level_offsets_hz(model, target.qubits[q], d)
+            offsets = _level_offsets_hz(model, target.qudits[q], d)
             width = max(offsets) - min(offsets)
             if width > spread:
                 spread, qudit, count = width, q, d
@@ -608,11 +682,11 @@ def _fastest(
     if levels.__class__ is not int or levels > 2:
         fastest, q, d = _level_spread(target, active, levels)
         source = ("levels", q, d)
-    qubits = target.qubits
+    qudits = target.qudits
     for c in target.couplings:
         a, b = c.qudits
         if a in active and b in active:
-            detuning = abs(qubits[a].frequency_hz - qubits[b].frequency_hz)
+            detuning = abs(qudits[a].frequency_hz - qudits[b].frequency_hz)
             if detuning > fastest:
                 fastest, source = detuning, ("coupling", a, b)
     return fastest, source
@@ -622,11 +696,11 @@ def _fastest(
 _MAX_HZ_NS = 1e9 / _STEPS_PER_PERIOD * (1 + 1e-9)
 
 
-def _level_offsets_hz(model: Any, qubit: Any, levels: int) -> list[float]:
+def _level_offsets_hz(model: Any, qudit: Any, levels: int) -> list[float]:
     """Each level's energy less that of evenly spaced levels at the 0-1
     frequency: the frequency it turns at in the qudit's frame."""
-    f01 = qubit.frequency_hz
-    return [e - k * f01 for k, e in enumerate(model.energies_hz(qubit, levels))]
+    f01 = qudit.frequency_hz
+    return [e - k * f01 for k, e in enumerate(model.energies_hz(qudit, levels))]
 
 
 def _hz(frequency: float) -> str:
@@ -639,7 +713,7 @@ def _cause(target: Any, source: tuple[str, int, int], fastest: float) -> str:
     """What turns at *fastest*, from ``_fastest``'s *source*."""
     kind, a, b = source
     if kind == "levels":
-        offsets = _level_offsets_hz(target.model, target.qubits[a], b)
+        offsets = _level_offsets_hz(target.model, target.qudits[a], b)
         low, high = sorted((offsets.index(min(offsets)), offsets.index(max(offsets))))
         return (
             f"qudit {a} has {b} levels, and in its frame the coherence of levels "
@@ -696,7 +770,7 @@ class _DivergedError(Exception):
 
 
 def _diverged_error(
-    lowered: Lowered,
+    lowered: ScheduledKernel,
     target: Any,
     levels: int | dict[int, int] | None,
     dt_ns: float | None,
@@ -718,7 +792,7 @@ def _diverged_error(
             f" {cause[0].upper()}{cause[1:]}, and a step of {step_ns:.3g} ns takes "
             f"{1e9 / (fastest * step_ns):.3g} steps per period of it: a fixed-step "
             f"integrator needs {_STEPS_PER_PERIOD} to be accurate and diverges with "
-            f"fewer than about 2. Pass {_suggestion(fastest, lowered.target.clock_ghz)}."
+            f"fewer than about 2. Pass {_suggestion(fastest, lowered.quantum_system.clock_ghz)}."
         )
     else:
         text += (
@@ -744,7 +818,7 @@ def _simulate_compiled(
     *,
     levels: int | dict[int, int] | None,
     initial_state: npt.ArrayLike | None,
-    shots: int | None,
+    shots_count: int | None,
     seed: int | None,
     backend: str,
     t_start: float,
@@ -756,11 +830,10 @@ def _simulate_compiled(
     handlers: Mapping[str, Callable[..., Any]] | None = None,
     readout: str = "ideal",
     latency_branching: bool = False,
-    plant: bool = False,
     sampled: bool = False,
 ) -> SimulationResult:
     # A cached specialization's module is shared by every call of it, from
-    # any thread: a segment sets the module attributes it lowers with and
+    # any thread: an interval sets the module attributes it lowers with and
     # reads the lowering under the module's lock, in one step. The GPU path,
     # and a call whose values set wait lengths, bind the float arguments into
     # a private copy of the module.
@@ -798,18 +871,10 @@ def _simulate_compiled(
     if not qudits:
         raise InvalidValueError("the program uses no qudits; there is nothing to simulate")
     mode = {q: i for i, q in enumerate(qudits)}
-    dims, extra = _level_attributes(target, qudits, levels)
-    base = _target_attributes(target, qudits, integrator=integrator, dephasing=dephasing)
-    base += ", " + extra
-    if plant:
-        frequencies = [math.nan] * (max(qudits) + 1)
-        for q in qudits:
-            frequencies[q] = float(target.qubits[q].frequency_hz)
-        base += (
-            ", pulse.plant_qubit_freq_hz = array<f64: "
-            + ", ".join("0x7FF8000000000000" if math.isnan(f) else repr(f) for f in frequencies)
-            + ">"
-        )
+    dims, level_fields = _level_attributes(target, qudits, levels)
+    base = _target_attributes(
+        target, qudits, integrator=integrator, dephasing=dephasing, levels=level_fields
+    )
 
     path_end = t_end is None and bool(functions)
     if t_end is None:
@@ -832,7 +897,7 @@ def _simulate_compiled(
         engine = _CpuBackend(module, dims, dt_ns, base, lock, arguments)
     else:
         # A program with classical calls lowers only with their answers
-        # bound: the backend lowers its placeholders, as each segment does.
+        # bound: the backend lowers its placeholders, as each interval does.
         probe = module.placeholders() if functions else module
         engine = _GpuBackend(probe, dims, dt_ns, base, lock, integrator)
     state = engine.prepare(state)
@@ -845,7 +910,7 @@ def _simulate_compiled(
             state,
             t_start,
             None if path_end else t_end,
-            shots,
+            shots_count,
             np.random.default_rng(seed),
             functions,
             handlers,
@@ -858,46 +923,28 @@ def _simulate_compiled(
             sampled,
         )
     # Only shots draw: numpy.random, and the hashing it imports, load for them.
-    rng: np.random.Generator = None if shots is None else np.random.default_rng(seed)  # type: ignore[assignment]
+    rng: np.random.Generator = None if shots_count is None else np.random.default_rng(seed)  # type: ignore[assignment]
     seen: dict[tuple[int, tuple[int, ...]], Measurement] = {}
     leaves: list[tuple[Any, list[tuple[tuple[int, tuple[int, ...]], int]], int]] = []
-
-    def run(
-        path: list[tuple[tuple[int, tuple[int, ...]], int]], state: Any, t: float, count: int
-    ) -> None:
-        entries = [[index, *iteration, k] for (index, iteration), k in path]
-        found = module.next_measurement(entries)
-        boundary = t_end if found is None or found[4] > t_end else found[4]
-        if boundary > t:
-            state = engine.evolve(state, entries, t, boundary)
-        if found is None or found[4] > t_end:
-            leaves.append((state, path, count))
-            return
-        index, iteration, qudit, start, end = found
-        key = (index, tuple(iteration))
-        seen[key] = Measurement(index, tuple(iteration), qudit, start, end)
-        projected = [engine.project(state, dims, mode[qudit], k) for k in range(dims[mode[qudit]])]
-        # Exact propagation leaves an empty level at a trace of +-1e-17.
-        weights = np.maximum([engine.weight(s) for s in projected], 0.0)
-        total = weights.sum()
-        counts = (
-            rng.multinomial(count, weights / total)
-            if count and total > 0
-            else np.zeros(len(weights), dtype=np.int64)
+    found = module.next_measurement([])
+    if found is None or found[4] > t_end:
+        if t_end > t_start:
+            state = engine.evolve(state, [], t_start, t_end)
+        leaves.append((state, [], shots_count or 0))
+    else:
+        _measurement_tree(
+            module,
+            engine,
+            dims,
+            mode,
+            state,
+            (t_start, t_end),
+            shots_count or 0,
+            rng,
+            sampled,
+            leaves,
+            seen,
         )
-        # A measurement that ends before t_start projects the initial state;
-        # evolution still starts at t_start.
-        for k, (branch, w) in enumerate(zip(projected, weights, strict=False)):
-            if sampled:
-                # A path of many measurements is improbable as a whole;
-                # each followed outcome is kept at unit weight instead.
-                if counts[k] and w > _NEGLIGIBLE * total:
-                    run([*path, (key, k)], branch / w, max(end, t), int(counts[k]))
-            elif w > _NEGLIGIBLE * norm:
-                run([*path, (key, k)], branch, max(end, t), int(counts[k]))
-
-    norm = engine.weight(state)
-    run([], state, t_start, shots or 0)
 
     measurements = sorted(seen.values(), key=lambda m: (m.end_ns, m.readout, m.iteration))
     column = {(m.readout, m.iteration): i for i, m in enumerate(measurements)}
@@ -907,7 +954,7 @@ def _simulate_compiled(
     for leaf, path, count in leaves:
         density = engine.density(leaf)
         if sampled:
-            density = density * (count / (shots or 1) / float(np.real(np.trace(density))))
+            density = density * (count / (shots_count or 1) / float(np.real(np.trace(density))))
         rho += density
         outcomes = [-1] * len(measurements)
         for key, k in path:
@@ -915,7 +962,7 @@ def _simulate_compiled(
         branches.append(Branch(tuple(outcomes), float(np.real(np.trace(density)))))
         rows.extend([outcomes] * count)
     records = None
-    if shots is not None:
+    if shots_count is not None:
         records = np.array(rows, dtype=np.int64).reshape(len(rows), len(measurements))
         rng.shuffle(records)
     return SimulationResult(
@@ -930,6 +977,140 @@ def _simulate_compiled(
     )
 
 
+def _measurement_tree(
+    module: Any,
+    engine: _Backend,
+    dims: tuple[int, ...],
+    mode: Mapping[int, int],
+    state: Any,
+    window: tuple[float, float],
+    shots: int,
+    rng: np.random.Generator,
+    sampled: bool,
+    leaves: list[tuple[Any, list[tuple[tuple[int, tuple[int, ...]], int]], int]],
+    seen: dict[tuple[int, tuple[int, ...]], Measurement],
+) -> None:
+    """Walk the outcome paths of a program without classical calls from
+    *state* over *window*, appending each path's end (state, outcomes, shots)
+    to *leaves* in depth-first order and each measurement to *seen*.
+
+    Shots are drawn at each measurement in that order, as each path is
+    reached. Paths that reach the same window together evolve together
+    (``_Backend.evolve_together``): siblings, and without *sampled* every
+    path of a depth."""
+    t_start, t_end = window
+
+    # A path is [outcomes, state, time, shots]; one that measures gets its
+    # measurement, outcome weights and followed outcomes appended.
+    def advance(paths: list[list[Any]]) -> list[Any]:
+        """Evolve *paths* to their next measurements and measure them; paths
+        over the same window evolve together. Returns each one's
+        projections, or None where it ends."""
+        found = []
+        windows: dict[tuple[float, float], list[int]] = {}
+        for i, path in enumerate(paths):
+            entries = [[index, *iteration, k] for (index, iteration), k in path[0]]
+            next_one = module.next_measurement(entries)
+            boundary = t_end if next_one is None or next_one[4] > t_end else next_one[4]
+            found.append(next_one)
+            if boundary > path[2]:
+                windows.setdefault((path[2], boundary), []).append(i)
+                path.append(entries)
+        for (t, boundary), members in windows.items():
+            evolved = engine.evolve_together(
+                [paths[i][1] for i in members], [paths[i].pop() for i in members], t, boundary
+            )
+            for i, state in zip(members, evolved, strict=True):
+                paths[i][1] = state
+        projections: list[Any] = []
+        for path, next_one in zip(paths, found, strict=True):
+            if next_one is None or next_one[4] > t_end:
+                projections.append(None)
+                continue
+            index, iteration, qudit, start, end = next_one
+            path.append(Measurement(index, tuple(iteration), qudit, start, end))
+            state = path[1]
+            path[1] = None
+            projected = [
+                engine.project(state, dims, mode[qudit], k) for k in range(dims[mode[qudit]])
+            ]
+            # Exact propagation leaves an empty level at a trace of +-1e-17.
+            projections.append((projected, np.maximum([engine.weight(s) for s in projected], 0.0)))
+        return projections
+
+    def outcome_counts(count: int, weights: npt.NDArray[np.float64]) -> Any:
+        total = weights.sum()
+        return (
+            rng.multinomial(count, weights / total)
+            if count and total > 0
+            else np.zeros(len(weights), dtype=np.int64)
+        )
+
+    def follow(paths: list[list[Any]]) -> None:
+        """Walk the paths shots take from *paths*, each to its end."""
+        for path, projection in zip(paths, advance(paths), strict=True):
+            if projection is None:
+                leaves.append((path[1], path[0], path[3]))
+                continue
+            measurement = path[4]
+            key = (measurement.readout, measurement.iteration)
+            seen[key] = measurement
+            projected, weights = projection
+            counts = outcome_counts(path[3], weights)
+            # A path of many measurements is improbable as a whole; each
+            # followed outcome is kept at unit weight instead. A measurement
+            # that ends before t_start projects the initial state; evolution
+            # still starts at t_start.
+            t = max(measurement.end_ns, path[2])
+            total = weights.sum()
+            follow(
+                [
+                    [[*path[0], (key, k)], branch / w, t, int(counts[k])]
+                    for k, (branch, w) in enumerate(zip(projected, weights, strict=False))
+                    if counts[k] and w > _NEGLIGIBLE * total
+                ]
+            )
+
+    def draw(path: list[Any]) -> None:
+        """Give the shots of *path* to its outcomes, as followed in order."""
+        if len(path) == 4:
+            leaves.append((path[1], path[0], path[3]))
+            return
+        measurement, weights, children = path[4:]
+        seen[(measurement.readout, measurement.iteration)] = measurement
+        counts = outcome_counts(path[3], weights)
+        for k, child in children:
+            child[3] = int(counts[k])
+            draw(child)
+
+    norm = engine.weight(state)
+    root = [[], state, t_start, shots]
+    if sampled:
+        follow([root])
+    else:
+        # Every outcome above the floor is followed whatever the shots draw,
+        # so the tree is grown a measurement deep at a time, every path at
+        # that depth evolving at once, and the shots drawn after.
+        frontier = [root]
+        while frontier:
+            deeper: list[list[Any]] = []
+            for path, projection in zip(frontier, advance(frontier), strict=True):
+                if projection is None:
+                    continue
+                projected, weights = projection
+                t = max(path[4].end_ns, path[2])
+                key = (path[4].readout, path[4].iteration)
+                children = [
+                    (k, [[*path[0], (key, k)], branch, t, 0])
+                    for k, (branch, w) in enumerate(zip(projected, weights, strict=False))
+                    if w > _NEGLIGIBLE * norm
+                ]
+                path += [weights, children]
+                deeper.extend(child for _, child in children)
+            frontier = deeper
+        draw(root)
+
+
 def _simulate_tree(
     module: Any,
     engine: _Backend,
@@ -937,7 +1118,7 @@ def _simulate_tree(
     state: Any,
     t_start: float,
     t_end: float | None,
-    shots: int | None,
+    shots_count: int | None,
     rng: np.random.Generator,
     functions: tuple[Any, ...],
     handlers: Mapping[str, Callable[..., Any]] | None,
@@ -969,7 +1150,7 @@ def _simulate_tree(
         state,
         t_start,
         t_end,
-        shots,
+        shots_count,
         rng,
         functions,
         chosen,
@@ -997,7 +1178,9 @@ def _simulate_tree(
     for leaf in leaves:
         density = engine.density(leaf.state)
         if sampled:
-            density = density * (leaf.count / (shots or 1) / float(np.real(np.trace(density))))
+            density = density * (
+                leaf.count / (shots_count or 1) / float(np.real(np.trace(density)))
+            )
         else:
             density = leaf.weight * density
         rho += density
@@ -1009,7 +1192,7 @@ def _simulate_tree(
         )
         rows.extend([outcomes] * leaf.count)
     records = None
-    if shots is not None:
+    if shots_count is not None:
         records = np.array(rows, dtype=np.int64).reshape(len(rows), len(measurements))
         rng.shuffle(records)
     return SimulationResult(
@@ -1043,7 +1226,7 @@ def _thermal_state(
 ) -> npt.NDArray[np.complex128]:
     """The product of the thermal mixtures of *qudits* (*dims* levels each),
     or *cold* if none is hot."""
-    populations = [float(target.qubits[q].thermal_population) for q in qudits]
+    populations = [float(target.qudits[q].thermal_population) for q in qudits]
     if not any(populations):
         return cold
     diagonal: npt.NDArray[Any] = np.ones(1)
@@ -1060,20 +1243,26 @@ def _level_mask(dims: tuple[int, ...], qudit: int, level: int) -> npt.NDArray[np
     return np.asarray((indices // stride) % dims[qudit] == level)
 
 
-def _segment_attributes(entries: list[list[int]], t0: float, t1: float, steps: int) -> str:
+def _interval_attributes(entries: list[list[int]], t0: float, t1: float, steps: int) -> str:
     path = ", ".join(f"array<i64: {', '.join(map(str, e))}>" for e in entries)
     return (
         f"{{pulse.path = [{path}], qop.t_start = {_f64(t0)}, qop.t_end = {_f64(t1)}, "
-        f"qop.num_steps = {steps} : i64}}"
+        f"qop.step_count = {steps} : i64}}"
     )
 
 
 class _Backend:
-    """Segment evolution and projection for one state representation.
+    """Interval evolution and projection for one state representation.
 
     *base* holds the module attributes of the target and levels, in MLIR
-    syntax without braces; every segment sets them along with its own.
+    syntax without braces; every interval sets them, then its own. The text
+    of *base* is the same in every interval: the module's context parses it
+    once.
     """
+
+    # Whether evolve_together runs states as one batch; if not, a walk
+    # gains nothing by gathering siblings first.
+    batches = False
 
     def __init__(
         self, module: Any, dims: tuple[int, ...], dt_ns: float, base: str, lock: Any
@@ -1082,12 +1271,8 @@ class _Backend:
         self.dims = dims
         self.dim = math.prod(dims)
         self.dt_ns = dt_ns
-        self.base = base
+        self.base = "{" + base + "}"
         self.lock = lock
-
-    def _attributes_for(self, attributes: str) -> str:
-        """The module attributes of one segment (*attributes* in braces)."""
-        return "{" + self.base + ", " + attributes[1:]
 
     def steps(self, t0: float, t1: float) -> int:
         return max(1, math.ceil((t1 - t0) / self.dt_ns - 1e-9))
@@ -1097,6 +1282,12 @@ class _Backend:
 
     def evolve(self, state: Any, entries: list[list[int]], t0: float, t1: float) -> Any:
         raise NotImplementedError
+
+    def evolve_together(
+        self, states: list[Any], paths: list[list[list[int]]], t0: float, t1: float
+    ) -> list[Any]:
+        """Evolve each state along its path (``evolve``) over the same window."""
+        return [self.evolve(s, e, t0, t1) for s, e in zip(states, paths, strict=True)]
 
     @staticmethod
     def project(state: Any, dims: tuple[int, ...], qudit: int, level: int) -> Any:
@@ -1173,7 +1364,7 @@ def _step_times(t0: float, h: float, lo: int, hi: int) -> npt.NDArray[np.float64
 
 
 def _step_range(support: tuple[float, float], t0: float, h: float, steps: int) -> tuple[int, int]:
-    """The steps, of a segment from *t0* in steps of *h*, that a drive term
+    """The steps, of an interval from *t0* in steps of *h*, that a drive term
     with this support can be nonzero on."""
     start, end = support
     # Clamped as floats first: a term that plays throughout has a huge or
@@ -1203,8 +1394,17 @@ def _active_ranges(
     return merged
 
 
+# A driven stretch of a register too large for kept maps builds the
+# Hamiltonians of its steps (three per step) in parts; a part and the one
+# built after it take at most about this many bytes.
+_STRETCH_BYTES = 1 << 25
+
+# The states of one batched GPU run take at most this many bytes.
+_BATCH_BYTES = 1 << 28
+
+
 class _Stepper:
-    """Steps one segment's density matrix in order (see ``_propagate``):
+    """Steps one interval's density matrix in order (see ``_propagate``):
     exactly where the Lindbladian is constant, else with RK4, reusing kept
     maps on small registers."""
 
@@ -1274,7 +1474,7 @@ class _Stepper:
         self.done += n
         if not self._exact_pays(n, hamiltonian):
             hs = np.broadcast_to(hamiltonian, (n * 3, self.dim, self.dim))
-            return self._rk4(rho, hs)
+            return self._rk4(rho, (hs,))
         key = (self.key, "exact", values.tobytes(), n)
         propagator = _propagate.cached(key)
         if propagator is None:
@@ -1327,10 +1527,11 @@ class _Stepper:
         n = values.shape[1]
         self.done += n
         if self.dim > _propagate.MAX_MAPPED_DIM:
-            hs = self.static + np.tensordot(
-                values.reshape(len(self.operators), n * 3).T, self.operators, axes=1
+            flat = values.reshape(len(self.operators), n * 3).T
+            rows = 3 * max(1, _STRETCH_BYTES // (96 * self.dim * self.dim))
+            return self._rk4(
+                rho, (self._hamiltonians(flat[lo : lo + rows]) for lo in range(0, 3 * n, rows))
             )
-            return self._rk4(rho, hs)
         # A digest, not the coefficients: a long pulse train's run to
         # megabytes, and the cache keeps thousands of keys.
         digest = _blake2b(np.round(values, 12).tobytes(), digest_size=16).digest()
@@ -1347,7 +1548,15 @@ class _Stepper:
             _keep_map(key, propagator, self.h)
         return _propagate.apply(propagator, rho)
 
-    def _rk4(self, rho: Any, hs: npt.NDArray[np.complex128]) -> Any:
+    def _hamiltonians(self, coefficients: npt.NDArray[np.float64]) -> npt.NDArray[np.complex128]:
+        """The Hamiltonian at each row of drive coefficients (rows x terms)."""
+        hs: npt.NDArray[np.complex128] = np.tensordot(coefficients, self.operators, axes=1)
+        hs += self.static
+        return hs
+
+    def _rk4(self, rho: Any, parts: Iterable[npt.NDArray[np.complex128]]) -> Any:
+        """RK4 steps on *rho*, each under three Hamiltonians (its start,
+        middle and end), from *parts* in order."""
         h = self.h
         jumps, decay = self.jumps, self.decay
         adjoints = [c.conj().T for c in jumps]
@@ -1363,13 +1572,14 @@ class _Stepper:
         start = rho
         # A state that diverges raises _DivergedError below, not numpy's warnings.
         with np.errstate(over="ignore", invalid="ignore"):
-            for step in range(len(hs) // 3):
-                h0, hm, h1 = hs[3 * step], hs[3 * step + 1], hs[3 * step + 2]
-                k1 = lindblad(rho, h0)
-                k2 = lindblad(rho + 0.5 * h * k1, hm)
-                k3 = lindblad(rho + 0.5 * h * k2, hm)
-                k4 = lindblad(rho + h * k3, h1)
-                rho = rho + (h / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+            for hs in parts:
+                for step in range(len(hs) // 3):
+                    h0, hm, h1 = hs[3 * step], hs[3 * step + 1], hs[3 * step + 2]
+                    k1 = lindblad(rho, h0)
+                    k2 = lindblad(rho + 0.5 * h * k1, hm)
+                    k3 = lindblad(rho + 0.5 * h * k2, hm)
+                    k4 = lindblad(rho + h * k3, h1)
+                    rho = rho + (h / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
         if not _bounded(rho, start):
             raise _DivergedError(h)
         return rho
@@ -1400,16 +1610,14 @@ class _CpuBackend(_Backend):
     def evolve(self, state: Any, entries: list[list[int]], t0: float, t1: float) -> Any:
         steps = self.steps(t0, t1)
         with self.lock:
-            self.module.set_attributes(
-                self._attributes_for(_segment_attributes(entries, t0, t1, steps))
-            )
+            self.module.set_attributes(self.base, _interval_attributes(entries, t0, t1, steps))
             _, hamiltonian, collapse, *_ = self.module.operator_program(self.arguments)
         static = np.zeros((self.dim, self.dim), dtype=np.complex128)
         driven = []
         for re, im, kind, params, factors in hamiltonian:
             if kind:
                 # An unrolled program lists every pulse it plays; only those
-                # that overlap the segment act in it.
+                # that overlap the interval act in it.
                 start, end = _propagate.support(params)
                 if end <= t0 or start >= t1:
                     continue
@@ -1422,6 +1630,14 @@ class _CpuBackend(_Backend):
             return state
         h = (t1 - t0) / steps
         stepper = _Stepper(self.dims, static, driven, jumps, decay, h)
+        if self.dims[1:] and any(k == 1 and p[1] >= 1e300 for k, p, _ in driven):
+            # Couplings of detuned qudits play throughout: idle stretches
+            # are propagated in the frame that turns with them.
+            from ._idle import step_through
+
+            rho = step_through(stepper, self.dims, state, t0, steps, self.dt_ns)
+            if rho is not None:
+                return rho
         rho = state
         for lo, hi in _active_ranges(driven, t0, h, steps):
             rho = stepper.idle(rho, lo - stepper.done)
@@ -1430,7 +1646,9 @@ class _CpuBackend(_Backend):
 
 
 class _GpuBackend(_Backend):
-    """Each segment is lowered and JIT-run by the cuDensityMat runtime."""
+    """Each interval is lowered and JIT-run by the cuDensityMat runtime."""
+
+    batches = True
 
     def __init__(
         self,
@@ -1449,9 +1667,9 @@ class _GpuBackend(_Backend):
         # Collapse operators depend on the target alone. A program that
         # measures lowers only along a measurement path over a window, so ask
         # along the empty path over an empty window at 0 ns, which ends before
-        # any measurement; every segment then sets its own path and window.
+        # any measurement; every interval then sets its own path and window.
         with lock:
-            module.set_attributes(self._attributes_for(_segment_attributes([], 0.0, 0.0, 1)))
+            module.set_attributes(self.base, _interval_attributes([], 0.0, 0.0, 1))
             _, _, collapse, *_ = module.operator_program()
         self.dissipative = bool(collapse)
 
@@ -1461,31 +1679,105 @@ class _GpuBackend(_Backend):
         return state
 
     def evolve(self, state: Any, entries: list[list[int]], t0: float, t1: float) -> Any:
+        steps = self.steps(t0, t1)
+        # An idle stretch long enough to pay for lowering and running the
+        # rest in parts (_idle.GPU_IDLE_STEPS) is propagated on the host.
+        if steps >= 1024:
+            from ._idle import through_gpu
+
+            results = through_gpu(self, [state], entries, t0, t1, steps)
+            if results is not None:
+                return results[0]
         mixed = state.ndim == 2
-        attributes = _segment_attributes(entries, t0, t1, self.steps(t0, t1))
+        attributes = _interval_attributes(entries, t0, t1, steps)
         attributes = attributes[:-1]
         if mixed and not self.dissipative:
             attributes += ", qop.mixed_state"
         with self.lock:
-            self.module.set_attributes(self._attributes_for(attributes + "}"))
+            self.module.set_attributes(self.base, attributes + "}")
             text = self.module.print()
-        result = self._execute(text, state, mixed)
+        (result,) = self._execute(text, [state], mixed)
         if not _bounded(result, state):
-            raise _DivergedError((t1 - t0) / self.steps(t0, t1))
+            raise _DivergedError((t1 - t0) / steps)
         return result
 
-    def _execute(self, text: str, state: Any, mixed: bool) -> Any:
-        """Run one segment, the module *text*, on the GPU from *state*."""
+    def evolve_together(
+        self, states: list[Any], paths: list[list[list[int]]], t0: float, t1: float
+    ) -> list[Any]:
+        """Evolve each state along its path over the same window. States
+        whose paths lower to the same operators there (sibling branches that
+        no outcome between them changes) evolve as one batched run, member
+        for member what each would give alone."""
+        if len(states) == 1:
+            return [self.evolve(states[0], paths[0], t0, t1)]
+        steps = self.steps(t0, t1)
+        programs = []
+        with self.lock:
+            for entries in paths:
+                self.module.set_attributes(self.base, _interval_attributes(entries, t0, t1, steps))
+                programs.append(self.module.operator_program())
+        groups: list[list[int]] = []
+        for i, program in enumerate(programs):
+            for group in groups:
+                first = group[0]
+                if states[first].ndim == states[i].ndim and programs[first] == program:
+                    group.append(i)
+                    break
+            else:
+                groups.append([i])
+        results: list[Any] = [None] * len(states)
+        limit = max(1, _BATCH_BYTES // states[0].nbytes)
+        for group in groups:
+            for lo in range(0, len(group), limit):
+                members = group[lo : lo + limit]
+                if len(members) > 1 and steps >= 1024:
+                    from ._idle import through_gpu
+
+                    # As evolve: idle stretches on the host, member by
+                    # member, and the rest of the interval as one batch.
+                    split = through_gpu(
+                        self, [states[i] for i in members], paths[members[0]], t0, t1, steps
+                    )
+                    if split is not None:
+                        for i, result in zip(members, split, strict=True):
+                            results[i] = result
+                        continue
+                if len(members) == 1:
+                    results[members[0]] = self.evolve(states[members[0]], paths[members[0]], t0, t1)
+                    continue
+                mixed = states[members[0]].ndim == 2
+                attributes = _interval_attributes(paths[members[0]], t0, t1, steps)[:-1]
+                if mixed and not self.dissipative:
+                    attributes += ", qop.mixed_state"
+                with self.lock:
+                    self.module.set_attributes(self.base, attributes + "}")
+                    text = self.module.print()
+                evolved = self._execute(text, [states[i] for i in members], mixed)
+                for i, result in zip(members, evolved, strict=True):
+                    if not _bounded(result, states[i]):
+                        raise _DivergedError((t1 - t0) / steps)
+                    results[i] = result
+        return results
+
+    def _execute(self, text: str, states: list[Any], mixed: bool) -> list[Any]:
+        """Run one interval, the module *text*, on the GPU from each of
+        *states*, as one batch."""
         jit_module = self.compiler.compile_pulse_mlir(text)
-        # cuDensityMat stores a density matrix with the ket index fastest.
-        buffer = np.ascontiguousarray(state.ravel(order="F") if mixed else state)
+        # cuDensityMat stores a density matrix with the ket index fastest,
+        # and a batch member after member.
+        buffer = np.ascontiguousarray(
+            np.concatenate([s.ravel(order="F") for s in states])
+            if len(states) > 1
+            else states[0].ravel(order="F")
+            if mixed
+            else states[0]
+        )
         library = self.compiler._runtime.library
-        if library.cudm_set_initial_state(buffer.ctypes.data, buffer.nbytes) != 0:
+        if library.cudm_set_initial_state(buffer.ctypes.data, buffer.nbytes, len(states)) != 0:
             raise ExecutionError("could not set the cuDensityMat initial state")
         results = self.compiler.load_and_run(
-            jit_module, n_qubits=len(self.dims), state_dim=self.dim
+            jit_module, qudit_count=len(self.dims), state_dim=self.dim, count=len(states)
         )
-        values = results[0].to_numpy().ravel()
         if mixed:
-            return values.reshape((self.dim, self.dim), order="F")
-        return values
+            return [r.to_numpy().ravel().reshape((self.dim, self.dim), order="F") for r in results]
+        return [r.to_numpy().ravel() for r in results]

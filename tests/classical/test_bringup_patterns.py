@@ -12,13 +12,13 @@ import cudaq_pulse as pulse
 import numpy as np
 import pytest
 from cudaq_pulse.classical import emulation, random_index
-from cudaq_pulse.targets import DispersiveReadout, Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import DispersiveReadout, PhysicalQudit
 
 PI_AMP = math.pi / 20
 
 
 def _device(**readout):
-    qubit = Qubit(
+    qudit = PhysicalQudit(
         index=0,
         frequency_hz=5e9,
         anharmonicity_hz=-2e8,
@@ -26,7 +26,7 @@ def _device(**readout):
         t2_star_us=0.0,
         readout=DispersiveReadout(**readout),
     )
-    return pulse.device(TargetDescription(name="sim", qubits={0: qubit}))
+    return pulse.quantum_system(name="sim", qudits={0: qudit})
 
 
 @pulse.classical(max_latency_ns=100)
@@ -71,7 +71,7 @@ def balanced_switch(q):
 @pytest.mark.parametrize("kernel", [chain_switch, balanced_switch], ids=["chain", "balanced"])
 def test_an_n_way_switch_takes_the_arm_of_its_index(kernel):
     dev = _device()
-    lowered = pulse.compile(kernel, device=dev).lower(dev.qudit_handles[0])
+    lowered = pulse.compile(kernel, quantum_system=dev).lower(dev.qudits[0])
     (call,) = lowered.classical_report()
     # Every arm ends at the same time, after the longest one.
     drives = [e for e in lowered.schedule if e.kind == "drive"]
@@ -107,7 +107,7 @@ def _expected_p1():
 
 def test_a_random_source_follows_every_value_without_shots():
     dev = _device()
-    lowered = pulse.compile(random_rotation, device=dev).lower(dev.qudit_handles[0])
+    lowered = pulse.compile(random_rotation, quantum_system=dev).lower(dev.qudits[0])
     result = pulse.simulate(lowered, levels=2)
     assert sorted(branch.calls[0].answer for branch in result.branches) == [0, 1, 2, 3]
     assert result.density_matrix[1, 1].real == pytest.approx(_expected_p1())
@@ -116,22 +116,22 @@ def test_a_random_source_follows_every_value_without_shots():
 
 def test_a_random_source_draws_per_shot():
     dev = _device()
-    lowered = pulse.compile(random_rotation, device=dev).lower(dev.qudit_handles[0])
-    result = pulse.simulate(lowered, shots=4000, seed=2, levels=2)
+    lowered = pulse.compile(random_rotation, quantum_system=dev).lower(dev.qudits[0])
+    result = pulse.simulate(lowered, shots_count=4000, seed=2, levels=2)
     assert result.records is not None and len(result.records) == 4000
     # The ensemble state is exact; the shots split about evenly.
     assert result.density_matrix[1, 1].real == pytest.approx(_expected_p1())
-    a = pulse.simulate(lowered, shots=100, seed=9, levels=2)
-    b = pulse.simulate(lowered, shots=100, seed=9, levels=2)
+    a = pulse.simulate(lowered, shots_count=100, seed=9, levels=2)
+    b = pulse.simulate(lowered, shots_count=100, seed=9, levels=2)
     assert np.array_equal(a.records, b.records)
 
 
 def test_a_random_source_is_marked_in_the_manifest_and_emulated_locally():
     dev = _device()
-    lowered = pulse.compile(random_rotation, device=dev).lower(dev.qudit_handles[0])
+    lowered = pulse.compile(random_rotation, quantum_system=dev).lower(dev.qudits[0])
     (entry,) = emulation.manifest(lowered)["functions"]
     assert entry["random"] == 4
-    run = emulation.emulate(lowered, shots=2000, seed=4)
+    run = emulation.emulate(lowered, shots_count=2000, seed=4)
     counts = np.bincount([shot[0].answer for shot in run.calls], minlength=4)
     assert counts.sum() == 2000 and counts.min() > 400
     assert run.late_fraction == 0.0
@@ -155,7 +155,7 @@ def test_latency_within_the_depletion_time_is_hidden(depletion_ns):
         if decide.submit([m]).result()[0]:
             drive(d, square(40, 0.1))
 
-    lowered = pulse.compile(feedback, device=dev).lower(dev.qudit_handles[0])
+    lowered = pulse.compile(feedback, quantum_system=dev).lower(dev.qudits[0])
     (call,) = lowered.classical_report()
     clock = dev.clock_ghz
     budget = call.due_cycles - call.submit_cycles
@@ -167,7 +167,7 @@ def test_latency_within_the_depletion_time_is_hidden(depletion_ns):
 
 
 def test_depletion_defaults_from_kappa():
-    qubit = Qubit(
+    qudit = PhysicalQudit(
         index=0,
         frequency_hz=5e9,
         anharmonicity_hz=-2e8,
@@ -175,8 +175,8 @@ def test_depletion_defaults_from_kappa():
         t2_star_us=0.0,
         readout=DispersiveReadout(linewidth_hz=1e6),
     )
-    assert qubit.depletion_ns == pytest.approx(math.log(100) / (2 * math.pi * 1e-3))
-    assert _device().target.qubits[0].depletion_ns == 0.0
+    assert qudit.depletion_ns == pytest.approx(math.log(100) / (2 * math.pi * 1e-3))
+    assert _device().physical_qudits[0].depletion_ns == 0.0
 
 
 # The converged pattern: the trip count is fixed; the estimator carries a
@@ -208,7 +208,7 @@ def converging(q):
 
 def test_the_converged_pattern_stops_probing_and_keeps_its_trip_count():
     dev = _device()
-    lowered = pulse.compile(converging, device=dev).lower(dev.qudit_handles[0])
+    lowered = pulse.compile(converging, quantum_system=dev).lower(dev.qudits[0])
     assert len(lowered.classical_report()) == 5
     result = pulse.simulate(lowered, initial_state=[1, 0], levels=2)
     for branch in result.branches:

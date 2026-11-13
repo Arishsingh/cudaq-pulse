@@ -243,7 +243,7 @@ def test_the_module_rounds_and_the_call_binds():
     assert "pulse.variable_wait" in generic and "pulse.min_cycles = 0" in generic
     bound = lowered.mlir()
     assert "%arg0" not in bound
-    assert "duration_cycles = 7 : i64, pulse.min_cycles = 0" in bound
+    assert "duration_cycles = 7 : i64, start_cycles = 40 : i64}> {pulse.min_cycles = 0" in bound
 
 
 def test_without_values_a_wait_stands_at_its_lowest_length():
@@ -253,7 +253,7 @@ def test_without_values_a_wait_stands_at_its_lowest_length():
         wait(d, tau, bounds=(100, None))
         drive(d, square(40, 0.5))
 
-    compiled = pulse.compile(k, device=Q[0].device)
+    compiled = pulse.compile(k, quantum_system=Q[0].quantum_system)
     generic = compiled.lower(Q[0], 250.0).generic
     assert _events(generic) == [("wait", 0, 0, 100), ("drive", 0, 100, 40)]
     assert _events(compiled.lower(Q[0], 250.0)) == [("wait", 0, 0, 250), ("drive", 0, 250, 40)]
@@ -371,7 +371,7 @@ def test_bounds_check_a_length_known_while_compiling():
             r"be negative",
         ),
         (-40.0, r"rounds to -40 clock cycles; a wait cannot be negative"),
-        (float("nan"), r"the wait length tau is nan; it must be a finite number of clock cycles"),
+        (float("nan"), r"t1\(\): argument 'tau' is nan; a float argument must be a number"),
         (float("inf"), r"the wait length tau is inf"),
         (2.0**60, r"outside its bounds \(0, None\)"),
     ],

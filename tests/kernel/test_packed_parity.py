@@ -75,14 +75,14 @@ def test_only_the_rejected_cases_are_left_out():
 @pytest.mark.parametrize("case", _PROGRAMS, ids=lambda c: c.name)
 def test_compile_builds_the_kernel_ir(case):
     ir = python_ir(case.kernel, *case.args(), unroll_threshold=UNROLL_THRESHOLD)
-    builder = PackedIRBuilder(name="k", qubit_freq_hz=_FREQ)
+    builder = PackedIRBuilder(name="k", qudit_freq_hz=_FREQ)
     builder.unroll_threshold = UNROLL_THRESHOLD
     _trace_kernel_with_builder(case.kernel.__wrapped__, builder, case.args())
     params = [p for p in case.args() if isinstance(p, Parameter)]
     module = PulseModuleBuilder().build_from_packed(
         builder.get_buffer(),
         2.0,
-        builder.n_qubits,
+        builder.qudit_count,
         builder.get_freq_array(),
         [p.name for p in params],
         [p.dtype for p in params],

@@ -12,13 +12,13 @@
 // RUN: cudaq-pulse-opt --pulse-schedule-asap %s | FileCheck %s --check-prefixes=CHECK,ASAP
 // RUN: cudaq-pulse-opt --pulse-schedule-alap --pulse-classical-check --pulse-verify %s > /dev/null
 
-module attributes {pulse.clock_ghz = 2.0 : f64,
+module attributes {pulse.control_system = #pulse.control_system<clock_period_fs = 500000>,
     classical.links = {"0" = {bytes_per_ns = 0.0 : f64, feedback_ns = 8.0 : f64,
-                              fixed_ns = 4.0 : f64, max_in_flight = 64 : i64,
+                              fixed_ns = 4.0 : f64, slots = 64 : i64,
                               slot_bytes = 1024 : i64}}} {
 
 classical.callable @update {args = ["bits:1", "f64", "f64", "f64"], device = 0 : i64,
-    function_id = 672109684 : i64, latency_max_ns = 500.0 : f64,
+    dispatch_key = 672109684 : i64, latency_max_ns = 500.0 : f64,
     latency_min_ns = 0.0 : f64, latency_nominal_ns = 500.0 : f64,
     mode = "bounded", results = ["f64", "f64", "f64"], submit = "eager"}
 
@@ -33,7 +33,7 @@ classical.callable @update {args = ["bits:1", "f64", "f64", "f64"], device = 0 :
 // ALAP: pulse.drive {{.*}}duration_cycles = 40 : i64, start_cycles = 1184 : i64}
 // ASAP: pulse.drive {{.*}}start_cycles = 200 : i64}
 // ASAP: pulse.drive {{.*}}duration_cycles = 40 : i64, start_cycles = 240 : i64}
-// CHECK: pulse.wait {{.*}}classical.variable{{.*}}duration_cycles = 32 : i64, {{.*}}start_cycles = 1224 : i64}
+// CHECK: pulse.wait {{.*}}duration_cycles = 32 : i64, {{.*}}start_cycles = 1224 : i64}> {{.*}}classical.variable
 // CHECK: pulse.readout {{.*}}start_cycles = 1256 : i64}
 func.func @round() {
   %c40 = arith.constant 40 : i64
@@ -45,12 +45,12 @@ func.func @round() {
   %rate = arith.constant 900.0 : f64
   %w0 = arith.constant 300.0 : f64
   %half = arith.constant 0.5 : f64
-  %q = pulse.qudit_alloc {qubit = 0 : i64} : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q {frequency_hz = 5.0e9 : f64, qubit = 0 : i64} : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %u0 = pulse.get_readout_line %q {frequency_hz = 5.0e9 : f64, qubit = 0 : i64} : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q {frequency_hz = 5.0e9 : f64} : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %u0 = pulse.get_readout_line %q {frequency_hz = 5.0e9 : f64} : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %pi = pulse.square %c40, %amp, %z : i64, f64, f64 -> !pulse.waveform
   %pr = pulse.square %c200, %ro, %z : i64, f64, f64 -> !pulse.waveform
-  %r1, %u1, %m = pulse.readout %r0, %pr, %u0, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+  %r1, %u1, %m = pulse.readout %r0, %pr, %u0, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   %l0 = classical.get_link {device = 0 : i64} : !classical.link
   %l1, %h = classical.submit %l0, @update(%m, %shape, %rate, %w0) {classical.eager} : (!pulse.measurement, f64, f64, f64) -> (!classical.link, !classical.future)
   %a:3 = classical.wait %h, @update : f64, f64, f64
@@ -68,7 +68,7 @@ func.func @round() {
   %len = pulse.duration_from_int %n : (i64) -> !pulse.duration
   %d2 = pulse.wait %d1, %len {classical.variable, pulse.variable_wait, pulse.min_cycles = 32 : i64, pulse.max_cycles = 4000 : i64} : (!pulse.drive_line, !pulse.duration) -> !pulse.drive_line
   %s2:2 = pulse.sync %d2, %s#1 : !pulse.drive_line, !pulse.readout_line -> !pulse.drive_line, !pulse.readout_line
-  %r2, %u2, %m2 = pulse.readout %s2#1, %pr, %u1, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+  %r2, %u2, %m2 = pulse.readout %s2#1, %pr, %u1, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   return
 }
 

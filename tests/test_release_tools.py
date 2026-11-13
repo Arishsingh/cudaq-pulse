@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The release tag checks, the workflow pin check, the release hygiene check,
-the GPU CI matrix, the classical remnant check and the license header check
-(source tree only)."""
+"""The release tag checks, the release bundle check, the workflow pin check,
+the release hygiene check, the GPU CI matrix, the classical remnant check and
+the license header check (source tree only)."""
 
 import importlib.util
 import json
@@ -97,34 +97,168 @@ def test_release_notes_reject_an_empty_section():
         _load("release-notes").release_notes("0.1.0rc1", "## [0.1.0] - Unreleased\n\n## [0.0.1]\n")
 
 
-def _next_release(changelog):
-    """The version of the changelog's undated section and the section's lines."""
+@pytest.mark.parametrize(
+    "version, release, message",
+    [
+        ("0.1.0", True, None),
+        ("0.1.0rc1", True, None),
+        ("0.1.0.post1", True, None),
+        ("0.1.dev5", False, None),
+        ("0.1.0rc2.dev1", False, None),
+        ("0.1.dev5+gc807058fb", False, "local segment"),
+        ("0.1.0+local", True, "local segment"),
+        ("0.1.dev5", True, "not a release version"),
+        ("0.1", True, "not a release version"),
+        ("0.1.0", False, "not a dev version"),
+        ("v0.1.0", True, "not a normalized"),
+        ("0.1.0-rc1", True, "not a normalized"),
+    ],
+)
+def test_dist_versions(version, release, message):
+    problems = _load("check-dist").check_version(version, release)
+    assert problems == [] if message is None else message in problems[0]
+
+
+_DIST_PLATFORMS = [
+    "manylinux_2_28_x86_64",
+    "manylinux_2_28_aarch64",
+    "macosx_11_0_arm64",
+]
+
+
+def _dist_file(dist, name, version, tags=None, *, meta_version=None, size=0):
+    import io
+    import tarfile
+    import zipfile
+
+    metadata = f"Metadata-Version: 2.4\nName: {name}\nVersion: {meta_version or version}\n\n"
+    stem = f"{name.replace('-', '_')}-{version}"
+    if tags is None:
+        path = dist / f"{stem}.tar.gz"
+        with tarfile.open(path, "w:gz") as sdist:
+            info = tarfile.TarInfo(f"{stem}/PKG-INFO")
+            info.size = len(metadata)
+            sdist.addfile(info, io.BytesIO(metadata.encode()))
+    else:
+        path = dist / f"{stem}-{tags}.whl"
+        with zipfile.ZipFile(path, "w") as wheel:
+            wheel.writestr(f"{stem}.dist-info/METADATA", metadata)
+            wheel.writestr("padding", b"\0" * size)
+    return path
+
+
+def _bundle(tmp_path, version="0.1.0rc1"):
+    dist = tmp_path / "bundle" / "dist"
+    dist.mkdir(parents=True)
+    _dist_file(dist, "cudaq-pulse", version)
+    for platform in _DIST_PLATFORMS:
+        _dist_file(dist, "cudaq-pulse", version, f"cp312-abi3-{platform}")
+        _dist_file(dist, "cudaq-pulse", version, f"cp314-cp314t-{platform}")
+        _dist_file(dist, "cudaq-pulse-tools", version, f"py3-none-{platform}")
+    return dist
+
+
+def test_a_complete_bundle_passes(tmp_path):
+    check = _load("check-dist")
+    dist = _bundle(tmp_path)
+    assert check.check_files(sorted(dist.iterdir()), "0.1.0rc1", 90) == []
+
+
+def test_a_bundle_needs_every_file_once_at_its_version(tmp_path):
+    check = _load("check-dist")
+    dist = _bundle(tmp_path)
+    (dist / "cudaq_pulse_tools-0.1.0rc1-py3-none-macosx_11_0_arm64.whl").unlink()
+    _dist_file(dist, "cudaq-pulse", "0.1.0rc1", "cp313-cp313-manylinux_2_28_x86_64")
+    _dist_file(dist, "cudaq-pulse", "0.1.0rc2", "cp312-abi3-win_amd64")
+    _dist_file(dist, "cudaq-pulse", "0.1.0rc0")
+    (dist / "SHA256SUMS").write_text("")
+    problems = check.check_files(sorted(dist.iterdir()), "0.1.0rc1", 90)
+    assert "missing cudaq_pulse_tools py3-none wheel for macos-arm64" in problems
+    assert any("cp313-cp313" in p and "not one of the expected" in p for p in problems)
+    assert any("win_amd64" in p and "file name version 0.1.0rc2" in p for p in problems)
+    assert any(p.startswith("more than one cudaq_pulse sdist") for p in problems)
+    assert "SHA256SUMS: not a wheel or sdist" in problems
+
+
+def test_a_bundle_wheel_has_one_platform_tag(tmp_path):
+    check = _load("check-dist")
+    dist = _bundle(tmp_path)
+    (dist / "cudaq_pulse-0.1.0rc1-cp312-abi3-manylinux_2_28_x86_64.whl").unlink()
+    double = "manylinux_2_27_x86_64.manylinux_2_28_x86_64"
+    _dist_file(dist, "cudaq-pulse", "0.1.0rc1", f"cp312-abi3-{double}")
+    problems = check.check_files(sorted(dist.iterdir()), "0.1.0rc1", 90)
+    name = f"cudaq_pulse-0.1.0rc1-cp312-abi3-{double}.whl"
+    assert f"{name}: platform tags {double}, expected exactly one" in problems
+    assert "missing cudaq_pulse cp312-abi3 wheel for linux-x86_64" in problems
+
+
+def test_a_bundle_file_must_carry_its_version_and_fit(tmp_path):
+    check = _load("check-dist")
+    dist = _bundle(tmp_path)
+    wheel = "cudaq_pulse-0.1.0rc1-cp312-abi3-macosx_11_0_arm64.whl"
+    (dist / wheel).unlink()
+    _dist_file(
+        dist, "cudaq-pulse", "0.1.0rc1", "cp312-abi3-macosx_11_0_arm64", meta_version="0.1.0"
+    )
+    _dist_file(
+        dist, "cudaq-pulse-tools", "0.1.0rc1", "py3-none-manylinux_2_28_aarch64", size=1 << 20
+    )
+    problems = check.check_files(sorted(dist.iterdir()), "0.1.0rc1", 0.5)
+    assert f"{wheel}: metadata Version 0.1.0, expected 0.1.0rc1" in problems
+    assert any("aarch64.whl: 1.0 MiB, over the 0.5 MiB limit" in p for p in problems)
+
+
+def test_bundle_digests(tmp_path):
+    check = _load("check-dist")
+    dist = _bundle(tmp_path)
+    files = sorted(dist.iterdir())
+    (dist.parent / check.SUMS).write_text(check.render_sums(files))
+    assert check.verify_sums(dist.parent, files) == []
+    (dist / "cudaq_pulse-0.1.0rc1.tar.gz").write_bytes(b"changed")
+    _dist_file(dist, "cudaq-pulse", "0.1.0rc1", "cp312-abi3-linux_x86_64")
+    problems = check.verify_sums(dist.parent, sorted(dist.iterdir()))
+    assert problems == [
+        "SHA256SUMS does not list cudaq_pulse-0.1.0rc1-cp312-abi3-linux_x86_64.whl",
+        "cudaq_pulse-0.1.0rc1.tar.gz: SHA-256 differs from SHA256SUMS",
+    ]
+    manifest = json.loads(check.manifest(files[:1], "0.1.0rc1"))
+    assert manifest["files"][0]["distribution"] == "cudaq-pulse"
+    assert manifest["files"][0]["file"] == f"dist/{files[0].name}"
+
+
+def _top_release(changelog):
+    """The version the changelog's top section releases (its own version once
+    dated, else its first release candidate) and the section's lines. Only
+    the top section may be undated, as ``## [X.Y.Z] - Unreleased``; it is
+    dated when X.Y.Z is released."""
     sections = re.split(r"^## ", changelog, flags=re.M)[1:]
     undated = [s for s in sections if not re.match(r"\[[^\]]+\] - \d{4}-\d{2}-\d{2}\s", s)]
-    assert len(undated) == 1, "CHANGELOG.md needs exactly one undated section"
-    heading, *lines = undated[0].splitlines()
-    match = re.fullmatch(r"\[(\d+\.\d+\.\d+)\] - Unreleased", heading)
-    assert match, f"the undated section is '## {heading}', not '## [X.Y.Z] - Unreleased'"
-    return match.group(1), lines
+    assert undated in ([], sections[:1]), "only the top section of CHANGELOG.md may be undated"
+    heading, *lines = sections[0].splitlines()
+    match = re.fullmatch(r"\[(\d+\.\d+\.\d+)\] - (Unreleased|\d{4}-\d{2}-\d{2})", heading)
+    assert match, f"the top section is '## {heading}', not '## [X.Y.Z] - Unreleased' or dated"
+    version = match.group(1)
+    return f"{version}rc1" if match.group(2) == "Unreleased" else version, lines
 
 
-def test_the_release_notes_hold_every_unreleased_entry():
+def test_the_release_notes_hold_every_entry_of_the_top_section():
     changelog = (_TOOLS.parent / "CHANGELOG.md").read_text()
-    version, lines = _next_release(changelog)
-    notes = _load("release-notes").release_notes(f"{version}rc1", changelog)
+    release, lines = _top_release(changelog)
+    notes = _load("release-notes").release_notes(release, changelog)
     entries = [line for line in lines if line.startswith("- ")]
     assert entries and "### Added" in notes
     assert [line for line in entries if line not in notes.splitlines()] == []
 
 
-@pytest.mark.parametrize("page", ["README.md", "docs/getting_started.rst"])
-def test_the_install_commands_name_the_next_release(page):
-    version, _ = _next_release((_TOOLS.parent / "CHANGELOG.md").read_text())
+@pytest.mark.parametrize(
+    "page", ["README.md", "docs/getting_started.rst", "docs/user_guide/gpu_execution.rst"]
+)
+def test_the_install_commands_install_from_pypi(page):
     text = (_TOOLS.parent / page).read_text()
-    assert f"releases/expanded_assets/v{version}" in text
-    pins = re.findall(r'pip install "cudaq-pulse(?:\[\w+\])?==([^"]+)"', text)
-    assert pins and set(pins) == {version}
-    assert not re.search(r"pip install (?:\"?)cudaq-pulse(?:\[\w+\])?(?:\"?)\s*$", text, re.M)
+    commands = re.findall(r"pip install (\"?cudaq-pulse\S*)", text)
+    assert commands
+    assert all(re.fullmatch(r'cudaq-pulse|"cudaq-pulse\[\w+\]"', c) for c in commands), commands
+    assert "expanded_assets" not in text and "--find-links" not in text
 
 
 @pytest.mark.parametrize(
@@ -273,6 +407,33 @@ def test_classical_remnants(tmp_path):
     notebook = tmp_path / "n.ipynb"
     notebook.write_text(json.dumps({"cells": [{"source": ["x = 1\n", bad[1]]}]}))
     assert [error.split(":")[1] for error in check(notebook)] == ["2"]
+
+
+def test_removed_names(tmp_path):
+    tool = _load("check-removed-names")
+    for page in ("user_guide/quantum_systems.rst", "user_guide/classical_calls.rst"):
+        assert tool.check(_TOOLS.parent / "docs" / page) == []
+    # Assembled at run time, as the docs must not spell them.
+    bad = [
+        "qs = pulse." + "device('transmon_" + "17q')",
+        "from cudaq_pulse." + "targets import Qubit",
+        "h = qs.qudit_" + "handles[0]",
+        "program = scheduled.export_" + "controller()",
+        "result = pulse.simulate(k, " + "shots=100)",
+    ]
+    good = [
+        "qs = pulse.quantum_system('transmon_surface17')",
+        "h = qs.qudits[0]",
+        "result = pulse.simulate(k, shots_count=100)",
+        "a transmon_" + "17q-style name  # rename-ok",
+    ]
+    path = tmp_path / "f.rst"
+    path.write_text("\n".join(bad + good) + "\n")
+    errors = tool.check(path)
+    assert [int(error.split(":")[1]) for error in errors] == [1, 1, 2, 3, 4, 5]
+    assert any("use transmon_surface17" in error for error in errors)
+    assert tool.covered(Path("docs/index.rst")) and tool.covered(Path("README.md"))
+    assert not tool.covered(Path("tests/test_x.py"))
 
 
 _SPDX = (

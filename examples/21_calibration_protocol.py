@@ -46,19 +46,16 @@ Then the frequency binary search of
     Tracking", arXiv:2501.05386 (2025),
 
 which narrows a detuning shot by shot without resetting the qubit, and the
-resource report: what each estimator costs the controller, checked against
+usage report: what each estimator costs the controller, checked against
 a declared ``Controller``.
 
 Compile with ALAP scheduling (the default): the pulse before each variable
 wait then ends where the wait starts, so the qubit decays for exactly the
 wait the estimator chose, not also through the call's latency.
 
-The device is qubit 0 of the 17-qubit transmon twin with its T1 set
+The quantum system is qubit 0 of ``transmon_surface17`` with its T1 set
 to 18.3 us (the analytical decay estimate reported by Marciniak et al.),
 detuned by 60 kHz from the drive and with a 1.5% drive-amplitude error.
-
-NOTE: Requires cudaq-pulse native C++ bindings (see README for build
-instructions).
 """
 
 import dataclasses
@@ -69,11 +66,11 @@ import cudaq_pulse as pulse
 from cudaq_pulse import controller
 from cudaq_pulse.classical import Link
 from cudaq_pulse.classical import calibration as cal
-from cudaq_pulse.targets import transmon_17q
+from cudaq_pulse.quantum_systems import transmon_surface17
 
 clock_ghz = 2.0  # the program clock: the estimators count waits and T1 in its cycles
 pulse_time = 20 * pulse.ns  # square pulses
-# square(pulse_time, nominal_pi_amplitude) is a pi pulse on the twin.
+# square(pulse_time, nominal_pi_amplitude) is a pi pulse on transmon_surface17.
 nominal_pi_amplitude = math.pi / 20
 readout_time = 300 * pulse.ns
 readout_amplitude = 0.05
@@ -110,7 +107,7 @@ processor = pulse.Processor(
     max_ops_per_function=256,
     max_state_bytes_per_function=512,
 )
-links = {"controller": Link(fixed_ns=4, feedback_ns=8, max_in_flight=4)}
+links = {"controller": Link(fixed_ns=4, feedback_ns=8, slots=4)}
 control_system = pulse.ControlSystem(
     controllers=[pulse.Controller(processors=[processor])], links=links
 )
@@ -441,35 +438,35 @@ def binary_search(q, rounds: int):
             drive(d, square(pulse_time, nominal_pi_amplitude * 0.5))
 
 
-# ── Devices ─────────────────────────────────────────────────────────────────
+# ── Quantum systems ─────────────────────────────────────────────────────────────────
 
 
-def chain_plant(target, t1_us=18.3, offset_hz=60e3, amplitude_scale=1.015):
-    """Qubit 0 of *target* as the chain's device: its T1, a detuning from
+def chain_system(qs, t1_us=18.3, offset_hz=60e3, amplitude_scale=1.015):
+    """Qubit 0 of *qs* as the chain's quantum system: its T1, a detuning from
     the drive, a drive-amplitude error and small readout errors."""
-    qubit = target.qubits[0]
-    scale = target.drive_amplitude_scale(0) * amplitude_scale
-    plant = qubit.replace(
+    qudit = qs.physical_qudits[0]
+    scale = qs.drive_amplitude_scale(0) * amplitude_scale
+    true_system = qudit.replace(
         t1_us=t1_us,
-        frequency_hz=qubit.frequency_hz + offset_hz,
-        drive=qubit.drive.replace(amplitude_scale_rad_per_ns=scale),
-        readout=qubit.readout.replace(error_1to0=0.03, error_0to1=0.02),
+        frequency_hz=qudit.frequency_hz + offset_hz,
+        drive=qudit.drive.replace(amplitude_scale_rad_per_ns=scale),
+        readout=qudit.readout.replace(error_1to0=0.03, error_0to1=0.02),
     )
-    return dataclasses.replace(target, qubits={**target.qubits, 0: plant})
+    return qs.replace(qudits={**qs.physical_qudits, 0: true_system})
 
 
-def search_plant(target, offset_hz):
-    """A device like the binary-search paper's: T2* 12 us, T1 80 us, and
+def search_system(qs, offset_hz):
+    """A quantum system like the binary-search paper's: T2* 12 us, T1 80 us, and
     readout errors that give its fringe contrast of 0.6 between shots."""
-    qubit = target.qubits[0]
-    plant = qubit.replace(
+    qudit = qs.physical_qudits[0]
+    true_system = qudit.replace(
         t1_us=80.0,
         t2_star_us=12.0,
         thermal_population=0.0,
-        frequency_hz=qubit.frequency_hz + offset_hz,
-        readout=qubit.readout.replace(error_1to0=0.115, error_0to1=0.105),
+        frequency_hz=qudit.frequency_hz + offset_hz,
+        readout=qudit.readout.replace(error_1to0=0.115, error_0to1=0.105),
     )
-    return dataclasses.replace(target, qubits={**target.qubits, 0: plant})
+    return qs.replace(qudits={**qs.physical_qudits, 0: true_system})
 
 
 def chain_results(branch):
@@ -491,30 +488,34 @@ if __name__ == "__main__":
         "The millisecond calibration chain of Marciniak et al., arXiv:2602.11912 (2026),\n"
         "with the adaptive T1 tracker of Berritta et al., arXiv:2506.09576 (2025).\n"
     )
-    target = transmon_17q()
-    dev = pulse.device(target)
-    q = dev.qudit_handles[0]
-    plant = chain_plant(target)
+    qs = transmon_surface17()
+    q = qs.qudits[0]
+    true_system = chain_system(qs)
 
     print("=== 1. The calibration chain, on the controller ===")
     start = time.perf_counter()
-    compiled = pulse.compile(calibration_chain, device=dev, control_system=control_system)
-    lowered = compiled.lower(q, 20_000.0 * clock_ghz)
+    compiled = pulse.compile(calibration_chain, quantum_system=qs, control_system=control_system)
+    scheduled = compiled.lower(q, 20_000.0 * clock_ghz)
     compile_s = time.perf_counter() - start
     end_cycles = max(
         e.start_cycles + e.duration_cycles
-        for e in lowered.schedule
+        for e in scheduled.schedule
         if e.start_cycles is not None and e.duration_cycles is not None
     )
     print(
-        f"  {sum(1 for e in lowered.schedule if e.kind == 'readout')} readouts, "
-        f"{len(lowered.classical_report())} calls, {len(lowered.segments())} segments; "
+        f"  {sum(1 for e in scheduled.schedule if e.kind == 'readout')} readouts, "
+        f"{len(scheduled.classical_report())} calls, {len(scheduled.segments())} segments; "
         f"compiled in {compile_s:.2f} s"
     )
     print(f"  the static schedule (every variable wait at its least) is {end_cycles / 2e3:.0f} us")
     start = time.perf_counter()
     result = pulse.simulate(
-        lowered, plant=plant, shots=1, seed=7, branches="sampled", readout="model"
+        scheduled,
+        quantum_system=true_system,
+        shots_count=1,
+        seed=7,
+        branches="sampled",
+        readout="model",
     )
     print(f"  one shot of the chain simulated in {time.perf_counter() - start:.1f} s")
     for name, value in chain_results(result.branches[0]).items():
@@ -527,16 +528,16 @@ if __name__ == "__main__":
 
     print("\n=== 2. Frequency binary search, 15 shots, no reset ===")
     rounds = 15
-    lowered = pulse.compile(binary_search, device=dev, control_system=control_system).lower(
-        q, rounds
-    )
+    scheduled = pulse.compile(
+        binary_search, quantum_system=qs, control_system=control_system
+    ).lower(q, rounds)
     errors, sigmas = [], []
     for seed in range(4):
         offset = (seed - 1.5) * 300e3
         found = pulse.simulate(
-            lowered,
-            plant=search_plant(target, offset),
-            shots=1,
+            scheduled,
+            quantum_system=search_system(qs, offset),
+            shots_count=1,
             seed=seed,
             branches="sampled",
             readout="model",
@@ -552,16 +553,15 @@ if __name__ == "__main__":
     )
 
     print("\n=== 3. What the estimators cost the controller ===")
-    lowered = compiled.lower(q, 20_000.0 * clock_ghz)
-    report = controller.resources(lowered)
-    print(report)
+    scheduled = compiled.lower(q, 20_000.0 * clock_ghz)
+    print(scheduled.controller_usage)
     slow = dataclasses.replace(processor, cycles_per_op=processor.cycles_per_op.replace(exp=400))
     slow_system = pulse.ControlSystem(
         controllers=[pulse.Controller(processors=[slow])], links=links
     )
     print("  with exp at 400 cycles:")
     try:
-        pulse.compile(calibration_chain, device=dev, control_system=slow_system).lower(
+        pulse.compile(calibration_chain, quantum_system=qs, control_system=slow_system).lower(
             q, 20_000.0 * clock_ghz
         )
     except controller.ControllerLimitError as error:

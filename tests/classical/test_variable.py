@@ -146,7 +146,7 @@ def test_segments_and_their_shift_ranges(policy, tied):
     assert segments[1].max_shift_cycles == 92 and segments[2].max_shift_cycles is None
     calls = low.classical_report()
     assert [c.segment for c in calls] == [0, 1]
-    spectator = [e for e in low.schedule if e.kind == "drive" and e.qubit == 1]
+    spectator = [e for e in low.schedule if e.kind == "drive" and e.qudit == 1]
     if tied:
         # Synced with the 400-cycle drive on the other line, the first
         # barrier waits for it, and that line's next drive for the barriers.
@@ -300,7 +300,7 @@ def test_a_wait_from_an_answer_and_a_float_compiles_once():
             1500.0,
             r"next_tau\[0\] \+ tau \(its answers at 0\) = 1500.0 .* above its highest length 1000",
         ),
-        (float("nan"), "must be a finite number"),
+        (float("nan"), "argument 'tau' is nan; a float argument must be a number"),
         (float("-inf"), "must be a finite number"),
     ],
 )
@@ -332,13 +332,13 @@ def test_a_float_part_below_the_lowest_length_is_clamped_with_the_answer(tau):
 
 @pytest.mark.parametrize("tau", [30.4, 980.0, -15.0])
 def test_a_wait_from_an_answer_and_a_float_runs_their_sum_clamped(tau):
-    from cudaq_pulse.targets import Qubit, TargetDescription
+    from cudaq_pulse.quantum_systems import PhysicalQudit
 
-    qubits = {i: Qubit(i, 5e9 + 1e8 * i, -2e8, 2.0, 0.0) for i in range(2)}
-    dev = pulse.device(TargetDescription(name="decay", qubits=qubits))
-    q, p = dev.qudit_handles
+    qudits = {i: PhysicalQudit(i, 5e9 + 1e8 * i, 2.0, 0.0, anharmonicity_hz=-2e8) for i in range(2)}
+    dev = pulse.quantum_system(name="decay", qudits=qudits)
+    q, p = dev.qudits
     length = min(max(round(2.0 * 10.0 + tau), 8), 1000)
-    low = pulse.compile(offset_by_tau, device=dev).lower(q, p, tau)
+    low = pulse.compile(offset_by_tau, quantum_system=dev).lower(q, p, tau)
     # The drive on d, then the wait once its answer is due, where the static
     # schedule puts them; the other line plays on.
     drive_d = next(e for e in low.schedule if e.kind == "drive" and e.line == 0)
@@ -358,7 +358,9 @@ def test_a_wait_from_an_answer_and_a_float_runs_their_sum_clamped(tau):
         drive(d, square(40, 0.1))
 
     mixed = pulse.simulate(low)
-    reference = pulse.simulate(pulse.compile(fixed, device=dev, schedule="asap").lower(q, p))
+    reference = pulse.simulate(
+        pulse.compile(fixed, quantum_system=dev, schedule="asap").lower(q, p)
+    )
     np.testing.assert_allclose(mixed.density_matrix, reference.density_matrix, atol=1e-9)
 
 
@@ -384,6 +386,6 @@ def test_pulses_either_side_of_a_barrier_are_not_fused(barrier):
         drive(e, square(30, 0.05))
 
     low = pulse.compile(k, unroll_threshold=0).lower(Q[0], Q[1])
-    spectator = [e for e in low.schedule if e.kind == "drive" and e.qubit == 1]
+    spectator = [e for e in low.schedule if e.kind == "drive" and e.qudit == 1]
     assert [e.end - e.start for e in spectator] == [400, 30]
     assert spectator[1].start >= low.segments()[-1].start_cycles

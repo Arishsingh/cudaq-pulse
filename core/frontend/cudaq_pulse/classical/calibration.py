@@ -13,6 +13,9 @@ between calls.
   qubit's detuning, updated from one Ramsey shot, and the wait and phase of
   the next shot (a binary search: each shot says which side of the estimate
   the detuning is on).
+- ``survival_probability``, ``ramsey_probability`` and ``rabi_probability``:
+  the outcome probabilities of those experiments with ideal pulses, for
+  drawing shots without simulating them (``rng.random() < p``).
 - ``three_point_decay``: the decay time of ``A exp(-t / T) + B`` from three
   equally spaced points.
 - ``three_point_phase``: the phase error ``e`` of ``a - b cos(theta + e)``
@@ -55,9 +58,12 @@ __all__ = [
     "golden_section_step",
     "nelder_mead_step",
     "pi_train_amplitude",
+    "rabi_probability",
     "ramsey_detuning",
+    "ramsey_probability",
     "ramsey_setting",
     "sparse_phase",
+    "survival_probability",
     "t1_update",
     "t1_wait",
     "three_point_decay",
@@ -172,6 +178,32 @@ def ramsey_setting(
         wait_ns = min(wait_ns, max_wait_ns)
     phase = (-2 * math.pi * mean_hz * wait_ns * 1e-9 + math.pi / 2) % (2 * math.pi)
     return wait_ns, phase
+
+
+# ── Outcome probabilities ───────────────────────────────────────────────────
+
+
+def survival_probability(wait_ns: float | Time, t1_us: float) -> float:
+    """P(still excited) after exciting a qudit of *t1_us* and waiting
+    *wait_ns* (a time, or a number of ns): exp(-wait / T1), the likelihood
+    ``t1_update`` uses. A T1 of 0 is no decay."""
+    t1_ns = t1_us * 1e3
+    return math.exp(-float(wait_ns) / t1_ns) if t1_ns > 0 else 1.0
+
+
+def ramsey_probability(wait_ns: float | Time, phase: float, detuning_hz: float) -> float:
+    """P(1) of a Ramsey shot that waits *wait_ns* (a time, or a number of
+    ns) between two pi/2 pulses, the second advanced by *phase*, on a qudit
+    *detuning_hz* off the drive: (1 - cos(2 pi D t + phase)) / 2, the
+    likelihood ``frequency_update`` uses. Ideal pulses, no decay."""
+    return 0.5 * (1 - math.cos(math.tau * detuning_hz * float(wait_ns) * 1e-9 + phase))
+
+
+def rabi_probability(angle: float, amplitude_scale: float) -> float:
+    """P(1) after a resonant rotation meant to be *angle* (rad), on a qudit
+    whose drive is *amplitude_scale* times the calibrated one: sin(scale x
+    angle / 2) ** 2."""
+    return math.sin(amplitude_scale * angle / 2) ** 2
 
 
 # ── Three-point estimators ──────────────────────────────────────────────────
@@ -496,7 +528,7 @@ def nelder_mead_step(state: NelderMead, cost: float) -> tuple[NelderMead, tuple[
     return state, state.best() if done else state.next_point(), done
 
 
-# ── The millisecond calibration protocol, in controller form ────────────────
+# ── The millisecond calibration protocol, as a processor runs it ────────────
 #
 # The estimators below are those of on-controller calibration: the analytical
 # decay and sparse phase estimators of M. A. Marciniak et al.,
@@ -505,9 +537,9 @@ def nelder_mead_step(state: NelderMead, cost: float) -> tuple[NelderMead, tuple[
 # "Real-time adaptive tracking of fluctuating relaxation rates in
 # superconducting qubits", arXiv:2506.09576 (2025); and the frequency binary
 # search of F. Berritta et al., "Efficient Qubit Calibration by Binary-Search
-# Hamiltonian Tracking", arXiv:2501.05386 (2025). They are written in
-# controller form, so a controller can run them as they are
-# (``cudaq_pulse.controller.resources`` checks it): a fixed number of scalars
+# Hamiltonian Tracking", arXiv:2501.05386 (2025). They are written so that
+# a controller's processor can run them as they are
+# (``Processor.usage`` reports it): a fixed number of scalars
 # of state, closed-form arithmetic (+ - * /, comparisons, sqrt, exp, log,
 # atan2, cos), branches and loops of a trip count fixed when the program
 # compiles, and no allocation or exceptions. An estimate that cannot be formed
@@ -635,7 +667,7 @@ def binary_search_phase(mean_hz: float, wait_ns: float | Time) -> float:
 
 
 def decay_time(
-    p0: float, p1: float, p3: float, spacing: float | Time, shots: int
+    p0: float, p1: float, p3: float, spacing: float | Time, shots_count: int
 ) -> tuple[float, float, bool]:
     """The analytical decay estimator: the decay time T of
     ``A exp(-t / T) + C`` from its values at t0, t0 + spacing and
@@ -643,7 +675,7 @@ def decay_time(
 
     With c = (p3 - p0) / (p1 - p0) = x^2 + x + 1 and x = exp(-spacing / T),
     x = sqrt(c - 3/4) - 1/2. Returns T, its standard deviation from the
-    binomial noise of *shots* shots per point (error propagation), and
+    binomial noise of *shots_count* shots per point (error propagation), and
     whether an estimate was formed (1 < c < 3). T is in the unit of
     *spacing*: ns when it is a time.
     """
@@ -665,23 +697,25 @@ def decay_time(
     dc3 = inverse
     variance_c = (
         dc0 * dc0 * p0 * (1.0 - p0) + dc1 * dc1 * p1 * (1.0 - p1) + dc3 * dc3 * p3 * (1.0 - p3)
-    ) / shots
+    ) / shots_count
     slope = spacing / (x * log_x * log_x) * 0.5 / root
     return t, abs(slope) * math.sqrt(variance_c), True
 
 
-def sparse_phase(p_minus: float, p_zero: float, p_plus: float, shots: int) -> tuple[float, float]:
+def sparse_phase(
+    p_minus: float, p_zero: float, p_plus: float, shots_count: int
+) -> tuple[float, float]:
     """The sparse phase estimator: the phase theta0 of ``A cos(theta) + C``
     from its values at theta0 - pi/2, theta0 and theta0 + pi/2, whatever A
     and C are: atan2(p- - p+, 2 (p0 - (p- + p+) / 2)) (Marciniak et al.,
     Eq. 3; theta0 + pi for A < 0). Returns it and its standard deviation
-    from the binomial noise of *shots* shots per point."""
+    from the binomial noise of *shots_count* shots per point."""
     y = p_minus - p_plus
     x = 2.0 * p_zero - p_minus - p_plus
     theta = math.atan2(y, x)
-    v_minus = p_minus * (1.0 - p_minus) / shots
-    v_zero = p_zero * (1.0 - p_zero) / shots
-    v_plus = p_plus * (1.0 - p_plus) / shots
+    v_minus = p_minus * (1.0 - p_minus) / shots_count
+    v_zero = p_zero * (1.0 - p_zero) / shots_count
+    v_plus = p_plus * (1.0 - p_plus) / shots_count
     r2 = x * x + y * y
     if r2 == 0.0:
         return theta, math.pi

@@ -9,11 +9,13 @@ So is each element of a ``list[float]`` parameter, whose length is part of
 the specialization. A parameter annotated ``Qudit`` or ``Register`` is a
 runtime qudit: the module takes it as a slot, and a call binds the slot to
 its handle's carrier, so calls with other handles, or on a recalibrated
-device, share the module. Every other parameter (unannotated qudits, ints,
+quantum system, share the module. A ``*qudits`` parameter is a register of the
+call's qudits, runtime when annotated ``Qudit``, of a length that is part of
+the specialization. Every other parameter (unannotated qudits, ints,
 anything unannotated) is static: it can shape the program, so the kernel is
 specialized on its value.
 
-A specialization is found by its static values and the target, and is used
+A specialization is found by its static values and the quantum system, and is used
 while its guard holds: the globals, closure cells and attribute chains the
 kernel read when it was traced are re-read and compared on every call
 (``_guard.py``). A miss traces and builds the module under the dispatcher's
@@ -36,9 +38,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any, NamedTuple
 
-from .._device import Device, DeviceMismatchError, NoDeviceError, Qudit, Register
+from .._device import (
+    NoQuantumSystemError,
+    QuantumSystem,
+    QuantumSystemMismatchError,
+    Qudit,
+    Register,
+)
 from .._errors import InvalidTypeError
-from ..compiler import CompileOptions, Lowered, build, with_line_delays
+from ..compiler import CompileOptions, ScheduledKernel, build, with_line_delays
 from ._guard import Guard, build_guard
 from ._schedule_blocks import root_schedule, validate_kernel_schedule, validate_max_duration
 from ._unroll import resolve_unroll_threshold
@@ -113,24 +121,50 @@ def _runtime_kind(annotation: Any, scope: dict[str, Any]) -> int | None:
     return None
 
 
-def _make_binder(fn: types.FunctionType) -> Callable[..., tuple[Any, ...]]:
-    """A function with *fn*'s signature that returns its bound arguments.
+def _make_binder(fn: types.FunctionType, names: tuple[str, ...]) -> Callable[..., tuple[Any, ...]]:
+    """A function with *fn*'s signature that returns its bound arguments,
+    those of *names* in order.
 
     Python itself binds the call, so defaults, keyword-only parameters and
-    every ``TypeError`` behave exactly as for *fn*.
+    every ``TypeError`` behave exactly as for *fn*. A ``*`` parameter, the
+    last of *names*, is bound to a ``Register`` of its qudits.
     """
     code = fn.__code__
-    names = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
     npos = code.co_posonlyargcount
     params = list(names[: code.co_argcount])
     if npos:
         params.insert(npos, "/")
-    if code.co_kwonlyargcount:
-        params.append("*")
-        params.extend(names[code.co_argcount :])
-    body = f"({', '.join(names)},)" if names else "()"
-    src = f"def _bind({', '.join(params)}):\n    return {body}\n"
     namespace: dict[str, Any] = {}
+    if code.co_flags & inspect.CO_VARARGS:
+        star = names[-1]
+        kernel = fn.__name__
+
+        def register(qudits: tuple[Any, ...]) -> Register:
+            for position, value in enumerate(qudits):
+                if type(value) is not Qudit:
+                    if isinstance(value, (Register, list, tuple)):
+                        hint = f"each qudit as its own argument, as {kernel}(..., *register)"
+                    else:
+                        hint = "other values as named parameters"
+                    raise InvalidTypeError(
+                        f"{kernel}(): *{star} takes qudit handles, got "
+                        f"{type(value).__name__} at position {position}; pass {hint}"
+                    )
+            return Register(qudits)
+
+        bound = "_register"
+        while bound in names:
+            bound += "_"
+        namespace[bound] = register
+        params.append(f"*{star}")
+        params.extend(names[code.co_argcount : -1])
+        body = f"({', '.join(names[:-1])}{', ' if names[1:] else ''}{bound}({star}),)"
+    else:
+        if code.co_kwonlyargcount:
+            params.append("*")
+            params.extend(names[code.co_argcount :])
+        body = f"({', '.join(names)},)" if names else "()"
+    src = f"def _bind({', '.join(params)}):\n    return {body}\n"
     exec(compile(src, code.co_filename, "exec"), namespace)
     binder: Any = namespace["_bind"]
     binder.__code__ = binder.__code__.replace(co_name=code.co_name, co_qualname=code.co_qualname)
@@ -144,7 +178,7 @@ def _make_binder(fn: types.FunctionType) -> Callable[..., tuple[Any, ...]]:
 def _static_key(value: Any) -> Any:
     t = type(value)
     if t is Qudit:
-        # The dispatcher's key holds the device's fingerprint.
+        # The dispatcher's key holds the quantum system's fingerprint.
         return (Qudit, value.carrier, value.index)
     if t is Register:
         return (Register, tuple((q.carrier, q.index) for q in value))
@@ -244,11 +278,11 @@ def _materialize(spec: Any, outcome: Callable[[int], int]) -> Any:
     return copy.deepcopy(spec)
 
 
-def _execute(lowered: Lowered, returns: Any) -> Any:
+def _execute(lowered: ScheduledKernel, returns: Any) -> Any:
     from ..runtime.simulate import _simulate_lowered
 
     measured = _has_measurements(returns)
-    result = _simulate_lowered(lowered, shots=1 if measured else None)
+    result = _simulate_lowered(lowered, shots_count=1 if measured else None)
     if not measured:
         return _materialize(returns, int)
     assert result.records is not None
@@ -263,52 +297,55 @@ def _execute(lowered: Lowered, returns: Any) -> Any:
 
 
 class _QuditTwiceError(Exception):
-    """A qudit ``_devices`` met twice; the caller names the parameters."""
+    """A qudit ``_systems`` met twice; the caller names the parameters."""
 
     def __init__(self, qudit: Qudit) -> None:
         self.qudit = qudit
 
 
-def _devices(value: Any, found: Device | None, name: str, seen: set[int]) -> Device | None:
-    """The device of the handles in *value*, checked against *found*.
+def _systems(arg: Any, qs: QuantumSystem | None, fn: Any, seen: set[int]) -> QuantumSystem | None:
+    """The quantum system of the handles in *arg*, checked against *qs*, for
+    a call of the kernel *fn* (named in errors).
 
     *seen* collects the carriers passed so far: one qudit passed twice is
     an error, as it would be one degree of freedom bound to two names, and
     raises ``_QuditTwiceError``.
     """
-    t = type(value)
+    t = type(arg)
     if t is Qudit:
-        if value.index in seen:
-            raise _QuditTwiceError(value)
-        seen.add(value.index)
-        device: Device = value.device
-        if found is None or found is device:
-            return device
-        raise DeviceMismatchError(_two_devices(name, found, device))
+        if arg.index in seen:
+            raise _QuditTwiceError(arg)
+        seen.add(arg.index)
+        quantum_system: QuantumSystem = arg.quantum_system
+        if qs is None or qs is quantum_system:
+            return quantum_system
+        raise QuantumSystemMismatchError(_two_systems(fn.__name__, qs, quantum_system))
     if t is Register or t is tuple or t is list:
-        for item in value:
-            found = _devices(item, found, name, seen)
-    return found
+        for item in arg:
+            qs = _systems(item, qs, fn, seen)
+    return qs
 
 
-def _two_devices(name: str, found: Device, device: Device) -> str:
-    """Why *name*() cannot take qudits of both *found* and *device*."""
-    if found == device:
+def _two_systems(name: str, found: QuantumSystem, quantum_system: QuantumSystem) -> str:
+    """Why *name*() cannot take qudits of both *found* and *quantum_system*."""
+    if found == quantum_system:
         return (
-            f"{name}() got qudits of two separate devices of target {device.name!r} with "
-            "the same definition, as two pulse.device() calls make; pass handles of one device"
+            f"{name}() got qudits of two separate quantum systems, both named "
+            f"{quantum_system.name!r}, with "
+            "the same definition, as two pulse.quantum_system() calls make; pass handles "
+            "of one quantum system"
         )
     from .._errors import _ranges
 
     both = (
-        f"both of target {device.name!r}"
-        if found.name == device.name
-        else f"of targets {found.name!r} and {device.name!r}"
+        f"both named {quantum_system.name!r}"
+        if found.name == quantum_system.name
+        else f"named {found.name!r} and {quantum_system.name!r}"
     )
     return (
-        f"{name}() got qudits of two different devices, {both}: one with layout "
-        f"{_ranges(found.layout)}, the other with layout {_ranges(device.layout)}; "
-        "pass handles of one device"
+        f"{name}() got qudits of two different quantum systems, {both}: one with layout "
+        f"{_ranges(found.layout)}, the other with layout {_ranges(quantum_system.layout)}; "
+        "pass handles of one quantum system"
     )
 
 
@@ -324,7 +361,7 @@ def _count(value: Any, index: int) -> int:
 
 def _passed_twice(name: str, qudit: Qudit, arguments: list[tuple[str, Any]]) -> InvalidTypeError:
     """The error for *qudit* passed twice among *arguments*, the (parameter,
-    value) pairs in the order ``_devices`` met them."""
+    value) pairs in the order ``_systems`` met them."""
     holders = [
         parameter for parameter, value in arguments for _ in range(_count(value, qudit.index))
     ]
@@ -364,14 +401,14 @@ class _Entry:
         "tick",
         "pins",
         "runtime",
-        "n_qudits",
+        "qudit_count",
     )
     # Set only on the entries kept to be scheduled again.
-    n_qudits: int
+    qudit_count: int
 
     def __init__(
         self,
-        lowered: Lowered,
+        lowered: ScheduledKernel,
         guard: Guard,
         returns: Any,
         pins: tuple[Any, ...],
@@ -398,49 +435,63 @@ class _Dispatcher:
         self._lock = threading.Lock()
         self.misses = 0
         self.evictions = 0
-        self.pin: Device | None = None
+        self.pin: QuantumSystem | None = None
         # The specialization a pinned all-float kernel is built with.
-        self.general: Lowered | None = None
+        self.general: ScheduledKernel | None = None
         _dispatchers.add(self)
 
-    def _device(self, values: tuple[Any, ...]) -> Device:
-        name = self.kernel.__name__
+    def _device(self, values: tuple[Any, ...], kernel: Kernel[...]) -> QuantumSystem:
         found = None
         seen: set[int] = set()
         try:
-            for i in self.kernel._split[0]:
-                found = _devices(values[i], found, name, seen)
+            for i in kernel._split[0]:
+                found = _systems(values[i], found, kernel, seen)
         except _QuditTwiceError as twice:
-            names = self.kernel._names
-            arguments = [(names[i], values[i]) for i in self.kernel._split[0]]
-            raise _passed_twice(name, twice.qudit, arguments) from None
+            names = kernel._names
+            arguments = [(names[i], values[i]) for i in kernel._split[0]]
+            raise _passed_twice(kernel.__name__, twice.qudit, arguments) from None
         pin = self.pin
         if pin is not None:
             if found is not None and found is not pin:
-                raise _pin_mismatch(name, pin, found)
+                raise _pin_mismatch(kernel.__name__, pin, found)
             return pin
         if found is not None:
             return found
-        raise _no_device(name)
+        raise _no_device(kernel.__name__)
 
     def lookup(self, values: tuple[Any, ...]) -> _Entry:
         kernel = self.kernel
-        target = self._device(values)
+        target = self._device(values, kernel)
         static = kernel._split[0]
         key = (target.fingerprint, static, *[_static_key(values[i]) for i in static])
         entry = self._entries.get(key)
         if entry is not None and entry.guard.check():
             entry.tick = next(_ticks)
+            if target._drift:
+                from ..quantum_systems.drift import _entry_for
+
+                return _entry_for(entry, target)
             return entry
         with self._lock:
             entry = self._entries.get(key)
             if entry is not None and entry.guard.check():
+                if target._drift:
+                    from ..quantum_systems.drift import _entry_for
+
+                    return _entry_for(entry, target)
                 return entry
             entry = kernel._specialize(values, target, self.options)
             self.misses += 1
             # Tracing may have made float parameters static.
             static = kernel._split[0]
             key = (target.fingerprint, static, *[_static_key(values[i]) for i in static])
+            if target._drift:
+                # Kept for the twin: no cached program plays another system's drift.
+                from ..quantum_systems.drift import _kept
+
+                kept, entry = _kept(entry, target, kernel)
+                self._insert(key, kept)
+                return entry
             self._insert(key, entry)
         return entry
 
@@ -461,37 +512,36 @@ class _Dispatcher:
             lowered = lowered._with_values(kernel._runtime_values(values, entry.runtime))
         return _execute(lowered, entry.returns)
 
-    def lower(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Lowered:
+    def lower(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> ScheduledKernel:
         kernel = self.kernel
         values = kernel._bind(*args, **kwargs)
         entry = self.lookup(values)
-        lowered = entry.lowered
         if entry.runtime:
-            lowered = lowered._with_values(kernel._runtime_values(values, entry.runtime))
-        return lowered
+            return entry.lowered._with_values(kernel._runtime_values(values, entry.runtime))
+        return entry.lowered
 
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
 
 
-def _pin_mismatch(name: str, pin: Device, found: Device) -> DeviceMismatchError:
-    if found == pin:
-        return DeviceMismatchError(
-            f"{name}() is compiled for a device of {pin.name!r} and got qudits of "
-            "another, separate device of it with the same definition; pass "
-            "handles of the device it is compiled for"
+def _pin_mismatch(name: str, pin: QuantumSystem, got: QuantumSystem) -> QuantumSystemMismatchError:
+    if got == pin:
+        return QuantumSystemMismatchError(
+            f"{name}() is compiled for a quantum system of {pin.name!r} and got qudits of "
+            "another, separate quantum system of it with the same definition; pass "
+            "handles of the quantum system it is compiled for"
         )
-    return DeviceMismatchError(
-        f"{name}() is compiled for device {pin.name!r} and got qudits of {found.name!r}"
+    return QuantumSystemMismatchError(
+        f"{name}() is compiled for quantum system {pin.name!r} and got qudits of {got.name!r}"
     )
 
 
-def _no_device(name: str) -> NoDeviceError:
-    return NoDeviceError(
-        f"{name}() was called without qudit handles, so it has no device: pass "
-        "handles of a device (dev.qudit_handles[i]), or compile it for one with "
-        "cudaq_pulse.compile(k, device=dev)"
+def _no_device(name: str) -> NoQuantumSystemError:
+    return NoQuantumSystemError(
+        f"{name}() was called without qudit handles, so it has no quantum system: pass "
+        "handles of a quantum system (qs.qudits[i]), or compile it for one with "
+        "cudaq_pulse.compile(k, quantum_system=qs)"
     )
 
 
@@ -526,8 +576,6 @@ class Kernel[**P]:
         if not isinstance(fn, types.FunctionType):
             raise TypeError(f"@kernel expects a function, got {type(fn).__name__}")
         code = fn.__code__
-        if code.co_flags & (inspect.CO_VARARGS | inspect.CO_VARKEYWORDS):
-            raise TypeError(f"pulse kernel {fn.__name__}() cannot take *args or **kwargs")
         self.__wrapped__ = fn
         self.__pulse_kernel_fn__ = fn
         # Called from another kernel, the kernel is scheduled on its own with
@@ -544,6 +592,37 @@ class Kernel[**P]:
             setattr(self, attr, getattr(fn, attr))
         signature = inspect.signature(fn)
         self.__signature__ = signature
+        if code.co_flags & (inspect.CO_VARARGS | inspect.CO_VARKEYWORDS):
+            # A * parameter is a register of the call's qudits. The kernel is
+            # traced as a function of the same code that takes it as its last
+            # keyword-only parameter, where the code keeps it.
+            name = fn.__name__
+            parameters = signature.parameters.values()
+            if code.co_flags & inspect.CO_VARKEYWORDS:
+                keywords = next(p for p in parameters if p.kind is p.VAR_KEYWORD)
+                raise InvalidTypeError(f"pulse kernel {name}() cannot take **{keywords.name}")
+            star = next(p for p in parameters if p.kind is p.VAR_POSITIONAL)
+            annotation = star.annotation
+            if annotation is not star.empty:
+                if _runtime_kind(annotation, fn.__globals__) != _QUDIT:
+                    raise InvalidTypeError(
+                        f"pulse kernel {name}(): *{star.name} takes qudits: annotate it Qudit "
+                        "to compile once for every placement, or leave it unannotated to "
+                        "specialize on the qudits, and pass other values as named parameters"
+                    )
+                annotation = tuple[Qudit, ...]
+            code = code.replace(
+                co_flags=code.co_flags & ~inspect.CO_VARARGS,
+                co_kwonlyargcount=code.co_kwonlyargcount + 1,
+            )
+            traced = types.FunctionType(code, fn.__globals__, name, fn.__defaults__, fn.__closure__)
+            traced.__qualname__ = fn.__qualname__
+            traced.__kwdefaults__ = fn.__kwdefaults__
+            # Called from another kernel, it binds as the function does.
+            traced.__signature__ = signature  # type: ignore[attr-defined]
+            self.__pulse_kernel_fn__ = traced
+            classified = [p.replace(annotation=annotation) if p is star else p for p in parameters]
+            signature = signature.replace(parameters=classified)
         names = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
         self._names = names
         kinds = {}
@@ -557,7 +636,7 @@ class Kernel[**P]:
         # programs it traced, the last _TRACED_KEPT of them, which other line
         # delays schedule again without tracing.
         self._traced: dict[Any, _Entry] = {}
-        self._bind = _make_binder(fn)
+        self._bind = _make_binder(fn, names)
         self._dispatch = self._dispatcher_type(
             self,
             CompileOptions(
@@ -570,9 +649,11 @@ class Kernel[**P]:
     @property
     def runtime_parameters(self) -> tuple[str, ...]:
         """Parameters annotated ``float``, ``list[float]``, ``Qudit`` or
-        ``Register``: function arguments of the module. An unannotated qudit
-        or register parameter is static."""
-        return tuple(self._names[i] for i in self._split[1])
+        ``Register``, and ``*qudits: Qudit``: function arguments of the
+        module. An unannotated qudit or register parameter is static. In the
+        order of the signature."""
+        runtime = {self._names[i] for i in self._split[1]}
+        return tuple(n for n in self.__signature__.parameters if n in runtime)
 
     @property
     def static_parameters(self) -> tuple[str, ...]:
@@ -581,14 +662,16 @@ class Kernel[**P]:
         Includes float parameters whose value the program needs while it
         compiles: one that sets a waveform duration, goes through ``int()``
         or decides Python control flow. A wait length is not one of them.
+        In the order of the signature.
         """
-        return tuple(self._names[i] for i in self._split[0])
+        static = {self._names[i] for i in self._split[0]}
+        return tuple(n for n in self.__signature__.parameters if n in static)
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Any:
         return self._dispatch.call(args, kwargs)
 
-    def lower(self, *args: P.args, **kwargs: P.kwargs) -> Lowered:
-        """Compile for these arguments without running; see ``Lowered``."""
+    def lower(self, *args: P.args, **kwargs: P.kwargs) -> ScheduledKernel:
+        """Compile for these arguments without running; see ``ScheduledKernel``."""
         return self._dispatch.lower(args, kwargs)
 
     def cache_info(self) -> CacheInfo:
@@ -621,7 +704,7 @@ class Kernel[**P]:
         out = []
         for i in runtime:
             v = values[i]
-            if type(v) is not float:
+            if v.__class__ is not float or v != v:
                 from .._units import Time
 
                 if v.__class__ is Time:
@@ -641,6 +724,13 @@ class Kernel[**P]:
                             f"real number, not {type(v).__name__}"
                         ) from None
                 v = float(v)
+                if v != v:
+                    from .._errors import InvalidValueError
+
+                    raise InvalidValueError(
+                        f"{self.__name__}(): argument {self._names[i]!r} is nan; a float "
+                        "argument must be a number"
+                    )
             out.append(v)
         return out
 
@@ -649,7 +739,7 @@ class Kernel[**P]:
             found = self._retimed(values, target, options)
             if found is not None:
                 return found
-        fn = self.__wrapped__
+        fn = self.__pulse_kernel_fn__
         names = self._names
         while True:
             static, runtime = self._split
@@ -702,7 +792,7 @@ class Kernel[**P]:
         entry = _Entry(lowered, guard, returns, pins, runtime)
         if options.machine._line_delays and lowered.scheduled:
             # Only a kept entry is scheduled again, for its qudits.
-            entry.n_qudits = builder.n_qubits
+            entry.qudit_count = builder.qudit_count
             self._keep_traced(self._traced_key(values, target, options), entry)
         return entry
 
@@ -735,11 +825,11 @@ class Kernel[**P]:
             or not prior.guard.check()
         ):
             return None
-        lowered = with_line_delays(prior.lowered, options, prior.n_qudits)
+        lowered = with_line_delays(prior.lowered, options)
         if lowered is None:
             return None
         entry = _Entry(lowered, prior.guard, prior.returns, prior.pins, prior.runtime)
-        entry.n_qudits = prior.n_qudits
+        entry.qudit_count = prior.qudit_count
         self._keep_traced(self._traced_key(values, target, options), entry)
         return entry
 
@@ -821,26 +911,28 @@ def _warn_static(kernel: str, params: list[str], operation: str, where: str = ""
 class CompiledKernel[**P]:
     """A kernel compiled ahead of its call by ``cudaq_pulse.compile``.
 
-    ``ck(*args)`` runs the kernel on the device of the qudit handles passed
+    ``ck(*args)`` runs the kernel on the quantum system of the qudit handles passed
     and returns what the kernel returns. It holds one specialization per
-    device and static argument values, built on first use and never
-    evicted. A kernel pinned to a device and without static parameters is
+    quantum system and static argument values, built on first use and never
+    evicted. A kernel pinned to a quantum system and without static parameters is
     built when it is compiled.
 
-    It pickles as its kernel (by reference), options and device, without
+    It pickles as its kernel (by reference), options and quantum system, without
     its specializations, which compile again on first use where it is
     unpickled; pickle ``ck.lower(*args)`` to send a program that runs
     without compiling.
     """
 
-    def __init__(self, kernel: Kernel[P], options: CompileOptions, device: Device | None) -> None:
-        if device is not None and not isinstance(device, Device):
-            raise TypeError(f"device must be a cudaq_pulse device, got {type(device).__name__}")
+    def __init__(self, kernel: Kernel[P], opts: CompileOptions, qs: QuantumSystem | None) -> None:
+        if qs is not None and not isinstance(qs, QuantumSystem):
+            raise TypeError(
+                f"quantum_system must be a cudaq_pulse QuantumSystem, got {type(qs).__name__}"
+            )
         self.kernel = kernel
-        self.device = device
-        self._dispatch = kernel._dispatcher_type(kernel, options, None)
-        self._dispatch.pin = device
-        if device is not None and not kernel._split[0] and not kernel._relocatable:
+        self.quantum_system = qs
+        self._dispatch = kernel._dispatcher_type(kernel, opts, None)
+        self._dispatch.pin = qs
+        if qs is not None and not kernel._split[0] and not kernel._relocatable:
             # Every parameter is a float: the values are not needed to build
             # it, unless one of them shapes the program.
             try:
@@ -852,24 +944,27 @@ class CompiledKernel[**P]:
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Any:
         return self._dispatch.call(args, kwargs)
 
-    def lower(self, *args: P.args, **kwargs: P.kwargs) -> Lowered:
+    def lower(self, *args: P.args, **kwargs: P.kwargs) -> ScheduledKernel:
         """The module for these arguments, specialized and scheduled."""
         return self._dispatch.lower(args, kwargs)
 
-    def _view(self) -> Lowered:
+    def _view(self) -> ScheduledKernel:
         general = self._dispatch.general
         if general is None:
             if self.kernel._split[0]:
                 why = f"is specialized on {', '.join(self.kernel.static_parameters)}"
             else:
-                why = "has no device until it is called; pin one with compile(k, device=dev)"
+                why = (
+                    "has no quantum system until it is called; pin one with compile(k, "
+                    "quantum_system=qs)"
+                )
             raise TypeError(
                 f"{self.kernel.__name__}() {why}; inspect one specialization with .lower(...)"
             )
         return general
 
     def mlir(self, stage: str = "pulse") -> str:
-        """MLIR text of the compiled module; see ``Lowered.mlir``."""
+        """MLIR text of the compiled module; see ``ScheduledKernel.mlir``."""
         return self._view().mlir(stage)
 
     @property
@@ -877,7 +972,7 @@ class CompiledKernel[**P]:
         return self._view().schedule
 
     def timeline(self, *, figsize: tuple[float, float] = (14, 4), title: str | None = None) -> Any:
-        """The schedule's plot; see ``Lowered.timeline``."""
+        """The schedule's plot; see ``ScheduledKernel.timeline``."""
         return self._view().timeline(figsize=figsize, title=title)
 
     @property
@@ -899,7 +994,7 @@ class CompiledKernel[**P]:
         from .._pickling import rebuilt_compiled
 
         d = self._dispatch
-        return (rebuilt_compiled, (self.kernel, d.options, self.device, d.general))
+        return (rebuilt_compiled, (self.kernel, d.options, self.quantum_system, d.general))
 
     def __repr__(self) -> str:
         return f"<compiled pulse kernel {self.kernel.__qualname__}{self.kernel.__signature__}>"

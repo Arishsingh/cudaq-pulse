@@ -11,7 +11,7 @@ import cudaq_pulse
 import pytest
 
 _EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
-_GPU_ONLY = {"transmon_17q_evolve_gpu.py"}
+_GPU_ONLY = {"transmon_surface17_evolve_gpu.py"}
 _SCRIPTS = sorted(p for p in _EXAMPLES.rglob("*.py") if p.name not in _GPU_ONLY)
 _SLOW = {
     "21_calibration_protocol.py",
@@ -19,6 +19,8 @@ _SLOW = {
     "25_precompiled_branches.py",
     "26_drift_following.py",
 }
+# Examples that call CUDA-Q QEC, which installs on Linux only.
+_CUDAQ_QEC = {"27_realtime_decoding.py"}
 # A build tree stages the package in build/<dir>/python and cudaq-pulse-opt in
 # build/<dir>/bin; an installation puts the tool on PATH itself.
 _BUILD_BIN = Path(cudaq_pulse.__file__).parent.parent.parent / "bin"
@@ -30,11 +32,13 @@ _BUILD_BIN = Path(cudaq_pulse.__file__).parent.parent.parent / "bin"
     ids=lambda p: str(p.relative_to(_EXAMPLES)),
 )
 def test_example_runs(path, monkeypatch, capsys):
+    if path.name in _CUDAQ_QEC:
+        pytest.importorskip("cudaq_qec", reason="needs CUDA-Q QEC (Linux)")
     if (_BUILD_BIN / "cudaq-pulse-opt").exists():
         monkeypatch.setenv("PATH", f"{_BUILD_BIN}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setenv("MPLBACKEND", "Agg")
-    # Examples choose their devices themselves.
-    monkeypatch.delenv("CUDAQ_PULSE_TARGET", raising=False)
+    # Examples choose their quantum systems themselves.
+    monkeypatch.delenv("CUDAQ_PULSE_QUANTUM_SYSTEM", raising=False)
     monkeypatch.syspath_prepend(str(path.parent))
     runpy.run_path(str(path), run_name="__main__")
     assert capsys.readouterr().out

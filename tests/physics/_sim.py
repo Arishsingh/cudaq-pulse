@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Devices and runs in the reference conventions: amplitudes are Rabi rates."""
+"""Quantum systems and runs in the reference conventions: amplitudes are Rabi rates."""
 
 import cudaq_pulse as pulse
-from cudaq_pulse.targets import Coupling, MicrowaveDrive, Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import Coupling, MicrowaveDrive, PhysicalQudit
 
 PASSES = (
     "verify",
@@ -24,34 +24,31 @@ def cycles(ns: float) -> int:
     return int(round(value))
 
 
-def device(freqs_hz, alphas_hz, couplings=(), t1_us=0.0, t2_us=0.0, **qubit):
-    target = TargetDescription(
+def quantum_system(freqs_hz, alphas_hz, couplings=(), t1_us=0.0, t2_us=0.0, **qudit):
+    return pulse.quantum_system(
         name="reference",
-        qubits={
-            i: Qubit(
+        qudits={
+            i: PhysicalQudit(
                 i,
                 f,
-                a,
                 t1_us,
                 t2_us,
+                anharmonicity_hz=a,
                 drive=MicrowaveDrive(amplitude_scale_rad_per_ns=1.0),
-                **qubit,
+                **qudit,
             )
             for i, (f, a) in enumerate(zip(freqs_hz, alphas_hz, strict=False))
         },
         couplings=[Coupling((i, j), g) for i, j, g in couplings],
     )
-    return pulse.device(target)
 
 
 def run(dev, kernel, *args, n=None, backend="cpu", levels=2, **simulate):
     """Simulate ``kernel`` on the first *n* qudits of *dev*, then *args*,
     with two levels per qudit unless *levels* says otherwise: the checks
     compare with two-level formulas."""
-    n = len(dev.qudit_handles) if n is None else n
-    lowered = pulse.compile(kernel, passes=PASSES).lower(
-        *[dev.qudit_handles[i] for i in range(n)], *args
-    )
+    n = len(dev.qudits) if n is None else n
+    lowered = pulse.compile(kernel, passes=PASSES).lower(*[dev.qudits[i] for i in range(n)], *args)
     return pulse.simulate(lowered, backend=backend, levels=levels, **simulate)
 
 

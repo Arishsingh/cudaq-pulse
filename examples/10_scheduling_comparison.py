@@ -13,7 +13,7 @@ cal = {"base_duration": 20 * pulse.ns, "duration_step": 10 * pulse.ns, "sigma": 
 
 
 @pulse.kernel
-def four_qubit(qs):
+def four_qudit(qs):
     lines, tones = [], []
     for i in range(4):
         line = get_drive_line(qs[i])
@@ -27,10 +27,10 @@ def four_qubit(qs):
         drive(lines[i], gaussian(durations[i], 0.25, cal["sigma"]), tone=tones[i])
 
 
-def print_timeline(compiled: pulse.Lowered, label: str) -> int:
+def print_timeline(scheduled: pulse.ScheduledKernel, label: str) -> int:
     """Pretty-print the scheduled drives and return the makespan."""
     print(f"\n  --- {label} ---")
-    events = sorted(compiled.schedule, key=lambda e: (e.start, e.line))
+    events = sorted(scheduled.schedule, key=lambda e: (e.start, e.line))
     for ev in events:
         end = ev.end
         print(f"    [{ev.start:5d} - {end:5d}]  line {ev.line}  {ev.kind}")
@@ -38,17 +38,17 @@ def print_timeline(compiled: pulse.Lowered, label: str) -> int:
 
 
 def main():
-    args = [dev.qudit_handles[:4]]
+    args = [qs.qudits[:4]]
     control_system = pulse.ControlSystem(max_concurrent_drives=2, line_switch_penalty_cycles=5)
     totals = {}
     for policy in ("asap", "alap", "rcp"):
-        compiled = pulse.compile(
-            four_qubit, schedule=policy, control_system=control_system, device=dev
+        scheduled = pulse.compile(
+            four_qudit, schedule=policy, control_system=control_system, quantum_system=qs
         ).lower(*args)
         label = policy.upper()
         if policy == "rcp":
             label += f" (max {control_system.max_concurrent_drives} concurrent drives)"
-        totals[policy] = (print_timeline(compiled, label), compiled.metrics.schedule_ms)
+        totals[policy] = (print_timeline(scheduled, label), scheduled.metrics.schedule_ms)
 
     print("\n  Policy   Total cycles  Schedule ms")
     for policy, (total, ms) in totals.items():
@@ -56,5 +56,5 @@ def main():
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
+    qs = pulse.quantum_system("transmon_surface17")
     main()

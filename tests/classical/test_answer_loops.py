@@ -22,12 +22,14 @@ import sys
 from typing import Any
 
 import cudaq_pulse as pulse
+import numpy as np
 import pytest
 from cudaq_pulse import ControlSystem
 from cudaq_pulse.classical import Link
 
 from tests import _child
 from tests._handles import Q
+from tests._work import native_seconds
 
 POLICIES = ("asap", "alap", "rcp", "alap_rcp")
 
@@ -378,7 +380,7 @@ def _machines() -> dict[str, dict[str, Any]]:
         "two_slots": {
             "control_system": ControlSystem(
                 controllers=[pulse.Controller(feedback_latency_cycles=9)],
-                links={"host": Link(fixed_ns=3, max_in_flight=2), "decoder": Link(feedback_ns=20)},
+                links={"host": Link(fixed_ns=3, slots=2), "decoder": Link(feedback_ns=20)},
                 max_concurrent_drives=2,
             )
         },
@@ -566,29 +568,213 @@ def test_a_round_of_feedback_is_rolled_two_iterations_at_a_time(schedule):
 def test_an_unrolled_loop_of_calls_verifies_and_schedules_in_linear_time():
     # A branch's condition is not computed from the requests before its own
     # on the link, so neither verifying nor scheduling the unrolled loop
-    # walks them all. Four times the trips take about four times as long
-    # natively (sixteen if quadratic); tracing is linear either way.
+    # walks them all. Eight times the trips take about eight times as long
+    # natively (64 if quadratic); tracing is linear either way.
     timings = {}
-    for n in (1000, 4000):
+    for n in (500, 4000):
         kernel = _kernels(n)["round"]
-        best = float("inf")
-        for _ in range(3):
-            program = pulse.compile(kernel, schedule="alap", unroll_threshold=10**6)
-            metrics = program.lower(Q[0], Q[1], Q[2]).metrics
-            best = min(best, (metrics.passes_ms + metrics.schedule_ms) / 1000)
-        timings[n] = best
-    assert timings[4000] < 7 * timings[1000] + 0.02, timings
+        timings[n] = native_seconds(
+            lambda kernel=kernel: pulse.compile(
+                kernel, schedule="alap", unroll_threshold=10**6
+            ).lower(Q[0], Q[1], Q[2]),
+            ("lower_selects", "run_passes", "schedule"),
+            repeats=3,
+        )
+    assert timings[4000] < 24 * timings[500], timings
 
 
 @pytest.mark.parametrize("schedule", ("asap", "alap", "rcp"))
 def test_a_loop_that_never_repeats_schedules_in_linear_time(schedule):
     # Its iterations are peeled around the copies of its inner loop, all of
-    # them in each round, so the rounds do not grow with the trips.
+    # them in each round, so the rounds do not grow with the trips. Eight
+    # times the trips: eight times the time when linear, 64 when quadratic.
     timings = {}
-    for n in (250, 1000):
-        program = pulse.compile(_saturating(n), schedule=schedule, unroll_threshold=0)
-        timings[n] = program.lower(Q[0], Q[1], Q[2]).metrics.schedule_ms / 1000
-    assert timings[1000] < 7 * timings[250] + 0.02, timings
+    for n in (125, 1000):
+        kernel = _saturating(n)
+        timings[n] = native_seconds(
+            lambda kernel=kernel: pulse.compile(
+                kernel, schedule=schedule, unroll_threshold=0
+            ).lower(Q[0], Q[1], Q[2])
+        )
+    assert timings[1000] < 24 * timings[125], timings
+
+
+@pulse.classical(max_latency_ns=200)
+def next_wait(survived: pulse.Bits, wait_ns: float) -> float:
+    return min(wait_ns + 100.0, 900.0) if survived[0] else max(wait_ns - 100.0, 100.0)
+
+
+@pulse.classical(max_latency_ns=120, latency_mode="blocking")
+def next_wait_blocking(survived: pulse.Bits, wait_ns: float) -> float:
+    return min(wait_ns + 100.0, 900.0) if survived[0] else max(wait_ns - 100.0, 100.0)
+
+
+def _tracking(rounds: int, variant: str = "variable") -> Any:
+    """A T1 tracker's loop: excite, measure, have a call choose the next
+    wait from the outcome, wait that long. Simulating it binds an answer a
+    round; unrolled, the program grows with the rounds."""
+
+    @pulse.kernel
+    def variable(q):
+        d = get_drive_line(q)
+        ro = get_readout_line(q)
+        wait_ns = 400.0
+        for _ in range(rounds):
+            drive(d, square(40, 0.0785))
+            sync(d, ro)
+            m = readout(ro, square(100, 0.05))
+            wait_ns = next_wait.submit([m], wait_ns).result()
+            sync(d, ro)
+            wait(d, wait_ns * pulse.ns, bounds=(100 * pulse.ns, 1 * pulse.us))
+        sync(d, ro)
+        readout(ro, square(100, 0.05))
+
+    @pulse.kernel
+    def blocking(q):
+        d = get_drive_line(q)
+        ro = get_readout_line(q)
+        wait_ns = 400.0
+        for _ in range(rounds):
+            drive(d, square(40, 0.0785))
+            sync(d, ro)
+            m = readout(ro, square(100, 0.05))
+            wait_ns = next_wait_blocking.submit([m], wait_ns).result()
+            sync(d, ro)
+            wait(d, wait_ns * pulse.ns, bounds=(100 * pulse.ns, 1 * pulse.us))
+        sync(d, ro)
+        readout(ro, square(100, 0.05))
+
+    @pulse.kernel
+    def detuned(q):
+        d = get_drive_line(q)
+        ro = get_readout_line(q)
+        wait_ns = 400.0
+        shift_frequency(d.tone, 2.0e6)
+        for _ in range(rounds):
+            drive(d, square(40, 0.0785))
+            sync(d, ro)
+            m = readout(ro, square(100, 0.05))
+            wait_ns = next_wait.submit([m], wait_ns).result()
+            sync(d, ro)
+            shift_phase(d.tone, 0.25)
+            if m:
+                drive(d, square(40, 0.0785))
+            wait(d, wait_ns * pulse.ns, bounds=(100 * pulse.ns, 1 * pulse.us))
+        sync(d, ro)
+        readout(ro, square(100, 0.05))
+
+    return {"variable": variable, "blocking": blocking, "detuned": detuned}[variant]
+
+
+def _relaxing() -> Any:
+    from cudaq_pulse.quantum_systems import PhysicalQudit
+
+    return pulse.quantum_system(
+        name="tracking",
+        qudits={
+            0: PhysicalQudit(
+                index=0, frequency_hz=5e9, anharmonicity_hz=-2e8, t1_us=2.0, t2_star_us=0.0
+            )
+        },
+    )
+
+
+class _Bound:
+    """A simulation module that notes the size of each module binding an
+    answer on it gives; with `whole`, binding without the path, so that the
+    whole program is bound and scheduled again for each answer."""
+
+    def __init__(self, module: Any, sizes: list[int], whole: bool) -> None:
+        self._module, self._sizes, self._whole = module, sizes, whole
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._module, name)
+
+    def bind_call(self, *args: Any) -> Any:
+        bound = self._module.bind_call(*(args[:7] if self._whole else args))
+        self._sizes.append(len(bound.events()))
+        return _Bound(bound, self._sizes, self._whole)
+
+
+def _simulate_bound(monkeypatch, lowered, whole=False, **options):
+    from cudaq_pulse.runtime import _call_tree, _calls
+
+    sizes: list[int] = []
+    tree = _call_tree.simulate_tree
+
+    def counted(module, *args, **kwargs):
+        return tree(_Bound(module, sizes, whole), *args, **kwargs)
+
+    monkeypatch.setattr(_calls, "simulate_tree", counted)
+    try:
+        return pulse.simulate(lowered, **options), sizes
+    finally:
+        monkeypatch.undo()
+
+
+@pytest.mark.parametrize("schedule", ("asap", "alap"))
+def test_simulating_a_long_loop_of_calls_schedules_each_answer_in_a_window(schedule, monkeypatch):
+    # Each answer is bound in the part of the program from the last wait it
+    # is past to the next whose length it does not know: the same few events
+    # at any number of rounds, where binding it in the whole program, as
+    # long as the rounds, made the simulation quadratic in them.
+    qs = _relaxing()
+    largest = {}
+    for rounds in (8, 64):
+        lowered = pulse.compile(_tracking(rounds), quantum_system=qs, schedule=schedule).lower(
+            qs.qudits[0]
+        )
+        _, sizes = _simulate_bound(
+            monkeypatch, lowered, levels=2, dt_ns=1.0, shots_count=4, seed=3, branches="sampled"
+        )
+        assert len(sizes) >= rounds
+        largest[rounds] = max(sizes)
+    assert largest[64] == largest[8] < 16, largest
+
+
+@pytest.mark.parametrize("variant", ("variable", "blocking", "detuned"))
+@pytest.mark.parametrize("schedule", POLICIES)
+def test_a_long_loop_of_calls_simulates_as_when_the_whole_program_is_bound_each_time(
+    variant, schedule, monkeypatch
+):
+    # The windows give what binding each answer in the whole program and
+    # scheduling it again gives, bit for bit: the outcomes, every branch's
+    # state and the records; the tone's frame carries across the windows.
+    qs = _relaxing()
+    for rounds, options in (
+        (12, {"shots_count": 6, "seed": 5, "branches": "sampled"}),
+        (3, {"shots_count": 3, "seed": 2}),
+    ):
+        lowered = pulse.compile(
+            _tracking(rounds, variant), quantum_system=qs, schedule=schedule
+        ).lower(qs.qudits[0])
+        windows, _ = _simulate_bound(monkeypatch, lowered, levels=2, dt_ns=1.0, **options)
+        whole, _ = _simulate_bound(monkeypatch, lowered, whole=True, levels=2, dt_ns=1.0, **options)
+        assert np.array_equal(windows.density_matrix, whole.density_matrix)
+        assert windows.measurements == whole.measurements
+        assert windows.branches == whole.branches
+        assert np.array_equal(windows.records, whole.records)
+        assert windows.times_ns == whole.times_ns
+
+
+@pytest.mark.slow
+def test_simulating_a_long_loop_of_calls_takes_the_same_time_per_round():
+    # Eight times the rounds in about eight times the time; binding each
+    # answer in the whole program took about three times as long per round
+    # at 60 rounds as at 10. The time is the best of three in CPU time.
+    import time
+
+    qs = _relaxing()
+    per_round = {}
+    for rounds in (10, 80):
+        lowered = pulse.compile(_tracking(rounds), quantum_system=qs).lower(qs.qudits[0])
+        best = float("inf")
+        for _ in range(3):
+            t0 = time.process_time()
+            pulse.simulate(lowered, levels=2, dt_ns=1.0, shots_count=4, seed=3, branches="sampled")
+            best = min(best, time.process_time() - t0)
+        per_round[rounds] = best / rounds
+    assert per_round[80] < 1.6 * per_round[10], per_round
 
 
 @pytest.mark.parametrize("schedule", POLICIES)
@@ -1176,7 +1362,7 @@ def _one_after_another(n: int, *bodies: str, name: str | None = None) -> Any:
 
 
 def _link_slots(slots: int) -> ControlSystem:
-    return ControlSystem(links={"host": Link(fixed_ns=4, max_in_flight=slots)})
+    return ControlSystem(links={"host": Link(fixed_ns=4, slots=slots)})
 
 
 def _most_at_once(spans: list[tuple[int, int]]) -> int:

@@ -10,8 +10,9 @@ in [SECURITY.md](SECURITY.md), not in an issue.
 - [uv](https://docs.astral.sh/uv/) (it provides Python, CMake, Ninja, and
   every Python tool below)
 - A C++20 compiler: GCC or Clang on Linux, the Xcode command-line tools on
-  macOS. CI builds with GCC 13 (Ubuntu 24.04), the manylinux_2_28 toolchain
-  and the Apple Clang of macOS 15
+  macOS. CI builds with GCC 13 (Ubuntu 24.04), the manylinux_2_28 toolchain,
+  the Apple Clang of macOS 15 and the oldest compilers supported, GCC 11 and
+  Clang 14 (Ubuntu 22.04)
 - For GPU work only: Linux, an NVIDIA GPU and driver, and the CUDA 12.9
   toolkit (or no toolkit at all; see [GPU builds](#gpu-builds))
 
@@ -90,7 +91,8 @@ fails instead of skipping), `physics` (everything in `tests/physics`),
 `scaling` (benchmarks that compare two sizes in one run) and `slow` (tests
 that spend seconds in native code or child processes, which the sanitizer job
 leaves out). `tests/conftest.py`
-sets `CUDAQ_PULSE_TARGET=ladder:8192` for the whole session. Tests run with
+sets `CUDAQ_PULSE_QUANTUM_SYSTEM=ladder:8192` for the whole session, and
+`CUDAQ_PULSE_VERIFY=1` unless it is set already. Tests run with
 the default unroll threshold; a test of a rolled loop of a few iterations
 passes `unroll_threshold=` to `pulse.compile` or `@pulse.kernel`.
 
@@ -99,6 +101,18 @@ them, except when `CI` is set: there they fail, unless the job names the
 tool in `CUDAQ_PULSE_OPTIONAL_TOOLS` (`tests/_tools.py`). Rewrite the IR
 goldens with `CUDAQ_PULSE_UPDATE_GOLDENS=1`; a run that changes them fails
 and names the changed cases, and the next run, without the variable, passes.
+
+`CUDAQ_PULSE_VERIFY=1` turns on the verifications that only catch a bug of
+the compiler itself, as MLIR's verify-each does: the module `run_passes()`
+leaves, before scheduling verifies it, and each specialization rescheduled
+from a verified module, which is otherwise printed without verifying it; a
+module noted as verified that does not verify then fails `mlir()`. A user's
+compile skips them (unset or `0`); any other value makes compiling raise
+`ValueError`. The test suite, `check-pulse`, `ctest` and every CI job that
+runs pytest have it on through `tests/conftest.py`; run a subset with
+`CUDAQ_PULSE_VERIFY=0 pytest ...` to test what users run. The perf gate
+measures with it off. It is a development aid, not part of the stable
+interface.
 
 The property tests use hypothesis profiles (`tests/property_settings.py`),
 chosen with `HYPOTHESIS_PROFILE`: `ci`, the default, is derandomized so every
@@ -429,7 +443,8 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   3.15), and macOS (3.12 to 3.14), and the lit and pytest suites on
   free-threaded CPython 3.14t with the GIL off (configured with
   `-DCUDAQ_PULSE_FREE_THREADED=ON`, which declares the extension safe
-  without the GIL, as the free-threaded wheels do). The `gpu` job
+  without the GIL, as the free-threaded wheels do). `old-compilers` builds
+  and runs lit with GCC 11 and Clang 14 on Ubuntu 22.04. The `gpu` job
   builds with GPU support and runs the GPU tests (see [GPU CI](#gpu-ci)).
 - `wheels.yml`: cibuildwheel for the `cudaq-pulse-tools` wheel (`py3-none`)
   first, then the `cudaq-pulse` wheels for `cp312-abi3` (3.12 and newer) and
@@ -443,7 +458,11 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   example pass plugin into the installed `cudaq-pulse-opt`
   (`tools/ci/opt-plugin-test.sh`). `gpu-install-test`
   runs the GPU tests from the wheels (see [GPU CI](#gpu-ci)) and gates the
-  release (see [Releases](#releases)).
+  release (see [Releases](#releases)). Once everything has passed, the
+  `dist` job checks the complete set of files with `tools/check-dist.py` and
+  uploads it as the run's one artifact for upload,
+  `cudaq-pulse-<version>-dist` (see [Releases](#releases)); the per-platform
+  `intermediate-*` artifacts only feed the run's own jobs.
 - `gpu-tests.yml`: the GPU tests, called by `ci.yml` and `wheels.yml`.
 - `docs.yml`: Sphinx with warnings as errors; deploys `main` to GitHub Pages.
 - `property-nightly.yml`: the property tests (every test file that imports
@@ -523,17 +542,22 @@ in `wheelhouse/` and run `bash tools/ci/install-test.sh gpu-cu12` (or
 
 Versions follow [PEP 440](https://peps.python.org/pep-0440/) in the shape of
 [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, with
-pre-releases `X.Y.Z{a,b,rc}N` and post releases `X.Y.Z.postN`.
+pre-releases `X.Y.Z{a,b,rc}N` and post releases `X.Y.Z.postN`. Both
+distributions take the version from the `v*` git tags through setuptools-scm:
+a build of a tag is exactly the tag's version, and any other build is a dev
+release, such as `0.1.1.dev3` three commits after `v0.1.0` or `0.1.0rc2.dev1`
+one commit after `v0.1.0rc1` (`0.1.1.dev0` for a tag with local changes).
+Versions have no local segment (`+g<commit>`), which package indexes reject.
 
 - **What is covered.** The public API is the names in the `__all__` of
   `cudaq_pulse` and of its documented submodules (`cudaq_pulse.ops`,
-  `cudaq_pulse.compiler`, `cudaq_pulse.targets`,
-  `cudaq_pulse.targets.transmon_model`, `cudaq_pulse.runtime`,
+  `cudaq_pulse.compiler`, `cudaq_pulse.quantum_systems`,
+  `cudaq_pulse.quantum_systems.transmon_model`, `cudaq_pulse.runtime`,
   `cudaq_pulse.runtime.simulate`, `cudaq_pulse.viz`, `cudaq_pulse.controller`,
   `cudaq_pulse.backends`, `cudaq_pulse.classical`,
-  `cudaq_pulse.classical.wire`, `cudaq_pulse.classical.qec`,
-  `cudaq_pulse.classical.emulation`, `cudaq_pulse.classical.calibration`,
-  `cudaq_pulse.classical.loop` and `cudaq_pulse.runtime.drift`), their
+  `cudaq_pulse.classical.wire`, `cudaq_pulse.classical.emulation`,
+  `cudaq_pulse.classical.calibration`, `cudaq_pulse.classical.loop` and
+  `cudaq_pulse.quantum_systems.drift`), their
   documented behavior, the `cudaq_pulse.backends` entry-point group, the
   controller export format (whose version is `cudaq_pulse.controller.FORMAT`),
   the documented environment variables, and the `cudaq-pulse-opt` and
@@ -580,9 +604,53 @@ A release has two distributions, each with a wheel per platform:
 `cudaq-pulse-tools`, with the MLIR driver, uploaded first, and `cudaq-pulse`,
 which requires it at the same version, with the sdist. An index needs both, in
 that order. A release is published as a GitHub release first. Once index
-publishing is enabled (below), its wheels then go to TestPyPI for a
+publishing is enabled (below), the same wheels then go to TestPyPI for a
 pre-release (`vX.Y.Z{a,b,rc}N`) or to PyPI for a final release; until then,
 releases are on GitHub only. The sdist is only on the GitHub release.
+
+Every run of `wheels.yml` whose builds and install tests pass uploads one
+artifact with exactly the files a release publishes,
+`cudaq-pulse-<version>-dist` (for example `cudaq-pulse-0.1.0rc1-dist` for
+the tag `v0.1.0rc1`, `cudaq-pulse-0.1.1.dev3-dist` for a push to a branch):
+
+```text
+dist/          the cudaq-pulse wheels (cp312-abi3 and cp314-cp314t) and the
+               cudaq-pulse-tools wheel (py3-none) for each of
+               manylinux_2_28 x86_64, manylinux_2_28 aarch64 and macOS arm64,
+               and the cudaq-pulse sdist: ten files of one version
+SHA256SUMS     their SHA-256 digests (`sha256sum --check SHA256SUMS`)
+MANIFEST.json  each file's distribution, version, tags, size and digest
+```
+
+The `dist` job writes it with `tools/check-dist.py`, which fails the run if
+a file is missing or unexpected, if the files do not all have the run's
+version (a release version on a tag, a dev version otherwise, never a local
+version), if one is over 90 MiB, lacks its license files or fails
+`twine check --strict`. The release jobs check the same artifact against
+its `SHA256SUMS`: the GitHub release gets exactly its `dist/`, and TestPyPI
+or PyPI exactly its wheels.
+
+**Rehearse a release** without a tag: run `wheels` manually on a branch
+(*Run workflow*) with `version` set, for example `0.1.0rc1`. Every file is
+built as that version and the run's artifact is
+`cudaq-pulse-0.1.0rc1-rehearsal-dist`; nothing is published. Check a
+downloaded bundle locally with
+`python tools/check-dist.py --version 0.1.0rc1 --release --verify-sums <dir>`
+(with `twine` installed).
+
+**Upload by hand** if trusted publishing (below) is not used: download the
+`cudaq-pulse-<version>-dist` artifact of the tag's run that published the
+GitHub release (or the same files from the release's assets), unpack it,
+check it, and upload the wheels of `dist/`, `cudaq-pulse-tools` first (the
+sdist stays on the GitHub release):
+
+```bash
+sha256sum --check SHA256SUMS
+twine upload dist/cudaq_pulse_tools-*.whl
+twine upload dist/cudaq_pulse-*.whl
+```
+
+Add `--repository testpypi` for TestPyPI.
 
 1. Tag a release candidate, for example `v0.1.0rc1`. `wheels.yml` builds and
    tests the wheels and the sdist, publishes them as a GitHub pre-release and,
@@ -607,11 +675,11 @@ Before anything is released, the `release-meta` job checks the tag with
 `X.Y.Z{a,b,rc}N` that the setuptools-scm `tag_regex` accepts, a final
 version must be on `main`, `CHANGELOG.md` must have a dated, non-empty
 section for it, and the release must not exist yet. The release is created as a
-draft, every built file's version is checked against the tag and gets a
+draft, the bundle is checked against the tag, every file gets a
 signed build-provenance attestation (check one with
-`gh attestation verify <file> --repo NVIDIA/cudaq-pulse`), the assets are
-uploaded once (never replaced), and only then is the release published. The
-MLIR toolchain assets are write-once too.
+`gh attestation verify <file> --repo NVIDIA/cudaq-pulse`), the files, their
+`SHA256SUMS` and `MANIFEST.json` are uploaded once (never replaced), and only
+then is the release published. The MLIR toolchain assets are write-once too.
 
 The `testpypi` and `pypi` jobs upload the same checked wheels with trusted
 publishing: the index accepts a short-lived token that GitHub issues to this
@@ -640,10 +708,11 @@ No release is published without GPU verification of the tagged commit; the
   and then stops at `gpu-gate`. To release it:
   1. Run the GPU test suite on the tagged commit on a machine with an
      NVIDIA GPU: build it as in [GPU builds](#gpu-builds) and run
-     `check-pulse` and `check-pulse-gpu`, or download the tag run's
-     `wheels-linux-x86_64` artifact into `wheelhouse/` in a checkout of the
-     tag and run `bash tools/ci/install-test.sh gpu`. Every test must pass,
-     with no GPU test skipped.
+     `check-pulse` and `check-pulse-gpu`, or unpack the tag run's
+     `cudaq-pulse-<version>-dist` artifact into `bundle/` in a checkout of
+     the tag and run
+     `bash tools/ci/install-test.sh --wheelhouse bundle/dist gpu`. Every test
+     must pass, with no GPU test skipped.
   2. Run the `wheels` workflow manually on the tag (*Run workflow*, *Use
      workflow from*: the tag) with `gpu-verified-sha` set to the full commit
      SHA the tag points to (`git rev-parse vX.Y.Z^{commit}`). This is the

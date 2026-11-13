@@ -15,7 +15,7 @@ import cudaq_pulse as pulse
 import numpy as np
 import pytest
 from cudaq_pulse import controller
-from cudaq_pulse.targets import transmon_17q
+from cudaq_pulse.quantum_systems import transmon_surface17
 
 _EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "21_calibration_protocol.py"
 if not _EXAMPLE.exists():
@@ -44,19 +44,25 @@ def _two_chains(q, p, t1_guess_cycles: float):
     _calibration_chain(p, t1_guess_cycles)
 
 
-def _device(target):
-    dev = pulse.device(target)
-    return dev, dev.qudit_handles[0]
+def _device(quantum_system):
+    return quantum_system, quantum_system.qudits[0]
 
 
 @pytest.mark.slow
 def test_the_pi_train_corrects_a_drive_amplitude_error():
-    target = transmon_17q()
+    target = transmon_surface17()
     dev, q = _device(target)
-    lowered = pulse.compile(_pi_step, device=dev, control_system=P["control_system"]).lower(q)
-    plant = P["chain_plant"](target, amplitude_scale=1.02)
+    lowered = pulse.compile(_pi_step, quantum_system=dev, control_system=P["control_system"]).lower(
+        q
+    )
+    true_system = P["chain_system"](target, amplitude_scale=1.02)
     result = pulse.simulate(
-        lowered, plant=plant, shots=2, seed=3, branches="sampled", readout="model"
+        lowered,
+        quantum_system=true_system,
+        shots_count=2,
+        seed=3,
+        branches="sampled",
+        readout="model",
     )
     for branch in result.branches:
         corrected, relative_sigma = branch.calls[-1].answer
@@ -67,44 +73,48 @@ def test_the_pi_train_corrects_a_drive_amplitude_error():
 
 @pytest.mark.slow
 def test_adaptive_t1_tracks_the_papers_device_on_the_controller():
-    base = transmon_17q()
-    qubit = base.qubits[0]
-    device_qubit = qubit.replace(
+    base = transmon_surface17()
+    qudit = base.physical_qudits[0]
+    device_qudit = qudit.replace(
         frequency_hz=4.13e9,
         anharmonicity_hz=-210e6,
         t1_us=160.0,
         t2_star_us=100.0,
         thermal_population=0.0,
-        readout=qubit.readout.replace(error_1to0=0.11, error_0to1=0.14),
+        readout=qudit.readout.replace(error_1to0=0.11, error_0to1=0.14),
     )
-    target = dataclasses.replace(base, qubits={**base.qubits, 0: device_qubit})
+    target = base.replace(qudits={**base.physical_qudits, 0: device_qudit})
     dev, q = _device(target)
-    lowered = pulse.compile(_adaptive_t1, device=dev, control_system=P["control_system"]).lower(q)
-    shots = 32
-    result = pulse.simulate(lowered, shots=shots, seed=4, branches="sampled", readout="model")
+    lowered = pulse.compile(
+        _adaptive_t1, quantum_system=dev, control_system=P["control_system"]
+    ).lower(q)
+    shots_count = 32
+    result = pulse.simulate(
+        lowered, shots_count=shots_count, seed=4, branches="sampled", readout="model"
+    )
     estimates = []
     for branch in result.branches:
         assert len(branch.answers("adaptive_t1")) == P["tracker_shots"]
         compiled = {c.compiled_name for c in branch.calls if c.function == "adaptive_t1"}
         assert compiled == {"adaptive_t1__1"}
         shape, rate, _ = branch.calls[-1].answer
-        estimates += [rate / shape / CLOCK / 1e3] * round(branch.probability * shots)
+        estimates += [rate / shape / CLOCK / 1e3] * round(branch.probability * shots_count)
     # The paper: 159 us, 68% interval [131, 202] us; the benchmark's 400
     # seeds give a median near 151 us at a true 160 us.
     assert 125 < np.median(estimates) < 190
 
 
 def test_the_binary_search_narrows_on_the_controller():
-    target = transmon_17q()
+    target = transmon_surface17()
     dev, q = _device(target)
     lowered = pulse.compile(
-        P["binary_search"], device=dev, control_system=P["control_system"]
+        P["binary_search"], quantum_system=dev, control_system=P["control_system"]
     ).lower(q, 15)
     for seed, offset in enumerate((-200e3, 120e3)):
         result = pulse.simulate(
             lowered,
-            plant=P["search_plant"](target, offset),
-            shots=1,
+            quantum_system=P["search_system"](target, offset),
+            shots_count=1,
             seed=seed,
             branches="sampled",
             readout="model",
@@ -115,10 +125,12 @@ def test_the_binary_search_narrows_on_the_controller():
 
 
 def _chain():
-    target = transmon_17q()
+    target = transmon_surface17()
     dev, q = _device(target)
     return (
-        pulse.compile(P["calibration_chain"], device=dev, control_system=P["control_system"]),
+        pulse.compile(
+            P["calibration_chain"], quantum_system=dev, control_system=P["control_system"]
+        ),
         dev,
         q,
     )
@@ -127,14 +139,14 @@ def _chain():
 def test_the_chain_fits_the_declared_controller():
     compiled, _, q = _chain()
     lowered = compiled.lower(q, 20_000.0 * CLOCK)
-    report = controller.resources(lowered)
-    assert report.violations == ()
-    assert all(row.on_controller and row.cost.in_controller_form for row in report.functions)
-    by_name = {row.compiled_name: row for row in report.functions}
+    report = lowered.controller_usage
+    assert report.violations == () and report.off_board == ()
+    rows = [f for c in report.controllers for p in c.processors for f in p.functions]
+    assert all(row.cost.runs_on_processor for row in rows)
+    by_name = {row.function: row for row in rows}
     assert by_name["adaptive_t1__1"].calls_per_shot == P["tracker_shots"]
-    assert by_name["adaptive_t1__1"].function == "adaptive_t1"
-    assert report.calls_per_shot == 7 + P["tracker_shots"]
-    assert all(row.compute_ns < row.max_latency_ns for row in report.functions)
+    assert sum(link.calls_per_shot for link in report.links) == 7 + P["tracker_shots"]
+    assert all(row.slack_ns > 0 for row in rows)
 
 
 def test_a_slower_controller_rejects_the_chain_at_compile_time():
@@ -144,20 +156,20 @@ def test_a_slower_controller_rejects_the_chain_at_compile_time():
     system = pulse.ControlSystem(
         controllers=[pulse.Controller(processors=[slow])], links=P["control_system"].links
     )
-    slow = pulse.compile(P["calibration_chain"], device=dev, control_system=system)
+    slow = pulse.compile(P["calibration_chain"], quantum_system=dev, control_system=system)
     with pytest.raises(controller.ControllerLimitError, match="adaptive_t1__1 computes for about"):
         slow.lower(q, 20_000.0 * CLOCK)
 
 
-def test_two_qubits_calibrate_side_by_side():
+def test_two_qudits_calibrate_side_by_side():
     chain, dev, _ = _chain()
-    q, p = dev.qudit_handles[:2]
+    q, p = dev.qudits[:2]
     one = chain.lower(q, 20_000.0 * CLOCK)
-    two = pulse.compile(_two_chains, device=dev, control_system=P["control_system"]).lower(
+    two = pulse.compile(_two_chains, quantum_system=dev, control_system=P["control_system"]).lower(
         q, p, 20_000.0 * CLOCK
     )
     # Each chain waits only on its own answers, so two take about as long as
     # one: only their requests on the shared link go out one after the other.
     alone, side_by_side = (max(e.end for e in low.schedule) for low in (one, two))
     assert alone <= side_by_side < alone * 1.01
-    assert controller.resources(two).violations == ()
+    assert two.controller_usage.violations == ()

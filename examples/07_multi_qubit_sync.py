@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Multi-qubit programs with sync barriers and registers of qudit handles.
 
-Shows qudits passed one by one and as a register (a slice of the device's
+Shows qudits passed one by one and as a register (a slice of the quantum system's
 handles), the sync primitive for cross-line coordination, and patterns for
 building multi-qubit pulse programs.
 """
@@ -21,11 +21,11 @@ cal = {
 
 
 @pulse.kernel
-def two_qubit_simultaneous(qubit_0, qubit_1):
+def two_qudit_simultaneous(qudit_0, qudit_1):
     """Drive two qubits simultaneously, then sync them."""
 
-    drive_line_0 = get_drive_line(qubit_0)
-    drive_line_1 = get_drive_line(qubit_1)
+    drive_line_0 = get_drive_line(qudit_0)
+    drive_line_1 = get_drive_line(qudit_1)
 
     drive(drive_line_0, gaussian(cal["x_duration"], 0.25, cal["x_sigma"]))
     drive(drive_line_1, gaussian(cal["x_duration"], 0.30, cal["x_sigma"]))
@@ -40,10 +40,10 @@ def two_qubit_simultaneous(qubit_0, qubit_1):
 
 
 @pulse.kernel
-def parametric_pi_half(qubit_0, qubit_1, amplitude_0, amplitude_1):
+def parametric_pi_half(qudit_0, qudit_1, amplitude_0, amplitude_1):
     """Calibration-friendly: pass the qudits and their amplitudes in."""
-    drive_line_0 = get_drive_line(qubit_0)
-    drive_line_1 = get_drive_line(qubit_1)
+    drive_line_0 = get_drive_line(qudit_0)
+    drive_line_1 = get_drive_line(qudit_1)
 
     x_duration, x_sigma, beta = cal["x_duration"], cal["x_sigma"], cal["drag_beta"]
     drive(drive_line_0, drag(x_duration, amplitude_0, x_sigma, beta))
@@ -54,14 +54,14 @@ def parametric_pi_half(qubit_0, qubit_1, amplitude_0, amplitude_1):
 
 
 @pulse.kernel
-def qvec_simultaneous_drive(qubit_vector, amplitude):
+def qvec_simultaneous_drive(qudit_vector, amplitude):
     """Drive two qubits of a register in parallel.
 
-    dev.qudit_handles[0:4] is a register of four qudits; individual qudits
+    qs.qudits[0:4] is a register of four qudits; individual qudits
     are accessed by indexing.
     """
-    drive_line_0 = get_drive_line(qubit_vector[0])
-    drive_line_1 = get_drive_line(qubit_vector[1])
+    drive_line_0 = get_drive_line(qudit_vector[0])
+    drive_line_1 = get_drive_line(qudit_vector[1])
 
     drive(drive_line_0, gaussian(cal["x_duration"], amplitude, cal["x_sigma"]))
     drive(drive_line_1, gaussian(cal["x_duration"], amplitude, cal["x_sigma"]))
@@ -72,14 +72,14 @@ def qvec_simultaneous_drive(qubit_vector, amplitude):
 
 
 @pulse.kernel
-def sync_after_asymmetric_ops(qubit_0, qubit_1):
+def sync_after_asymmetric_ops(qudit_0, qudit_1):
     """Sync after different-duration ops to re-align timelines.
 
     Without sync, the two lines would diverge in time.
     """
 
-    drive_line_0 = get_drive_line(qubit_0)
-    drive_line_1 = get_drive_line(qubit_1)
+    drive_line_0 = get_drive_line(qudit_0)
+    drive_line_1 = get_drive_line(qudit_1)
 
     drive(drive_line_0, square(cal["long_duration"], 0.1))
     drive(drive_line_1, gaussian(cal["x_duration"], 0.25, cal["x_sigma"]))
@@ -91,14 +91,14 @@ def sync_after_asymmetric_ops(qubit_0, qubit_1):
 
 
 @pulse.kernel
-def staggered_readout(qubit_0, qubit_1):
+def staggered_readout(qudit_0, qudit_1):
     """Stagger operations across qubits with wait + sync.
 
-    Drive qubit_0, wait, then sync with qubit_1 before a joint operation.
+    Drive qudit_0, wait, then sync with qudit_1 before a joint operation.
     """
 
-    drive_line_0 = get_drive_line(qubit_0)
-    drive_line_1 = get_drive_line(qubit_1)
+    drive_line_0 = get_drive_line(qudit_0)
+    drive_line_1 = get_drive_line(qudit_1)
 
     drive(drive_line_0, gaussian(cal["x_duration"], 0.5, cal["x_sigma"]))
     wait(drive_line_0, cal["stagger_wait"])
@@ -112,34 +112,32 @@ def staggered_readout(qubit_0, qubit_1):
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
+    qs = pulse.quantum_system("transmon_surface17")
     print("=== Two-qubit simultaneous drive ===")
-    compiled_kernel = pulse.compile(two_qubit_simultaneous, device=dev).lower(
-        dev.qudit_handles[0], dev.qudit_handles[1]
+    scheduled = pulse.compile(two_qudit_simultaneous, quantum_system=qs).lower(
+        qs.qudits[0], qs.qudits[1]
     )
-    print(compiled_kernel.mlir())
+    print(scheduled.mlir())
 
     print("\n=== Parametric pi/2 ===")
-    compiled_kernel = pulse.compile(parametric_pi_half, device=dev).lower(
-        dev.qudit_handles[0], dev.qudit_handles[1], 0.25, 0.28
+    scheduled = pulse.compile(parametric_pi_half, quantum_system=qs).lower(
+        qs.qudits[0], qs.qudits[1], 0.25, 0.28
     )
-    print(compiled_kernel.mlir())
+    print(scheduled.mlir())
 
     print("\n=== Register simultaneous drive ===")
-    compiled_kernel = pulse.compile(qvec_simultaneous_drive, device=dev).lower(
-        dev.qudit_handles[0:4], 0.3
-    )
-    print(compiled_kernel.mlir())
+    scheduled = pulse.compile(qvec_simultaneous_drive, quantum_system=qs).lower(qs.qudits[0:4], 0.3)
+    print(scheduled.mlir())
 
     print("\n=== Sync after asymmetric ops ===")
-    compiled_kernel = pulse.compile(sync_after_asymmetric_ops, device=dev).lower(
-        dev.qudit_handles[0], dev.qudit_handles[1]
+    scheduled = pulse.compile(sync_after_asymmetric_ops, quantum_system=qs).lower(
+        qs.qudits[0], qs.qudits[1]
     )
-    print(compiled_kernel.mlir())
+    print(scheduled.mlir())
 
     print("\n=== Staggered readout ===")
-    compiled_kernel = pulse.compile(staggered_readout, device=dev).lower(
-        dev.qudit_handles[0], dev.qudit_handles[1]
+    scheduled = pulse.compile(staggered_readout, quantum_system=qs).lower(
+        qs.qudits[0], qs.qudits[1]
     )
-    print(compiled_kernel.mlir())
-    print(f"  Compile metrics: {compiled_kernel.metrics}")
+    print(scheduled.mlir())
+    print(f"  Compile metrics: {scheduled.metrics}")

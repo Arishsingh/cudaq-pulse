@@ -5,7 +5,9 @@ check's license, notice, CUDA and GPL rules (source tree only)."""
 
 import importlib.util
 import io
+import sys
 import tarfile
+import types
 import zipfile
 from pathlib import Path
 
@@ -224,7 +226,7 @@ def _wheel(
         "cudaq_pulse/ops/__init__.py": "__all__ = []\n",
         "cudaq_pulse/_native/_cudaq_pulse_native.pyi": "",
         "cudaq_pulse/_native/_cudaq_pulse_native.abi3.so": "",
-        "cudaq_pulse/targets/calibrations/transmon_17q.json": "{}",
+        "cudaq_pulse/quantum_systems/calibrations/transmon_surface17.json": "{}",
     }
     for name in checker._LICENSES:
         source = _ROOT / name
@@ -444,17 +446,33 @@ def test_the_driver_wheel_may_carry_only_listed_grafts(tmp_path, checker):
     assert not any(p.startswith("contains cudaq_pulse_tools.libs/") for p in problems)
 
 
-def _sdist(tmp_path, checker, requires, extra=None):
+def _tools_licenses(checker):
+    """The tools license files as the sdist must store them."""
+    return {
+        f"packaging/cudaq-pulse-tools/{f}": (_ROOT / "packaging/cudaq-pulse-tools" / f).read_bytes()
+        for f in checker._TOOLS_LICENSES
+    }
+
+
+def _sdist(tmp_path, checker, requires, tools=None, links=()):
+    """An sdist with PKG-INFO, empty root licenses, the tools license files
+    ``tools`` (by default the repository's) and ``links``, (name, target)
+    symbolic links."""
     path = tmp_path / "cudaq_pulse-0.1.0.tar.gz"
     metadata = ["Metadata-Version: 2.4", "Name: cudaq-pulse", "Version: 0.1.0"]
     metadata += [f"Requires-Dist: {r}" for r in requires]
-    files = {"PKG-INFO": "\n".join(metadata) + "\n\n", **dict.fromkeys(checker._LICENSES, "")}
-    files |= extra or {}
+    files = {"PKG-INFO": ("\n".join(metadata) + "\n\n").encode()}
+    files |= dict.fromkeys(checker._LICENSES, b"")
+    files |= _tools_licenses(checker) if tools is None else tools
     with tarfile.open(path, "w:gz") as sdist:
-        for name, text in files.items():
+        for name, data in files.items():
             info = tarfile.TarInfo(f"cudaq_pulse-0.1.0/{name}")
-            info.size = len(text.encode())
-            sdist.addfile(info, io.BytesIO(text.encode()))
+            info.size = len(data)
+            sdist.addfile(info, io.BytesIO(data))
+        for name, target in links:
+            info = tarfile.TarInfo(f"cudaq_pulse-0.1.0/{name}")
+            info.type, info.linkname = tarfile.SYMTYPE, target
+            sdist.addfile(info)
     return path
 
 
@@ -468,16 +486,84 @@ def test_the_sdist_requires_the_driver_at_its_version(tmp_path, checker):
 
 
 def test_the_sdist_ships_no_lock_file(tmp_path, checker):
-    extra = {
-        "uv.lock": "",
-        "examples/app/poetry.lock": "",
-        "requirements-dev.txt": "numpy==2.5.4 \\\n    --hash=sha256:00\n",
-        "docs/requirements.txt": "sphinx>=7\n",
-        "tests/uv.lock.txt": "",
+    hashed = b"numpy==2.5.4 \\\n    --hash=sha256:00\n"
+    files = _tools_licenses(checker) | {
+        "uv.lock": b"",
+        "examples/app/poetry.lock": b"",
+        "requirements-dev.txt": hashed,
+        "docs/requirements.txt": b"sphinx>=7\n",
+        "tests/uv.lock.txt": b"",
     }
-    path = _sdist(tmp_path, checker, ["cudaq-pulse-tools==0.1.0"], extra)
+    path = _sdist(tmp_path, checker, ["cudaq-pulse-tools==0.1.0"], files)
     assert checker.check_sdist(path) == [
         f"{path.name}: ships examples/app/poetry.lock, a lock file",
         f"{path.name}: ships requirements-dev.txt, a requirements file with hashes",
         f"{path.name}: ships uv.lock, a lock file",
     ]
+
+
+def test_the_sdist_stores_the_driver_licenses_as_the_repository_texts(tmp_path, checker):
+    requires = ["cudaq-pulse-tools==0.1.0"]
+    tools = _tools_licenses(checker)
+    linked = "packaging/cudaq-pulse-tools/LICENSE"
+    differing = "packaging/cudaq-pulse-tools/LICENSES/LLVM-LICENSE.txt"
+    missing = "packaging/cudaq-pulse-tools/NOTICE"
+    del tools[linked], tools[missing]
+    tools[differing] += b"\n"
+    path = _sdist(tmp_path, checker, requires, tools, links=[(linked, "../../LICENSE")])
+    assert set(checker.check_sdist(path)) == {
+        f"{path.name}: {linked} is not a regular file",
+        f"{path.name}: {differing} differs from the repository's LICENSES/LLVM-LICENSE.txt",
+        f"{path.name}: missing {missing}",
+    }
+
+
+@pytest.fixture
+def backend(monkeypatch, tmp_path):
+    """tools/backend/cudaq_pulse_build.py over a stand-in for
+    scikit-build-core, whose sdist has a file, a link to it, and the links
+    ``backend.links`` (set by the test)."""
+
+    def build_sdist(sdist_directory, config_settings=None):
+        name = "cudaq_pulse-0.1.0.tar.gz"
+        with tarfile.open(Path(sdist_directory) / name, "w:gz") as sdist:
+            info = tarfile.TarInfo("cudaq_pulse-0.1.0/LICENSE")
+            info.size, info.mode = 7, 0o644
+            sdist.addfile(info, io.BytesIO(b"license"))
+            for link, target in [("tools/LICENSE", "../LICENSE"), *module.links]:
+                info = tarfile.TarInfo(f"cudaq_pulse-0.1.0/{link}")
+                info.type, info.linkname = tarfile.SYMTYPE, target
+                sdist.addfile(info)
+        return name
+
+    build = types.ModuleType("scikit_build_core.build")
+    build.__all__ = ["build_sdist", "build_wheel"]
+    build.build_sdist, build.build_wheel = build_sdist, object()
+    package = types.ModuleType("scikit_build_core")
+    package.build = build
+    monkeypatch.setitem(sys.modules, "scikit_build_core", package)
+    monkeypatch.setitem(sys.modules, "scikit_build_core.build", build)
+    spec = importlib.util.spec_from_file_location(
+        "cudaq_pulse_build", _TOOLS / "backend" / "cudaq_pulse_build.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.links = []
+    return module
+
+
+def test_the_backend_stores_a_copy_of_each_linked_file(backend, tmp_path):
+    assert backend.build_wheel is not None and "build_wheel" in backend.__all__
+    name = backend.build_sdist(str(tmp_path))
+    with tarfile.open(tmp_path / name) as sdist:
+        members = {m.name: m for m in sdist.getmembers()}
+        copy = members["cudaq_pulse-0.1.0/tools/LICENSE"]
+        assert copy.isfile() and copy.mode == 0o644
+        assert sdist.extractfile(copy).read() == b"license"
+
+
+@pytest.mark.parametrize("target", ["../missing", "../../LICENSE", "."])
+def test_the_backend_fails_on_a_link_to_no_file_in_the_sdist(backend, tmp_path, target):
+    backend.links = [("tools/other", target)]
+    with pytest.raises(RuntimeError, match="which is not a file in the sdist"):
+        backend.build_sdist(str(tmp_path))

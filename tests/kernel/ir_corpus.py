@@ -62,7 +62,7 @@ def dump_python(ir: PythonIRBuilder) -> list[str]:
 
 def dump_packed(b: PackedIRBuilder) -> list[str]:
     return [
-        f"packed n_qubits={b.n_qubits} op_count={b.op_count}",
+        f"packed qudit_count={b.qudit_count} op_count={b.op_count}",
         "words " + " ".join(str(w) for w in b.get_buffer().tolist()),
         "freq " + _canon(b.get_freq_array().tolist()),
     ]
@@ -71,18 +71,18 @@ def dump_packed(b: PackedIRBuilder) -> list[str]:
 # ── Corpus kernels ───────────────────────────────────────────────────
 
 
-def dd_loop(n_iter: int) -> Callable[..., Any]:
+def dd_loop(iteration_count: int) -> Callable[..., Any]:
     @pulse.kernel
     def dd(q0):
         d0 = get_drive_line(q0)
         x = square(40, 0.047 + 0j)
-        for _ in range(n_iter):
+        for _ in range(iteration_count):
             drive(d0, x)
 
     return dd
 
 
-def tone_list_loop(n_iter: int) -> Callable[..., Any]:
+def tone_list_loop(iteration_count: int) -> Callable[..., Any]:
     """Tones kept in a list, retuned, then driven in a rolled loop."""
 
     @pulse.kernel
@@ -91,7 +91,7 @@ def tone_list_loop(n_iter: int) -> Callable[..., Any]:
         for d, f in zip(lines, (5.0e9, 5.1e9), strict=True):
             set_frequency(d.tone, f)
         x = square(40, 0.047)
-        for _ in range(n_iter):
+        for _ in range(iteration_count):
             for d in lines:
                 drive(d, x)
 
@@ -111,24 +111,24 @@ def cpmg_with_waits(q0):
 
 def surface_syndrome(d: int) -> Callable[..., Any]:
     """Rotated-lattice syndrome round: one ancilla per plaquette."""
-    n_data = d * d
-    n_anc = (d - 1) * (d - 1) + 2 * (d - 1)
-    n_total = n_data + n_anc
+    data_count = d * d
+    ancilla_count = (d - 1) * (d - 1) + 2 * (d - 1)
+    total_count = data_count + ancilla_count
 
     @pulse.kernel
-    def round_(qubits):
+    def round_(qudits):
         lines = []
         tones = []
-        for i in range(n_total):
-            line = get_drive_line(qubits[i])
+        for i in range(total_count):
+            line = get_drive_line(qudits[i])
             lines.append(line)
             tones.append(line.tone)
 
         h = drag(40, 0.25, 10.0, 0.5)
         cr_p = gaussian(160, 0.12, 40.0)
         cr_m = gaussian(160, -0.12, 40.0)
-        for a in range(n_anc):
-            anc = n_data + a
+        for a in range(ancilla_count):
+            anc = data_count + a
             row = a // (d - 1) if a < (d - 1) * (d - 1) else -1
             col = a % (d - 1) if a < (d - 1) * (d - 1) else a - (d - 1) * (d - 1)
             drive(lines[anc], h, tone=tones[anc])
@@ -142,21 +142,21 @@ def surface_syndrome(d: int) -> Callable[..., Any]:
                         drive(lines[anc], cr_p, tone=tones[q])
                         drive(lines[anc], cr_m, tone=tones[q])
 
-    return round_, n_total
+    return round_, total_count
 
 
 def bicycle_syndrome(l: int, m: int) -> Callable[..., Any]:  # noqa: E741
     """Bivariate-bicycle style check: weight-6 stabilizers on a torus."""
-    n_data = 2 * l * m
-    n_checks = l * m
-    n_total = n_data + 2 * n_checks
+    data_count = 2 * l * m
+    check_count = l * m
+    total_count = data_count + 2 * check_count
 
     @pulse.kernel
-    def checks(qubits):
+    def checks(qudits):
         lines = []
         tones = []
-        for i in range(n_total):
-            line = get_drive_line(qubits[i])
+        for i in range(total_count):
+            line = get_drive_line(qudits[i])
             lines.append(line)
             tones.append(line.tone)
 
@@ -165,17 +165,17 @@ def bicycle_syndrome(l: int, m: int) -> Callable[..., Any]:  # noqa: E741
         shifts_r = [0, 0, 3, 0, 1, 2]
         shifts_c = [0, 1, 0, 2, 0, 2]
         for kind in range(2):
-            for ci in range(n_checks):
-                anc = n_data + kind * n_checks + ci
+            for ci in range(check_count):
+                anc = data_count + kind * check_count + ci
                 r0, c0 = ci // m, ci % m
                 for s in range(6):
                     q = ((r0 + shifts_r[s]) % l) * m + (c0 + shifts_c[s]) % m
-                    q = q + l * m if kind == 1 and q + l * m < n_data else q
+                    q = q + l * m if kind == 1 and q + l * m < data_count else q
                     sync(lines[anc], lines[q])
                     drive(lines[q], sx, tone=tones[q])
                     drive(lines[anc], cr, tone=tones[q])
 
-    return checks, n_total
+    return checks, total_count
 
 
 _SCALE = 0.5
@@ -350,7 +350,7 @@ class Case:
     path: str  # "python" (kernel call) or "packed" (compile() trace)
 
 
-def _qubits(n: int) -> Callable[[], list[Any]]:
+def _qudits(n: int) -> Callable[[], list[Any]]:
     return lambda: [Q[i] for i in range(n)]
 
 
@@ -361,12 +361,12 @@ def _qvec(n: int) -> Callable[[], list[Any]]:
 def _cases() -> list[Case]:
     cases = []
     for n in (8, 32, 128, 512):
-        cases.append(Case(f"dd_loop_n{n}", dd_loop(n), _qubits(1), "python"))
-    cases.append(Case("dd_loop_n8_packed", dd_loop(8), _qubits(1), "packed"))
-    cases.append(Case("cpmg_with_waits", cpmg_with_waits, _qubits(1), "python"))
+        cases.append(Case(f"dd_loop_n{n}", dd_loop(n), _qudits(1), "python"))
+    cases.append(Case("dd_loop_n8_packed", dd_loop(8), _qudits(1), "packed"))
+    cases.append(Case("cpmg_with_waits", cpmg_with_waits, _qudits(1), "python"))
     for mod in (w1_bell, w2_cnot_cr, w3_qaoa4, w4_syndrome, w5_dd_cpmg8, w6_vqe_hea):
-        n = mod.NUM_QUBITS
-        cases.append(Case(f"workload_{mod.NAME}", mod.build, _qubits(n), "python"))
+        n = mod.NUM_QUDITS
+        cases.append(Case(f"workload_{mod.NAME}", mod.build, _qudits(n), "python"))
     for d in (3, 5):
         kernel, n = surface_syndrome(d)
         cases.append(Case(f"surface_d{d}", kernel, _qvec(n), "packed"))
@@ -374,11 +374,11 @@ def _cases() -> list[Case]:
     cases.append(Case("surface_d3_python", kernel, _qvec(n), "python"))
     kernel, n = bicycle_syndrome(3, 3)
     cases.append(Case("bicycle_3x3", kernel, _qvec(n), "packed"))
-    cases.append(Case("closures_and_helpers", closures_and_helpers(0.8), _qubits(2), "python"))
-    cases.append(Case("python_expressions", python_expressions, _qubits(1), "python"))
-    cases.append(Case("python_expressions_packed", python_expressions, _qubits(1), "packed"))
-    cases.append(Case("readout_and_algebra", readout_and_algebra, _qubits(1), "python"))
-    cases.append(Case("readout_and_algebra_packed", readout_and_algebra, _qubits(1), "packed"))
+    cases.append(Case("closures_and_helpers", closures_and_helpers(0.8), _qudits(2), "python"))
+    cases.append(Case("python_expressions", python_expressions, _qudits(1), "python"))
+    cases.append(Case("python_expressions_packed", python_expressions, _qudits(1), "packed"))
+    cases.append(Case("readout_and_algebra", readout_and_algebra, _qudits(1), "python"))
+    cases.append(Case("readout_and_algebra_packed", readout_and_algebra, _qudits(1), "packed"))
     cases.append(
         Case(
             "parametric",
@@ -387,11 +387,11 @@ def _cases() -> list[Case]:
             "packed",
         )
     )
-    cases.append(Case("measurement_branch", measurement_branch, _qubits(1), "packed"))
-    cases.append(Case("active_reset", active_reset, _qubits(1), "python"))
-    cases.append(Case("negated_feedback", negated_feedback, _qubits(2), "python"))
-    cases.append(Case("feedback_in_loop", feedback_in_loop, _qubits(1), "python"))
-    cases.append(Case("feedback_both_return", feedback_both_return, _qubits(1), "python"))
+    cases.append(Case("measurement_branch", measurement_branch, _qudits(1), "packed"))
+    cases.append(Case("active_reset", active_reset, _qudits(1), "python"))
+    cases.append(Case("negated_feedback", negated_feedback, _qudits(2), "python"))
+    cases.append(Case("feedback_in_loop", feedback_in_loop, _qudits(1), "python"))
+    cases.append(Case("feedback_both_return", feedback_both_return, _qudits(1), "python"))
     cases.append(
         Case(
             "compare_symbolic",
@@ -400,9 +400,9 @@ def _cases() -> list[Case]:
             "packed",
         )
     )
-    cases.append(Case("compare_measurement", compare_measurement, _qubits(1), "python"))
-    cases.append(Case("bad_attribute", bad_attribute, _qubits(1), "python"))
-    cases.append(Case("while_loop", while_loop, _qubits(1), "python"))
+    cases.append(Case("compare_measurement", compare_measurement, _qudits(1), "python"))
+    cases.append(Case("bad_attribute", bad_attribute, _qudits(1), "python"))
+    cases.append(Case("while_loop", while_loop, _qudits(1), "python"))
     return cases
 
 
@@ -417,15 +417,15 @@ def trace(case: Case) -> dict[str, Any]:
         if case.path == "python":
             ir = compile_kernel_bytecode(fn, unroll_threshold=UNROLL_THRESHOLD)(*args)
             lines = dump_python(ir)
-            n_ops = len(ir.ops)
+            op_count = len(ir.ops)
         else:
             builder = PackedIRBuilder(
-                name=fn.__name__, clock_ghz=2.0, qubit_freq_hz={i: 5e9 + 1e6 * i for i in range(64)}
+                name=fn.__name__, clock_ghz=2.0, qudit_freq_hz={i: 5e9 + 1e6 * i for i in range(64)}
             )
             builder.unroll_threshold = UNROLL_THRESHOLD
             _trace_kernel_with_builder(fn, builder, args)
             lines = dump_packed(builder)
-            n_ops = builder.op_count
+            op_count = builder.op_count
     except Exception as e:
         record: dict[str, Any] = {"error": f"{type(e).__name__}: {e}"}
         source = getattr(e, "pulse_source", None)
@@ -437,4 +437,4 @@ def trace(case: Case) -> dict[str, Any]:
             record["span"] = [line - first, None if end_line is None else end_line - first]
             record["cols"] = [col, end_col]
         return record
-    return {"ops": n_ops, "dump": lines}
+    return {"ops": op_count, "dump": lines}

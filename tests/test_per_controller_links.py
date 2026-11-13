@@ -10,9 +10,8 @@ import tomllib
 
 import cudaq_pulse as pulse
 import pytest
-from cudaq_pulse._errors import DeviceDefinitionError
+from cudaq_pulse._errors import QuantumSystemDefinitionError
 from cudaq_pulse.classical import Link
-from cudaq_pulse.controller import resources
 
 from tests._handles import ladder_target
 
@@ -68,14 +67,16 @@ def _controllers(processors=False):
     ]
 
 
-def _device(per_controller, processors=False, max_in_flight=1):
-    link = Link(fixed_ns=10, max_in_flight=max_in_flight, per_controller=per_controller)
+def _device(per_controller, processors=False, slots=1):
+    link = Link(fixed_ns=10, slots=slots, per_controller=per_controller)
     system = pulse.ControlSystem(controllers=_controllers(processors), links={"decoder": link})
-    return pulse.device(ladder_target(4), control_system=system)
+    return ladder_target(4, control_system=system)
 
 
 def _lower(kernel, qpu, schedule="asap"):
-    return pulse.compile(kernel, device=qpu, schedule=schedule).lower(qpu.qudits[0], qpu.qudits[2])
+    return pulse.compile(kernel, quantum_system=qpu, schedule=schedule).lower(
+        qpu.qudits[0], qpu.qudits[2]
+    )
 
 
 # ── Declaring one ─────────────────────────────────────────────────────────────
@@ -93,18 +94,16 @@ def test_a_system_file_states_a_per_controller_link_in_json_and_toml():
     qpu = _device(True)
     data = json.loads(json.dumps(qpu.as_dict()))
     assert data["control_system"]["links"]["decoder"]["per_controller"] is True
-    again = pulse.Device.from_dict(data)
+    again = pulse.QuantumSystem.from_dict(data)
     assert again.control_system.links["decoder"].per_controller
     table = tomllib.loads(
         "[[control_system.controllers]]\ndrive_lines = [0, 1]\nreadout_lines = [0, 1]\n"
         "[[control_system.controllers]]\ndrive_lines = [2, 3]\nreadout_lines = [2, 3]\n"
-        "[control_system.links.decoder]\nfixed_ns = 10\nmax_in_flight = 1\n"
+        "[control_system.links.decoder]\nfixed_ns = 10\nslots = 1\n"
         "per_controller = true\n"
     )
-    loaded = pulse.Device.from_dict({"quantum_system": ladder_target(4)} | table)
-    assert loaded.control_system.links["decoder"] == Link(
-        fixed_ns=10, max_in_flight=1, per_controller=True
-    )
+    loaded = pulse.QuantumSystem.from_dict(ladder_target(4).as_dict() | table)
+    assert loaded.control_system.links["decoder"] == Link(fixed_ns=10, slots=1, per_controller=True)
     shared = _device(False).as_dict()["control_system"]["links"]["decoder"]
     assert "per_controller" not in shared
 
@@ -129,25 +128,25 @@ def test_each_controller_has_its_own_slots_of_a_per_controller_link(schedule):
 def test_each_controller_exports_the_calls_of_its_own_instance():
     lowered = _lower(two_rounds, _device(True))
     for index in (0, 1):
-        program = lowered.export_controller(controller=index)
+        program = lowered.export_to_controller(controller=index)
         assert [c["controller"] for c in program["calls"]] == [index]
         calls = [e for e in program["events"] if e["kind"] in ("submit", "answer")]
         assert [e["controller"] for e in calls] == [index, index]
         assert all(e["qudit"] == -1 for e in calls)
-    links = resources(lowered).links
-    assert [(u.controller, u.peak_in_flight, u.calls_per_shot) for u in links] == [
+    report = lowered.controller_usage
+    assert [(u.controller, u.peak_slots_used, u.calls_per_shot) for u in report.links] == [
         (0, 1, 1),
         (1, 1, 1),
     ]
-    report = resources(lowered)
     assert report.violations == () and "decoder@1" in str(report)
 
 
 def test_a_shared_link_exports_without_an_instance():
-    program = _lower(two_rounds, _device(False)).export_controller(controller=0)
+    program = _lower(two_rounds, _device(False)).export_to_controller(controller=0)
     assert all("controller" not in c for c in program["calls"])
     assert all("controller" not in e for e in program["events"])
-    assert [u.controller for u in resources(_lower(two_rounds, _device(False))).links] == [None]
+    shared = _lower(two_rounds, _device(False)).controller_usage
+    assert [u.controller for u in shared.links] == [None]
 
 
 def test_a_call_over_a_per_controller_link_runs_on_one_controller():
@@ -166,7 +165,7 @@ def test_a_call_whose_controller_is_not_known_keeps_the_link_shared():
     assert [c.submit_cycles for c in report] == [c.submit_cycles for c in shared]
     # No call crosses between controllers, so none waits out their alignment.
     assert all(a.due_cycles <= b.due_cycles for a, b in zip(report, shared, strict=True))
-    calls = _lower(with_unread_call, _device(True)).export_controller(controller=1)["calls"]
+    calls = _lower(with_unread_call, _device(True)).export_to_controller(controller=1)["calls"]
     assert [c["function"] for c in calls] == ["_decode", "_decode"]
 
 
@@ -174,9 +173,9 @@ def test_one_controller_schedules_a_per_controller_link_as_a_shared_one():
     single = [pulse.Controller(drive_lines=range(4), readout_lines=range(4))]
     reports = []
     for per in (False, True):
-        link = Link(fixed_ns=10, max_in_flight=1, per_controller=per)
+        link = Link(fixed_ns=10, slots=1, per_controller=per)
         system = pulse.ControlSystem(controllers=single, links={"decoder": link})
-        qpu = pulse.device(ladder_target(4), control_system=system)
+        qpu = ladder_target(4, control_system=system)
         reports.append(
             [(c.submit_cycles, c.due_cycles) for c in _lower(two_rounds, qpu).classical_report()]
         )
@@ -187,7 +186,7 @@ def test_one_controller_schedules_a_per_controller_link_as_a_shared_one():
 
 
 def test_each_controller_places_a_per_controller_link_on_its_own_processor():
-    with pytest.raises(DeviceDefinitionError, match="is also a link of controllers"):
+    with pytest.raises(QuantumSystemDefinitionError, match="is also a link of controllers"):
         _device(False, processors=True)
     lowered = _lower(two_rounds, _device(True, processors=True))
     usage = lowered.controller_usage
@@ -203,7 +202,7 @@ def test_two_processors_of_one_controller_cannot_both_hold_its_instance():
         drive_lines=[0, 1],
         processors=[pulse.Processor(links=["decoder"]), pulse.Processor(links=["decoder"])],
     )
-    with pytest.raises(DeviceDefinitionError, match="per controller"):
+    with pytest.raises(QuantumSystemDefinitionError, match="per controller"):
         pulse.ControlSystem(controllers=[two], links={"decoder": Link(per_controller=True)})
 
 
@@ -228,27 +227,27 @@ def calls_only(q):
 
 def _three():
     system = pulse.ControlSystem(controllers=_controllers(), links={"controller": Link()})
-    return pulse.device(ladder_target(4), control_system=system)
+    return ladder_target(4, control_system=system)
 
 
 def test_a_controller_the_program_does_not_use_exports_an_empty_program():
     qpu = _three()
-    lowered = pulse.compile(driven, device=qpu).lower(qpu.qudits[0])
-    used = lowered.export_controller(controller=0)
+    lowered = pulse.compile(driven, quantum_system=qpu).lower(qpu.qudits[0])
+    used = lowered.export_to_controller(controller=0)
     for index in (1, 2):
-        program = lowered.export_controller(controller=index)
+        program = lowered.export_to_controller(controller=index)
         assert program.keys() == used.keys()
         assert program["lines"] == program["events"] == program["calls"] == []
         assert program["qudits"] == [] and program["schedule"] == used["schedule"]
         json.dumps(program)
-        emulation = lowered.export_emulation(controller=index)
+        emulation = lowered.export_to_emulator(controller=index)
         assert emulation["calls"] == [] and emulation["events"] == []
 
 
 def test_a_program_of_calls_only_is_exported_by_the_controller_making_them():
     qpu = _three()
-    lowered = pulse.compile(calls_only, device=qpu).lower(qpu.qudits[0])
-    program = lowered.export_controller()
+    lowered = pulse.compile(calls_only, quantum_system=qpu).lower(qpu.qudits[0])
+    program = lowered.export_to_controller()
     assert [c["function"] for c in program["calls"]] == ["gain"]
     assert [e["kind"] for e in program["events"]] == ["submit", "answer"]
-    assert lowered.export_controller(controller=1)["calls"] == []
+    assert lowered.export_to_controller(controller=1)["calls"] == []

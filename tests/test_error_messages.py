@@ -31,18 +31,19 @@ def test_an_op_called_outside_a_kernel_is_a_compilation_error_naming_it(name):
         op(*[None] * len(required))
 
 
-def test_qudit_handles_in_a_list_say_how_to_pass_them():
+@pytest.mark.parametrize("handles", [list, tuple])
+def test_qudit_handles_in_a_list_or_tuple_say_how_to_pass_them(handles):
     @pulse.kernel
     def k(qs):
         d = get_drive_line(qs[0])
         drive(d, square(8, 0.1))
 
     with pytest.raises(pulse.CompilationError) as info:
-        pulse.compile(k).lower([Q[0], Q[1]])
+        pulse.compile(k).lower(handles([Q[0], Q[1]]))
     assert str(info.value) == (
         "get_drive_line(): argument 1 is a qudit handle that reached the kernel inside a "
-        "list; pass qudits as separate arguments, a Register (dev.qudit_handles[0:4]) or a "
-        "tuple, not a list"
+        "list; pass qudits as separate arguments, *qudits, or a Register (qs.qudits[0:4]), "
+        "not a list or tuple"
     )
 
 
@@ -106,19 +107,19 @@ def test_needing_a_float_arguments_value_says_how_to_keep_it_symbolic():
 
 
 def test_qudits_of_two_devices_of_one_target_name_their_layouts():
-    a = pulse.device("transmon_generic:4")
-    b = pulse.device("transmon_generic:4", layout=[2, 3])
+    a = pulse.quantum_system("transmon_lattice:4")
+    b = pulse.quantum_system("transmon_lattice:4", layout=[2, 3])
 
     @pulse.kernel
     def k(q0, q1):
         d = get_drive_line(q0)
         drive(d, square(8, 0.1))
 
-    with pytest.raises(pulse.DeviceMismatchError) as info:
-        k.lower(a.qudit_handles[0], b.qudit_handles[1])
+    with pytest.raises(pulse.QuantumSystemMismatchError) as info:
+        k.lower(a.qudits[0], b.qudits[1])
     assert str(info.value) == (
-        "k() got qudits of two different devices, both of target 'transmon_generic:4': one "
-        "with layout 0..3, the other with layout 2..3; pass handles of one device"
+        "k() got qudits of two different quantum systems, both named 'transmon_lattice:4': one "
+        "with layout 0..3, the other with layout 2..3; pass handles of one quantum system"
     )
 
 
@@ -170,7 +171,7 @@ def idle():
 
 
 @pytest.mark.parametrize(
-    ("shots", "error"),
+    ("shots_count", "error"),
     [
         (0, pulse.InvalidValueError),
         (-1, pulse.InvalidValueError),
@@ -180,27 +181,27 @@ def idle():
     ],
 )
 @pytest.mark.parametrize("run", ["simulate", "emulate"])
-def test_shots_is_a_positive_int(idle, run, shots, error):
+def test_shots_is_a_positive_int(idle, run, shots_count, error):
     call = pulse.simulate if run == "simulate" else emulation.emulate
     with pytest.raises(error) as info:
-        call(idle, shots=shots)
-    assert str(info.value) == f"shots must be a positive int, got {shots!r}"
+        call(idle, shots_count=shots_count)
+    assert str(info.value) == f"shots_count must be a positive int, got {shots_count!r}"
 
 
 def test_no_shots_is_the_documented_simulate_default(idle):
-    assert pulse.simulate(idle, shots=None).records is None
+    assert pulse.simulate(idle, shots_count=None).records is None
 
 
 @pytest.mark.parametrize(
     ("index", "message"),
     [
-        (999, "qudit index 999 is out of range: device 'transmon_17q' has 17 qudits"),
-        (-18, "qudit index -18 is out of range: device 'transmon_17q' has 17 qudits"),
+        (999, "qudit index 999 is out of range: quantum system 'transmon_surface17' has 17 qudits"),
+        (-18, "qudit index -18 is out of range: quantum system 'transmon_surface17' has 17 qudits"),
         ([0, 999], "qudit index 999 is out of range"),
     ],
 )
 def test_a_qudit_index_past_the_device_says_how_many_qudits_it_has(index, message):
-    handles = pulse.device("transmon_17q").qudit_handles
+    handles = pulse.quantum_system("transmon_surface17").qudits
     with pytest.raises(pulse.IndexOutOfRangeError, match=message) as info:
         handles[index]
     assert isinstance(info.value, IndexError)
@@ -208,7 +209,7 @@ def test_a_qudit_index_past_the_device_says_how_many_qudits_it_has(index, messag
 
 
 def test_a_qudit_index_past_a_register_says_how_many_qudits_it_has():
-    register = pulse.device("transmon_17q").qudit_handles[0:3]
+    register = pulse.quantum_system("transmon_surface17").qudits[0:3]
     with pytest.raises(pulse.IndexOutOfRangeError) as info:
         register[5]
     assert str(info.value) == (

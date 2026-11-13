@@ -27,14 +27,16 @@ import tracemalloc
 
 import cudaq_pulse as pulse
 from cudaq_pulse.classical import emulation
-from cudaq_pulse.targets import Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import PhysicalQudit
 
 PI_AMP = math.pi / 20
 
 
-def _device(t1_us: float = 0.0) -> pulse.Device:
-    qubit = Qubit(index=0, frequency_hz=5e9, anharmonicity_hz=-2e8, t1_us=t1_us, t2_star_us=0.0)
-    return pulse.device(TargetDescription(name="bench", qubits={0: qubit}))
+def _device(t1_us: float = 0.0) -> pulse.QuantumSystem:
+    qudit = PhysicalQudit(
+        index=0, frequency_hz=5e9, anharmonicity_hz=-2e8, t1_us=t1_us, t2_star_us=0.0
+    )
+    return pulse.quantum_system(name="bench", qudits={0: qudit})
 
 
 def many_calls(n: int, links: int):
@@ -127,7 +129,7 @@ def bench_compile(max_calls: int, repeats: int) -> None:
             kernel = many_calls(n, links)
             runs = []
             for _ in range(repeats if n < 50_000 else 1):
-                lowered = pulse.compile(kernel, schedule="asap").lower(_device().qudit_handles[0])
+                lowered = pulse.compile(kernel, schedule="asap").lower(_device().qudits[0])
                 runs.append(lowered.metrics)
             trace = statistics.median(m.trace_ms for m in runs)
             build = statistics.median(m.ffi_ms for m in runs)
@@ -141,7 +143,7 @@ def bench_compile(max_calls: int, repeats: int) -> None:
 
 
 def bench_memory() -> None:
-    q = _device().qudit_handles[0]
+    q = _device().qudits[0]
     sizes = (500, 4000)
     peaks = {}
     for n in sizes:
@@ -159,8 +161,8 @@ def bench_memory() -> None:
 
 def bench_cache(repeats: int) -> None:
     dev = _device()
-    q = dev.qudit_handles[0]
-    compiled = pulse.compile(decoded_reset, device=dev)
+    q = dev.qudits[0]
+    compiled = pulse.compile(decoded_reset, quantum_system=dev)
     compiled.lower(q)
     t = _median(lambda: [compiled.lower(q) for _ in range(1000)], repeats) / 1000
     print(f"cache: lower() of a cached kernel that calls: {t * 1e6:.1f} us")
@@ -168,9 +170,9 @@ def bench_cache(repeats: int) -> None:
 
 def bench_simulate(repeats: int) -> None:
     dev = _device(t1_us=20.0)
-    q = dev.qudit_handles[0]
-    plain = pulse.compile(waiting_reset, device=dev).lower(q)
-    called = pulse.compile(decoded_reset, device=dev).lower(q)
+    q = dev.qudits[0]
+    plain = pulse.compile(waiting_reset, quantum_system=dev).lower(q)
+    called = pulse.compile(decoded_reset, quantum_system=dev).lower(q)
     plus = [2**-0.5, 2**-0.5]
     a = _median(lambda: pulse.simulate(plain, initial_state=plus, levels=2), repeats)
     b = _median(lambda: pulse.simulate(called, initial_state=plus, levels=2), repeats)
@@ -181,13 +183,15 @@ def bench_simulate(repeats: int) -> None:
 
 
 def bench_emulate() -> None:
-    lowered = pulse.compile(feedback).lower(_device().qudit_handles[0])
-    local = emulation.emulate(lowered, shots=2000, seed=1)
+    lowered = pulse.compile(feedback).lower(_device().qudits[0])
+    local = emulation.emulate(lowered, shots_count=2000, seed=1)
     functions = lowered.classical
     handlers = {fn.name: fn.implementation for fn in functions}
     _, address, stop = emulation.serve_udp(functions, handlers)
     try:
-        udp = emulation.emulate(lowered, shots=500, seed=1, channel=emulation.UdpChannel(address))
+        udp = emulation.emulate(
+            lowered, shots_count=500, seed=1, channel=emulation.UdpChannel(address)
+        )
     finally:
         stop()
     print(

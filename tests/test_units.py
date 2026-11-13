@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Times with units: ``20 * pulse.ns`` in every duration, converted to cycles
-of the device's clock exactly when the kernel compiles."""
+of the quantum system's clock exactly when the kernel compiles."""
 
 from __future__ import annotations
 
@@ -463,7 +463,7 @@ def test_a_timeout_takes_a_time():
     with_units = timed.lower(Q[0], 0.3 * us)
     in_ns = timed.lower(Q[0], 300)
     assert with_units.mlir() == in_ns.mlir()
-    exports = (with_units.export_controller(), in_ns.export_controller())
+    exports = (with_units.export_to_controller(), in_ns.export_to_controller())
     answers = [next(e for e in p["events"] if e["kind"] == "answer") for p in exports]
     assert answers[0]["timeout_ns"] == answers[1]["timeout_ns"] == 300
 
@@ -517,16 +517,16 @@ def x_then_wait(q):
 
 
 def test_one_kernel_compiles_for_devices_with_different_clocks():
-    fast = pulse.device("transmon_17q", clock_ghz=2.0)
-    slow = pulse.device("transmon_17q", clock_ghz=1.0)
-    on_fast = pulse.compile(x_then_wait, device=fast).lower(fast.qudit_handles[0])
-    on_slow = pulse.compile(x_then_wait, device=slow).lower(slow.qudit_handles[0])
+    fast = pulse.quantum_system("transmon_surface17", clock_ghz=2.0)
+    slow = pulse.quantum_system("transmon_surface17", clock_ghz=1.0)
+    on_fast = pulse.compile(x_then_wait, quantum_system=fast).lower(fast.qudits[0])
+    on_slow = pulse.compile(x_then_wait, quantum_system=slow).lower(slow.qudits[0])
     assert _events(on_fast) == [("drive", 0, 40), ("wait", 40, 200), ("drive", 240, 40)]
     assert _events(on_slow) == [("drive", 0, 20), ("wait", 20, 100), ("drive", 120, 20)]
     # The same nanoseconds on both.
-    for lowered, device in ((on_fast, fast), (on_slow, slow)):
+    for lowered, quantum_system in ((on_fast, fast), (on_slow, slow)):
         end = lowered.schedule[-1].start_cycles + lowered.schedule[-1].duration_cycles
-        assert end / device.clock_ghz == 140.0
+        assert end / quantum_system.clock_ghz == 140.0
 
 
 # ── Times outside kernels ────────────────────────────────────────────────────

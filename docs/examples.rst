@@ -7,7 +7,7 @@ Examples
 
 The examples in the ``examples/`` directory cover pulse-level programming
 from single-qubit Rabi oscillations to multi-qubit error-correction cycles.
-Every example except ``transmon/transmon_17q_evolve_gpu.py`` runs on a CPU-only
+Every example except ``transmon/transmon_surface17_evolve_gpu.py`` runs on a CPU-only
 machine, Linux or macOS, and the test suite runs each of them. Those marked
 *(simulates)* also evolve the program with the NumPy reference
 (``pulse.simulate``); the others compile kernels and print their MLIR,
@@ -84,7 +84,7 @@ Core Examples
        call slack and hidden latency *(simulates)*
    * - 20
      - ``20_adaptive_calibration.py``
-     - Adaptive calibration with variable waits, tracking a drifting device
+     - Adaptive calibration with variable waits, tracking a drifting quantum system
        *(simulates)*
    * - 21
      - ``21_calibration_protocol.py``
@@ -99,8 +99,8 @@ Core Examples
        qubits", arXiv:2506.09576 (2025) *(simulates)*
    * - 22
      - ``22_runtime_qudits.py``
-     - One compile for every qudit of a device: the qudit is bound at each
-       call, and a frequency the kernel needs, read from the device on the
+     - One compile for every qudit of a quantum system: the qudit is bound at each
+       call, and a frequency the kernel needs, read from the quantum system on the
        host, is an ordinary float parameter
    * - 23
      - ``23_define_a_qpu.py``
@@ -122,8 +122,13 @@ Core Examples
    * - 26
      - ``26_drift_following.py``
      - Following a drifting qudit: a background process recompiles when the
-       device fingerprint changes, and the host swaps programs in between
+       quantum system fingerprint changes, and the host swaps programs in between
        batches *(simulates)*
+   * - 27
+     - ``27_realtime_decoding.py``
+     - Real-time QEC decoding with a deadline and a fallback table: a
+       decoder configured in CUDA-Q QEC, called with CUDA-Q QEC's own
+       functions; needs cudaq-qec (Linux) and an NVIDIA GPU *(simulates)*
 
 Examples 24 to 26 send compiled programs between processes, which works
 because programs pickle; their worker processes use the ``spawn`` start
@@ -141,7 +146,7 @@ Custom Passes
    * - File
      - Description
    * - ``python_pass.py``
-     - A schedule check written in Python over ``Lowered.schedule``
+     - A schedule check written in Python over ``ScheduledKernel.schedule``
    * - ``cpp/DriveCount.cpp``
      - An MLIR pass plugin loaded with ``cudaq-pulse-opt --load-pass-plugin``
 
@@ -166,8 +171,8 @@ Controller Backend
 
 See :doc:`user_guide/controller_backends`.
 
-Hardware Target Examples
-------------------------
+Transmon Quantum System Examples
+--------------------------------
 
 **Transmon** (``examples/transmon/``):
 
@@ -177,15 +182,18 @@ Hardware Target Examples
 
    * - File
      - Description
-   * - ``transmon_17q_rabi.py``
-     - Rabi oscillation on the 17-qubit transmon target
-   * - ``transmon_17q_full_pipeline.py``
+   * - ``transmon_surface17_rabi.py``
+     - Rabi oscillation on the 17-qubit ``transmon_surface17`` quantum system
+   * - ``transmon_surface17_full_pipeline.py``
      - Each stage of the native lowering: Pulse MLIR, QOp, and LLVM IR
-   * - ``transmon_17q_evolve_gpu.py``
-     - ``pulse.simulate(..., backend="gpu")`` on the 17-qubit transmon target (needs an
+   * - ``transmon_surface17_evolve_gpu.py``
+     - ``pulse.simulate(..., backend="gpu")`` on the 17-qubit ``transmon_surface17`` quantum system (needs an
        NVIDIA GPU and the ``[cu12]`` or ``[cu13]`` extra)
-   * - ``transmon_17q_surface_code_cycle.py``
+   * - ``transmon_surface17_surface_code_cycle.py``
      - Timeline of one error correction cycle from the 17-qubit lattice and CZ schedule
+   * - ``transmon_surface17_multiplexed_readout.py``
+     - One readout feedline shared by the four X-check ancillas: the tones it plays at
+       once, and each readout's tone slot in the controller export
 
 Running Examples
 ----------------

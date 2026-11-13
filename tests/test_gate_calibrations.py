@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Gate calibrations: pulse.gates, get_calibration on lines, qudits and
-couplings, and the pulses they derive where a device publishes none."""
+couplings, and the pulses they derive where a quantum system publishes none."""
 
 from __future__ import annotations
 
@@ -13,15 +13,14 @@ import sys
 import cudaq_pulse as pulse
 import pytest
 from cudaq_pulse.gates import CZ, READOUT, X90, Y90, Gate, X, Y
-from cudaq_pulse.targets import (
+from cudaq_pulse.quantum_systems import (
     Coupling,
     DispersiveReadout,
     DragPulse,
     FluxCZ,
     MicrowaveDrive,
-    Qubit,
+    PhysicalQudit,
     ReadoutPulse,
-    TargetDescription,
 )
 
 _X = DragPulse(duration_ns=40.0, sigma_ns=10.0)
@@ -31,15 +30,15 @@ _READOUT = ReadoutPulse(duration_ns=300.0, sigma_ns=10.0, integration_ns=400.0)
 
 def _qudit(index=0, **fields):
     fields.setdefault("calibrations", {X: _X, READOUT: _READOUT})
-    return Qubit(index, 5.0e9 + 1e8 * index, -2.0e8, 50.0, 30.0, **fields)
+    return PhysicalQudit(index, 5.0e9 + 1e8 * index, 50.0, 30.0, anharmonicity_hz=-2.0e8, **fields)
 
 
 def _device(**fields):
     qudits = {0: _qudit(0, **fields), 1: _qudit(1)}
     cz = FluxCZ(duration_ns=60.0, buffer_ns=10.0, interaction_frequency_hz=4.4e9)
     couplings = [Coupling((0, 1), 5.0e6, calibrations={CZ: cz})]
-    target = TargetDescription(name="gates", qubits=qudits, couplings=couplings)
-    return pulse.device(target)
+    target = pulse.quantum_system(name="gates", qudits=qudits, couplings=couplings)
+    return target
 
 
 def _mlir(lowered, name):
@@ -57,7 +56,7 @@ def test_the_gates_are_one_name_each():
 
 
 def test_the_gate_values_are_the_ones_targets_check():
-    from cudaq_pulse.targets.base import _GATES
+    from cudaq_pulse.quantum_systems.base import _GATES
 
     assert set(_GATES) == {str(g) for g in Gate}
 
@@ -67,7 +66,7 @@ def test_neither_import_nor_a_device_loads_the_gates():
         [
             sys.executable,
             "-c",
-            "import sys, cudaq_pulse as p; p.device('transmon_17q'); "
+            "import sys, cudaq_pulse as p; p.quantum_system('transmon_surface17'); "
             "print('cudaq_pulse.gates' in sys.modules); p.gates; "
             "print('cudaq_pulse.gates' in sys.modules)",
         ],
@@ -127,7 +126,7 @@ def test_another_transition_must_be_published():
     qudit = _qudit(calibrations={X: _X, (X, (1, 2)): x12})
     assert qudit.get_calibration(X, transition=(1, 2)) == x12
     assert qudit.get_calibration(X90, transition=[1, 2]) == x12.replace(amplitude=0.1)
-    assert qudit.calibrations == {"x": _X, ("x", (1, 2)): x12}
+    assert qudit == _qudit(calibrations={"x": _X, ("x", (1, 2)): x12})
     with pytest.raises(pulse.NotFoundError) as raised:
         _qudit().get_calibration(X, transition=(1, 2))
     assert "publishes no pulse.gates.X (1, 2) calibration; it publishes pulse.gates.X, " in str(
@@ -147,17 +146,17 @@ def test_a_qudit_checks_its_calibrations():
         _qudit(calibrations={CZ: FluxCZ(duration_ns=60.0)})
     with pytest.raises(pulse.InvalidTypeError, match="map gates to calibrations"):
         _qudit(calibrations=[X])
-    with pytest.raises(TypeError, match="read-only"):
-        _qudit().calibrations[X] = _X  # type: ignore[index]
+    # Given to the constructor, read only through get_calibration.
+    assert not hasattr(_qudit(), "calibrations")
 
 
-# ── On a device ─────────────────────────────────────────────────────────────
+# ── On a quantum system ─────────────────────────────────────────────────────────────
 
 
 def test_a_qudit_handle_and_a_coupling_give_the_device_calibrations():
-    dev = pulse.device("transmon_17q")
+    dev = pulse.quantum_system("transmon_surface17")
     q = dev.qudits[4]
-    assert q.get_calibration(X) == dev.target.qubits[4].get_calibration(X)
+    assert q.get_calibration(X) == dev.physical_qudits[4].get_calibration(X)
     assert q.get_calibration(X).amplitude == pytest.approx(math.pi / _AREA_NS)
     assert q.get_calibration(READOUT) == ReadoutPulse(
         duration_ns=300.0, sigma_ns=10.0, integration_ns=400.0
@@ -167,17 +166,17 @@ def test_a_qudit_handle_and_a_coupling_give_the_device_calibrations():
     assert (cz.duration_ns, cz.buffer_ns) == (98.0, 15.0)
     assert cz.interaction_frequency_hz == pytest.approx(4.693e9)
     assert dev.coupling(d, a) is dev.coupling(a, d)
-    assert dev.coupling(a, d).strength_hz == dev.target.coupling(a.index, d.index).strength_hz
+    assert dev.coupling(a, d).strength_hz == dev._description.coupling(a.index, d.index).strength_hz
 
 
 def test_a_coupling_of_a_device_takes_its_handles():
-    dev = pulse.device("transmon_17q")
+    dev = pulse.quantum_system("transmon_surface17")
     with pytest.raises(pulse.NotFoundError, match="are not coupled"):
         dev.coupling(dev.qudits[0], dev.qudits[1])
     with pytest.raises(pulse.InvalidTypeError, match="takes two qudit handles"):
         dev.coupling(0, 1)  # type: ignore[arg-type]
     other = _device()
-    with pytest.raises(pulse.DeviceMismatchError, match="not of 'transmon_17q'"):
+    with pytest.raises(pulse.QuantumSystemMismatchError, match="not of 'transmon_surface17'"):
         dev.coupling(other.qudits[0], dev.qudits[0])
 
 
@@ -249,7 +248,7 @@ def test_a_line_has_the_calibrations_of_its_kind():
         r = get_readout_line(q)
         r.get_calibration(pulse.gates.CZ)
 
-    with pytest.raises(pulse.CompilationError, match=r"dev.coupling\(a, b\)"):
+    with pytest.raises(pulse.CompilationError, match=r"qs.coupling\(a, b\)"):
         cz_on_a_line.lower(dev.qudits[0])
 
 
@@ -297,7 +296,7 @@ def test_what_does_not_play_says_why():
 def test_metadata_is_the_users_own_and_no_part_of_the_device():
     tagged = {"fridge": "B", "fit": {"r2": 0.99, "points": [1, 2, 3]}, "note": None}
     dev = _device(metadata=tagged)
-    qudit = dev.target.qubits[0]
+    qudit = dev.physical_qudits[0]
     assert qudit.metadata == tagged and _qudit().metadata == {}
     with pytest.raises(TypeError):
         qudit.metadata["fridge"] = "C"  # type: ignore[index]
@@ -318,7 +317,7 @@ def test_calibrations_and_metadata_round_trip_through_a_system_file():
         readout=DispersiveReadout(frequency_hz=7e9, dispersive_shift_hz=1e6, linewidth_hz=2e6),
     )
     data = dev.as_dict()
-    qudit = data["quantum_system"]["qudits"][0]
+    qudit = data["qudits"][0]
     assert qudit["calibrations"] == [
         {"gate": "x", "duration_ns": 40.0, "sigma_ns": 10.0, "amplitude": None, "beta_ns": 0.0,
          "phase_rad": 0.0},
@@ -328,25 +327,25 @@ def test_calibrations_and_metadata_round_trip_through_a_system_file():
          "integration_ns": 400.0, "photon_number": 4.0},
     ]  # fmt: skip
     assert qudit["metadata"] == {"fridge": "B"}
-    assert "calibrations" in data["quantum_system"]["couplings"][0]
-    back = pulse.Device.from_dict(json.loads(json.dumps(data)))
-    assert back == dev and back.target.qubits[0].metadata == {"fridge": "B"}
-    assert back.target.qubits[0].get_calibration(X, (1, 2)) == x12
+    assert "calibrations" in data["couplings"][0]
+    back = pulse.QuantumSystem.from_dict(json.loads(json.dumps(data)))
+    assert back == dev and back.physical_qudits[0].metadata == {"fridge": "B"}
+    assert back.physical_qudits[0].get_calibration(X, (1, 2)) == x12
 
 
 def test_a_system_file_names_a_calibration_of_the_wrong_kind(tmp_path):
     data = _device().as_dict()
-    data["quantum_system"]["qudits"][0]["calibrations"] = [
+    data["qudits"][0]["calibrations"] = [
         {"gate": "cz", "duration_ns": 60.0},
         {"gate": "x", "duration": 40.0, "sigma_ns": 10.0},
         {"duration_ns": 40.0},
     ]
     path = tmp_path / "qpu.json"
     path.write_text(json.dumps(data, indent=2))
-    with pytest.raises(pulse.DeviceDefinitionError) as raised:
-        pulse.Device.load(path)
+    with pytest.raises(pulse.QuantumSystemDefinitionError) as raised:
+        pulse.QuantumSystem.load(path)
     found = [(p.path, p.message) for p in raised.value.problems]
-    where = "quantum_system.qudits[0].calibrations"
+    where = "qudits[0].calibrations"
     assert found[:3] == [
         (f"{where}[0].gate", "is not a gate of a qudit"),
         (f"{where}[1].duration", "is not a known key"),

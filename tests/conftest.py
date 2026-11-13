@@ -1,18 +1,50 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
 import os
+import weakref
 
 import pytest
+from cudaq_pulse.quantum_systems._registry import ENV_VAR, register_quantum_system
 from cudaq_pulse.runtime.gpu import GpuRuntimeError, require_gpu_runtime
-from cudaq_pulse.targets._registry import ENV_VAR, register_target
 
 import tests.property_settings  # noqa: F401  (loads the hypothesis profile)
 from tests._handles import ladder_target
 
-# ``device()`` without an argument returns the process target.
-register_target("ladder", lambda arg: ladder_target(int(arg) if arg else 64))
+# ``quantum_system()`` without an argument returns the process quantum system.
+register_quantum_system("ladder", lambda arg: ladder_target(int(arg) if arg else 64))
 os.environ[ENV_VAR] = "ladder:8192"
+# The verifications that only catch a bug of the compiler itself, which a
+# user's compile skips; read by the first compile, in every child too.
+os.environ.setdefault("CUDAQ_PULSE_VERIFY", "1")
+
+
+@pytest.fixture(autouse=True)
+def _guard_forms_agree(monkeypatch):
+    """Every cache guard a test builds gives one verdict as closures and as
+    generated code, checked when the test ends (kernel/_guard.py)."""
+    kernel = importlib.import_module("cudaq_pulse.kernel._kernel")
+    guards = importlib.import_module("cudaq_pulse.kernel._guard")
+    built = weakref.WeakSet()
+    build = kernel.build_guard
+
+    def recorded(*args, **kwargs):
+        guard = build(*args, **kwargs)
+        built.add(guard)
+        return guard
+
+    monkeypatch.setattr(kernel, "build_guard", recorded)
+    yield
+    for guard in list(built):
+        if not guard.impure:
+            closures, generated = (
+                guards._closures(guard.plan, guard.registers)(),
+                guards._generated(guard.plan)(),
+            )
+            assert closures == generated, (
+                f"a guard holds {closures} as closures but {generated} as generated code"
+            )
 
 
 def pytest_addoption(parser):

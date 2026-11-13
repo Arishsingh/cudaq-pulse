@@ -21,7 +21,7 @@ import cudaq_pulse.ops
 import numpy as np
 import pytest
 from cudaq_pulse.kernel.ir_builder import CompilationError
-from cudaq_pulse.targets._registry import current_target
+from cudaq_pulse.quantum_systems._registry import current_quantum_system
 
 from tests._handles import Q
 from tests._ir import python_ir
@@ -113,7 +113,7 @@ def test_the_op_given_a_choice_is_emitted_in_each_arm():
     assert _amplitudes(chosen) == [0.3, 0.1]
     compiled = _lower(chosen)
     compiled._module.run_passes(["pulse-verify"])
-    for export in (compiled.export_controller, compiled.export_emulation):
+    for export in (compiled.export_to_controller, compiled.export_to_emulator):
         assert export()["events"]
 
 
@@ -470,8 +470,8 @@ def test_a_chosen_reset_simulates_like_the_op_in_the_arms():
             amp = _PI
         drive(d1, square(40, amp))
 
-    expected = _run(conditional_flip, 2, shots=200, seed=3).density_matrix
-    actual = _run(chosen_flip, 2, shots=200, seed=3).density_matrix
+    expected = _run(conditional_flip, 2, shots_count=200, seed=3).density_matrix
+    actual = _run(chosen_flip, 2, shots_count=200, seed=3).density_matrix
     np.testing.assert_allclose(actual, expected, atol=1e-12)
 
     @pulse.kernel
@@ -486,7 +486,7 @@ def test_a_chosen_reset_simulates_like_the_op_in_the_arms():
             amp = 0.0
         drive(d0, square(40, amp))
 
-    rho = _run(reset, shots=200, seed=2).density_matrix
+    rho = _run(reset, shots_count=200, seed=2).density_matrix
     np.testing.assert_allclose(rho, [[1, 0], [0, 0]], atol=1e-6)
 
 
@@ -603,7 +603,7 @@ def at_runtime(monkeypatch):
 
 def _fresh(kernel, n=1, **options):
     kernel.cache_clear()
-    dev = pulse.device(_target(n))
+    dev = _target(n)
     lowered = pulse.compile(kernel, **options).lower(*_handles(dev, [Q[i] for i in range(n)]))
     kernel.cache_clear()
     return lowered
@@ -682,7 +682,7 @@ def chosen_on_two(q0, q1):
 
 
 def test_without_a_target_that_takes_values_at_run_time_each_op_runs_in_the_arms():
-    for target in (current_target(), pulse.device(_target())):
+    for target in (current_quantum_system(), _target()):
         assert not any(pulse.compiler._can_select_at_runtime(target, kind) for kind in _KINDS)
     lowered = _fresh(chosen_amplitudes)
     assert not lowered.runtime_selects
@@ -720,8 +720,8 @@ def test_run_time_values_do_not_grow_with_the_uses(at_runtime, uses):
     arms, kept = _both(kernel, at_runtime, passes=_UNFUSED)
     assert arms.mlir().count("scf.if") == uses
     assert kept.mlir().count("scf.if") == 0
-    assert len(kept.export_controller()["events"]) == uses + 1
-    assert len(arms.export_controller()["events"]) == 2 * uses + 1
+    assert len(kept.export_to_controller()["events"]) == uses + 1
+    assert len(arms.export_to_controller()["events"]) == 2 * uses + 1
 
 
 @pytest.mark.parametrize("schedule", ["asap", "alap"])
@@ -741,8 +741,8 @@ def test_run_time_values_schedule_and_simulate_like_the_op_in_the_arms(
         if "fuse_pulses" not in passes:
             # Each use plays when it does in either arm.
             assert _timing(kept) == _timing(arms)
-        expected = pulse.simulate(arms, shots=200, seed=4, levels=2).density_matrix
-        actual = pulse.simulate(kept, shots=200, seed=4, levels=2).density_matrix
+        expected = pulse.simulate(arms, shots_count=200, seed=4, levels=2).density_matrix
+        actual = pulse.simulate(kept, shots_count=200, seed=4, levels=2).density_matrix
         np.testing.assert_allclose(actual, expected, atol=1e-12)
 
 

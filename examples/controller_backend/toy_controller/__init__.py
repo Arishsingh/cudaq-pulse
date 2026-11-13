@@ -65,7 +65,7 @@ class ToyBackend:
             )
         return "\n".join(lines) + "\n"
 
-    def run(self, artifact: Any, *, shots: int = 1) -> ToyResult:
+    def run(self, artifact: Any, *, shots_count: int = 1) -> ToyResult:
         played = []
         for text in str(artifact).splitlines():
             line, start, kind = text.split()[:3]
@@ -74,24 +74,28 @@ class ToyBackend:
         readouts = sum(1 for _, _, kind in played if kind == "readout")
         return ToyResult(
             played=tuple((line, start, kind) for start, line, kind in played),
-            outcomes=tuple((0,) * readouts for _ in range(shots)),
+            outcomes=tuple((0,) * readouts for _ in range(shots_count)),
         )
 
 
 if __name__ == "__main__":
     import cudaq_pulse as pulse
     from cudaq_pulse import backends
-    from cudaq_pulse.targets import Qubit, TargetDescription
+    from cudaq_pulse.quantum_systems import PhysicalQudit
 
     # Installed, the backend is found by its entry point; here it is
     # registered in the process.
     backends.register("toy", ToyBackend)
     backend = backends.get("toy")
-    target = TargetDescription(
-        name="toy-device",
-        qubits={0: Qubit(index=0, frequency_hz=5e9, anharmonicity_hz=-2e8, t1_us=0, t2_star_us=0)},
+    qs = pulse.quantum_system(
+        name="toy-system",
+        qudits={
+            0: PhysicalQudit(
+                index=0, frequency_hz=5e9, anharmonicity_hz=-2e8, t1_us=0, t2_star_us=0
+            )
+        },
+        clock_ghz=1.0,
     )
-    dev = pulse.device(target, clock_ghz=1.0)
     cal = {
         "x_duration": 40 * pulse.ns,
         "x_sigma": 10 * pulse.ns,
@@ -106,8 +110,10 @@ if __name__ == "__main__":
         sync(drive_line, readout_line)
         readout(readout_line, square(cal["readout_duration"], 0.05))
 
-    compiled = pulse.compile(drive_and_measure, device=dev, control_system=backend.control_system())
-    program = backend.emit(compiled.lower(dev.qudit_handles[0]).export_controller())
+    compiled = pulse.compile(
+        drive_and_measure, quantum_system=qs, control_system=backend.control_system()
+    )
+    program = backend.emit(compiled.lower(qs.qudits[0]).export_to_controller())
     print(program, end="")
-    print(backend.run(program, shots=2))
+    print(backend.run(program, shots_count=2))
     backends.unregister("toy")

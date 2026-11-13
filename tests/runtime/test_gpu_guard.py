@@ -7,8 +7,8 @@ import cudaq_pulse as pulse
 import pytest
 from cudaq_pulse import _build_config
 from cudaq_pulse._native._cudaq_pulse_native import MLIRPipeline
+from cudaq_pulse.quantum_systems.base import PhysicalQudit
 from cudaq_pulse.runtime import gpu
-from cudaq_pulse.targets.base import Qubit, TargetDescription
 
 from tests._handles import Q
 from tests.runtime._lowering import evolve, on
@@ -45,16 +45,16 @@ def test_evolve_on_compiler_only_build_raises_not_built():
         d0 = get_drive_line(q0)
         drive(d0, gaussian(40, 0.3, 10.0))
 
-    target = TargetDescription(
+    target = pulse.quantum_system(
         name="guard",
-        qubits={
-            0: Qubit(
+        qudits={
+            0: PhysicalQudit(
                 index=0, frequency_hz=5.0e9, anharmonicity_hz=-200.0e6, t1_us=0.0, t2_star_us=0.0
             )
         },
     )
     with pytest.raises(gpu.GpuSupportNotBuiltError):
-        evolve(on(target, kernel, Q[0]), t_start=0.0, t_end=20.0, num_steps=10)
+        evolve(on(target, kernel, Q[0]), t_start=0.0, t_end=20.0, step_count=10)
 
 
 def test_override_pointing_nowhere_is_a_load_error(monkeypatch, tmp_path):

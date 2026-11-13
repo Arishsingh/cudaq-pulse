@@ -14,9 +14,10 @@ import time
 import cudaq_pulse as pulse
 import pytest
 from cudaq_pulse import ControlSystem, classical
-from cudaq_pulse.classical import Link, emulation, qec, wire
+from cudaq_pulse.classical import Link, emulation, wire
 
 from tests._handles import Q
+from tests.classical.fake_cudaq_qec import Decoders, answering, qec
 
 
 @pulse.classical(max_latency_ns=1000)
@@ -53,9 +54,9 @@ def adaptive(q):
 
 
 def test_export_and_manifest_are_json():
-    machine = ControlSystem(links={"host": Link(slot_bytes=256, max_in_flight=8)})
+    machine = ControlSystem(links={"host": Link(slot_bytes=256, slots=8)})
     low = pulse.compile(adaptive, control_system=machine).lower(Q[0])
-    artifact = json.loads(json.dumps(low.export_emulation()))
+    artifact = json.loads(json.dumps(low.export_to_emulator()))
     assert artifact["format"] == emulation.FORMAT
     assert [e["opened_by"] for e in artifact["segments"]] == ["start", "wait"]
     after = [e for e in artifact["events"] if e["segment"] == 1]
@@ -63,11 +64,11 @@ def test_export_and_manifest_are_json():
     (entry,) = artifact["manifest"]["functions"]
     version = next_wait.specialize(bits=1)
     assert version.name == "next_wait__1"
-    assert entry["dispatch_key"] == classical.function_id("next_wait__1")
+    assert entry["dispatch_key"] == classical.dispatch_key("next_wait__1")
     assert entry["slot_bytes"] == 256
     assert entry["schema"] == wire.schema(version)
     assert entry["request_bytes"] == 25 and entry["answer_bytes"] == 32
-    assert artifact["links"]["0"]["max_in_flight"] == 8
+    assert artifact["links"]["0"]["slots"] == 8
 
 
 def test_a_call_exports_its_fields_in_order():
@@ -84,9 +85,9 @@ def test_a_call_exports_its_fields_in_order():
 def test_variable_waits_take_their_emulated_lengths():
     low = pulse.compile(adaptive).lower(Q[0])
     result = emulation.emulate(
-        low, shots=20, seed=1, outcomes=lambda q, _, rng: int(rng.integers(0, 2))
+        low, shots_count=20, seed=1, outcomes=lambda q, _, rng: int(rng.integers(0, 2))
     )
-    clock = low.target.clock_ghz
+    clock = low.quantum_system.clock_ghz
     for outcomes, _end in zip(result.outcomes, result.ends_ns, strict=True):
         # A 1 waits 400 cycles longer before the second readout.
         assert outcomes[0] in (0, 1)
@@ -99,7 +100,9 @@ def test_late_answers_take_the_timeout_arm_at_the_modelled_rate():
     # Each direction: 200 ns fixed plus exponential jitter of mean 100 ns.
     # Late when the sum of two jitters exceeds 100 ns: P = (1 + 1) e^-1.
     transport = emulation.Transport(fixed_ns=200, jitter_ns=100)
-    result = emulation.emulate(low, shots=4000, transport=transport, service_time="none", seed=5)
+    result = emulation.emulate(
+        low, shots_count=4000, transport=transport, service_time="none", seed=5
+    )
     expected = 2 * math.exp(-1)
     assert result.late_fraction == pytest.approx(
         expected, abs=4 * math.sqrt(expected * (1 - expected) / 4000)
@@ -107,8 +110,8 @@ def test_late_answers_take_the_timeout_arm_at_the_modelled_rate():
     assert all(len(shot) == 1 for shot in result.calls)
     # The timeout, and the cycle the request takes on the link.
     (call,) = low.classical_report()
-    due_ns = (call.due_cycles - call.submit_cycles) / low.target.clock_ghz
-    assert due_ns == 500 + 1 / low.target.clock_ghz
+    due_ns = (call.due_cycles - call.submit_cycles) / low.quantum_system.clock_ghz
+    assert due_ns == 500 + 1 / low.quantum_system.clock_ghz
     assert all(c.budget_ns == due_ns for shot in result.calls for c in shot)
 
 
@@ -134,9 +137,9 @@ def test_an_answer_is_in_time_when_the_compiled_program_can_use_it(arrival_ns):
     machine = ControlSystem(links={"host": Link(fixed_ns=100, bytes_per_ns=10, feedback_ns=50)})
     low = pulse.compile(feedback, control_system=machine).lower(Q[0])
     (call,) = low.classical_report()
-    assert (call.due_cycles - call.submit_cycles) / low.target.clock_ghz == 652.5
+    assert (call.due_cycles - call.submit_cycles) / low.quantum_system.clock_ghz == 652.5
     transport = emulation.Transport(fixed_ns=arrival_ns / 2)
-    result = emulation.emulate(low, shots=4, transport=transport, service_time="none", seed=1)
+    result = emulation.emulate(low, shots_count=4, transport=transport, service_time="none", seed=1)
     for (trace,) in result.calls:
         assert trace.latency_ns == arrival_ns and trace.budget_ns == 602.5
         assert trace.in_time is (arrival_ns <= 602.5)
@@ -156,24 +159,29 @@ class _Status:
         return answer[:4] + struct.pack("<i", self.status) + answer[8:], 0.0
 
 
+@pytest.fixture
+def one_bit_decoder():
+    with answering(Decoders(d0=lambda bits: [1])):
+        yield
+
+
 def _decoded(timeout):
-    decoder = qec.Decoder(
-        0, syndrome_count=1, correction_count=1, max_latency_ns=300, decode=lambda b: [1]
-    )
+    enqueue_syndromes = pulse.classical(qec.enqueue_syndromes)
+    get_corrections = pulse.classical(qec.get_corrections, max_latency_ns=300)
 
     @pulse.kernel
     def k(q):
         d = get_drive_line(q)
         r = get_readout_line(q)
         m = readout(r, square(300, 0.05))
-        qec.enqueue_syndromes(decoder, [m])
+        enqueue_syndromes.submit(0, [m], 0)
         if timeout:
-            ok, fix = qec.get_corrections(decoder).result(timeout=200 * pulse.ns)
+            ok, fix = get_corrections.submit(0, 1, False).result(timeout=200 * pulse.ns)
             sync(d, r)
             if ok:
                 drive(d, square(400, 0.1))
         else:
-            fix = qec.get_corrections(decoder).result()
+            fix = get_corrections.submit(0, 1, False).result()
             sync(d, r)
             if fix[0]:
                 drive(d, square(400, 0.1))
@@ -181,20 +189,22 @@ def _decoded(timeout):
     low = pulse.compile(k).lower(Q[0])
     functions = low.classical
     inner = emulation.InProcess(functions, {fn.name: fn.implementation for fn in functions})
-    return low, inner, decoder.corrections_function.name
+    return low, inner, "get_corrections__0_1"
 
 
+@pytest.mark.usefixtures("one_bit_decoder")
 def test_a_decoder_not_ready_takes_the_timeout_arm():
     low, inner, name = _decoded(timeout=True)
-    ready = emulation.emulate(low, shots=3, channel=inner, service_time="none", seed=2)
+    ready = emulation.emulate(low, shots_count=3, channel=inner, service_time="none", seed=2)
     late = emulation.emulate(
-        low, shots=3, channel=_Status(inner, {name}, 4), service_time="none", seed=2
+        low, shots_count=3, channel=_Status(inner, {name}, 4), service_time="none", seed=2
     )
     for fast, slow in zip(ready.calls, late.calls, strict=True):
         assert [c.in_time for c in fast] == [True, True] and fast[1].answer == [1]
         assert [c.in_time for c in slow] == [True, False] and slow[1].answer is None
 
 
+@pytest.mark.usefixtures("one_bit_decoder")
 def test_a_decoder_not_ready_without_a_timeout_is_an_error():
     low, inner, name = _decoded(timeout=False)
     with pytest.raises(pulse.ExecutionError, match=r"answered NOT_READY \(status 4\).*timeout="):
@@ -214,10 +224,10 @@ def test_udp_gives_the_same_answers_as_in_process():
     handlers = {fn.name: fn.implementation for fn in functions}
     _, address, stop = emulation.serve_udp(functions, handlers)
     try:
-        udp = emulation.emulate(low, shots=10, seed=3, channel=emulation.UdpChannel(address))
+        udp = emulation.emulate(low, shots_count=10, seed=3, channel=emulation.UdpChannel(address))
     finally:
         stop()
-    local = emulation.emulate(low, shots=10, seed=3)
+    local = emulation.emulate(low, shots_count=10, seed=3)
     assert udp.outcomes == local.outcomes
     assert [[c.answer for c in s] for s in udp.calls] == [
         [c.answer for c in s] for s in local.calls
@@ -276,11 +286,11 @@ def test_udp_reads_a_server_that_sends_no_time():
             # From a server that sends no time, the round trip measured here.
             assert answer == exact
             assert service == 12345 if service_ns else service > 0
-            udp = emulation.emulate(low, shots=10, seed=3, channel=channel)
+            udp = emulation.emulate(low, shots_count=10, seed=3, channel=channel)
         finally:
             channel.close()
             stop()
-        local = emulation.emulate(low, shots=10, seed=3)
+        local = emulation.emulate(low, shots_count=10, seed=3)
         assert [[c.answer for c in s] for s in udp.calls] == [
             [c.answer for c in s] for s in local.calls
         ]
@@ -352,13 +362,13 @@ def test_an_answer_to_another_request_is_an_error():
     functions = low.classical
     fresh = emulation.InProcess(functions, {"echo": echo.implementation})
     recorded = _Replayed(fresh, 0)
-    emulation.emulate(low, shots=3, seed=1, channel=recorded)
+    emulation.emulate(low, shots_count=3, seed=1, channel=recorded)
     # Request ids run on over shots.
     assert recorded.sent == list(range(6))
     # The second request gets the first's answer, as a late or repeated one.
     message = r"'echo__1' sent request 1 and got the answer to request 0: a late or repeated"
     with pytest.raises(pulse.ExecutionError, match=message):
-        emulation.emulate(low, shots=1, seed=1, channel=_Replayed(fresh, 1))
+        emulation.emulate(low, shots_count=1, seed=1, channel=_Replayed(fresh, 1))
 
     @pulse.kernel
     def once(q):
@@ -370,12 +380,12 @@ def test_an_answer_to_another_request_is_an_error():
     with pytest.raises(
         pulse.ExecutionError, match=r"sent request 1 and got the answer to request 0"
     ):
-        emulation.emulate(low, shots=2, seed=1, channel=_Replayed(fresh, 1))
+        emulation.emulate(low, shots_count=2, seed=1, channel=_Replayed(fresh, 1))
 
 
 def test_throughput_is_reported():
     low = pulse.compile(feedback).lower(Q[0])
-    result = emulation.emulate(low, shots=50, seed=1)
+    result = emulation.emulate(low, shots_count=50, seed=1)
     assert result.calls_per_second > 0
 
 
@@ -383,7 +393,7 @@ def test_the_realtime_channel_and_device_call_export_are_seams():
     with pytest.raises(NotImplementedError, match="InProcess"):
         emulation.RealtimeChannel("libcudaq-realtime.so")
     low = pulse.compile(feedback).lower(Q[0])
-    with pytest.raises(NotImplementedError, match="export_emulation"):
+    with pytest.raises(NotImplementedError, match="export_to_emulator"):
         emulation.device_call_text(low)
 
 
@@ -403,6 +413,6 @@ def test_exports_with_calls_in_loops_are_json_data():
                 drive(d, square(40, 0.1))
 
     low = pulse.compile(k, unroll_threshold=0).lower(Q[0])
-    for program in (low.export_emulation(), low.export_controller()):
+    for program in (low.export_to_emulator(), low.export_to_controller()):
         assert json.loads(json.dumps(program)) == program
         assert [c["iteration"] for c in program["calls"]] == [[0], [1]]

@@ -32,9 +32,9 @@ def sine_envelope(t):
 
 
 @pulse.kernel
-def waveform_showcase(qubit):
+def waveform_showcase(qudit):
     """Drive a qubit with each built-in waveform type sequentially."""
-    drive_line = get_drive_line(qubit)
+    drive_line = get_drive_line(qudit)
     duration, sigma = cal["duration"], cal["sigma"]
 
     # Gaussian — the workhorse of single-qubit gates
@@ -67,9 +67,9 @@ def waveform_showcase(qubit):
 
 
 @pulse.kernel
-def waveform_algebra(qubit):
+def waveform_algebra(qudit):
     """Combine waveforms using the built-in algebraic operations."""
-    drive_line = get_drive_line(qubit)
+    drive_line = get_drive_line(qudit)
 
     gaussian_envelope = gaussian(cal["duration"], 0.3, cal["sigma"])
     square_envelope = square(cal["duration"], 0.1)
@@ -101,17 +101,17 @@ def waveform_algebra(qubit):
 derivative_duration = 20 * pulse.ns
 derivative_sigma = 5 * pulse.ns
 derivative_amplitude = 0.3
-clock_ghz = 2.0  # the transmon device's program clock; one sample per cycle
+clock_ghz = 2.0  # the transmon quantum system's program clock; one sample per cycle
 
 
 def gaussian_derivative_samples(duration, amplitude, sigma):
     """d/dt of a Gaussian centered in *duration*, one sample per clock cycle."""
-    n_samples = round(duration / pulse.ns * clock_ghz)
+    sample_count = round(duration / pulse.ns * clock_ghz)
     sigma = sigma / pulse.ns * clock_ghz
-    center = (n_samples - 1) / 2
+    center = (sample_count - 1) / 2
     return [
         -amplitude * (t - center) / sigma**2 * math.exp(-((t - center) ** 2) / (2 * sigma**2))
-        for t in range(n_samples)
+        for t in range(sample_count)
     ]
 
 
@@ -121,7 +121,7 @@ derivative_samples = gaussian_derivative_samples(
 
 
 @pulse.kernel
-def derivative_pulse(qubit, beta: float):
+def derivative_pulse(qudit, beta: float):
     """A Gaussian plus beta times its time derivative, built by hand.
 
     The derivative is sampled in Python and enters the kernel through
@@ -129,7 +129,7 @@ def derivative_pulse(qubit, beta: float):
     The sampled correction is in phase with the Gaussian; ``drag()`` puts
     the same correction on the quadrature, as the DRAG scheme needs.
     """
-    drive_line = get_drive_line(qubit)
+    drive_line = get_drive_line(qudit)
 
     base = gaussian(derivative_duration, derivative_amplitude, derivative_sigma)
     correction = wf_scale(custom_samples(derivative_samples), beta)
@@ -139,17 +139,17 @@ def derivative_pulse(qubit, beta: float):
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
+    qs = pulse.quantum_system("transmon_surface17")
     print("=== Waveform Showcase ===")
-    compiled_kernel = pulse.compile(waveform_showcase, device=dev).lower(dev.qudit_handles[0])
-    print(compiled_kernel.mlir())
-    print(f"  Compile metrics: {compiled_kernel.metrics}")
+    scheduled = pulse.compile(waveform_showcase, quantum_system=qs).lower(qs.qudits[0])
+    print(scheduled.mlir())
+    print(f"  Compile metrics: {scheduled.metrics}")
 
     print("\n=== Waveform Algebra ===")
-    compiled_kernel = pulse.compile(waveform_algebra, device=dev).lower(dev.qudit_handles[0])
-    print(compiled_kernel.mlir())
+    scheduled = pulse.compile(waveform_algebra, quantum_system=qs).lower(qs.qudits[0])
+    print(scheduled.mlir())
 
     print("\n=== Derivative Pulse ===")
-    compiled_kernel = pulse.compile(derivative_pulse, device=dev).lower(dev.qudit_handles[0], 0.5)
-    print(compiled_kernel.mlir())
-    print(f"  Compile metrics: {compiled_kernel.metrics}")
+    scheduled = pulse.compile(derivative_pulse, quantum_system=qs).lower(qs.qudits[0], 0.5)
+    print(scheduled.mlir())
+    print(f"  Compile metrics: {scheduled.metrics}")

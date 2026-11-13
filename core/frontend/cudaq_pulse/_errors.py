@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 __all__ = [
     "CompilationError",
-    "DeviceDefinitionError",
+    "QuantumSystemDefinitionError",
     "ExecutionError",
     "IndexOutOfRangeError",
     "InternalError",
@@ -197,15 +197,15 @@ class PulseError(Exception):
         return text + ":\n  " + "\n  ".join(lines)
 
 
-class DeviceDefinitionError(PulseError, ValueError):
-    """A device's definition is wrong: ``pulse.device()`` lists every problem
+class QuantumSystemDefinitionError(PulseError, ValueError):
+    """A quantum system's definition is wrong: ``pulse.quantum_system()`` lists every problem
     of its config or file in ``problems``, each with its path in the config
     (and, for a file, its line and column)."""
 
     def __init__(self, message: str = "", *, problems: Iterable[Problem] = ()) -> None:
         problems = tuple(problems)
         if not message:
-            message = f"{_count(len(problems), 'problem')} in the device definition"
+            message = f"{_count(len(problems), 'problem')} in the quantum system definition"
         super().__init__(message, problems=problems)
 
 
@@ -266,7 +266,7 @@ class _CallTimeoutError(ExecutionError, TimeoutError):
 
 class IndexOutOfRangeError(PulseError, IndexError):
     """An index past the end of what it indexes, such as a qudit index past
-    the qudits of a device or register. The message says how many there are."""
+    the qudits of a quantum system or register. The message says how many there are."""
 
 
 class PulseWarning(UserWarning):
@@ -289,7 +289,7 @@ class _CoarseStepWarning(PulseWarning, RuntimeWarning):
 
 
 def _positive_int(name: str, value: Any) -> int:
-    """*value*, a count such as ``shots``, as an int of at least 1; otherwise
+    """*value*, a count such as ``shots_count``, as an int of at least 1; otherwise
     the error saying what it got."""
     if isinstance(value, bool) or not isinstance(value, numbers.Integral):
         raise InvalidTypeError(f"{name} must be a positive int, got {value!r}")

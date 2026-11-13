@@ -20,20 +20,23 @@ import pytest
 from cudaq_pulse import Controller, ControlSystem, _validation
 from cudaq_pulse.compiler import DEFAULT_PASSES, Pass
 from cudaq_pulse.controller import unroll
-from cudaq_pulse.targets import Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import PhysicalQudit
 
 from tests import _child
-from tests._work import python_work
+from tests._work import native_seconds, python_work
 
 _FREQUENCY_HZ = 5.0e9
 _CLOCK_GHZ = 2.0
-_TARGET = TargetDescription(
+_TARGET = pulse.quantum_system(
     name="frames",
     clock_ghz=_CLOCK_GHZ,
-    qubits={i: Qubit(i, _FREQUENCY_HZ + 1.0e7 * i, -2.0e8, 50.0, 30.0) for i in range(2)},
+    qudits={
+        i: PhysicalQudit(i, _FREQUENCY_HZ + 1.0e7 * i, 50.0, 30.0, anharmonicity_hz=-2.0e8)
+        for i in range(2)
+    },
 )
-_DEV = pulse.device(_TARGET)
-Q = _DEV.qudit_handles
+_DEV = _TARGET
+Q = _DEV.qudits
 _PERSISTENT = ControlSystem(controllers=[Controller(persistent_frames=True)])
 
 
@@ -183,7 +186,7 @@ def idle_unchanged(q, r):
 
 
 def _compile(kernel, **options):
-    return pulse.compile(kernel, device=_DEV, **options).lower(Q[0])
+    return pulse.compile(kernel, quantum_system=_DEV, **options).lower(Q[0])
 
 
 def _wrapped(phase):
@@ -245,7 +248,10 @@ def test_the_simulator_plays_each_drive_with_the_frame_the_export_gives(kernel, 
     lowered = _compile(kernel, **options)
     simulated = _simulated(lowered)
     assert simulated
-    for program in (lowered.export_controller(), unroll(lowered.export_controller(version=2))):
+    for program in (
+        lowered.export_to_controller(),
+        unroll(lowered.export_to_controller(version=2)),
+    ):
         assert _exported(program) == _approx(simulated)
 
 
@@ -254,12 +260,15 @@ def test_a_frame_changed_in_a_branch_plays_as_the_controller_tracks_it(outcome):
     lowered = _compile(branched)
     simulated = _simulated(lowered, outcome)
     assert len(simulated) == 2 + outcome
-    for program in (lowered.export_controller(), unroll(lowered.export_controller(version=2))):
+    for program in (
+        lowered.export_to_controller(),
+        unroll(lowered.export_to_controller(version=2)),
+    ):
         assert _exported(program, outcome) == _approx(simulated)
 
 
 def test_a_frame_change_carried_to_the_next_iteration_is_a_phase_step():
-    structured = _compile(looped, unroll_threshold=0).export_controller(version=2)
+    structured = _compile(looped, unroll_threshold=0).export_to_controller(version=2)
     [loop] = (e for e in structured["events"] if e["kind"] == "loop")
     [play] = (e for e in loop["body"] if e["kind"] == "play")
     [tone] = play["tones"]
@@ -269,14 +278,14 @@ def test_a_frame_change_carried_to_the_next_iteration_is_a_phase_step():
 
 def test_frame_changes_are_stamped_on_the_timeline_with_no_duration():
     text = _compile(looped, unroll_threshold=0).mlir()
-    [before] = re.findall(r"pulse\.shift_frequency .*\{(.*)\}", text)
-    assert before == "duration_cycles = 0 : i64, start_cycles = 0 : i64"
+    [before] = re.findall(r"pulse\.shift_frequency [^<]*(<\{.*?\}>)", text)
+    assert before == "<{duration_cycles = 0 : i64, start_cycles = 0 : i64}>"
     # The shift after the drive in the loop's body: at its end, every period;
     # the last iteration's is left to nothing, so the loop lists it.
-    [carried] = re.findall(r"pulse\.shift_phase .*\{(.*)\}", text)
+    [carried] = re.findall(r"pulse\.shift_phase [^<]*(<\{.*?\}> \{.*?\})", text)
     assert carried == (
-        "duration_cycles = 0 : i64, period_cycles = array<i64: 24>, pulse.carried = 0 : i64, "
-        "start_cycles = 16 : i64"
+        "<{duration_cycles = 0 : i64, period_cycles = array<i64: 24>, start_cycles = 16 : i64}> "
+        "{pulse.carried = 0 : i64}"
     )
     assert "pulse.exit_updates = array<i64: 0>" in text
     text = _compile(straight).mlir()
@@ -290,11 +299,11 @@ def test_frame_changes_are_stamped_on_the_timeline_with_no_duration():
 def test_a_frame_change_no_operation_takes_is_kept_as_a_frame_update():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        lowered = pulse.compile(trailing, device=_DEV).lower(Q[0])
+        lowered = pulse.compile(trailing, quantum_system=_DEV).lower(Q[0])
     text = lowered.mlir()
     for op in ("shift_phase", "set_frequency"):
         assert re.search(rf"pulse\.{op} .*pulse\.unconsumed", text)
-    flat = lowered.export_controller()
+    flat = lowered.export_to_controller()
     kept = [e for e in flat["events"] if e["kind"] == "frame_update"]
     # A change is placed where its tone's previous drive ends; a wait on the
     # line does not move the tone. Each has the tone's frame after it.
@@ -311,13 +320,13 @@ def test_a_frame_change_no_operation_takes_is_kept_as_a_frame_update():
     assert [e["phase_rad"] for e in kept] == [pytest.approx(detuned + 0.4)] * 2
     assert (kept[-1]["frequency_hz"], kept[-1]["phase_rad"]) == (frequency, pytest.approx(phase))
     assert "frame_state" not in flat
-    structured = lowered.export_controller(version=2)
+    structured = lowered.export_to_controller(version=2)
     assert unroll(structured) == flat
     # Every other event is as without the changes.
     plain = _compile(untrailed)
-    assert [e for e in flat["events"] if e not in kept] == plain.export_controller()["events"]
+    assert [e for e in flat["events"] if e not in kept] == plain.export_to_controller()["events"]
     assert [e for e in structured["events"] if e["kind"] != "frame_update"] == (
-        plain.export_controller(version=2)["events"]
+        plain.export_to_controller(version=2)["events"]
     )
 
 
@@ -327,7 +336,7 @@ def test_a_program_whose_frame_changes_are_all_taken_has_no_frame_update(kernel)
     assert "pulse.unconsumed" not in lowered.mlir()
     assert "pulse.carried" not in lowered.mlir()
     for version in (1, 2):
-        assert "frame_update" not in json.dumps(lowered.export_controller(version=version))
+        assert "frame_update" not in json.dumps(lowered.export_to_controller(version=version))
 
 
 def _updates(events):
@@ -353,7 +362,7 @@ def test_the_changes_a_loop_carries_out_of_its_last_iteration_follow_it(kernel, 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         lowered = _compile(kernel, **options)
-    flat = lowered.export_controller()
+    flat = lowered.export_to_controller()
     # The last iteration's shift, after the loop: the frame the shot ends in.
     [update] = _updates(flat["events"])
     assert update is flat["events"][-1]
@@ -362,7 +371,7 @@ def test_the_changes_a_loop_carries_out_of_its_last_iteration_follow_it(kernel, 
     assert update["start_cycles"] == round(time_ns * _CLOCK_GHZ)
     assert update["frequency_hz"] == frequency
     assert _wrapped(update["phase_rad"]) == pytest.approx(_wrapped(phase))
-    structured = lowered.export_controller(version=2)
+    structured = lowered.export_to_controller(version=2)
     assert _close(unroll(structured), flat)
     if threshold == 0:
         assert [e["kind"] for e in structured["events"]] == ["loop", "frame_update"]
@@ -373,7 +382,7 @@ def test_the_changes_a_loop_carries_out_of_its_last_iteration_follow_it(kernel, 
 @pytest.mark.parametrize(("kernel", "arm"), [(one_arm, False), (other_arm, True)])
 def test_a_change_before_a_branch_one_arm_plays_is_a_frame_update_in_the_other(kernel, arm):
     lowered = _compile(kernel)
-    flat = lowered.export_controller()
+    flat = lowered.export_to_controller()
     [update] = _updates(flat["events"])
     [condition] = update["conditions"]
     assert condition["arm"] is arm
@@ -387,7 +396,7 @@ def test_a_change_before_a_branch_one_arm_plays_is_a_frame_update_in_the_other(k
     else:
         assert (update["op"], update["frequency_hz"]) == ("shift_frequency", _FREQUENCY_HZ + 2e6)
         assert played["frequency_hz"] == _FREQUENCY_HZ + 2e6
-    assert unroll(lowered.export_controller(version=2)) == flat
+    assert unroll(lowered.export_to_controller(version=2)) == flat
     for outcome in (0, 1):
         assert _exported(flat, outcome) == _approx(_simulated(lowered, outcome))
 
@@ -396,21 +405,21 @@ def test_a_change_before_a_branch_one_arm_plays_is_a_frame_update_in_the_other(k
 def test_a_change_a_loop_carries_through_a_branch_is_a_frame_update_at_each_execution(outcome):
     lowered = _compile(branched_loop, unroll_threshold=0)
     assert "pulse.unconsumed" in lowered.mlir()
-    flat = lowered.export_controller()
+    flat = lowered.export_to_controller()
     updates = _updates(flat["events"])
     assert [(e["op"], e["conditions"]) for e in updates] == [("shift_phase", [])] * 3
     assert [e["phase_rad"] for e in updates] == pytest.approx([0.3, 0.6, 0.9])
     # A drive that plays with them has them in its frame as well.
     assert _exported(flat, outcome) == _approx(_simulated(lowered, outcome))
-    assert _close(unroll(lowered.export_controller(version=2)), flat)
+    assert _close(unroll(lowered.export_to_controller(version=2)), flat)
 
 
 @pytest.mark.parametrize("threshold", [None, 0])
 def test_a_change_after_a_drive_in_a_loop_is_where_the_drive_ends(threshold):
     # With a threshold of 0 the second iteration is a loop of one, whose
     # drive repeats with no period.
-    lowered = pulse.compile(measured_rounds, device=_DEV, unroll_threshold=threshold)
-    flat = lowered.lower(Q[0], Q[1]).export_controller()
+    lowered = pulse.compile(measured_rounds, quantum_system=_DEV, unroll_threshold=threshold)
+    flat = lowered.lower(Q[0], Q[1]).export_to_controller()
     [update] = _updates(flat["events"])
     drives = [e for e in flat["events"] if e["kind"] == "drive" and e["line"] == update["line"]]
     last = max(d["end_cycles"] for d in drives if not d.get("conditions"))
@@ -418,16 +427,16 @@ def test_a_change_after_a_drive_in_a_loop_is_where_the_drive_ends(threshold):
 
 
 def test_a_change_in_a_loop_on_a_tone_it_does_not_play_keeps_the_loop_rolled():
-    lowered = pulse.compile(idle, device=_DEV, unroll_threshold=0).lower(Q[0], Q[1])
-    plain = pulse.compile(idle_unchanged, device=_DEV, unroll_threshold=0).lower(Q[0], Q[1])
+    lowered = pulse.compile(idle, quantum_system=_DEV, unroll_threshold=0).lower(Q[0], Q[1])
+    plain = pulse.compile(idle_unchanged, quantum_system=_DEV, unroll_threshold=0).lower(Q[0], Q[1])
     # Each iteration's change at the start of the iteration.
-    [stamp] = re.findall(r"pulse\.shift_phase .*\{(.*)\}", lowered.mlir())
+    [stamp] = re.findall(r"pulse\.shift_phase [^<]*(<\{.*?\}> \{.*?\})", lowered.mlir())
     assert stamp == (
-        "duration_cycles = 0 : i64, period_cycles = array<i64: 16>, pulse.unconsumed, "
-        "start_cycles = 0 : i64"
+        "<{duration_cycles = 0 : i64, period_cycles = array<i64: 16>, start_cycles = 0 : i64}> "
+        "{pulse.unconsumed}"
     )
-    structured = lowered.export_controller(version=2)
-    unchanged = plain.export_controller(version=2)
+    structured = lowered.export_to_controller(version=2)
+    unchanged = plain.export_to_controller(version=2)
     assert [e["kind"] for e in structured["events"]] == ["play", "loop"]
     loop, before = structured["events"][1], unchanged["events"][1]
     assert [e["kind"] for e in loop["body"]] == ["play", "frame_update"]
@@ -437,7 +446,7 @@ def test_a_change_in_a_loop_on_a_tone_it_does_not_play_keeps_the_loop_rolled():
     rest = {**structured, "events": [structured["events"][0], before]}
     assert json.dumps(rest) == json.dumps(unchanged)
     assert lowered.duration == plain.duration
-    flat = lowered.export_controller()
+    flat = lowered.export_to_controller()
     assert [e["start_cycles"] for e in _updates(flat["events"])] == [0, 16, 32, 48]
     assert [e["phase_rad"] for e in _updates(flat["events"])] == pytest.approx(
         [0.25, 0.5, 0.75, 1.0]
@@ -446,10 +455,10 @@ def test_a_change_in_a_loop_on_a_tone_it_does_not_play_keeps_the_loop_rolled():
 
 
 def test_frames_that_persist_keep_the_last_changes_and_export_the_final_frame():
-    lowered = pulse.compile(trailing, device=_DEV, control_system=_PERSISTENT).lower(Q[0])
+    lowered = pulse.compile(trailing, quantum_system=_DEV, control_system=_PERSISTENT).lower(Q[0])
     assert "pulse.shift_phase" in lowered.mlir()
-    flat = lowered.export_controller()
-    structured = lowered.export_controller(version=2)
+    flat = lowered.export_to_controller()
+    structured = lowered.export_to_controller(version=2)
     assert flat["limits"]["persistent_frames"] is True
     assert structured["controller"]["persistent_frames"] is True
     _, finals = lowered._concrete().drive_frames([])
@@ -462,7 +471,7 @@ def test_frames_that_persist_keep_the_last_changes_and_export_the_final_frame():
     assert structured["frame_state"] == flat["frame_state"]
     assert unroll(structured)["frame_state"] == flat["frame_state"]
     # The drives play as without the declaration.
-    plain = pulse.compile(untrailed, device=_DEV).lower(Q[0]).export_controller()
+    plain = pulse.compile(untrailed, quantum_system=_DEV).lower(Q[0]).export_to_controller()
     assert flat["events"] == plain["events"]
 
 
@@ -533,15 +542,17 @@ _UNFUSED = [p for p in DEFAULT_PASSES if p != Pass.FUSE_PULSES]
 
 @pytest.mark.parametrize("threshold", [None, 0], ids=["default", "rolled"])
 @pytest.mark.parametrize(
-    ("name", "kernel", "device"), _TIMING_CORPUS, ids=[n for n, _, _ in _TIMING_CORPUS]
+    ("name", "kernel", "quantum_system"), _TIMING_CORPUS, ids=[n for n, _, _ in _TIMING_CORPUS]
 )
-def test_keeping_frame_changes_moves_and_lengthens_nothing(name, kernel, device, threshold):
-    qudits = device.qudit_handles[: kernel.__wrapped__.__code__.co_argcount]
+def test_keeping_frame_changes_moves_and_lengthens_nothing(name, kernel, quantum_system, threshold):
+    qudits = quantum_system.qudits[: kernel.__wrapped__.__code__.co_argcount]
     options = {} if threshold is None else {"unroll_threshold": threshold}
     bare_kernel = _without_frame_changes(kernel)
 
     def lower(kernel, **more):
-        return pulse.compile(kernel, device=device, **options, **more).lower(*qudits)
+        return pulse.compile(kernel, quantum_system=quantum_system, **options, **more).lower(
+            *qudits
+        )
 
     assert lower(kernel).duration == lower(bare_kernel).duration
     # Without fusion, which a change between two drives keeps apart, every
@@ -554,9 +565,9 @@ def test_keeping_frame_changes_moves_and_lengthens_nothing(name, kernel, device,
     ]
     end = max((e.start_cycles + e.duration_cycles for e in bare.schedule), default=0)
     for version in (1, 2):
-        exported = kept.export_controller(version=version)
+        exported = kept.export_to_controller(version=version)
         assert _timing(exported["events"]) == _timing(
-            bare.export_controller(version=version)["events"]
+            bare.export_to_controller(version=version)["events"]
         )
         for update in _updates(unroll(exported)["events"]):
             assert update["duration_cycles"] == 0 and 0 <= update["start_cycles"] <= end
@@ -581,20 +592,20 @@ def _branches(n):
 def test_a_run_of_branches_places_its_frame_changes_in_linear_time():
     # Each branch passes its tone through the arm that does not play, so a
     # change is free where the branches before it, all of them, leave its
-    # tone. The Python work is counted; the schedule, native, is the best of
-    # five times.
+    # tone. The Python work is counted; the schedule, native, is timed.
     work, timings = {}, {}
-    for n in (1000, 4000):
+    for n in (250, 2000):
         kernel = _branches(n)
 
         def run(kernel=kernel):
             return pulse.compile(kernel).lower(Q[0])
 
         work[n] = python_work(run)
-        timings[n] = min(run().metrics.schedule_ms for _ in range(5))
-    # 4x the branches in well under 16x the time (quadratic would be 16x).
-    assert all(work[4000][count] <= 4 * work[1000][count] for count in work[1000]), work
-    assert timings[4000] < 8 * timings[1000], timings
+        timings[n] = native_seconds(run)
+    # 8x the branches: 8x the time when linear, 64x when quadratic. The bound
+    # is between them, past the caches a larger program misses.
+    assert all(work[2000][count] <= 8 * work[250][count] for count in work[250]), work
+    assert timings[2000] < 24 * timings[250], timings
 
 
 _LONG_RUN = """

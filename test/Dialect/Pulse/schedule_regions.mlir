@@ -11,12 +11,12 @@
 // the wait after it starts once all eight have run.
 // CHECK-LABEL: func.func @dd_loop
 // CHECK: scf.for
-// CHECK: pulse.drive {{.*}}{duration_cycles = 40 : i64, period_cycles = array<i64: 240>, start_cycles = 100 : i64}
-// CHECK: pulse.wait {{.*}}{duration_cycles = 200 : i64, period_cycles = array<i64: 240>, start_cycles = 140 : i64}
-// CHECK: pulse.wait {{.*}}{duration_cycles = 10 : i64, start_cycles = 2020 : i64}
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 40 : i64, period_cycles = array<i64: 240>, start_cycles = 100 : i64}>
+// CHECK: pulse.wait {{.*}}<{duration_cycles = 200 : i64, period_cycles = array<i64: 240>, start_cycles = 140 : i64}>
+// CHECK: pulse.wait {{.*}}<{duration_cycles = 10 : i64, start_cycles = 2020 : i64}>
 func.func @dd_loop() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %amp = arith.constant 0.047 : f64
   %zero = arith.constant 0.0 : f64
@@ -49,10 +49,10 @@ func.func @dd_loop() {
 // ALAP: scf.for %{{.*}} = %c0 to %c6
 // ALAP: pulse.drive {{.*}}period_cycles = array<i64: 40>, start_cycles = 460 : i64
 func.func @transient(%x: !pulse.waveform) {
-  %qa = pulse.qudit_alloc : !pulse.qref
-  %qb = pulse.qudit_alloc : !pulse.qref
-  %a0, %ta = pulse.get_drive_line %qa : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %b0, %tb = pulse.get_drive_line %qb : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %qa = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %qb = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %a0, %ta = pulse.get_drive_line %qa : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %b0, %tb = pulse.get_drive_line %qb : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %amp = arith.constant 0.047 : f64
   %zero = arith.constant 0.0 : f64
@@ -74,14 +74,14 @@ func.func @transient(%x: !pulse.waveform) {
 // The conditional X waits for the readout; the wait after the if waits for
 // the longer arm.
 // CHECK-LABEL: func.func @active_reset
-// CHECK: pulse.readout {{.*}}{duration_cycles = 300 : i64, start_cycles = 0 : i64}
+// CHECK: pulse.readout {{.*}}<{duration_cycles = 300 : i64, start_cycles = 0 : i64}>
 // CHECK: scf.if
-// CHECK: pulse.drive {{.*}}{duration_cycles = 40 : i64, start_cycles = 300 : i64}
-// CHECK: pulse.wait {{.*}}{duration_cycles = 10 : i64, start_cycles = 340 : i64}
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 300 : i64}>
+// CHECK: pulse.wait {{.*}}<{duration_cycles = 10 : i64, start_cycles = 340 : i64}>
 func.func @active_reset() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c300 = arith.constant 300 : i64
   %c40 = arith.constant 40 : i64
   %amp = arith.constant 0.05 : f64
@@ -90,7 +90,7 @@ func.func @active_reset() {
   %x = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !pulse.waveform
   %c10 = arith.constant 10 : i64
   %w10 = pulse.duration_from_int %c10 : (i64) -> !pulse.duration
-  %r1, %rt1, %m = pulse.readout %r0, %ro, %rt0, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+  %r1, %rt1, %m = pulse.readout %r0, %ro, %rt0, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   %bit = pulse.is_set %m : !pulse.measurement -> i1
   %d1, %t1 = scf.if %bit -> (!pulse.drive_line, !pulse.tone) {
     %d, %t = pulse.drive %d0, %x, %t0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
@@ -105,13 +105,13 @@ func.func @active_reset() {
 // Each conditional drive waits for its own iteration's readout. ASAP plays it
 // right after the readout; ALAP packs the drives at the end of the schedule.
 // CHECK-LABEL: func.func @feedback_in_loop
-// CHECK: pulse.readout {{.*}}{duration_cycles = 300 : i64, period_cycles = array<i64: 300>, start_cycles = 0 : i64}
+// CHECK: pulse.readout {{.*}}<{duration_cycles = 300 : i64, period_cycles = array<i64: 300>, start_cycles = 0 : i64}>
 // ASAP: pulse.drive {{.*}}{duration_cycles = 40 : i64, period_cycles = array<i64: 300>, start_cycles = 300 : i64}
 // ALAP: pulse.drive {{.*}}{duration_cycles = 40 : i64, period_cycles = array<i64: 40>, start_cycles = 1340 : i64}
 func.func @feedback_in_loop() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c300 = arith.constant 300 : i64
   %c40 = arith.constant 40 : i64
   %amp = arith.constant 0.05 : f64
@@ -122,7 +122,7 @@ func.func @feedback_in_loop() {
   %ub = arith.constant 5 : index
   %step = arith.constant 1 : index
   %d5, %t5, %r5, %rt5 = scf.for %i = %lb to %ub step %step iter_args(%d = %d0, %t = %t0, %r = %r0, %rt = %rt0) -> (!pulse.drive_line, !pulse.tone, !pulse.readout_line, !pulse.tone) {
-    %r1, %rt1, %m = pulse.readout %r, %ro, %rt, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+    %r1, %rt1, %m = pulse.readout %r, %ro, %rt, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
     %bit = pulse.is_set %m : !pulse.measurement -> i1
     %d1, %t1 = scf.if %bit -> (!pulse.drive_line, !pulse.tone) {
       %dd, %tt = pulse.drive %d, %x, %t : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone

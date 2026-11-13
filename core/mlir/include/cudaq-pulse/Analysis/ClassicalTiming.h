@@ -10,7 +10,7 @@
 // 0 for unbounded), `feedback_ns` (from an answer arriving to a pulse being
 // able to use it), `start_uncertainty_ns` (on a link that joins controllers,
 // how far apart the starts of the two it joins known least well may be),
-// `max_in_flight` (requests a link holds at once) and `slot_bytes` (the
+// `slots` (requests a link holds at once) and `slot_bytes` (the
 // largest request or answer, header included). On several controllers, a
 // link with `per_controller` (and its `name`) is one instance per
 // controller, each with its own slots and its own order of submissions.
@@ -18,12 +18,12 @@
 // An answer's budget adds the start uncertainty between the controller that
 // sends the request and the one that takes the answer: none when one
 // controller does both, the link's `start_uncertainty_ns` when the module's
-// `pulse.controllers` (see Controllers.h) does not say which they are.
+// the control system (see Controllers.h) does not say which they are.
 //
 // `annotateClassicalCalls` writes on every `classical.submit` the attributes
 // scheduling reads: `classical.submit_cycles` (how long the submission holds
 // the link), `classical.budget_cycles` (from its end until the answer is due),
-// `classical.device`, `classical.max_in_flight` and `classical.eager`; and on
+// `classical.device`, `classical.slots` and `classical.eager`; and on
 // every `classical.wait` `classical.device` and, in blocking mode,
 // `classical.blocking`. A call over a per-controller link gets, on its
 // submission and its waits, `classical.instance`: the controller that sends
@@ -61,7 +61,7 @@ struct LinkModel {
   double bytesPerNs = 0.0;
   double feedbackNs = 0.0;
   double uncertaintyNs = 0.0;
-  int64_t maxInFlight = 64;
+  int64_t slots = 64;
   int64_t slotBytes = 1024;
   bool perController = false;
   llvm::StringRef name;
@@ -87,8 +87,8 @@ inline LinkModel linkModel(mlir::ModuleOp module, int64_t device) {
   link.bytesPerNs = number("bytes_per_ns", link.bytesPerNs);
   link.feedbackNs = number("feedback_ns", link.feedbackNs);
   link.uncertaintyNs = number("start_uncertainty_ns", link.uncertaintyNs);
-  link.maxInFlight = static_cast<int64_t>(
-      number("max_in_flight", static_cast<double>(link.maxInFlight)));
+  link.slots =
+      static_cast<int64_t>(number("slots", static_cast<double>(link.slots)));
   link.slotBytes = static_cast<int64_t>(
       number("slot_bytes", static_cast<double>(link.slotBytes)));
   link.perController = static_cast<bool>(entry.get("per_controller"));
@@ -290,9 +290,7 @@ inline std::optional<double> waitTimeoutNs(SubmitOp submit) {
 }
 
 inline double moduleClockGHz(mlir::ModuleOp module) {
-  if (auto clock = module->getAttrOfType<mlir::FloatAttr>("pulse.clock_ghz"))
-    return clock.getValueAsDouble();
-  return 1.0;
+  return pulse::clockGHz(module);
 }
 
 /// Whether `module` declares any classical function: only then can it hold
@@ -399,7 +397,7 @@ annotateClassicalCalls(mlir::func::FuncOp function) {
   mlir::StringAttr submitName = name("classical.submit_cycles"),
                    budgetName = name("classical.budget_cycles"),
                    deviceName = name("classical.device"),
-                   inFlightName = name("classical.max_in_flight"),
+                   inFlightName = name("classical.slots"),
                    eagerName = name("classical.eager"),
                    blockingName = name("classical.blocking"),
                    instanceName = name(kInstanceAttr),
@@ -442,7 +440,7 @@ annotateClassicalCalls(mlir::func::FuncOp function) {
              budgetCycles(callable, link, clock, waitTimeoutNs(submit),
                           callUncertaintyNs(submit, controllers, trace)));
       setInt(attrs, deviceName, callable.getDevice());
-      setInt(attrs, inFlightName, link.maxInFlight);
+      setInt(attrs, inFlightName, link.slots);
       if (callable.getSubmit() == "eager")
         attrs.set(eagerName, b.getUnitAttr());
       else
@@ -500,7 +498,7 @@ annotateClassicalCalls(mlir::func::FuncOp function) {
       continue;
     auto rank = static_cast<int64_t>(
         std::lower_bound(list.begin(), list.end(), t) - list.begin());
-    int64_t slots = linkOf(key.first).maxInFlight;
+    int64_t slots = linkOf(key.first).slots;
     int64_t share = slots / count + (rank < slots % count ? 1 : 0);
     int64_t send = cyclesOf(op) + (count - 1) * longest[key];
     mlir::NamedAttrList attrs(op->getDiscardableAttrDictionary());
@@ -521,13 +519,11 @@ inline constexpr const char *kBlockingWaitInBlock =
     "is fixed; return the future from the kernel and take the answer after "
     "it returns, or call the kernel without schedule=";
 
-/// The module attribute of a program for a controller that plays nothing
-/// while a call is out: each call holds every line from its submission
-/// until its answer is due. On several controllers (`pulse.controllers`) it
-/// is the i64 array of those that block, and a call holds the lines of each
-/// of them that issues it, reads a measurement it sends or plays an op that
-/// uses its answer.
-inline constexpr const char *kBlocksOnCallsAttr = "pulse.blocks_on_calls";
+/// A controller that plays nothing while a call is out (`blocks_on_calls`
+/// in the module's control system, see pulse::blocksOnCalls): each call
+/// holds every line from its submission until its answer is due. On several
+/// controllers, a call holds the lines of each of those that issues it,
+/// reads a measurement it sends or plays an op that uses its answer.
 inline constexpr const char *kBlockingCallInBlock =
     "the controller blocks on calls, holding every line while one is out, "
     "which a pulse.schedule_block, placed whole, cannot; call the kernel "
@@ -536,6 +532,15 @@ inline constexpr const char *kBlockingCallInBlock =
 inline int64_t intAttr(mlir::Operation *op, llvm::StringRef name,
                        int64_t fallback = 0) {
   if (auto attr = op->getAttrOfType<mlir::IntegerAttr>(name))
+    return attr.getInt();
+  return fallback;
+}
+
+/// intAttr() of a discardable attribute by its interned name.
+inline int64_t intAttr(mlir::Operation *op, mlir::StringAttr name,
+                       int64_t fallback = 0) {
+  if (auto attr = mlir::dyn_cast_or_null<mlir::IntegerAttr>(
+          op->getDiscardableAttr(name)))
     return attr.getInt();
   return fallback;
 }

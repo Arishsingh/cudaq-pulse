@@ -11,8 +11,8 @@ import pytest
 from cudaq_pulse.backends import BackendNotFoundError
 from cudaq_pulse.kernel._bytecode_normalize import UnsupportedInterpreterError
 from cudaq_pulse.kernel.ir_builder import SymbolicValueError
+from cudaq_pulse.quantum_systems import UnknownQuantumSystemError
 from cudaq_pulse.runtime import GpuRuntimeError
-from cudaq_pulse.targets import UnknownTargetError
 
 CAUGHT_AS = [
     (pulse.InvalidValueError, ValueError),
@@ -28,9 +28,9 @@ CAUGHT_AS = [
     (pulse.TimingError, RuntimeError),
     (pulse.ExecutionError, RuntimeError),
     (pulse.InternalError, RuntimeError),
-    (pulse.DeviceDefinitionError, ValueError),
-    (UnknownTargetError, pulse.NotFoundError),
-    (UnknownTargetError, LookupError),
+    (pulse.QuantumSystemDefinitionError, ValueError),
+    (UnknownQuantumSystemError, pulse.NotFoundError),
+    (UnknownQuantumSystemError, LookupError),
     (BackendNotFoundError, pulse.NotFoundError),
     (UnsupportedInterpreterError, pulse.UnsupportedError),
     (UnsupportedInterpreterError, RuntimeError),
@@ -54,15 +54,21 @@ def test_the_value_and_type_errors_are_separate():
 def test_a_not_found_error_prints_without_quotes():
     error = pulse.NotFoundError("no calibration value 'q0.freq'")
     assert str(error) == "no calibration value 'q0.freq'"
-    assert str(UnknownTargetError("no registered target 'x'")) == "no registered target 'x'"
+    assert (
+        str(UnknownQuantumSystemError("no registered quantum system 'x'"))
+        == "no registered quantum system 'x'"
+    )
 
 
 def test_problems_are_listed_after_the_message():
     error = pulse.InvalidValueError(
         "2 problems in the options",
-        problems=[pulse.Problem("must be positive", path="shots", value=0), pulse.Problem("x")],
+        problems=[
+            pulse.Problem("must be positive", path="shots_count", value=0),
+            pulse.Problem("x"),
+        ],
     )
-    assert str(error) == "2 problems in the options:\n  shots: must be positive\n  x"
+    assert str(error) == "2 problems in the options:\n  shots_count: must be positive\n  x"
     assert error.problems[0].value == 0
 
 
@@ -83,9 +89,14 @@ def test_an_error_without_problems_has_an_empty_tuple_and_no_location():
 
 def test_a_problem_prints_its_location_path_and_fix():
     problem = pulse.Problem(
-        "must be positive", path="shots", fix="pass shots=1000", file="run.json", line=3, column=7
+        "must be positive",
+        path="shots_count",
+        fix="pass shots_count=1000",
+        file="run.json",
+        line=3,
+        column=7,
     )
-    assert str(problem) == "run.json:3:7: shots: must be positive; pass shots=1000"
+    assert str(problem) == "run.json:3:7: shots_count: must be positive; pass shots_count=1000"
     assert str(pulse.Problem("bad", file="f.json")) == "f.json: bad"
     assert pulse.Problem("bad").value is pulse.Problem.UNSET
 
@@ -100,8 +111,8 @@ ALL = [
     pulse.TimingError,
     pulse.ExecutionError,
     pulse.InternalError,
-    pulse.DeviceDefinitionError,
-    UnknownTargetError,
+    pulse.QuantumSystemDefinitionError,
+    UnknownQuantumSystemError,
     BackendNotFoundError,
     UnsupportedInterpreterError,
     GpuRuntimeError,
@@ -110,7 +121,7 @@ ALL = [
 
 @pytest.mark.parametrize("cls", ALL, ids=lambda c: c.__name__)
 def test_each_error_survives_pickling_with_its_problems(cls):
-    problem = pulse.Problem("must be positive", path="shots", value=0, line=2)
+    problem = pulse.Problem("must be positive", path="shots_count", value=0, line=2)
     error = cls("1 problem", problems=[problem])
     copy = pickle.loads(pickle.dumps(error))
     assert type(copy) is cls
@@ -143,12 +154,12 @@ def test_an_internal_error_asks_for_a_report():
 
 def test_library_errors_are_pulse_errors_of_their_kind():
     from cudaq_pulse.classical import emulation
-    from cudaq_pulse.targets import Calibration, transmon_generic
+    from cudaq_pulse.quantum_systems import Calibration, transmon_lattice
 
     with pytest.raises(pulse.NotFoundError, match="no calibration 'missing'"):
         Calibration.load("missing")
-    with pytest.raises(pulse.InvalidValueError, match="n_qubits must be >= 1"):
-        transmon_generic(0)
+    with pytest.raises(pulse.InvalidValueError, match="qudit_count must be >= 1"):
+        transmon_lattice(0)
     with pytest.raises(pulse.UnsupportedError, match="not available yet"):
         emulation.device_call_text(None)
     with pytest.raises(pulse.CompilationError, match="inside a @cudaq_pulse.kernel"):
@@ -171,7 +182,7 @@ BUILTIN_RAISES = {
     "_waits.py": 6,
     "compiler.py": 14,
     "controller.py": 4,
-    "kernel/_kernel.py": 7,
+    "kernel/_kernel.py": 6,
 }
 
 

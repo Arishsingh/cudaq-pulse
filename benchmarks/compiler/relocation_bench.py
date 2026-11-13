@@ -6,7 +6,7 @@
 A kernel whose qudit parameter is annotated ``Qudit`` compiles once and binds
 the qudit at each call; without the annotation the qudit is static, so each
 new qudit compiles the kernel again. For kernels of growing size this places
-each on every qudit of a 17-qudit device and prints the median time of the
+each on every qudit of a 17-qudit quantum system and prints the median time of the
 whole placement sweep (with a controller export per call) for both, and of a
 repeated call (a cache hit). The exports, the same on both sides, bound the
 speedup. It exits 1 if the sweep with a runtime qudit is not at least
@@ -26,7 +26,7 @@ from collections.abc import Callable
 import cudaq_pulse as pulse
 from cudaq_pulse import Qudit
 
-_HANDLES = pulse.device("transmon_17q").qudit_handles
+_HANDLES = pulse.quantum_system("transmon_surface17").qudits
 _DRIVE_COUNTS = (1, 5, 20)
 
 
@@ -58,7 +58,7 @@ def _median_ms(call: Callable[[], object], iterations: int) -> float:
 def _sweep(count: int, relocatable: bool) -> None:
     compiled = pulse.compile(_drives(count, relocatable))
     for q in _HANDLES:
-        compiled.lower(q, 0.1).export_controller()
+        compiled.lower(q, 0.1).export_to_controller()
 
 
 def main() -> int:

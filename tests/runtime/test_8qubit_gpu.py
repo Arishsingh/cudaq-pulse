@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """GPU integration tests: 8-qubit ladder system.
 
-The ladder connectivity is a ``TargetDescription``; the tests check a
+The ladder connectivity is a ``QuantumSystem``; the tests check a
 256-dimensional GPU evolution on it.
 
     q0 -- q1 -- q2 -- q3
@@ -15,7 +15,7 @@ import math
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
-from cudaq_pulse.targets import Coupling, MicrowaveDrive, Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import Coupling, MicrowaveDrive, PhysicalQudit
 
 from tests._handles import Q
 from tests.runtime._lowering import evolve, on
@@ -29,8 +29,8 @@ gpu = pytest.mark.gpu
 
 
 def _ladder_8q_target(coupling_hz=1.0e6):
-    qubits = {
-        i: Qubit(
+    qudits = {
+        i: PhysicalQudit(
             index=i,
             frequency_hz=(5.0 + 0.02 * i) * 1.0e9,
             anharmonicity_hz=-200.0e6,
@@ -41,7 +41,7 @@ def _ladder_8q_target(coupling_hz=1.0e6):
         for i in range(8)
     }
     couplings = [Coupling((a, b), strength_hz=coupling_hz) for a, b in _LADDER_EDGES]
-    return TargetDescription(name="ladder-8q", qubits=qubits, couplings=couplings)
+    return pulse.quantum_system(name="ladder-8q", qudits=qudits, couplings=couplings)
 
 
 def test_ladder_topology_structure():
@@ -72,7 +72,7 @@ def test_ladder_neighbor_degrees():
 
 
 @gpu
-def test_8qubit_single_qubit_excitation():
+def test_8qudit_single_qudit_excitation():
     """A pi pulse on q0 excites it within the full 256-dimensional register."""
     target = _ladder_8q_target()
 
@@ -93,7 +93,7 @@ def test_8qubit_single_qubit_excitation():
 
     refs = [Q[i] for i in range(8)]
     result = evolve(
-        on(target, excite_q0, *refs), t_start=0.0, t_end=20.0, num_steps=200, integrator="rk4"
+        on(target, excite_q0, *refs), t_start=0.0, t_end=20.0, step_count=200, integrator="rk4"
     )
 
     state = result.final_state

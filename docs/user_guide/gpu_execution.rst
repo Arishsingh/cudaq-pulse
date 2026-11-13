@@ -17,16 +17,13 @@ research and should not be treated as a production simulator.
 Installation
 ------------
 
-The wheels are attached to each release on the `GitHub releases page
-<https://github.com/NVIDIA/cudaq-pulse/releases>`_ (cudaq-pulse is coming to
-PyPI); ``pip`` installs the one for your platform from the release, as in
+Install cudaq-pulse from PyPI with the extra for your CUDA major, as in
 :doc:`../getting_started`:
 
 .. code-block:: bash
 
-   RELEASE=https://github.com/NVIDIA/cudaq-pulse/releases/expanded_assets/v0.1.0
-   pip install "cudaq-pulse[cu12]==0.1.0" --find-links "$RELEASE"   # CUDA 12 libraries
-   pip install "cudaq-pulse[cu13]==0.1.0" --find-links "$RELEASE"   # CUDA 13 libraries
+   pip install "cudaq-pulse[cu12]"   # CUDA 12 libraries
+   pip install "cudaq-pulse[cu13]"   # CUDA 13 libraries
 
 The Linux wheels include a cuDensityMat runtime library for each of CUDA 12
 and CUDA 13. The ``cu12`` and ``cu13`` extras install cuDensityMat and the
@@ -86,7 +83,7 @@ GPU Runtime Errors
 ------------------
 
 Every execution path calls ``require_gpu_runtime()`` first. It either returns
-a runtime backed by a usable device or raises one of three errors, all
+a runtime backed by a usable quantum system or raises one of three errors, all
 subclasses of ``cudaq_pulse.runtime.GpuRuntimeError``:
 
 ``GpuSupportNotBuiltError``
@@ -114,9 +111,9 @@ Pipeline Overview
 The public execution path is:
 
 1. ``kernel.lower(*args)`` verifies, optimizes and schedules the kernel for
-   the device of its qudit handles.
-2. ``pulse.simulate(lowered, backend="gpu")`` annotates the module with the
-   device's calibration (drive scales, couplings, residual ZZ, T1/T2) and the
+   the quantum system of its qudit handles.
+2. ``pulse.simulate(scheduled, backend="gpu")`` annotates the module with the
+   quantum system's calibration (drive scales, couplings, residual ZZ, T1/T2) and the
    native pipeline lowers it Pulse -> QOp -> CuDensityMat -> LLVM IR.
 3. MLIR's ExecutionEngine compiles the LLVM IR in process and executes it
    against the cuDensityMat runtime library; no external compiler or LLVM
@@ -142,8 +139,8 @@ To inspect the lowered LLVM IR:
        sigma = 5 * pulse.ns
        drive(drive_line, gaussian(duration, 0.3, sigma))
 
-   dev = pulse.device("transmon_17q")
-   llvm_ir = my_kernel.lower(dev.qudit_handles[0]).mlir("llvm")
+   qs = pulse.quantum_system("transmon_surface17")
+   llvm_ir = my_kernel.lower(qs.qudits[0]).mlir("llvm")
    print(llvm_ir)
 
 The lowering passes through three dialect conversions:
@@ -152,7 +149,7 @@ The lowering passes through three dialect conversions:
    Converts supported drive operations and waveforms into backend-agnostic
    Hamiltonian and Lindblad operator algebra. A drive in a retained loop
    becomes one pulse-train coefficient. A program that measures is lowered
-   one segment at a time along a chosen outcome for each measurement; see
+   one interval at a time along a chosen outcome for each measurement; see
    :ref:`measurement-simulation`.
 
 **QOp -> CuDensityMat**
@@ -171,12 +168,12 @@ To execute on a GPU (requires cuDensityMat runtime):
 
    import math
    import cudaq_pulse as pulse
-   from cudaq_pulse.targets import MicrowaveDrive, Qubit, TargetDescription
+   from cudaq_pulse.quantum_systems import MicrowaveDrive, PhysicalQudit
 
-   target = TargetDescription(
+   qs = pulse.quantum_system(
        name="one-qubit-demo",
-       qubits={
-           0: Qubit(
+       qudits={
+           0: PhysicalQudit(
                index=0,
                frequency_hz=5.0e9,
                anharmonicity_hz=-200.0e6,
@@ -192,10 +189,9 @@ To execute on a GPU (requires cuDensityMat runtime):
        drive_line = get_drive_line(qubit)
        drive(drive_line, square(duration, math.pi / 20.0))
 
-   dev = pulse.device(target)
    pi_time = 20 * pulse.ns
-   lowered = x_gate.lower(dev.qudit_handles[0], pi_time)
-   result = pulse.simulate(lowered, backend="gpu", t_end=20.0, dt_ns=0.1, integrator="rk4")
+   scheduled = x_gate.lower(qs.qudits[0], pi_time)
+   result = pulse.simulate(scheduled, backend="gpu", t_end=20.0, dt_ns=0.1, integrator="rk4")
    print(result.density_matrix)
 
 ``t_end`` and ``dt_ns`` are in nanoseconds; ``t_end`` defaults to the end of
@@ -228,29 +224,44 @@ used by the cuDensityMat runtime path:
 All five schemes reuse the same boundary-safe sampling that keeps piecewise
 constant pulse segments from being sampled across a discontinuity.
 
+Where no drive plays for at least 1024 steps (a wait, a CZ slot without flux
+pulses, the latency of a classical call), the integrator does not step
+through it: the stretch is propagated exactly on the host, decay, couplings
+and residual ZZ included, and the GPU runs the drives before and after it
+with the steps they have in the whole program. Couplings of detuned qudits
+turn in the qudits' frames; the propagation uses the frame that turns with
+them, where the idle Lindbladian is constant. This applies to registers of up
+to 40 levels with decay, and to any register without it; larger ones are
+stepped throughout.
+
 Physical Model
 --------------
 
 The simulated space holds only the qudits the program uses: those it gets a
-drive or readout line on, one mode each in increasing order of device index.
-A pair at qudits 13 and 3 of the 17-qudit ``transmon_17q`` device is a 3 x 3 problem
+drive or readout line on, one mode each in increasing order of quantum system index.
+A pair at qudits 13 and 3 of the 17-qudit ``transmon_surface17`` quantum system is a 3 x 3 problem
 with three levels, not a 3^14 one. Couplings and residual ZZ between those
-qudits keep their device values; the other qudits are left out, with their
+qudits keep their quantum system values; the other qudits are left out, with their
 couplings, as classical spectators in their ground state. To simulate an
-idle qudit, get a line on it. ``result.qudits`` lists the device qudit of
+idle qudit, get a line on it. ``result.qudits`` lists the quantum system qudit of
 each mode: ``result.qudits[i]`` has ``result.dims[i]`` levels and is digit
 ``i`` of the state index, least significant first. An ``initial_state``
-uses the same layout, and measurements report device qudits.
+uses the same layout, and measurements report quantum system qudits.
 
 The native execution lowering is a transmon model in one rotating frame per
-qudit, with the levels the target's simulation model declares for it (three
+qudit, with the levels the quantum system's simulation model declares for it (three
 for a ``TransmonModel``) unless ``levels`` sets them. Drive envelopes are converted to X/Y Hamiltonian
 coefficients in radians per nanosecond; tone frequency and phase determine the
-rotating-frame detuning and quadrature. A target may supply
+rotating-frame detuning and quadrature. Drive terms are in the rotating-wave
+approximation: the counter-rotating terms, which turn at about twice the
+qudit frequency, are dropped. Against an exact lab-frame evolution of a
+three-level transmon, that costs about 2e-5 in population for a 40 ns pi
+pulse and about 3e-4 for a 10 ns one; the integrator's own error is far
+smaller. A quantum system may supply
 ``amplitude_scale_rad_per_ns`` explicitly, or pulse infers a scale from the
 amplitude of the qudit's ``X`` calibration when it publishes one.
 
-Target relaxation and dephasing data produce Lindblad collapse operators.
+The quantum system's relaxation and dephasing data produce Lindblad collapse operators.
 A qudit whose ``thermal_population`` p is nonzero starts in its thermal
 mixture (the excited level holds p, and higher levels follow the same
 Boltzmann ratio p / (1 - p) per level) unless ``initial_state`` is given,
@@ -282,7 +293,7 @@ callbacks, and waveform-algebra nodes. Built-in waveforms and
 time-dependent coefficients per evolution: two per drive op (a drive
 repeated by a loop needs only one pair) and four per coupling between
 detuned qudits. A single evolution cannot contain a measurement: a
-program that measures is lowered and evolved one segment at a time (see
+program that measures is lowered and evolved one interval at a time (see
 :ref:`measurement-simulation`).
 
 The GPU test suite (``pytest tests -m gpu``, or the ``check-pulse-gpu`` target
@@ -304,7 +315,7 @@ Measurement and Feedback
 ------------------------
 
 ``pulse.simulate()`` evolves a program that measures, and branches on the
-results, in segments between measurements. A readout measures its qudit in
+results, in intervals between measurements. A readout measures its qudit in
 the computational basis when it completes: every level ``k`` is a separate
 outcome, and each continues along its own path, on which a branch on that
 measurement takes the arm the outcome selects. The unnormalized states of
@@ -314,7 +325,7 @@ all paths sum to the ensemble
 
    \rho' = \sum_m U_m P_m \rho P_m^\dagger U_m^\dagger
 
-with no sampling error. Requesting ``shots`` also samples per-shot records
+with no sampling error. Requesting ``shots_count`` also samples per-shot records
 of the outcomes from the same branch probabilities.
 
 .. code-block:: python
@@ -330,8 +341,8 @@ of the outcomes from the same branch probabilities.
        if result:
            drive(drive_line, square(pi_time, math.pi / 20.0))
 
-   lowered = active_reset.lower(dev.qudit_handles[0])
-   result = pulse.simulate(lowered, shots=1000, backend="cpu")
+   scheduled = active_reset.lower(qs.qudits[0])
+   result = pulse.simulate(scheduled, shots_count=1000, backend="cpu")
    result.density_matrix   # ensemble state at the end
    result.level_population(1)   # P(1) of the one qudit; level_population(1, qudit=q) for one of several
    result.level_populations()   # [P(0), P(1), P(2)] for a three-level qudit
@@ -339,8 +350,8 @@ of the outcomes from the same branch probabilities.
    result.records          # one row of outcomes per shot
 
 ``backend="cpu"`` integrates the same lowered operator with a NumPy RK4
-reference; ``backend="gpu"`` evolves each segment with cuDensityMat, starting
-from the projected state. By default each qudit has the levels its target's
+reference; ``backend="gpu"`` evolves each interval with cuDensityMat, starting
+from the projected state. By default each qudit has the levels its quantum system's
 model declares (three for a transmon); ``levels=2`` simulates qubits, an int
-sets every qudit's levels and a dict by device qudit index sets those it
+sets every qudit's levels and a dict by quantum system qudit index sets those it
 names. With three or more levels a transmon includes its anharmonicity.

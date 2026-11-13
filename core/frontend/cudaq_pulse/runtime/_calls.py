@@ -97,7 +97,7 @@ def _call_inputs(
         elif spec.descriptor.startswith("iq"):
             if iq is None:
                 raise InvalidValueError(
-                    f"{function.name}: IQ points are drawn per shot; simulate with shots"
+                    f"{function.name}: IQ points are drawn per shot; simulate with shots_count"
                 )
             part = [_point(iq(key)) for key in part_keys]
         elif spec.source == "integer":
@@ -163,13 +163,13 @@ class IQModel:
     """
 
     def __init__(self, target: Any, qudits: Sequence[int], decay: bool) -> None:
-        from cudaq_pulse.targets.base import DispersiveReadout, ReadoutPulse
+        from cudaq_pulse.quantum_systems.base import DispersiveReadout, ReadoutPulse
 
         self.decay = decay
         self._params: dict[int, dict[str, float]] = {}
         nan = math.nan
         for qudit in qudits:
-            q = target.qubits[qudit]
+            q = target.qudits[qudit]
             r = q.readout
             if not isinstance(r, DispersiveReadout):
                 from .._errors import UnsupportedError
@@ -184,7 +184,7 @@ class IQModel:
                 )
             # DispersiveReadout._fields and ReadoutPulse._fields, in their order.
             f_r, chi, linewidth, eta, _, _, depletion = r._values
-            pulse = q.calibrations.get("readout") or ReadoutPulse()
+            pulse = q._calibrations.get("readout") or ReadoutPulse()
             _, amp, _, tau, photons = pulse._values
             if chi is None or linewidth is None:
                 from .._errors import UnsupportedError

@@ -10,10 +10,15 @@ name: wheels
 # Both distributions are tested by cibuildwheel (see [tool.cibuildwheel] in
 # each pyproject.toml), then installed together from the built wheels and
 # tested again on clean systems without a CUDA toolkit.
-# A v* tag publishes a GitHub release with the wheels and the sdist, after
-# release-meta checks the tag and gpu-gate confirms GPU verification, and
-# then, once enabled, uploads the wheels to TestPyPI (pre-releases) or PyPI
-# (see the end of this file).
+# Every file of a run has the version the version job picks. Once all tests
+# pass, the dist job checks the complete set (tools/check-dist.py) and uploads
+# it as the run's one artifact for upload, cudaq-pulse-<version>-dist: dist/
+# with exactly the files to upload, and SHA256SUMS and MANIFEST.json beside
+# it. The per-platform intermediate-* artifacts only feed the jobs of the run.
+# A v* tag publishes a GitHub release with that bundle, after release-meta
+# checks the tag and gpu-gate confirms GPU verification, and then, once
+# enabled, uploads its wheels to TestPyPI (pre-releases) or PyPI (see the end
+# of this file); the sdist stays on the GitHub release.
 #
 # GPU gate: with the GPU_RUNNERS repository variable set, a tag runs
 # gpu-install-test on the GPU runners and publishes only if it passes. Without
@@ -38,15 +43,81 @@ on:
           commit, confirming that the GPU tests passed on it
         type: string
         default: ""
+      version:
+        description: >
+          Rehearse a release on a branch: build every file as this version
+          (X.Y.Z, X.Y.Z.postN or X.Y.Z{a,b,rc}N); nothing is published
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
+  # The version of every file of the run: on a v* tag the tag's
+  # (release-meta.py), on a manual run with `version` that version, and
+  # otherwise the dev version setuptools-scm gives the commit (X.Y.Z.devN, no
+  # local segment; see [tool.setuptools_scm] in pyproject.toml). Only a
+  # rehearsal pins the builds to it, through setuptools-scm's
+  # SETUPTOOLS_SCM_PRETEND_VERSION_FOR_<DISTRIBUTION>; other builds derive the
+  # same version from git, and the dist job checks that they did.
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      kind: ${{ steps.version.outputs.kind }}
+      pretend: ${{ steps.version.outputs.pretend }}
+      artifact: ${{ steps.version.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          REHEARSAL: ${{ inputs.version }}
+        run: |
+          pretend=""
+          if [[ "$REF_TYPE" == tag && "$REF_NAME" == v* ]]; then
+            if [[ -n "$REHEARSAL" ]]; then
+              echo "::error::a run on tag $REF_NAME builds the tag's version; leave version empty"
+              exit 1
+            fi
+            version="$(python3 tools/release-meta.py "$REF_NAME")"
+            kind=release
+            artifact="cudaq-pulse-$version-dist"
+          elif [[ -n "$REHEARSAL" ]]; then
+            version="$(python3 tools/release-meta.py "v$REHEARSAL")"
+            kind=rehearsal
+            pretend="$version"
+            artifact="cudaq-pulse-$version-rehearsal-dist"
+          else
+            version="$(uv run --no-project --with 'setuptools-scm>=9' python -m setuptools_scm)"
+            kind=dev
+            artifact="cudaq-pulse-$version-dist"
+          fi
+          echo "::notice::$kind build of version $version, artifact $artifact"
+          {
+            echo "version=$version"
+            echo "kind=$kind"
+            echo "pretend=$pretend"
+            echo "artifact=$artifact"
+          } >> "$GITHUB_OUTPUT"
+
   wheels:
     name: wheels (${{ matrix.platform }})
+    needs: version
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    # Empty, and so ignored, unless the run is a rehearsal. On Linux,
+    # environment-pass in each pyproject.toml hands them to the container.
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAQ_PULSE: ${{ needs.version.outputs.pretend }}
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAQ_PULSE_TOOLS: ${{ needs.version.outputs.pretend }}
     strategy:
       fail-fast: false
       matrix:
@@ -110,13 +181,17 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: wheels-${{ matrix.platform }}
+          name: intermediate-wheels-${{ matrix.platform }}
           path: wheelhouse/*.whl
           if-no-files-found: error
+          retention-days: 14
 
   sdist:
+    needs: version
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAQ_PULSE: ${{ needs.version.outputs.pretend }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,9 +205,10 @@ jobs:
           uvx --from 'twine>=6' twine check --strict dist/*.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sdist
+          name: intermediate-sdist
           path: dist/*.tar.gz
           if-no-files-found: error
+          retention-days: 14
 
   # Installs the wheels into images that have no CUDA toolkit, the way users
   # will: rockylinux:8 is the manylinux_2_28 glibc floor, ubuntu:24.04 uses its
@@ -183,7 +259,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: wheels-${{ matrix.platform }}
+          name: intermediate-wheels-${{ matrix.platform }}
           path: wheelhouse
 
       - name: Install and test cudaq-pulse
@@ -218,6 +294,54 @@ jobs:
     with:
       source: wheels
       scope: ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && 'full' || 'quick' }}
+
+  # The run's one artifact for upload, once every test has passed: dist/ with
+  # exactly the files a release uploads (both distributions' wheels for every
+  # platform and the sdist), checked by tools/check-dist.py against the
+  # version job's version (a release version for a tag or rehearsal, a dev
+  # version otherwise; no local version, both distributions and the sdist
+  # alike, twine check --strict, sizes, license files), with SHA256SUMS and
+  # MANIFEST.json beside it. The release jobs upload exactly these files.
+  dist:
+    needs: [version, wheels, sdist, install-test, gpu-install-test]
+    if: >-
+      !cancelled() && needs.version.result == 'success' &&
+      needs.wheels.result == 'success' && needs.sdist.result == 'success' &&
+      needs.install-test.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.gpu-install-test.result)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      artifact: ${{ needs.version.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: intermediate-*
+          path: bundle/dist
+          merge-multiple: true
+      - name: Check the files and write SHA256SUMS and MANIFEST.json
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          KIND: ${{ needs.version.outputs.kind }}
+          ARTIFACT: ${{ needs.version.outputs.artifact }}
+        run: |
+          flags=(--write-sums)
+          [[ "$KIND" == dev ]] || flags+=(--release)
+          {
+            echo "### \`$ARTIFACT\` ($KIND build)"
+            echo
+            uv run --no-project --with 'twine>=6' \
+              python tools/check-dist.py --version "$VERSION" "${flags[@]}" bundle
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.version.outputs.artifact }}
+          path: bundle/
+          if-no-files-found: error
 
   # A release publishes only after GPU verification: gpu-install-test passed
   # in this run, or, when it did not run, a maintainer attested on a manual
@@ -289,20 +413,20 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
-  # Releases are GitHub-only for now: a draft is created with the notes from
-  # CHANGELOG.md, every wheel and the sdist are uploaded once, their versions
-  # are checked against the tag, they get signed build-provenance
-  # attestations, and only then is the release published. Nothing is
+  # A draft is created with the notes from CHANGELOG.md, the dist job's
+  # bundle is checked against the tag and its SHA256SUMS, its files get signed
+  # build-provenance attestations and are uploaded once with SHA256SUMS and
+  # MANIFEST.json, and only then is the release published. Nothing is
   # overwritten. Verify a download with
   # `gh attestation verify <file> --repo NVIDIA/cudaq-pulse`.
   github-release:
-    needs: [release-meta, wheels, sdist, install-test, gpu-gate]
+    needs: [release-meta, dist, gpu-gate]
     # gpu-gate runs after a skipped job, which would skip this one by default;
-    # require every direct dependency to have passed instead.
+    # require every direct dependency to have passed instead. dist ran only if
+    # the builds and every install test passed.
     if: >-
       !cancelled() && needs.release-meta.result == 'success' &&
-      needs.wheels.result == 'success' && needs.sdist.result == 'success' &&
-      needs.install-test.result == 'success' && needs.gpu-gate.result == 'success'
+      needs.dist.result == 'success' && needs.gpu-gate.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -314,31 +438,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: dist
-          merge-multiple: true
-      - name: Check the artifacts' versions against the tag
+          name: ${{ needs.dist.outputs.artifact }}
+          path: bundle
+      - name: Check the bundle against the tag
         env:
           VERSION: ${{ needs.release-meta.outputs.version }}
         run: |
-          ls -l dist
-          shopt -s nullglob
-          files=(dist/*.whl dist/*.tar.gz)
-          (( ${#files[@]} )) || { echo "::error::no artifacts"; exit 1; }
-          for file in "${files[@]}"; do
-            name="$(basename "$file")"
-            [[ "$name" == "cudaq_pulse-$VERSION-"* || "$name" == "cudaq_pulse_tools-$VERSION-"* ||
-               "$name" == "cudaq_pulse-$VERSION.tar.gz" ]] ||
-              { echo "::error::$name was not built as version $VERSION"; exit 1; }
-          done
-          python3 tools/check-wheel-contents.py dist/*.whl
+          uv run --no-project --with 'twine>=6' \
+            python tools/check-dist.py --version "$VERSION" --release --verify-sums bundle
       - name: Attest the build provenance of the wheels and the sdist
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: |
-            dist/*.whl
-            dist/*.tar.gz
+          subject-path: bundle/dist/*
       - name: Create a draft, upload once, publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -353,8 +467,9 @@ jobs:
           [[ "$PRERELEASE" == true ]] && flags+=(--prerelease)
           gh release create "$TAG" "${flags[@]}"
           # cudaq-pulse-tools first, as cudaq-pulse requires it.
-          gh release upload "$TAG" dist/cudaq_pulse_tools-*.whl
-          gh release upload "$TAG" dist/*.tar.gz dist/cudaq_pulse-*.whl
+          gh release upload "$TAG" bundle/dist/cudaq_pulse_tools-*.whl
+          gh release upload "$TAG" bundle/dist/*.tar.gz bundle/dist/cudaq_pulse-*.whl
+          gh release upload "$TAG" bundle/SHA256SUMS bundle/MANIFEST.json
           gh release edit "$TAG" --draft=false
 
   # Once the GitHub release is published, its wheels go to a package index by
@@ -368,10 +483,11 @@ jobs:
   # this repository; pushes to branches and manual runs on a branch never
   # reach them. The cudaq-pulse-tools wheels are uploaded first, so that
   # cudaq-pulse is never on the index without the cudaq-pulse-tools it pins;
-  # a re-run skips the files already there. The files are the ones
-  # github-release checked; the sdist stays on the GitHub release.
+  # a re-run skips the files already there. The wheels are exactly those in
+  # dist/ of the bundle github-release checked and published, with their
+  # SHA256SUMS checked again; the sdist stays on the GitHub release.
   testpypi:
-    needs: [release-meta, github-release]
+    needs: [release-meta, dist, github-release]
     if: >-
       !cancelled() && vars.PYPI_PUBLISHING == 'true' &&
       github.repository == 'NVIDIA/cudaq-pulse' && startsWith(github.ref, 'refs/tags/v') &&
@@ -387,25 +503,29 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: wheels-*
-          path: dist
-          merge-multiple: true
-      - name: Put the cudaq-pulse-tools wheels apart
+          name: ${{ needs.dist.outputs.artifact }}
+          path: bundle
+      - name: Check the bundle's digests and sort out the wheels to upload
         env:
           VERSION: ${{ needs.release-meta.outputs.version }}
         run: |
+          (cd bundle && sha256sum --check --strict SHA256SUMS)
+          diff <(cd bundle && printf '%s\n' dist/* | LC_ALL=C sort) \
+            <(sed 's|^[0-9a-f]*  ||' bundle/SHA256SUMS | LC_ALL=C sort)
           shopt -s nullglob
-          tools=(dist/cudaq_pulse_tools-"$VERSION"-*.whl)
+          tools=(bundle/dist/cudaq_pulse_tools-"$VERSION"-*.whl)
           (( ${#tools[@]} )) || { echo "::error::no cudaq-pulse-tools wheels"; exit 1; }
-          mkdir tools-dist
+          wheels=(bundle/dist/cudaq_pulse-"$VERSION"-*.whl)
+          (( ${#wheels[@]} )) || { echo "::error::no cudaq-pulse wheels"; exit 1; }
+          mkdir tools-dist wheels-dist
           mv "${tools[@]}" tools-dist/
-          files=(dist/*)
-          (( ${#files[@]} )) || { echo "::error::no cudaq-pulse wheels"; exit 1; }
-          for file in "${files[@]}"; do
-            [[ "$file" == dist/cudaq_pulse-"$VERSION"-*.whl ]] ||
-              { echo "::error::$file is not a cudaq-pulse $VERSION wheel"; exit 1; }
+          mv "${wheels[@]}" wheels-dist/
+          # Only the sdist, which stays on the GitHub release, is left.
+          for file in bundle/dist/*; do
+            [[ "$file" == bundle/dist/cudaq_pulse-"$VERSION".tar.gz ]] ||
+              { echo "::error::$file is not a cudaq-pulse $VERSION file"; exit 1; }
           done
-          ls -l tools-dist dist
+          ls -l tools-dist wheels-dist
       - name: Publish cudaq-pulse-tools to TestPyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
@@ -415,12 +535,12 @@ jobs:
       - name: Publish cudaq-pulse to TestPyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
-          packages-dir: dist/
+          packages-dir: wheels-dist/
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
 
   pypi:
-    needs: [release-meta, github-release]
+    needs: [release-meta, dist, github-release]
     if: >-
       !cancelled() && vars.PYPI_PUBLISHING == 'true' &&
       github.repository == 'NVIDIA/cudaq-pulse' && startsWith(github.ref, 'refs/tags/v') &&
@@ -436,25 +556,29 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: wheels-*
-          path: dist
-          merge-multiple: true
-      - name: Put the cudaq-pulse-tools wheels apart
+          name: ${{ needs.dist.outputs.artifact }}
+          path: bundle
+      - name: Check the bundle's digests and sort out the wheels to upload
         env:
           VERSION: ${{ needs.release-meta.outputs.version }}
         run: |
+          (cd bundle && sha256sum --check --strict SHA256SUMS)
+          diff <(cd bundle && printf '%s\n' dist/* | LC_ALL=C sort) \
+            <(sed 's|^[0-9a-f]*  ||' bundle/SHA256SUMS | LC_ALL=C sort)
           shopt -s nullglob
-          tools=(dist/cudaq_pulse_tools-"$VERSION"-*.whl)
+          tools=(bundle/dist/cudaq_pulse_tools-"$VERSION"-*.whl)
           (( ${#tools[@]} )) || { echo "::error::no cudaq-pulse-tools wheels"; exit 1; }
-          mkdir tools-dist
+          wheels=(bundle/dist/cudaq_pulse-"$VERSION"-*.whl)
+          (( ${#wheels[@]} )) || { echo "::error::no cudaq-pulse wheels"; exit 1; }
+          mkdir tools-dist wheels-dist
           mv "${tools[@]}" tools-dist/
-          files=(dist/*)
-          (( ${#files[@]} )) || { echo "::error::no cudaq-pulse wheels"; exit 1; }
-          for file in "${files[@]}"; do
-            [[ "$file" == dist/cudaq_pulse-"$VERSION"-*.whl ]] ||
-              { echo "::error::$file is not a cudaq-pulse $VERSION wheel"; exit 1; }
+          mv "${wheels[@]}" wheels-dist/
+          # Only the sdist, which stays on the GitHub release, is left.
+          for file in bundle/dist/*; do
+            [[ "$file" == bundle/dist/cudaq_pulse-"$VERSION".tar.gz ]] ||
+              { echo "::error::$file is not a cudaq-pulse $VERSION file"; exit 1; }
           done
-          ls -l tools-dist dist
+          ls -l tools-dist wheels-dist
       - name: Publish cudaq-pulse-tools to PyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
@@ -463,5 +587,5 @@ jobs:
       - name: Publish cudaq-pulse to PyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
-          packages-dir: dist/
+          packages-dir: wheels-dist/
           skip-existing: true

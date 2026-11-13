@@ -4,7 +4,7 @@
 
 Each check runs a fresh interpreter and lists the heavy modules a path left
 in ``sys.modules``. ``test_import.py`` checks the import and compile of a
-program; these add devices with their calibration, a program's queries and
+program; these add quantum systems with their calibration, a program's queries and
 exports, classical calls and the modules behind them.
 """
 
@@ -56,8 +56,8 @@ def k(q):
             drive(d, square(20, 0.1))
 
 system = p.ControlSystem(links={"gpu": Link(fixed_ns=100, bytes_per_ns=10, feedback_ns=50)})
-dev = p.device("transmon_17q")
-low = p.compile(k, control_system=system).lower(dev.qudit_handles[0])
+dev = p.quantum_system("transmon_surface17")
+low = p.compile(k, control_system=system).lower(dev.qudits[0])
 """
 
 
@@ -75,8 +75,8 @@ def _loaded(code: str, tmp_path: Path, modules: tuple[str, ...] = _HEAVY) -> lis
 def test_devices_and_a_classical_program_load_no_heavy_module(tmp_path):
     code = (
         _PROGRAM
-        + "p.device('transmon_generic:4')\n"
-        + "p.device('transmon_17q', clock_ghz=1.0)\n"
+        + "p.quantum_system('transmon_lattice:4')\n"
+        + "p.quantum_system('transmon_surface17', clock_ghz=1.0)\n"
         + "low.mlir(); low.schedule; low.segments; low.classical_report; str(low)\n"
         + "low.generic.bind([])\n"
     )
@@ -87,8 +87,8 @@ def test_exports_load_no_heavy_module(tmp_path):
     code = (
         _PROGRAM
         + "from cudaq_pulse.controller import evaluate_expression, unroll\n"
-        + "low.export_controller(); low.export_emulation()\n"
-        + "unroll(low.export_controller(version=2))\n"
+        + "low.export_to_controller(); low.export_to_emulator()\n"
+        + "unroll(low.export_to_controller(version=2))\n"
         + "evaluate_expression({'op': 'ne', 'type': 'int', 'of': [{'readout': 0}, {'const': 0}]},"
         + " readouts={0: 1})\n"
     )
@@ -101,8 +101,8 @@ def test_sampled_exports_load_no_heavy_module(tmp_path):
     code = (
         _PROGRAM
         + "rate = 2 * dev.clock_ghz\n"
-        + "low.export_controller(sample_rate_ghz=rate)\n"
-        + "low.export_controller(sample_rate_ghz=rate, version=2)\n"
+        + "low.export_to_controller(sample_rate_ghz=rate)\n"
+        + "low.export_to_controller(sample_rate_ghz=rate, version=2)\n"
     )
     assert _loaded(code, tmp_path) == []
     sample = code + "from cudaq_pulse.controller import sample_waveform\n"
@@ -115,7 +115,7 @@ def test_a_device_with_a_control_system_loads_no_heavy_module(tmp_path):
     code = (
         "import sys\nimport cudaq_pulse as p\n"
         "c = p.controller('reference.controller', drive_lines=[0, 1], readout_lines=[0, 1])\n"
-        "p.device('transmon_17q', layout=[0, 1],\n"
+        "p.quantum_system('transmon_surface17', layout=[0, 1],\n"
         "         control_system=p.ControlSystem(controllers=[c]))\n"
     )
     assert _loaded(code, tmp_path) == []
@@ -141,8 +141,8 @@ def k(q):
     d = get_drive_line(q)
     drive(d, drag(40, 0.2, 10.0, 0.5))
 
-dev = p.device("transmon_17q")
-low = p.compile(k).lower(dev.qudit_handles[0])
+dev = p.quantum_system("transmon_surface17")
+low = p.compile(k).lower(dev.qudits[0])
 """
 
 # What exporting a program does not build: the reports and their analyzer,
@@ -159,7 +159,7 @@ _REPORTS = (
 def test_a_program_in_cycles_loads_no_fractions(tmp_path):
     # Importing fractions compiles two regular expressions; only a clock
     # ratio of a control system, or reading a time's exact_ns, needs it.
-    code = _PLAIN + "low.schedule; low.export_controller(); low.export_emulation()\n"
+    code = _PLAIN + "low.schedule; low.export_to_controller(); low.export_to_emulator()\n"
     assert _loaded(code, tmp_path, ("fractions", "decimal")) == []
 
 
@@ -169,8 +169,8 @@ def test_times_load_no_fractions(tmp_path):
         _PLAIN + "t = (0.1 * p.us + 3 * p.ns) / 7 - p.ns\n"
         "assert repr(t) == '13.7143 ns' and t < low.duration and t // p.ns == 13\n"
         "assert (t % p.ns) * 7 == 5 * p.ns and abs(-t) == t\n"
-        "dev2 = p.device('transmon_17q', clock_ghz=1.5)\n"
-        "low2 = p.compile(k).lower(dev2.qudit_handles[0])\n"
+        "dev2 = p.quantum_system('transmon_surface17', clock_ghz=1.5)\n"
+        "low2 = p.compile(k).lower(dev2.qudits[0])\n"
         "assert low2.duration > 0 * p.ns\n"
     )
     assert _loaded(code, tmp_path, ("fractions", "decimal")) == []
@@ -180,14 +180,14 @@ def test_times_load_no_fractions(tmp_path):
 
 
 def test_exports_build_no_report(tmp_path):
-    code = _PLAIN + "low.export_controller(); low.export_emulation()\n"
+    code = _PLAIN + "low.export_to_controller(); low.export_to_emulator()\n"
     assert _loaded(code, tmp_path, _REPORTS) == []
-    calls = _PROGRAM + "low.export_controller(); low.export_emulation()\n"
+    calls = _PROGRAM + "low.export_to_controller(); low.export_to_emulator()\n"
     assert _loaded(calls, tmp_path, _REPORTS) == [
         "cudaq_pulse._classical_report",
         "cudaq_pulse.classical._link",
     ]
-    report = _PLAIN + "import cudaq_pulse.controller as c\nc.resources(low)\n"
+    report = _PLAIN + "import cudaq_pulse.controller as c\nc.usage(low)\n"
     assert _loaded(report, tmp_path, _REPORTS) == ["cudaq_pulse._controller_cost"]
 
 
@@ -195,8 +195,8 @@ def test_exporting_an_emulated_program_loads_no_module(tmp_path):
     # The export lives in the wire format, which emulating loads too.
     code = (
         _PROGRAM + "from cudaq_pulse.classical import emulation\n"
-        "emulation.emulate(low, shots=2, seed=1)\nbefore = set(sys.modules)\n"
-        "low.export_controller(); low.export_emulation()\n"
+        "emulation.emulate(low, shots_count=2, seed=1)\nbefore = set(sys.modules)\n"
+        "low.export_to_controller(); low.export_to_emulator()\n"
         "new = [m for m in set(sys.modules) - before if m.startswith('cudaq_pulse.classical')]\n"
         "assert not new, new\n"
     )
@@ -208,7 +208,7 @@ def test_a_name_with_no_close_match_loads_no_difflib(tmp_path):
     code = (
         "import sys\nimport cudaq_pulse as p\n\n@p.kernel\ndef k(q):\n"
         "    d = get_drive_line(q)\n    drive(d, zzz_not_a_waveform(40))\n\n"
-        "try:\n    p.compile(k).lower(p.device('transmon_17q').qudit_handles[0])\n"
+        "try:\n    p.compile(k).lower(p.quantum_system('transmon_surface17').qudits[0])\n"
         "except p.CompilationError as e:\n    assert 'did you mean' not in str(e), e\n"
     )
     assert _loaded(code, tmp_path, ("difflib",)) == []
@@ -279,7 +279,7 @@ if sys.argv[1] == "eager":
 
 import cudaq_pulse.controller as c
 from cudaq_pulse import Problem
-from cudaq_pulse.targets import ResidualZZ
+from cudaq_pulse.quantum_systems import ResidualZZ
 
 classes = [ResidualZZ, c.FunctionUsage, c.ProcessorUsage, c.ControllerUsage, c.LimitExceeded,
            c.UsageReport, Problem]
@@ -410,9 +410,9 @@ def test_classes_most_programs_never_use_are_made_when_used():
     unmade = sorted(["ResidualZZ", "Problem", *usage])
     code = (
         _PLAIN + "import cudaq_pulse.controller as c\n"
-        "low.schedule; low.export_controller(); low.export_emulation(); c.resources(low)\n"
+        "low.schedule; low.export_to_controller(); low.export_to_emulator(); c.FunctionCost\n"
         f"names = [(n, getattr(c, n)) for n in {usage!r}]\n"
-        "names += [('ResidualZZ', p.targets.ResidualZZ), ('Problem', p.Problem)]\n"
+        "names += [('ResidualZZ', p.quantum_systems.ResidualZZ), ('Problem', p.Problem)]\n"
         "def unmade():\n"
         "    return sorted(n for n, cls in names\n"
         "                  if type(vars(cls)['__dataclass_fields__']) is not dict)\n"
@@ -443,10 +443,10 @@ def test_the_report_names_resolve_on_first_use():
         "from cudaq_pulse.classical import emulation\n"
         "assert 'cudaq_pulse._controller_cost' not in sys.modules\n"
         "assert set(c.__all__) <= set(dir(c)) and set(emulation.__all__) <= set(dir(emulation))\n"
-        "from cudaq_pulse.controller import ResourceReport, usage\n"
-        "assert c.ResourceReport is ResourceReport and 'usage' in vars(c)\n"
-        "assert ResourceReport.__module__ == 'cudaq_pulse.controller'\n"
-        "assert pickle.loads(pickle.dumps(ResourceReport)) is ResourceReport\n"
+        "from cudaq_pulse.controller import LinkUsage, usage\n"
+        "assert c.LinkUsage is LinkUsage and 'usage' in vars(c)\n"
+        "assert LinkUsage.__module__ == 'cudaq_pulse.controller'\n"
+        "assert pickle.loads(pickle.dumps(LinkUsage)) is LinkUsage\n"
         "from cudaq_pulse.classical import wire\n"
         "assert emulation.export is wire._emulation_export\n"
         "assert emulation.FORMAT == wire._EMULATION_FORMAT\n"
@@ -463,8 +463,17 @@ def test_simulating_without_shots_loads_no_random_generator(tmp_path):
     # only drawing shots (or a program's calls) uses a generator.
     modules = ("numpy.random", "hashlib")
     assert _loaded(_PLAIN + "p.simulate(low)\n", tmp_path, modules) == []
-    shots = _PLAIN + "p.simulate(low, shots=10, seed=1)\n"
-    assert _loaded(shots, tmp_path, modules) != []
+    shots_count = _PLAIN + "p.simulate(low, shots_count=10, seed=1)\n"
+    assert _loaded(shots_count, tmp_path, modules) != []
+
+
+def test_a_system_without_drift_loads_no_drift_module(tmp_path):
+    # Parameter drift is loaded only by a system built with it.
+    modules = ("cudaq_pulse.quantum_systems.drift",)
+    code = _PLAIN + "p.simulate(low, shots_count=10, seed=1)\nlow.export_to_controller()\n"
+    assert _loaded(code, tmp_path, modules) == []
+    drifting = _PLAIN + "p.quantum_system('transmon_surface17', parameter_drift=True)\n"
+    assert _loaded(drifting, tmp_path, modules) == list(modules)
 
 
 def test_simulating_loads_no_numpy_typing(tmp_path):

@@ -13,7 +13,7 @@ import math
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
-from cudaq_pulse.targets import MicrowaveDrive, Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import MicrowaveDrive, PhysicalQudit
 
 from tests._handles import Q
 from tests.runtime._lowering import evolve, on, pulse_mlir
@@ -22,10 +22,10 @@ gpu = pytest.mark.gpu
 
 
 def _target():
-    return TargetDescription(
+    return pulse.quantum_system(
         name="iq-modulation",
-        qubits={
-            0: Qubit(
+        qudits={
+            0: PhysicalQudit(
                 index=0,
                 frequency_hz=5.0e9,
                 anharmonicity_hz=-200.0e6,
@@ -42,7 +42,7 @@ def _evolve(kernel):
         on(_target(), kernel, Q[0]),
         t_start=0.0,
         t_end=20.0,
-        num_steps=200,
+        step_count=200,
         integrator="rk4",
     ).final_state
 
@@ -56,7 +56,7 @@ def test_iq_modulation_mlir_structure():
         shift_phase(d0.tone, math.pi / 2)
         drive(d0, square(40, math.pi / 20.0))
 
-    mlir = pulse_mlir((q_drive, Q[0]), clock_ghz=2.0, qubit_freq_hz={0: 5.0e9})
+    mlir = pulse_mlir((q_drive, Q[0]), clock_ghz=2.0, qudit_freq_hz={0: 5.0e9})
     assert "pulse.square" in mlir
 
 

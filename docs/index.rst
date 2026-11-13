@@ -5,23 +5,33 @@
 cudaq-pulse
 ===========
 
-**cudaq-pulse** is a pulse-level MLIR dialect and programming model for
-quantum control. Its Python DSL drives an MLIR-based compiler pipeline:
+**cudaq-pulse** puts the pulses, the measurements and the classical calls
+between them in one Python program, compiled to open MLIR, then simulated,
+emulated, or exported to your controller:
 
-1. Write a pulse kernel with the ``@pulse.kernel`` DSL.
-2. Call it, or compile it to Pulse-dialect MLIR with ``kernel.lower()`` or
-   ``pulse.compile()``.
-3. Inspect the schedule, or extend the pipeline with custom passes.
-4. Simulate it with the NumPy reference on any machine, or on an NVIDIA GPU.
+1. Write a pulse kernel with the ``@pulse.kernel`` DSL, calling classical
+   functions (``@pulse.classical``) where it needs their answers.
+2. Compile it with ``pulse.compile()`` and schedule it with ``lower()``;
+   inspect the schedule and the MLIR, or extend the pipeline with custom
+   passes.
+3. Send the one compiled program to any of three destinations: simulate it
+   (``pulse.simulate``, with the NumPy reference on any machine or on an
+   NVIDIA GPU), emulate it in virtual time against its classical services
+   (``classical.emulation.emulate``), or export it to a controller backend
+   (``export_to_controller()``).
 
-.. warning::
+Project status
+--------------
 
-   CUDA-Q pulse is **research-preview software**, not production software or a
-   product-supported CUDA-Q feature. APIs, dialects, runtime interfaces,
-   numerical behavior, build options, and file layout may change incompatibly
-   or be removed without notice. No stability, compatibility, performance, or
-   production-readiness guarantee is provided. Expect the work to evolve as
-   the research matures.
+.. note::
+
+   CUDA-Q pulse is an early-stage research project. We are releasing it now
+   because the pulse layer is where much of the open work in quantum control
+   happens, and we want to build it in the open with the people who use it.
+   It is under active development: expect bugs, incomplete features, and
+   incompatible changes to the Python APIs, MLIR dialects and file formats
+   between releases. It is not a supported CUDA-Q product feature. We invite
+   you to try it with your own quantum systems and help shape its direction.
 
 .. toctree::
    :maxdepth: 2
@@ -36,7 +46,7 @@ quantum control. Its Python DSL drives an MLIR-based compiler pipeline:
    user_guide/kernels
    user_guide/operations
    user_guide/compilation
-   user_guide/devices
+   user_guide/quantum_systems
    user_guide/custom_passes
    user_guide/editors
    user_guide/classical_calls
@@ -61,6 +71,7 @@ quantum control. Its Python DSL drives an MLIR-based compiler pipeline:
    :caption: Resources
 
    examples
+   performance
 
 .. toctree::
    :maxdepth: 1

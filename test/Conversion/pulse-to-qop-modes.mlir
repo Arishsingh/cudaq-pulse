@@ -6,6 +6,7 @@
 // is not simulated, so its anharmonicity is left out.
 // RUN: cudaq-pulse-opt --pulse-to-qop %s | FileCheck %s
 // RUN: cudaq-pulse-opt --pulse-to-qop --qop-to-cudm %s | FileCheck %s --check-prefix=CUDM
+// RUN: cudaq-pulse-opt --canonicalize --pulse-to-qop %s | FileCheck %s
 
 // CHECK: qop.mode_extents = array<i64: 3, 3>
 // CHECK-NOT: targets = array<i64: {{[2-9]|1[0-9]}}>
@@ -23,17 +24,17 @@
 // CHECK: qop.matrix_leaf({{.*}}) {dimensions = array<i64: 3>, targets = array<i64: 1>}
 // CHECK-NOT: targets = array<i64: {{[2-9]|1[0-9]}}>
 // CUDM: mode_extents = array<i64: 3, 3>
-module attributes {pulse.clock_ghz = 1.000000e+00 : f64, pulse.modes = array<i64: 3, 13>, pulse.levels = array<i64: 2, 2, 2, 3, 2, 3, 2, 2, 2, 2, 2, 2, 2, 3>, pulse.anharmonicity_hz = array<f64: 0.0, 0.0, 0.0, -2.000000e+08, 0.0, -1.900000e+08, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.800000e+08>, pulse.coupling_pairs = array<i64: 13, 3>, pulse.coupling_strength_hz = array<f64: 5.000000e+06>} {
+module attributes {pulse.control_system = #pulse.control_system<clock_period_fs = 1000000>, pulse.modes = array<i64: 3, 13>, pulse.quantum_system = #pulse.quantum_system<qudit_frequency_hz = [5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.000000e+09, 5.100000e+09], level_counts = [2, 2, 2, 3, 2, 3, 2, 2, 2, 2, 2, 2, 2, 3], anharmonicity_hz = [0.0, 0.0, 0.0, -2.000000e+08, 0.0, -1.900000e+08, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.800000e+08]>, pulse.coupling_pairs = array<i64: 13, 3>, pulse.coupling_strength_hz = array<f64: 5.000000e+06>} {
   func.func @main() {
-    %q13 = pulse.qudit_alloc {qubit = 13 : i64} : !pulse.qref
-    %q3 = pulse.qudit_alloc {qubit = 3 : i64} : !pulse.qref
-    %d0, %t0 = pulse.get_drive_line %q13 {qubit = 13 : i64, frequency_hz = 5.100000e+09 : f64} : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-    %d1, %t1 = pulse.get_drive_line %q3 {qubit = 3 : i64, frequency_hz = 5.000000e+09 : f64} : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+    %q13 = pulse.qudit_alloc {qudit = 13 : i64} : !pulse.qudit
+    %q3 = pulse.qudit_alloc {qudit = 3 : i64} : !pulse.qudit
+    %d0, %t0 = pulse.get_drive_line %q13 {frequency_hz = 5.100000e+09 : f64} : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+    %d1, %t1 = pulse.get_drive_line %q3 {frequency_hz = 5.000000e+09 : f64} : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
     %c40 = arith.constant 40 : i64
     %amp = arith.constant 0.05 : f64
     %zero = arith.constant 0.0 : f64
     %x = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !pulse.waveform
-    %d2, %t2 = pulse.drive %d0, %x, %t0 {start_cycles = 0 : i64, duration_cycles = 40 : i64} : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+    %d2, %t2 = pulse.drive %d0, %x, %t0 <{duration_cycles = 40 : i64, start_cycles = 0 : i64}> : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
     return
   }
 }

@@ -17,36 +17,29 @@ Installation
 
 cudaq-pulse requires Python 3.12 or newer and does not depend on CUDA-Q. Its
 wheels contain a statically linked MLIR, so ``pip`` is the only installer
-needed. The wheels are attached to each release on the `GitHub releases page
-<https://github.com/NVIDIA/cudaq-pulse/releases>`_; cudaq-pulse is coming to
-PyPI. To install from a GitHub release, point ``pip`` at it, and ``pip`` picks
-the wheel for your platform:
+needed. Install it from PyPI; ``pip`` picks the wheel for your platform:
 
 .. code-block:: bash
 
    python -m venv .venv
    source .venv/bin/activate
-   RELEASE=https://github.com/NVIDIA/cudaq-pulse/releases/expanded_assets/v0.1.0
 
    # Compiler and CPU simulation (Linux and macOS)
-   pip install "cudaq-pulse==0.1.0" --find-links "$RELEASE"
+   pip install cudaq-pulse
 
    # Plus GPU simulation (Linux), with CUDA 12 or CUDA 13 libraries
-   pip install "cudaq-pulse[cu12]==0.1.0" --find-links "$RELEASE"
-   pip install "cudaq-pulse[cu13]==0.1.0" --find-links "$RELEASE"
+   pip install "cudaq-pulse[cu12]"
+   pip install "cudaq-pulse[cu13]"
 
    # Report what was installed and whether it works
    python -m cudaq_pulse.doctor
 
-Keep the version pin: it stops ``pip`` from choosing a different package of
-the same name from PyPI. ``cudaq-pulse-opt``, the MLIR driver, comes along
-automatically: it is in ``cudaq-pulse-tools``, a wheel of its own on the
-release, one per platform for every Python, which ``cudaq-pulse`` requires at
-the same version. The other
-dependencies, CUDA libraries included, come from PyPI. Wheels downloaded from
-the release install the same way when both are given, as
-``pip install ./cudaq_pulse-0.1.0-<platform>.whl ./cudaq_pulse_tools-0.1.0-<platform>.whl``
-(or with ``"./cudaq_pulse-0.1.0-<platform>.whl[cu12]"``).
+``cudaq-pulse-opt``, the MLIR driver, comes along automatically: it is in
+``cudaq-pulse-tools``, a wheel of its own, one per platform for every Python,
+which ``cudaq-pulse`` requires at the same version. The other dependencies,
+CUDA libraries included, come from PyPI too. Each release on the `GitHub
+releases page <https://github.com/NVIDIA/cudaq-pulse/releases>`_ also carries
+the wheels and the source distribution.
 
 ``[gpu]`` is an alias for ``[cu12]``. Each CUDA extra installs cuDensityMat
 and the CUDA runtime libraries it needs from PyPI; the two extras write the
@@ -94,15 +87,15 @@ generated MLIR:
        drive_line = get_drive_line(qubit)
        drive(drive_line, gaussian(cal["duration"], amplitude, cal["sigma"]))
 
-   dev = pulse.device("transmon_17q")
-   qubit = dev.qudit_handles[0]
+   qs = pulse.quantum_system("transmon_surface17")
+   qubit = qs.qudits[0]
    result = pulse.simulate(rabi_oscillation, qubit, 0.5)    # NumPy reference, no GPU needed
    print(f"P(1) = {result.level_population(1):.3f}")   # P(1) = 0.972
-   lowered = rabi_oscillation.lower(qubit, 0.5)
-   print(lowered.mlir())
-   print(f"Compiled in {lowered.metrics.total_ms:.1f} ms")
+   scheduled = rabi_oscillation.lower(qubit, 0.5)
+   print(scheduled.mlir())
+   print(f"Compiled in {scheduled.metrics.total_ms:.1f} ms")
 
-The pulse lasts 32 ns, 64 cycles of the device's 2 GHz clock. A duration is
+The pulse lasts 32 ns, 64 cycles of the quantum system's 2 GHz clock. A duration is
 an ``int`` number of cycles or a time with units; see :ref:`durations`.
 
 The Compiler Pipeline
@@ -122,7 +115,7 @@ cudaq-pulse is a Python-first compiler pipeline with four stages:
 4. **Lower and simulate** -- ``pulse.simulate(kernel, *args)`` compiles a
    call and evolves it with the NumPy reference, and
    ``pulse.simulate(kernel, *args, backend="gpu")`` on the GPU, through the native
-   Pulse -> QOp -> CuDensityMat -> LLVM lowering (``lowered.mlir("llvm")``).
+   Pulse -> QOp -> CuDensityMat -> LLVM lowering (``scheduled.mlir("llvm")``).
    A program compiled already is simulated the same way without compiling
    it again: ``pulse.simulate(program, *values)`` binds the values of its
    run-time float parameters as ``program.bind(values)`` does.
@@ -133,8 +126,9 @@ GPU simulation via NVIDIA cuDensityMat is a preview capability; see
 IDE Setup
 ---------
 
-None is needed. Pylance, Cursor, pyright and basedpyright know the
-operations used by bare name inside ``@pulse.kernel`` functions, with
+None is needed. Pylance (in VS Code and VS Code-based editors), pyright and
+basedpyright know the operations used by bare name inside ``@pulse.kernel``
+functions, with
 completion, hover documentation and checked arguments, as soon as
 cudaq-pulse is installed. See :doc:`user_guide/editors`.
 

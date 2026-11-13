@@ -38,6 +38,8 @@ struct HandleData {
   std::vector<size_t> freeCallbackSlots;
   // The run's classical handlers, by function id; a program calls a few.
   std::vector<std::pair<uint32_t, CudmClassicalHandler>> classical;
+  // The states of the run each hold this many members, evolved together.
+  int64_t batch = 1;
 };
 
 struct StateData {
@@ -118,11 +120,16 @@ int32_t evaluateWaveformCallback(size_t slot, double time,
   return 0;
 }
 
+// Every member of a batch plays the same envelope.
 template <size_t Slot>
-int32_t waveformCallback(double time, int64_t, int32_t, const double *,
-                         cudaDataType_t dataType, void *scalarStorage,
-                         cudaStream_t) {
-  return evaluateWaveformCallback(Slot, time, dataType, scalarStorage);
+int32_t waveformCallback(double time, int64_t batchSize, int32_t,
+                         const double *, cudaDataType_t dataType,
+                         void *scalarStorage, cudaStream_t) {
+  auto status = evaluateWaveformCallback(Slot, time, dataType, scalarStorage);
+  auto *values = static_cast<cuDoubleComplex *>(scalarStorage);
+  for (int64_t member = 1; status == 0 && member < batchSize; ++member)
+    values[member] = values[0];
+  return status;
 }
 
 template <size_t... Slots>
@@ -160,6 +167,7 @@ void releaseCallbackSlot(HandleData *run, size_t slot) {
 
 thread_local std::vector<std::byte> lastResult;
 thread_local std::vector<std::byte> pendingInitialState;
+thread_local int64_t pendingBatch = 1;
 thread_local std::string lastError;
 
 CudmStatus fail(CudmStatus status, const char *message) {
@@ -196,9 +204,15 @@ CudmStatus initializeBasisZero(StateData *state) {
                 "cuDensityMat state has no component storage");
 
   const cuDoubleComplex one = make_cuDoubleComplex(1.0, 0.0);
-  return checkCuda(cudaMemcpy(state->buffers.front(), &one, sizeof(one),
-                              cudaMemcpyHostToDevice),
-                   "cudaMemcpy(initial state)");
+  const int64_t batch = state->owner->batch;
+  const size_t member = state->bufferSizes.front() / static_cast<size_t>(batch);
+  for (int64_t b = 0; status == CUDM_SUCCESS && b < batch; ++b)
+    status =
+        checkCuda(cudaMemcpy(static_cast<std::byte *>(state->buffers.front()) +
+                                 b * member,
+                             &one, sizeof(one), cudaMemcpyHostToDevice),
+                  "cudaMemcpy(initial state)");
+  return status;
 }
 
 CudmStatus setZero(StateData *state) {
@@ -207,15 +221,22 @@ CudmStatus setZero(StateData *state) {
                    "cudensitymatStateInitializeZero");
 }
 
-CudmStatus setFactor(void *deviceFactor, cuDoubleComplex value) {
-  return checkCuda(
-      cudaMemcpy(deviceFactor, &value, sizeof(value), cudaMemcpyHostToDevice),
-      "cudaMemcpy(state factor)");
+// Accumulation scales each member of a batch by its own factor.
+CudmStatus setFactor(void *deviceFactor, cuDoubleComplex value, int64_t batch) {
+  if (batch == 1)
+    return checkCuda(
+        cudaMemcpy(deviceFactor, &value, sizeof(value), cudaMemcpyHostToDevice),
+        "cudaMemcpy(state factor)");
+  std::vector<cuDoubleComplex> values(static_cast<size_t>(batch), value);
+  return checkCuda(cudaMemcpy(deviceFactor, values.data(),
+                              values.size() * sizeof(value),
+                              cudaMemcpyHostToDevice),
+                   "cudaMemcpy(state factor)");
 }
 
 CudmStatus accumulate(StateData *source, StateData *destination,
                       void *deviceFactor, cuDoubleComplex factor) {
-  auto status = setFactor(deviceFactor, factor);
+  auto status = setFactor(deviceFactor, factor, source->owner->batch);
   if (status != CUDM_SUCCESS)
     return status;
   return checkCudm(cudensitymatStateComputeAccumulation(
@@ -276,9 +297,9 @@ CudmStatus rhs(HandleData *handle, OperatorData *op, StateData *stateIn,
   if (status != CUDM_SUCCESS)
     return status;
   return checkCudm(cudensitymatOperatorComputeAction(
-                       handle->native, op->native, time, 1, 0, nullptr,
-                       stateIn->native, stateOut->native, workspace->native,
-                       nullptr),
+                       handle->native, op->native, time, handle->batch, 0,
+                       nullptr, stateIn->native, stateOut->native,
+                       workspace->native, nullptr),
                    "cudensitymatOperatorComputeAction");
 }
 
@@ -479,6 +500,8 @@ CudmStatus cudm_init(CudmHandle *handle) {
     delete data;
     return status;
   }
+  data->batch = pendingBatch;
+  pendingBatch = 1;
   lastError.clear();
   lastResult.clear();
   *handle = data;
@@ -515,10 +538,11 @@ CudmStatus cudm_state_alloc(CudmHandle handle, CudmState *state,
   data->purity = purity;
   auto nativePurity = purity == 0 ? CUDENSITYMAT_STATE_PURITY_PURE
                                   : CUDENSITYMAT_STATE_PURITY_MIXED;
-  auto status = checkCudm(cudensitymatCreateState(owner->native, nativePurity,
-                                                  numModes, modeExtents, 0,
-                                                  CUDA_C_64F, &data->native),
-                          "cudensitymatCreateState");
+  auto status = checkCudm(
+      cudensitymatCreateState(owner->native, nativePurity, numModes,
+                              modeExtents, owner->batch == 1 ? 0 : owner->batch,
+                              CUDA_C_64F, &data->native),
+      "cudensitymatCreateState");
   int32_t numComponents = 0;
   if (status == CUDM_SUCCESS)
     status = checkCudm(cudensitymatStateGetNumComponents(
@@ -623,11 +647,13 @@ CudmStatus cudm_state_capture(CudmState state) {
   return CUDM_SUCCESS;
 }
 
-CudmStatus cudm_set_initial_state(const void *data, int64_t size) {
-  if (size < 0 || (size > 0 && !data))
+CudmStatus cudm_set_initial_state(const void *data, int64_t size,
+                                  int64_t count) {
+  if (size < 0 || (size > 0 && !data) || count < 1 || size % count != 0)
     return fail(CUDM_ERROR_INVALID_STATE, "invalid initial state buffer");
   const auto *bytes = static_cast<const std::byte *>(data);
   pendingInitialState.assign(bytes, bytes + size);
+  pendingBatch = count;
   return CUDM_SUCCESS;
 }
 
@@ -929,8 +955,9 @@ CudmStatus cudm_evolve(CudmHandle handle, CudmOperator op, CudmState stateIn,
   auto *k4 = scratch[6];
 
   void *deviceFactor = nullptr;
-  auto status = checkCuda(cudaMalloc(&deviceFactor, sizeof(cuDoubleComplex)),
-                          "cudaMalloc(integration factor)");
+  auto status = checkCuda(
+      cudaMalloc(&deviceFactor, owner->batch * sizeof(cuDoubleComplex)),
+      "cudaMalloc(integration factor)");
   if (status == CUDM_SUCCESS)
     status = copyState(input, current, deviceFactor);
   if (status == CUDM_SUCCESS)
@@ -965,7 +992,7 @@ CudmStatus cudm_evolve(CudmHandle handle, CudmOperator op, CudmState stateIn,
   return status;
 }
 
-CudmStatus cudm_classical_register(CudmHandle handle, uint32_t function_id,
+CudmStatus cudm_classical_register(CudmHandle handle, uint32_t dispatch_key,
                                    CudmClassicalHandler handler) {
   auto *run = static_cast<HandleData *>(handle);
   if (!run)
@@ -975,11 +1002,11 @@ CudmStatus cudm_classical_register(CudmHandle handle, uint32_t function_id,
     return fail(CUDM_ERROR_INVALID_STATE,
                 "cudm_classical_register received a null handler");
   for (auto &entry : run->classical)
-    if (entry.first == function_id) {
+    if (entry.first == dispatch_key) {
       entry.second = handler;
       return CUDM_SUCCESS;
     }
-  run->classical.emplace_back(function_id, handler);
+  run->classical.emplace_back(dispatch_key, handler);
   return CUDM_SUCCESS;
 }
 

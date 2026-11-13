@@ -25,7 +25,7 @@ import cudaq_pulse as pulse
 from cudaq_pulse import ControlSystem
 from cudaq_pulse.classical import Link
 
-CLOCK = 2.0  # GHz, the test device's clock
+CLOCK = 2.0  # GHz, the test quantum system's clock
 SPECTATOR, X90, RO, ARM, TAIL = 1200, 24, 200, 40, 30
 LATENCY_NS = 150.0
 TIMEOUT_NS = 200.0  # longer than the latency: in simulation the answer is in time
@@ -36,7 +36,7 @@ FLOAT_TAU = 37.4  # the kernels' float parameter: a wait length in cycles
 LOOP = 3
 
 LINKS = {
-    "controller": Link(fixed_ns=4, feedback_ns=8, max_in_flight=4),
+    "controller": Link(fixed_ns=4, feedback_ns=8, slots=4),
     "gpu": Link(fixed_ns=100, bytes_per_ns=10, feedback_ns=50),
 }
 MACHINE = ControlSystem(links=dict(LINKS))
@@ -178,13 +178,13 @@ def segment_after(low: Any) -> list[int | None]:
     """The segment each segment follows, from the export: the one its barrier
     ends, on the lines it holds back (``None`` for the first). The export
     names it only where it is not the one before."""
-    segments = low.export_emulation()["segments"]
+    segments = low.export_to_emulator()["segments"]
     return [e.get("after", k - 1 if k else None) for k, e in enumerate(segments)]
 
 
 def event_segments(low: Any) -> list[int]:
     """The segment of each event of ``low.schedule``, from the export."""
-    return [e["segment"] for e in low.export_emulation()["events"]]
+    return [e["segment"] for e in low.export_to_emulator()["events"]]
 
 
 def _follows(after: Sequence[int | None], segment: int | None, k: int) -> bool:
@@ -469,7 +469,7 @@ def alone(case: Case) -> Any:
     return pulse.kernel(w)
 
 
-def compile_case(case: Case, device: Any = None, kernel: Any = None, **options: Any) -> Any:
+def compile_case(case: Case, quantum_system: Any = None, kernel: Any = None, **options: Any) -> Any:
     """``pulse.compile`` of *case*'s program (or of *kernel*), as the case says."""
     settings: dict[str, Any] = {
         "control_system": MACHINE,
@@ -478,8 +478,8 @@ def compile_case(case: Case, device: Any = None, kernel: Any = None, **options: 
     }
     if case.root in ("rcp", "alap_rcp"):
         settings["schedule"] = case.root
-    if device is not None:
-        settings["device"] = device
+    if quantum_system is not None:
+        settings["quantum_system"] = quantum_system
     settings.update(options)
     return pulse.compile(kernel or program(case), **settings)
 
@@ -533,7 +533,7 @@ def check_calls(case: Case, low: Any) -> None:
         assert call.first_use is None or call.first_use >= call.due, call
     spans = sorted((c.submit, c.due) for c in made)
     for start, _ in spans:
-        assert sum(s <= start < e for s, e in spans) <= link.max_in_flight
+        assert sum(s <= start < e for s, e in spans) <= link.slots
     # Lines that wait on their own share the link: each budgets its
     # requests as sent after the others', so they may go out at once.
     sharing = len(set(line_timelines(low).values()))
@@ -670,13 +670,13 @@ def check_policy_order(case: Case, qudits: Sequence[Any]) -> None:
     assert max(e.end for e in asap) == max(e.end for e in alap)
 
 
-def callee_slices(low: Any, n_callee: int) -> list[list[Any]]:
+def callee_slices(low: Any, callee_count: int) -> list[list[Any]]:
     """The events of each call of the called kernel, in program order: the
     events of ``q`` and of the link after the program's own drive and
     readout of ``q`` (``p`` plays only the program's own pulses)."""
     spectator = low.qudits[1]
-    events = [e for e in low.schedule if e.qubit != spectator][2:]
-    return [events[k : k + n_callee] for k in range(0, len(events), n_callee)]
+    events = [e for e in low.schedule if e.qudit != spectator][2:]
+    return [events[k : k + callee_count] for k in range(0, len(events), callee_count)]
 
 
 def check_callee_shape(low: Any, own: Any) -> None:
@@ -690,7 +690,7 @@ def check_callee_shape(low: Any, own: Any) -> None:
 
 
 def export_text(low: Any) -> str:
-    program = low.export_controller()
+    program = low.export_to_controller()
     text = json.dumps(program, sort_keys=True)
     assert json.loads(text) == program
     return text
@@ -735,7 +735,7 @@ def explicit_reference(low: Any, shifts: Sequence[int]) -> Any:
 
     *shifts* is how much later each segment starts at run time.
     """
-    exported = low.export_controller()
+    exported = low.export_to_controller()
     events = exported["events"]
     lines = {line["line"]: line["qudit"] for line in exported["lines"]}
     qudits = sorted(set(lines.values()))
@@ -871,7 +871,7 @@ def _hoist(nodes: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
 
 def pulses(low: Any, shifts: Sequence[int] = ()) -> list[tuple[str, int, int, int]]:
     """The drives and readouts, by qudit, with their timing at run time."""
-    exported = low.export_controller()
+    exported = low.export_to_controller()
     lines = {line["line"]: line["qudit"] for line in exported["lines"]}
     found = []
     for event in exported["events"]:

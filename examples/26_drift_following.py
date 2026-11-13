@@ -7,11 +7,11 @@ A qudit's frequency drifts while a loop runs one program batch after batch.
 Each batch also takes a few Ramsey shots and hands them to a background
 worker process, started with the ``spawn`` method. The worker keeps a
 posterior over the frequency, writes the estimate into the calibration at
-a fixed resolution and builds the device again. When the device's
+a fixed resolution and builds the quantum system again. When the quantum system's
 fingerprint has changed, it recompiles the program and sends it back
 pickled. The loop swaps the fresh program in before its next batch.
 
-The device fingerprint is a hash of everything a compiled program depends
+The quantum system fingerprint is a hash of everything a compiled program depends
 on, so the worker only recompiles when the calibration actually changed.
 It keeps its programs by fingerprint, so returning to an earlier
 calibration costs no compile either.
@@ -21,19 +21,21 @@ apart, which end in |1> when the drive is on resonance. A frequency error
 turns it away from |1>, so 1 - P(1) measures how well the calibration
 follows the drift.
 
-What is simulated: the simulator plays the QPU. Each batch's error is
-``pulse.simulate`` of the program in use against the drifting plant's true
-parameters, and the Ramsey shots are drawn from the plant's analytic
-surrogate (ideal pulses, no decay). The drift is far faster than a real
-device's, so the run fits in seconds; the batches are real 20 ms waits, and
-the worker, the pickling and the compiles are real.
+What is simulated: the simulator plays the QPU, a quantum system built with
+``parameter_drift=``. Programs are compiled from the worker's estimate;
+each batch is ``pulse.simulate`` of the program in use for 400 shots of
+50 us on the drifting system, which plays its true parameters and moves
+its drift clock on by the batch's 20 ms. The Ramsey shots are drawn from
+the true frequency with ``cal.ramsey_probability`` (ideal pulses, no
+decay). The drift is far faster than a real quantum system's, so the run
+fits in seconds; the batches also take 20 ms of wall time, and the worker,
+the pickling and the compiles are real.
 
 Programs are swapped between batches, by the host. Swapping one in between
 shots, inside a running controller program, needs runtime support that
 does not exist yet.
 """
 
-import dataclasses
 import math
 import multiprocessing
 import queue
@@ -42,19 +44,21 @@ import time
 import cudaq_pulse as pulse
 import numpy as np
 from cudaq_pulse.classical import calibration as cal
-from cudaq_pulse.runtime.drift import DriftingPlant, OrnsteinUhlenbeck
-from cudaq_pulse.targets import transmon_17q
+from cudaq_pulse.quantum_systems import transmon_surface17
+from cudaq_pulse.quantum_systems.drift import OrnsteinUhlenbeck, ParameterDrift
 
-target = transmon_17q()
+qs = transmon_surface17()
 qudit_index = 0
 pulse_duration = 40 * pulse.ns
 pulse_sigma = 10 * pulse.ns
 area_ns = (pulse_sigma / pulse.ns) * math.sqrt(2 * math.pi) * math.erf(2 / math.sqrt(2))
-half_pi_amplitude = math.pi / 2 / (area_ns * target.drive_amplitude_scale(qudit_index))
+half_pi_amplitude = math.pi / 2 / (area_ns * qs.drive_amplitude_scale(qudit_index))
 fringe_wait = 1 * pulse.us
 
-drift = OrnsteinUhlenbeck(200e3, correlation_s=10.0)
-batch_time = 20 * pulse.ms  # 400 shots of 50 us on the QPU
+drift = OrnsteinUhlenbeck(200e3, correlation_time=10 * pulse.s)
+shots_per_batch = 400
+shot_time = 50 * pulse.us  # the program, then the reset before the next shot
+batch_time = shots_per_batch * shot_time
 batches = 200
 settled = 10  # batches the first estimate takes
 ramsey_shots = 16
@@ -72,21 +76,21 @@ def fringe_top(qudit):
     drive(d, gaussian(pulse_duration, half_pi_amplitude, pulse_sigma))
 
 
-def calibrated_device(offset_hz):
-    """The device whose qudit frequency is the nominal one plus *offset_hz*."""
-    nominal = target.qubits[qudit_index]
+def calibrated_system(offset_hz):
+    """The quantum system whose qudit frequency is the nominal one plus *offset_hz*."""
+    nominal = qs.physical_qudits[qudit_index]
     qudit = nominal.replace(frequency_hz=nominal.frequency_hz + offset_hz)
-    return pulse.device(dataclasses.replace(target, qubits={**target.qubits, qudit_index: qudit}))
+    return qs.replace(qudits={**qs.physical_qudits, qudit_index: qudit})
 
 
 # ── The background worker ────────────────────────────────────────────────────
 
 
 def calibration_worker(records_in, updates_out):
-    """Estimate the frequency from Ramsey records; recompile when the device changes."""
+    """Estimate the frequency from Ramsey records; recompile when the quantum system changes."""
     mean_hz, sigma_hz = 0.0, prior_sigma_hz
-    start = calibrated_device(0.0)
-    programs = {start.fingerprint: fringe_top.lower(start.qudit_handles[qudit_index])}
+    start = calibrated_system(0.0)
+    programs = {start.fingerprint: fringe_top.lower(start.qudits[qudit_index])}
     current = start.fingerprint
     counts = {"estimates": 0, "unchanged": 0, "compiled": 0, "reused": 0}
     updates_out.put("ready")
@@ -97,17 +101,19 @@ def calibration_worker(records_in, updates_out):
             mean_hz, sigma_hz = cal.frequency_update(mean_hz, sigma_hz, outcome, wait_ns, phase)
         counts["estimates"] += 1
         written_hz = calibration_step_hz * round(mean_hz / calibration_step_hz)
-        device = calibrated_device(written_hz)
+        quantum_system = calibrated_system(written_hz)
         fresh = None
-        if device.fingerprint == current:
+        if quantum_system.fingerprint == current:
             counts["unchanged"] += 1
         else:
-            if device.fingerprint in programs:
+            if quantum_system.fingerprint in programs:
                 counts["reused"] += 1
             else:
-                programs[device.fingerprint] = fringe_top.lower(device.qudit_handles[qudit_index])
+                programs[quantum_system.fingerprint] = fringe_top.lower(
+                    quantum_system.qudits[qudit_index]
+                )
                 counts["compiled"] += 1
-            current = device.fingerprint
+            current = quantum_system.fingerprint
             fresh = (written_hz, programs[current])
         updates_out.put((batch, mean_hz, sigma_hz, fresh))
     updates_out.put(counts)
@@ -116,15 +122,33 @@ def calibration_worker(records_in, updates_out):
 # ── The loop ─────────────────────────────────────────────────────────────────
 
 
-def error_against(program, plant):
-    result = pulse.simulate(program, levels=3, dt_ns=0.25, plant=plant.target())
+def run_batch(program, reset_time, qpu):
+    """One batch of shots of *program* on *qpu*, whose drift time moves on by
+    it; *reset_time* is the rest of each shot's ``shot_time``."""
+    result = pulse.simulate(
+        program,
+        levels=3,
+        dt_ns=0.25,
+        quantum_system=qpu,
+        shots_count=shots_per_batch,
+        seed=0,
+        reset_time=reset_time,
+    )
     return 1 - result.level_population(1)
 
 
 def follow(swapping, seed=5):
-    plant = DriftingPlant(target, qudit_index, frequency=drift, seed=seed)
+    qpu = qs.replace(
+        parameter_drift={qudit_index: ParameterDrift(frequency=drift, t1=None, amplitude=None)},
+        parameter_drift_seed=seed,
+    )
+    calibrated_hz = qpu.physical_qudits[qudit_index].frequency_hz
+    shots = np.random.default_rng(seed)
     in_use_hz = 0.0
-    program = fringe_top.lower(calibrated_device(0.0).qudit_handles[qudit_index])
+    program = fringe_top.lower(calibrated_system(0.0).qudits[qudit_index])
+    # A recalibration moves only the frequency, so every program the worker
+    # sends has this one's duration.
+    reset_time = shot_time - program.duration
     mean_hz, sigma_hz = 0.0, prior_sigma_hz
     spawn = multiprocessing.get_context("spawn")
     records_in, updates_out = spawn.Queue(), spawn.Queue()
@@ -145,14 +169,15 @@ def follow(swapping, seed=5):
                 in_use_hz, program = fresh
                 swaps += 1
                 lags.append(batch - sent)
-        trace.append((plant.state.frequency_offset_hz, in_use_hz, error_against(program, plant)))
+        true_offset_hz = qpu.true_qudits[qudit_index].frequency_hz - calibrated_hz
         records = []
         for _ in range(ramsey_shots):
             wait_ns, phase = cal.ramsey_setting(mean_hz, sigma_hz, max_wait_ns=2000.0)
-            records.append((wait_ns, phase, plant.sample(plant.p_ramsey(wait_ns, phase))))
+            p1 = cal.ramsey_probability(wait_ns, phase, true_offset_hz)
+            records.append((wait_ns, phase, int(shots.random() < p1)))
         records_in.put((batch, records))
+        trace.append((true_offset_hz, in_use_hz, run_batch(program, reset_time, qpu)))
         time.sleep(max(0.0, started + batch_time / pulse.s - time.monotonic()))
-        plant.advance(batch_time / pulse.s)
     records_in.put(None)
     while not isinstance(counts := updates_out.get(), dict):
         pass
@@ -161,11 +186,11 @@ def follow(swapping, seed=5):
 
 
 if __name__ == "__main__":
-    print("=== The device fingerprint follows the calibration ===")
+    print("=== The quantum system fingerprint follows the calibration ===")
     for offset_hz in (0.0, 0.0, 25e3):
         print(
             f"  qudit frequency +{offset_hz / 1e3:4.0f} kHz: fingerprint "
-            f"{calibrated_device(offset_hz).fingerprint}"
+            f"{calibrated_system(offset_hz).fingerprint}"
         )
 
     runs = {}
@@ -190,17 +215,16 @@ if __name__ == "__main__":
         f"on {settled_on.mean():.4f}; worst off {settled_off.max():.4f}, "
         f"on {settled_on.max():.4f}"
     )
-    floor = error_against(
-        fringe_top.lower(calibrated_device(0.0).qudit_handles[qudit_index]),
-        DriftingPlant(target, qudit_index),
-    )
+    # The same system without drift: on resonance.
+    resonant = fringe_top.lower(qs.qudits[qudit_index])
+    floor = run_batch(resonant, shot_time - resonant.duration, qs)
     print(f"  (on resonance the error is {floor:.4f}: decay and thermal population)")
     tracking = np.sqrt(np.mean((on[settled:, 0] - on[settled:, 1]) ** 2))
     print(f"  calibration tracking error (rms, settled): {tracking / 1e3:.1f} kHz")
 
     print("\n=== What the worker did ===")
     print(
-        f"  {counts['estimates']} estimates: the device built from {counts['unchanged']} "
+        f"  {counts['estimates']} estimates: the quantum system built from {counts['unchanged']} "
         f"of them had the fingerprint already in use, so nothing was recompiled"
     )
     print(

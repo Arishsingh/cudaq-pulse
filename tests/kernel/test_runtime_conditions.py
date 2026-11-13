@@ -20,13 +20,15 @@ import cudaq_pulse as pulse
 import numpy as np
 import pytest
 from cudaq_pulse.kernel.ir_builder import CompilationError
-from cudaq_pulse.targets import Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import PhysicalQudit
 
 from tests._handles import Q
 
 PI_AMP = math.pi / 20  # square(40, PI_AMP) is a pi pulse at 2 GHz
 
-_DEVICE = pulse.device(TargetDescription(name="sim", qubits={0: Qubit(0, 5e9, -2e8, 0.0, 0.0)}))
+_DEVICE = pulse.quantum_system(
+    name="sim", qudits={0: PhysicalQudit(0, 5e9, 0.0, 0.0, anharmonicity_hz=-2e8)}
+)
 
 
 def _answers(n=5, x=0.05, b=1):
@@ -180,8 +182,8 @@ _SIMULATED = [
 @pytest.mark.parametrize("condition", _SIMULATED)
 def test_simulation_takes_the_branch_python_would(condition):
     for n, x, b in itertools.product((0, 5, 9), (0.05, 0.5), (0, 1)):
-        kernel = pulse.compile(_kernel(condition, _answers(n, x, b)), device=_DEVICE)
-        result = pulse.simulate(kernel.lower(_DEVICE.qudit_handles[0]), levels=2)
+        kernel = pulse.compile(_kernel(condition, _answers(n, x, b)), quantum_system=_DEVICE)
+        result = pulse.simulate(kernel.lower(_DEVICE.qudits[0]), levels=2)
         excited = result.level_population(1)
         expected = bool(eval(condition, {"np": np}, {"n": n, "x": x, "b": bool(b)}))  # noqa: S307
         assert excited == pytest.approx(1.0 if expected else 0.0, abs=1e-3), (n, x, b)
@@ -191,7 +193,7 @@ def test_simulation_takes_the_branch_python_would(condition):
     "condition", ["(n > 3) == (x > 0.1)", "(n > 3) & (x > 0.1)", "(n > 3) | (x > 0.1)"]
 )
 def test_the_export_tests_a_comparison_of_conditions_on_both_answers(condition):
-    events = pulse.compile(_kernel(condition)).lower(Q[0]).export_controller()["events"]
+    events = pulse.compile(_kernel(condition)).lower(Q[0]).export_to_controller()["events"]
     answers = [e["index"] for e in events if e["kind"] == "answer"]
     [pi] = (e for e in events if e["kind"] == "drive")
     [condition] = pi["conditions"]
@@ -385,8 +387,8 @@ def test_a_value_a_runtime_condition_chooses_is_the_one_python_would(prelude, co
             source = _kernel("False", _answers(n, x, b), prelude=prelude, after=after)
         else:
             source = _kernel(condition, _answers(n, x, b), prelude=prelude)
-        kernel = pulse.compile(source, device=_DEVICE)
-        result = pulse.simulate(kernel.lower(_DEVICE.qudit_handles[0]), levels=2)
+        kernel = pulse.compile(source, quantum_system=_DEVICE)
+        result = pulse.simulate(kernel.lower(_DEVICE.qudits[0]), levels=2)
         taken = bool(eval(expected, {}, {"n": n, "x": x, "b": bool(b)}))  # noqa: S307
         assert result.level_population(1) == pytest.approx(float(taken), abs=1e-3), (n, x, b)
 
@@ -434,8 +436,8 @@ def test_a_match_on_a_condition_with_bool_cases_takes_the_case_python_would(
     prelude = f"    match {subject}:\n{arms}"
     for n, x, b in itertools.product((0, 5, 9), (0.05, 0.5), (0, 1)):
         source = _kernel("False", _answers(n, x, b), prelude=prelude)
-        kernel = pulse.compile(source, device=_DEVICE)
-        result = pulse.simulate(kernel.lower(_DEVICE.qudit_handles[0]), levels=2)
+        kernel = pulse.compile(source, quantum_system=_DEVICE)
+        result = pulse.simulate(kernel.lower(_DEVICE.qudits[0]), levels=2)
         taken = bool(eval(expected, {}, {"n": n, "x": x, "b": bool(b)}))  # noqa: S307
         assert result.level_population(1) == pytest.approx(float(taken), abs=1e-3), (n, x, b)
 

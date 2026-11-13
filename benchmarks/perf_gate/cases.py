@@ -46,7 +46,7 @@ if str(_ROOT) not in sys.path:
 import cudaq_pulse as pulse  # noqa: E402
 from cudaq_pulse import Controller, ControlSystem  # noqa: E402
 from cudaq_pulse.kernel import packed_ir_builder  # noqa: E402
-from cudaq_pulse.targets import Qubit, TargetDescription  # noqa: E402
+from cudaq_pulse.quantum_systems import PhysicalQudit  # noqa: E402
 
 Op = Callable[[int], object]
 
@@ -66,13 +66,14 @@ _calls = _load("benchmarks/classical/classical_calls.py")
 _WORKLOADS = {name: (kernel, n) for name, kernel, n, _ in _workloads.WORKLOADS}
 
 # Qudit i at 5 GHz + i * 100 MHz, as in tests/_handles.py.
-_DEVICE = pulse.device(
-    TargetDescription(
-        name="perf-gate",
-        qubits={i: Qubit(i, 5.0e9 + 1.0e8 * i, -300e6, 50.0, 30.0) for i in range(64)},
-    )
+_DEVICE = pulse.quantum_system(
+    name="perf-gate",
+    qudits={
+        i: PhysicalQudit(i, 5.0e9 + 1.0e8 * i, 50.0, 30.0, anharmonicity_hz=-300e6)
+        for i in range(64)
+    },
 )
-Q = _DEVICE.qudit_handles
+Q = _DEVICE.qudits
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ class Case:
 
 def _compile(kernel: Any, args: tuple[Any, ...], **options: Any) -> Callable[[], Op]:
     # A fresh compiled kernel holds no specializations, so this compiles.
-    return lambda: lambda i: pulse.compile(kernel, device=_DEVICE, **options).lower(*args)
+    return lambda: lambda i: pulse.compile(kernel, quantum_system=_DEVICE, **options).lower(*args)
 
 
 def _op_count(lowered: object) -> dict[str, int]:
@@ -151,7 +152,7 @@ def _amplitude(q, amp: float):
     drive(d, gaussian(44, amp, 10.0))
 
 
-def _tone_list(n_iter: int) -> Any:
+def _tone_list(iteration_count: int) -> Any:
     # tests/kernel/ir_corpus.py: tone_list_loop.
     @pulse.kernel
     def listed(qs):
@@ -159,7 +160,7 @@ def _tone_list(n_iter: int) -> Any:
         for d, f in zip(lines, (5.0e9, 5.1e9), strict=True):
             set_frequency(d.tone, f)
         x = square(40, 0.047)
-        for _ in range(n_iter):
+        for _ in range(iteration_count):
             for d in lines:
                 drive(d, x)
 
@@ -168,23 +169,23 @@ def _tone_list(n_iter: int) -> Any:
 
 def _surface(d: int) -> tuple[Any, int]:
     # tests/kernel/ir_corpus.py: surface_syndrome.
-    n_data = d * d
-    n_anc = (d - 1) * (d - 1) + 2 * (d - 1)
-    n_total = n_data + n_anc
+    data_count = d * d
+    ancilla_count = (d - 1) * (d - 1) + 2 * (d - 1)
+    total_count = data_count + ancilla_count
 
     @pulse.kernel
-    def round_(qubits):
+    def round_(qudits):
         lines = []
         tones = []
-        for i in range(n_total):
-            line = get_drive_line(qubits[i])
+        for i in range(total_count):
+            line = get_drive_line(qudits[i])
             lines.append(line)
             tones.append(line.tone)
         h = drag(40, 0.25, 10.0, 0.5)
         cr_p = gaussian(160, 0.12, 40.0)
         cr_m = gaussian(160, -0.12, 40.0)
-        for a in range(n_anc):
-            anc = n_data + a
+        for a in range(ancilla_count):
+            anc = data_count + a
             row = a // (d - 1) if a < (d - 1) * (d - 1) else -1
             col = a % (d - 1) if a < (d - 1) * (d - 1) else a - (d - 1) * (d - 1)
             drive(lines[anc], h, tone=tones[anc])
@@ -198,7 +199,7 @@ def _surface(d: int) -> tuple[Any, int]:
                         drive(lines[anc], cr_p, tone=tones[q])
                         drive(lines[anc], cr_m, tone=tones[q])
 
-    return round_, n_total
+    return round_, total_count
 
 
 def _feedback_program(n: int) -> Any:
@@ -206,7 +207,7 @@ def _feedback_program(n: int) -> Any:
     limits = Controller(
         instruction_cycles=2,
         detectors={0: 0},
-        max_tones_per_line=2,
+        max_frequencies_per_line=2,
         waveform_memory_samples=10**9,
         feedback_latency_cycles=1,
     )
@@ -225,7 +226,11 @@ def _feedback_program(n: int) -> Any:
                 drive(line, square(8, 0.1))
 
     compiled = pulse.compile(
-        program, device=_DEVICE, schedule="rcp", control_system=machine, unroll_threshold=100_000
+        program,
+        quantum_system=_DEVICE,
+        schedule="rcp",
+        control_system=machine,
+        unroll_threshold=100_000,
     )
     return compiled.lower(Q[0])
 
@@ -249,30 +254,30 @@ def _bell_args() -> tuple[Any, ...]:
 
 def _first_compile() -> Op:
     kernel, _ = _WORKLOADS["bell"]
-    return lambda i: pulse.compile(kernel, device=_DEVICE).lower(*_bell_args())
+    return lambda i: pulse.compile(kernel, quantum_system=_DEVICE).lower(*_bell_args())
 
 
 def _bind_new_value() -> Op:
-    compiled = pulse.compile(_wait_sweep, device=_DEVICE)
+    compiled = pulse.compile(_wait_sweep, quantum_system=_DEVICE)
     compiled.lower(Q[0], 1.0)
     return lambda i: compiled.lower(Q[0], float(4 * i + 5))
 
 
 def _bind_cached() -> Op:
-    compiled = pulse.compile(_wait_sweep, device=_DEVICE)
+    compiled = pulse.compile(_wait_sweep, quantum_system=_DEVICE)
     compiled.lower(Q[0], 1.0)
     return lambda i: compiled.lower(Q[0], 1.0)
 
 
 def _specialize_wait() -> Op:
-    compiled = pulse.compile(_wait_sweep, device=_DEVICE)
+    compiled = pulse.compile(_wait_sweep, quantum_system=_DEVICE)
     compiled.lower(Q[0], 1.0)
     # A new length retimes the module: its schedule specializes it.
     return lambda i: compiled.lower(Q[0], float(4 * i + 5)).schedule
 
 
 def _specialize_amplitude() -> Op:
-    compiled = pulse.compile(_amplitude, device=_DEVICE)
+    compiled = pulse.compile(_amplitude, quantum_system=_DEVICE)
     compiled.lower(Q[0], 0.1)
     return lambda i: compiled.lower(Q[0], 0.01 * (i + 1)).mlir()
 
@@ -281,20 +286,22 @@ def _submit() -> Op:
     return lambda i: _SUBMIT.submit([1], 0.1, 0.2, 0.3, 0.4, 0.5).result()
 
 
-def _export_controller() -> Op:
+def _export_to_controller() -> Op:
     lowered = _feedback_program(64)
-    return lambda i: lowered.export_controller()
+    return lambda i: lowered.export_to_controller()
 
 
-def _export_controller_sampled() -> Op:
+def _export_to_controller_sampled() -> Op:
     lowered = _feedback_program(16)
-    rate = 2 * lowered.target.clock_ghz
-    return lambda i: lowered.export_controller(rate)
+    rate = 2 * lowered.quantum_system.clock_ghz
+    return lambda i: lowered.export_to_controller(rate)
 
 
-def _export_emulation() -> Op:
-    lowered = pulse.compile(_calls.many_calls(64, 4), device=_DEVICE, schedule="asap").lower(Q[0])
-    return lambda i: lowered.export_emulation()
+def _export_to_emulator() -> Op:
+    lowered = pulse.compile(
+        _calls.many_calls(64, 4), quantum_system=_DEVICE, schedule="asap"
+    ).lower(Q[0])
+    return lambda i: lowered.export_to_emulator()
 
 
 def _simulate_setup() -> Op:
@@ -303,7 +310,7 @@ def _simulate_setup() -> Op:
         d = get_drive_line(q)
         drive(d, square(8, 0.1))
 
-    lowered = pulse.compile(pi_pulse, device=_DEVICE).lower(Q[0])
+    lowered = pulse.compile(pi_pulse, quantum_system=_DEVICE).lower(Q[0])
     # Eight cycles at one step per cycle: the run is mostly its setup. The
     # seed keeps its generator from being seeded with the system's entropy,
     # different in every run.
@@ -401,23 +408,23 @@ CASES: tuple[Case, ...] = (
         sizes=_call_size,
     ),
     Case(
-        "export_controller",
+        "export_to_controller",
         "controller program of 64 readouts with feedback",
-        _export_controller,
+        _export_to_controller,
         3,
         sizes=_json_bytes,
     ),
     Case(
-        "export_controller_sampled",
+        "export_to_controller_sampled",
         "controller program of 16 readouts with feedback, with envelope samples",
-        _export_controller_sampled,
+        _export_to_controller_sampled,
         3,
         sizes=_json_bytes,
     ),
     Case(
-        "export_emulation",
+        "export_to_emulator",
         "emulator program of 64 classical calls on 4 links",
-        _export_emulation,
+        _export_to_emulator,
         3,
         sizes=_json_bytes,
     ),

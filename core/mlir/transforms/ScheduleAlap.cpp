@@ -58,10 +58,12 @@
 #include <numeric>
 
 #include "cudaq-pulse/Dialect/Pulse/PulseDialect.h.inc"
+#include "cudaq-pulse/Dialect/Pulse/PulseEnums.h.inc"
 
 #define GET_TYPEDEF_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseTypes.h.inc"
 #define GET_OP_CLASSES
+#include "cudaq-pulse/Dialect/Pulse/PulseAttrs.h"
 #include "cudaq-pulse/Dialect/Pulse/PulseOps.h.inc"
 
 #include "cudaq-pulse/Dialect/Classical/ClassicalDialect.h.inc"
@@ -346,8 +348,8 @@ public:
   /// one. Returns whether the calls' attributes changed.
   bool run(Timelines &result) {
     // Every call of a controller that blocks on calls holds every line.
-    everyLine = function->getParentOfType<mlir::ModuleOp>()->hasAttr(
-        classical::kBlocksOnCallsAttr);
+    everyLine =
+        pulse::blocksOnCalls(function->getParentOfType<mlir::ModuleOp>());
     // Without a run-time wait there is one timeline: skip the analysis.
     bool numbered = false;
     auto scan = function.walk([&](mlir::Operation *op) {
@@ -569,7 +571,7 @@ private:
       bool merged = false;
       for (auto &[key, list] : perLink) {
         auto slots = static_cast<size_t>(std::max<int64_t>(
-            1, classical::linkModel(module, key.first).maxInFlight));
+            1, classical::linkModel(module, key.first).slots));
         for (size_t k = slots; k < list.size(); ++k) {
           join(list[k], list[k % slots]);
           merged = true;
@@ -1153,9 +1155,8 @@ public:
         grid(grid),
         controllers(resources.enabled ? controllers : pulse::Controllers()) {
     auto module = region.getParentOp()->getParentOfType<mlir::ModuleOp>();
-    if (mlir::Attribute held =
-            module ? module->getAttr(classical::kBlocksOnCallsAttr) : nullptr)
-      holdControllers(held, controllers);
+    if (module && pulse::blocksOnCalls(module))
+      holdControllers(pulse::controlSystemOf(module), controllers);
     auto count = static_cast<size_t>(isolated() ? lanesPer->count : 1);
     floors.assign(count, 0);
     ends.assign(count, 0);
@@ -1213,7 +1214,7 @@ public:
         spans;
     auto hold = [&](mlir::Operation *submit, int64_t start, int64_t busy) {
       auto &[slots, found] = spans[linkOf(submit)];
-      slots = classical::intAttr(submit, "classical.max_in_flight", 64);
+      slots = classical::intAttr(submit, "classical.slots", 64);
       found.push_back({start, 1});
       found.push_back({start + busy, -1});
     };
@@ -1380,21 +1381,22 @@ private:
 
   // ── Calls that hold controllers ───────────────────────────────────────
 
-  /// From `pulse.blocks_on_calls`: every call holds every line, or, on
-  /// several controllers whose lines are traced, the lines of those it
-  /// lists that the call involves (`heldBy`).
-  void holdControllers(mlir::Attribute held, const pulse::Controllers &all) {
-    auto listed = mlir::dyn_cast<mlir::DenseI64ArrayAttr>(held);
-    if (!Gridded || !listed || !all.enabled()) {
+  /// From the controllers of `system` that block on calls: every call holds
+  /// every line, or, on several controllers whose lines are traced, the
+  /// lines of those that block that the call involves (`heldBy`).
+  void holdControllers(pulse::ControlSystemAttr system,
+                       const pulse::Controllers &all) {
+    llvm::ArrayRef<pulse::ControllerAttr> listed = system.getControllers();
+    if (!Gridded || !all.enabled() ||
+        static_cast<int64_t>(listed.size()) != all.count()) {
       blocksOnCalls = true;
       return;
     }
     owners = all;
     auto count = static_cast<size_t>(all.count());
     blocking.assign(count, false);
-    for (int64_t c : listed.asArrayRef())
-      if (c >= 0 && c < all.count())
-        blocking[c] = true;
+    for (auto [c, controller] : llvm::enumerate(listed))
+      blocking[c] = controller.getBlocksOnCalls();
     heldEnds.assign(count, 0);
     heldFloors.assign(count, 0);
     heldCeilings.assign(count, kNever);
@@ -1834,7 +1836,7 @@ private:
         ok = false;
         return;
       }
-      slots = classical::intAttr(op, "classical.max_in_flight", 64);
+      slots = classical::intAttr(op, "classical.slots", 64);
     });
     for (auto &[device, entry] : perLink)
       ok = ok && entry.first <= entry.second;
@@ -2306,7 +2308,7 @@ private:
     if (inserted)
       it->second.free.assign(
           static_cast<size_t>(std::max<int64_t>(
-              1, classical::intAttr(submit, "classical.max_in_flight", 64))),
+              1, classical::intAttr(submit, "classical.slots", 64))),
           laneReset);
     return it->second;
   }
@@ -2447,7 +2449,7 @@ private:
         ok = false;
         return;
       }
-      slots = classical::intAttr(op, "classical.max_in_flight", 64);
+      slots = classical::intAttr(op, "classical.slots", 64);
     });
     for (auto &[device, entry] : perLink)
       ok = ok && entry.first <= entry.second;
@@ -2973,7 +2975,7 @@ private:
               noteEnd(time, 0);
           for (auto [op, group] : groups->ofOp) {
             if (!mlir::isa<classical::WaitOp>(op) ||
-                op->getParentOfType<mlir::scf::ForOp>() != loop)
+                op->template getParentOfType<mlir::scf::ForOp>() != loop)
               continue;
             auto found = samples.find(op);
             if (found != samples.end() && !found->second.empty() &&
@@ -3996,49 +3998,15 @@ static NotAffine peelAround(mlir::scf::ForOp loop,
           extended && after ? 0 : trips - 1 - line[last].first};
 }
 
-/// The names of the timing attributes, interned once per scheduling rather
-/// than once per op: every interning is a lookup in the context's uniquer.
-struct TimingNames {
-  mlir::StringAttr start, duration, period;
-  explicit TimingNames(mlir::MLIRContext *context)
-      : start(mlir::StringAttr::get(context, "start_cycles")),
-        duration(mlir::StringAttr::get(context, "duration_cycles")),
-        period(mlir::StringAttr::get(context, "period_cycles")) {}
-};
-
-static std::optional<NotAffine> writeTiming(
-    mlir::Operation *op, mlir::Operation *root, llvm::ArrayRef<Sample> samples,
-    llvm::ArrayRef<Extrapolation> extrapolations, const TimingNames &names) {
+static std::optional<NotAffine>
+writeTiming(mlir::Operation *op, mlir::Operation *root,
+            llvm::ArrayRef<Sample> samples,
+            llvm::ArrayRef<Extrapolation> extrapolations) {
   auto loops = pulse::enclosingLoops(op, root);
-  mlir::MLIRContext *context = op->getContext();
-  auto i64 = mlir::IntegerType::get(context, 64);
   int64_t duration = durationOf(op);
-  // One rebuild of the op's own (discardable) attributes, none when a later
-  // round writes what an earlier one did.
   auto write = [&](std::optional<int64_t> start,
                    llvm::ArrayRef<int64_t> periods) {
-    mlir::NamedAttrList attributes(op->getDiscardableAttrDictionary());
-    auto setCycles = [&](mlir::StringAttr name, int64_t value) {
-      auto old =
-          mlir::dyn_cast_or_null<mlir::IntegerAttr>(attributes.get(name));
-      if (!old || old.getType() != i64 || old.getInt() != value)
-        attributes.set(name, mlir::IntegerAttr::get(i64, value));
-    };
-    if (start)
-      setCycles(names.start, *start);
-    else
-      attributes.erase(names.start);
-    setCycles(names.duration, duration);
-    if (periods.empty()) {
-      attributes.erase(names.period);
-    } else {
-      auto old = mlir::dyn_cast_or_null<mlir::DenseI64ArrayAttr>(
-          attributes.get(names.period));
-      if (!old || old.asArrayRef() != periods)
-        attributes.set(names.period,
-                       mlir::DenseI64ArrayAttr::get(context, periods));
-    }
-    op->setDiscardableAttrs(attributes.getDictionary(context));
+    pulse::setTiming(op, start, duration, periods);
   };
   if (samples.empty()) {
     // Never executed (inside a zero-trip loop).
@@ -4265,9 +4233,8 @@ static std::optional<NotAffine> periodMismatch(mlir::Region &region,
         problem = NotAffine{loop, 1};
     };
     forEachScheduled(loop.getRegion(), [&](mlir::Operation *timed) {
-      auto periods =
-          timed->getAttrOfType<mlir::DenseI64ArrayAttr>("period_cycles");
-      if (problem || !periods || static_cast<size_t>(periods.size()) <= level)
+      llvm::ArrayRef<int64_t> periods = pulse::periodCycles(timed);
+      if (problem || periods.size() <= level)
         return;
       if (mlir::isa<classical::WaitOp>(timed))
         return;
@@ -4341,8 +4308,8 @@ private:
   }
 
   void note(mlir::Operation *op) {
-    if (auto start = op->getAttrOfType<mlir::IntegerAttr>("start_cycles"))
-      earliest = std::min(earliest, start.getInt());
+    if (std::optional<int64_t> start = pulse::startCycles(op))
+      earliest = std::min(earliest, *start);
   }
 
   void visit(mlir::OpOperand &use) {
@@ -4556,44 +4523,33 @@ static void inlineBody(pulse::ScheduleBlockOp block) {
 /// Move the ops of the placed `block` to its start and period, then inline
 /// it.
 static void inlineScheduleBlock(pulse::ScheduleBlockOp block) {
-  mlir::MLIRContext *context = block.getContext();
-  auto start = block->getAttrOfType<mlir::IntegerAttr>("start_cycles");
-  llvm::SmallVector<int64_t> outer;
-  if (auto periods =
-          block->getAttrOfType<mlir::DenseI64ArrayAttr>("period_cycles"))
-    outer.assign(periods.asArrayRef().begin(), periods.asArrayRef().end());
+  std::optional<int64_t> start = pulse::startCycles(block);
+  llvm::ArrayRef<int64_t> outer = pulse::periodCycles(block);
   block.getBody().walk([&](mlir::Operation *op) {
     if (!isTimedOp(op))
       return;
-    auto local = op->getAttrOfType<mlir::IntegerAttr>("start_cycles");
+    std::optional<int64_t> local = pulse::startCycles(op);
     if (!start || !local) {
       // The block or this op never runs.
-      op->removeAttr("start_cycles");
-      op->removeAttr("period_cycles");
+      pulse::setStartCycles(op, std::nullopt);
+      pulse::setPeriodCycles(op, {});
       return;
     }
-    op->setAttr("start_cycles",
-                mlir::IntegerAttr::get(local.getType(),
-                                       start.getInt() + local.getInt()));
-    llvm::SmallVector<int64_t> periods = outer;
-    if (auto inner =
-            op->getAttrOfType<mlir::DenseI64ArrayAttr>("period_cycles"))
-      periods.append(inner.asArrayRef().begin(), inner.asArrayRef().end());
-    if (periods.empty())
-      op->removeAttr("period_cycles");
-    else
-      op->setAttr("period_cycles",
-                  mlir::DenseI64ArrayAttr::get(context, periods));
+    pulse::setStartCycles(op, *start + *local);
+    llvm::SmallVector<int64_t> periods(outer);
+    llvm::append_range(periods, pulse::periodCycles(op));
+    pulse::setPeriodCycles(op, periods);
   });
   inlineBody(block);
 }
 
 // ── Duration budgets ─────────────────────────────────────────────────────
 //
-// `max_duration_cycles` on a schedule block, or `pulse.max_duration_cycles`
-// on the module, bounds how long every execution of the block, or the whole
-// program, may take. A wait whose length is not known yet is scheduled at
-// its current length; the check adds what each execution of it can add.
+// `max_duration_cycles` on a schedule block, or on a controller of the
+// module's control system, bounds how long every execution of the block, or
+// the whole program, may take. A wait whose length is not known yet is
+// scheduled at its current length; the check adds what each execution of it can
+// add.
 
 /// How many cycles longer than scheduled `op` can take: 0 for an op of
 /// known length, -1 for a wait without a highest length.
@@ -4689,13 +4645,18 @@ static mlir::LogicalResult checkBlockBudget(pulse::ScheduleBlockOp block) {
 }
 
 /// The end of the last execution of the last op of the scheduled
-/// `function`.
-static int64_t programLength(mlir::func::FuncOp function) {
+/// `function`, with each line delayed as `clocks` (its module's; none when
+/// null) delays it.
+static int64_t programLength(mlir::func::FuncOp function,
+                             const pulse::ClockAttributes *clocks = nullptr) {
+  std::optional<pulse::LineDelays> lines;
+  if (clocks && clocks->delayed())
+    lines.emplace(*clocks);
   int64_t length = 0;
   function.walk([&](mlir::Operation *op) {
     if (!isTimedOp(op))
       return;
-    auto start = op->getAttrOfType<mlir::IntegerAttr>("start_cycles");
+    std::optional<int64_t> start = pulse::startCycles(op);
     if (!start)
       return;
     auto loops = pulse::enclosingLoops(op, function);
@@ -4706,28 +4667,44 @@ static int64_t programLength(mlir::func::FuncOp function) {
         return;
       last.push_back(trips - 1);
     }
-    int64_t end = start.getInt();
-    if (auto periods =
-            op->getAttrOfType<mlir::DenseI64ArrayAttr>("period_cycles"))
-      for (auto [k, period] : llvm::zip(last, periods.asArrayRef()))
-        end += std::max<int64_t>(0, k * period);
+    int64_t end = *start;
+    for (auto [k, period] : llvm::zip(last, pulse::periodCycles(op)))
+      end += std::max<int64_t>(0, k * period);
     end += pulse::scheduledDuration(op).value_or(0);
+    if (lines)
+      end += lines->of(op);
     length = std::max(length, end);
   });
   return length;
 }
 
+/// The longest program a schedule counts, in cycles, as building the module
+/// checks it before its lines are delayed; a delay is at most as long, so
+/// the delayed length does not overflow.
+constexpr int64_t kLongestProgram = int64_t(1) << 60;
+
+/// Fail if the line delays of `clocks` take the scheduled `function` past
+/// kLongestProgram.
+static mlir::LogicalResult
+checkDelayedLength(mlir::func::FuncOp function,
+                   const pulse::ClockAttributes &clocks) {
+  if (!clocks.delayed() || programLength(function, &clocks) <= kLongestProgram)
+    return mlir::success();
+  return function->emitError()
+         << "the program lasts more than 2**60 cycles with its lines delayed "
+            "(their delay_ns), more than a schedule counts";
+}
+
 static mlir::LogicalResult checkProgramBudget(mlir::func::FuncOp function) {
   auto module = function->getParentOfType<mlir::ModuleOp>();
-  auto budget = module ? module->getAttrOfType<mlir::IntegerAttr>(
-                             "pulse.max_duration_cycles")
-                       : mlir::IntegerAttr();
+  std::optional<int64_t> budget =
+      module ? pulse::programBudget(module) : std::nullopt;
   if (!budget)
     return mlir::success();
   std::string what =
       "kernel '" + module.getSymName().value_or("main").str() + "'";
   return checkBudget(function, function, what, programLength(function),
-                     budget.getInt());
+                     *budget);
 }
 
 // ── Driver ───────────────────────────────────────────────────────────────
@@ -4751,7 +4728,6 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
   // terminates.
   int64_t widePeels = 0, regroups = 0, headPeels = 0;
   llvm::DenseMap<mlir::Operation *, int64_t> regroupedBy;
-  TimingNames names(region.getContext());
   while (true) {
     Scheduler<Gridded> scheduler(region, resources, classical, grid,
                                  controllers, &timelines);
@@ -4807,22 +4783,32 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
     // The first problem of each loop that neither holds nor is held by the
     // loop of one before it: peeling or unrolling one leaves the others'
     // loops in place, and copies of a loop that peeling made (one per
-    // iteration peeled around it) are then all fixed in one round.
+    // iteration peeled around it) are then all fixed in one round. With a
+    // problem for each copy, whether a loop is apart is a walk up from it,
+    // not a comparison with every problem.
     llvm::SmallVector<NotAffine> problems;
+    llvm::DenseSet<mlir::Operation *> problemLoops, aroundProblems;
     auto apart = [&](mlir::scf::ForOp loop) {
-      return llvm::none_of(problems, [&](const NotAffine &other) {
-        return other.loop->isAncestor(loop) || loop->isAncestor(other.loop);
-      });
+      if (aroundProblems.contains(loop))
+        return false;
+      for (mlir::Operation *op = loop; op; op = op->getParentOp())
+        if (problemLoops.contains(op))
+          return false;
+      return true;
     };
     forEachScheduled(region, [&](mlir::Operation *op) {
       auto it = scheduler.samples.find(op);
       llvm::ArrayRef<Sample> samples;
       if (it != scheduler.samples.end())
         samples = it->second;
-      if (auto problem =
-              writeTiming(op, root, samples, scheduler.extrapolations, names))
-        if (apart(problem->loop))
-          problems.push_back(*problem);
+      auto problem = writeTiming(op, root, samples, scheduler.extrapolations);
+      if (!problem || !apart(problem->loop))
+        return;
+      problems.push_back(*problem);
+      problemLoops.insert(problem->loop);
+      mlir::Operation *around = problem->loop;
+      while (around && aroundProblems.insert(around).second)
+        around = around->getParentOp();
     });
     if (problems.empty())
       if (auto problem = periodMismatch(region, root))
@@ -4850,11 +4836,15 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
   return mlir::success();
 }
 
-/// Whether the module of `op` lists the controllers that block on calls.
+/// Whether some of the several controllers of the module of `op` block on
+/// calls.
 static bool holdsControllers(mlir::Operation *op) {
   auto module = op->getParentOfType<mlir::ModuleOp>();
-  return module && mlir::isa_and_present<mlir::DenseI64ArrayAttr>(
-                       module->getAttr(classical::kBlocksOnCallsAttr));
+  if (!module)
+    return false;
+  pulse::ControlSystemAttr system = pulse::controlSystemOf(module);
+  return system && system.getControllers().size() > 1 &&
+         pulse::blocksOnCalls(module);
 }
 
 static mlir::LogicalResult
@@ -4866,9 +4856,10 @@ scheduleRegion(mlir::Region &region, mlir::Operation *root, Resources resources,
   if (mlir::failed(blocks))
     return mlir::failure();
   for (pulse::ScheduleBlockOp block : *blocks) {
-    if (mlir::failed(scheduleRegion(block.getBody(), block, Resources{},
-                                    block.getPolicy() == "alap", classical,
-                                    timelines, grid, controllers)))
+    if (mlir::failed(
+            scheduleRegion(block.getBody(), block, Resources{},
+                           block.getPolicy() == pulse::SchedulePolicy::ALAP,
+                           classical, timelines, grid, controllers)))
       return mlir::failure();
     writeShape(block);
     if (mlir::failed(checkBlockBudget(block)))
@@ -4910,8 +4901,8 @@ static mlir::LogicalResult schedule(mlir::func::FuncOp function,
   if (mlir::failed(annotated))
     return mlir::failure();
   bool classical = *annotated;
-  bool blocksOnCalls = function->getParentOfType<mlir::ModuleOp>()->hasAttr(
-      classical::kBlocksOnCallsAttr);
+  bool blocksOnCalls =
+      pulse::blocksOnCalls(function->getParentOfType<mlir::ModuleOp>());
   if (classical)
     for (pulse::ScheduleBlockOp block : outermostBlocks(function.getBody())) {
       mlir::WalkResult found = block.walk([blocksOnCalls](mlir::Operation *op) {
@@ -4944,10 +4935,16 @@ static mlir::LogicalResult schedule(mlir::func::FuncOp function,
       function->getParentOfType<mlir::ModuleOp>());
   if (mlir::failed(scheduleRegion(
           function.getBody(), function, resources, isAlap, data, timelines,
-          pulse::LineGrid(clocks), pulse::Controllers(clocks.controllers))) ||
-      mlir::failed(checkProgramBudget(function)))
+          pulse::LineGrid(clocks), pulse::Controllers(clocks))) ||
+      mlir::failed(checkProgramBudget(function)) ||
+      mlir::failed(checkDelayedLength(function, clocks)))
     return mlir::failure();
-  pulse::applyLineDelays(function, clocks.delays);
+  bool placed = pulse::applyLineDelays(function, clocks);
+  function->setAttr(
+      pulse::kScheduleStateAttr,
+      pulse::ScheduleStateAttr::get(function.getContext(),
+                                    placed ? pulse::ScheduleState::Placed
+                                           : pulse::ScheduleState::Timed));
   return mlir::success();
 }
 

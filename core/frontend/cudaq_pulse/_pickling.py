@@ -10,21 +10,21 @@
   defined inside a function. A process keeps the last ``_KEPT_KERNELS``
   kernels pickled or unpickled this way by token, so a kernel sent again
   (a task's argument, say) is the same kernel, with its specializations.
-  A compiled kernel pickles as its kernel, options and device: its
+  A compiled kernel pickles as its kernel, options and quantum system: its
   specializations are compiled again where it is called.
-- A target pickles as the inputs it was built from, and a device as its
+- A target pickles as the inputs it was built from, and a quantum system as its
   target and the inputs it was built from; both are built again, equal to
-  the originals. A process keeps the last ``_KEPT_DEVICES`` devices it
+  the originals. A process keeps the last ``_KEPT_DEVICES`` quantum systems it
   unpickled by fingerprint (which covers the calibration), name, source
-  and control system, so that programs of one device unpickled one by one
-  share it without building it again. A device makes its description
+  and control system, so that programs of one quantum system unpickled one by one
+  share it without building it again. A quantum system makes its description
   once. A control system, its controllers and their processors pickle as
   their inputs and are checked again. A calibration the package ships
-  pickles as its name, cooldown and the digest of its file, and unpickles
+  pickles as its name, measurement run and the digest of its file, and unpickles
   as the one shipped here if that has the same digest; any other pickles
-  as its values. Qudit handles and registers pickle as their device and
+  as its values. Qudit handles and registers pickle as their quantum system and
   indices.
-- A program (``Lowered``, and a call's view of one) pickles as MLIR
+- A program (``ScheduledKernel``, and a call's view of one) pickles as MLIR
   bytecode and its metadata, stamped with the build that compiled it, and
   runs without compiling again. Only that build unpickles it: another
   raises ``UnsupportedError`` saying to compile it again. The stamp hashes
@@ -96,66 +96,69 @@ def rebuilt_links(cls: Any, links: dict[int, Any], names: dict[str, int]) -> Any
     return found
 
 
-# ── Devices ─────────────────────────────────────────────────────────────────
+# ── Quantum systems ─────────────────────────────────────────────────────────────────
 
 _KEPT_DEVICES = 16
 _devices: dict[tuple[Any, ...], Any] = {}
 _devices_lock = threading.Lock()
 
 
-def _device_key(device: Any) -> tuple[Any, ...]:
+def _device_key(quantum_system: Any) -> tuple[Any, ...]:
     # The fingerprint, and the labels and control system it leaves out, so
-    # that an unpickled device is the one pickled in every attribute.
-    system = device.control_system
+    # that an unpickled quantum system is the one pickled in every attribute.
+    system = quantum_system.control_system
     if system is None:
-        return (device.fingerprint, device.name, device.source)
-    return (device.fingerprint, device.name, device.source, system)
+        return (quantum_system.fingerprint, quantum_system.name, quantum_system.source)
+    return (quantum_system.fingerprint, quantum_system.name, quantum_system.source, system)
 
 
-def _keep(key: tuple[Any, ...], device: Any) -> None:
+def _keep(key: tuple[Any, ...], quantum_system: Any) -> None:
     with _devices_lock:
         _devices.pop(key, None)
-        _devices[key] = device
+        _devices[key] = quantum_system
         while len(_devices) > _KEPT_DEVICES:
             del _devices[next(iter(_devices))]
 
 
-def device_reduce(device: Any) -> tuple[Any, ...]:
-    """*device* as its fingerprint, labels and control system and, pickled
+def device_reduce(quantum_system: Any) -> tuple[Any, ...]:
+    """*quantum_system* as its fingerprint, labels and control system and, pickled
     apart, its class, target, the other inputs of its constructor and the
-    attributes they do not set: a process that has the device of that key
-    does not unpickle the rest. The description is made once per device: a
-    device is read-only."""
-    key = _device_key(device)
-    _keep(key, device)
-    description: bytes | None = device.__dict__.get("_pickled")
+    attributes they do not set: a process that has the quantum system of that key
+    does not unpickle the rest. The description is made once per quantum system: a
+    quantum system is read-only."""
+    key = _device_key(quantum_system)
+    _keep(key, quantum_system)
+    description: bytes | None = quantum_system.__dict__.get("_pickled")
     if description is None:
         # The target already has the program clock, which a control system
         # is given again to check it against.
         inputs = {
-            "name": device.name,
-            "layout": device.layout,
-            "source": device.source,
-            "calibration": device.calibration,
+            "name": quantum_system.name,
+            "layout": quantum_system.layout,
+            "source": quantum_system.source,
+            "calibration": quantum_system.calibration,
         }
-        if device.control_system is not None:
-            inputs["clock_ghz"] = device.clock_ghz
-        parts: tuple[Any, ...] = (type(device), device.target, inputs)
+        if quantum_system.control_system is not None:
+            inputs["clock_ghz"] = quantum_system.clock_ghz
+        parts: tuple[Any, ...] = (type(quantum_system), quantum_system._description, inputs)
         # What as_dict writes that the inputs do not give: the registered
         # target and the target before its calibration and program clock.
-        if device._spec is not None or device._base_target is not device.target:
-            parts += ({"_spec": device._spec, "_base_target": device._base_target},)
+        if (
+            quantum_system._spec is not None
+            or quantum_system._base_target is not quantum_system._description
+        ):
+            parts += ({"_spec": quantum_system._spec, "_base_target": quantum_system._base_target},)
         description = pickle.dumps(parts, pickle.HIGHEST_PROTOCOL)
-        device._pickled = description
+        quantum_system._pickled = description
     return (rebuilt_device, (key, description))
 
 
-def rebuilt_shipped_calibration(name: str, cooldown: str, digest: str, version: str) -> Any:
-    """The calibration *name* (*cooldown*) that this package ships, if it is
+def rebuilt_shipped_calibration(name: str, measurement_run: str, digest: str, version: str) -> Any:
+    """The calibration *name* (*measurement_run*) that this package ships, if it is
     the file of that *digest* that cudaq-pulse *version* shipped."""
-    from .targets.calibration import _shipped_unread
+    from .quantum_systems.calibration import _shipped_unread
 
-    found = _shipped_unread(name, cooldown, digest)
+    found = _shipped_unread(name, measurement_run, digest)
     if found is None:
         from ._build_config import PACKAGE_VERSION
         from ._errors import UnsupportedError
@@ -178,11 +181,11 @@ def rebuilt_device(key: tuple[Any, ...], description: bytes) -> Any:
     cls, target, inputs, *state = pickle.loads(description)
     if len(key) > 3:
         inputs["control_system"] = key[3]
-    device = cls(target, **inputs)
+    quantum_system = cls(target, **inputs)
     for attributes in state:
-        vars(device).update(attributes)
-    _keep(key, device)
-    return device
+        vars(quantum_system).update(attributes)
+    _keep(key, quantum_system)
+    return quantum_system
 
 
 # ── Kernels and classical functions ─────────────────────────────────────────
@@ -283,6 +286,9 @@ def classical_reduce(function: Any, protocol: int) -> Any:
 
         return (_unpickled_version, (template, function._key))
     implementation = function.implementation
+    own = getattr(implementation, "_pickle_function", None)
+    if own is not None:  # a CUDA-Q QEC function or one of its versions
+        return own(function)
     if implementation is not None:
         module = getattr(implementation, "__module__", None)
         qualname = getattr(implementation, "__qualname__", "")
@@ -296,16 +302,16 @@ def classical_reduce(function: Any, protocol: int) -> Any:
     return object.__reduce_ex__(function, protocol)
 
 
-def rebuilt_compiled(kernel: Any, options: Any, device: Any, general: Any) -> Any:
+def rebuilt_compiled(kernel: Any, options: Any, quantum_system: Any, general: Any) -> Any:
     """A compiled kernel without its specializations, which compile on first
     use; its pinned module, if built, comes with it."""
     from .kernel._kernel import CompiledKernel
 
     compiled = CompiledKernel.__new__(CompiledKernel)
     compiled.kernel = kernel
-    compiled.device = device
+    compiled.quantum_system = quantum_system
     compiled._dispatch = kernel._dispatcher_type(kernel, options, None)
-    compiled._dispatch.pin = device
+    compiled._dispatch.pin = quantum_system
     compiled._dispatch.general = general
     return compiled
 

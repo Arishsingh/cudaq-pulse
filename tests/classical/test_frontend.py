@@ -64,9 +64,9 @@ def test_module_is_the_decorator():
 
 def test_function_id_is_fnv1a_as_cuda_q_hashes_handler_names():
     # The keys CUDA-QX pins for its decoder messages.
-    assert classical.function_id("enqueue_syndromes") == 0x7ED8BE82
-    assert classical.function_id("get_corrections") == 0x882D5BA1
-    assert classical.function_id("reset_decoder") == 0x977A59CF
+    assert classical.dispatch_key("enqueue_syndromes") == 0x7ED8BE82
+    assert classical.dispatch_key("get_corrections") == 0x882D5BA1
+    assert classical.dispatch_key("reset_decoder") == 0x977A59CF
 
 
 def test_declaration_keeps_the_schema_and_timing():
@@ -379,11 +379,11 @@ def test_lengths_option_is_gone():
 
 
 def test_link_validation():
-    assert Link().max_in_flight == 64
+    assert Link().slots == 64
     for bad in (
         {"fixed_ns": -1},
         {"bytes_per_ns": math.nan},
-        {"max_in_flight": 0},
+        {"slots": 0},
         {"slot_bytes": 24},
     ):
         with pytest.raises(ValueError):
@@ -698,11 +698,11 @@ def test_a_call_is_dispatched_by_the_hash_of_its_compiled_name():
     (call,) = low.classical_report()
     assert (call.compiled_name, call.dispatch_key) == (
         "first__1",
-        classical.function_id("first__1"),
+        classical.dispatch_key("first__1"),
     )
-    (entry,) = low.export_emulation()["manifest"]["functions"]
+    (entry,) = low.export_to_emulator()["manifest"]["functions"]
     assert entry["dispatch_key"] == call.dispatch_key and "dispatch_key_fixed_by" not in entry
-    assert "function_id" not in entry and "dispatch_key" not in low.export_emulation()["calls"][0]
+    assert "dispatch_key" not in low.export_to_emulator()["calls"][0]
 
 
 def test_a_function_on_a_processor_that_fixes_keys_must_be_listed():
@@ -725,18 +725,14 @@ def test_two_names_that_hash_alike_are_an_error():
 
 
 def test_a_name_that_hashes_to_a_reserved_key_is_an_error():
-    with pytest.raises(pulse.CompilationError, match="which cudaq_pulse.classical.qec uses"):
+    with pytest.raises(pulse.CompilationError, match="which CUDA-Q QEC's decoding server uses"):
         _program(_one("enqueue_syndromes", link=0))
 
 
 def test_the_reserved_keys_are_the_keys_of_the_decoder_protocol():
-    from cudaq_pulse.classical import _RESERVED_KEYS, qec
+    from cudaq_pulse.classical import _RESERVED_KEYS, _cudaqx
 
-    assert set(_RESERVED_KEYS) == {
-        qec.ENQUEUE_SYNDROMES_ID,
-        qec.GET_CORRECTIONS_ID,
-        qec.RESET_DECODER_ID,
-    }
+    assert set(_RESERVED_KEYS) == {m.key for m in _cudaqx._MESSAGES.values()}
 
 
 def test_a_template_on_a_processor_that_fixes_keys_needs_a_length():
@@ -759,9 +755,9 @@ def test_a_processor_fixes_the_keys_of_the_functions_it_runs():
     low = _program(_one("table"), _one("decode", link="gpu"), machine=system)
     assert [(c.compiled_name, c.dispatch_key) for c in low.classical_report()] == [
         ("table", 5),
-        ("decode", classical.function_id("decode")),
+        ("decode", classical.dispatch_key("decode")),
     ]
-    entries = {e["name"]: e for e in low.export_emulation()["manifest"]["functions"]}
+    entries = {e["name"]: e for e in low.export_to_emulator()["manifest"]["functions"]}
     assert entries["table"]["dispatch_key_fixed_by"] == "controllers[0] (vendor.fpga).processors[0]"
     with pytest.raises(pulse.CompilationError, match="processors\\[0\\]"):
         _program(_one("vote"), machine=system)
@@ -883,11 +879,11 @@ def test_an_external_of_unsized_inputs_has_a_version_per_length():
         ("_syndromes", "_syndromes__3"),
         ("_decode_surface", "_decode_surface__4"),
     ]
-    entries = {e["name"]: e for e in low.export_emulation()["manifest"]["functions"]}
+    entries = {e["name"]: e for e in low.export_to_emulator()["manifest"]["functions"]}
     assert set(entries) == {"_syndromes__2", "_syndromes__3", "_decode_surface__4"}
-    assert entries["_syndromes__3"]["dispatch_key"] == classical.function_id("_syndromes__3")
+    assert entries["_syndromes__3"]["dispatch_key"] == classical.dispatch_key("_syndromes__3")
     assert entries["_syndromes__3"]["schema"] == wire.schema(_syndromes.specialize(syndrome=3))
-    key = classical.function_id("_decode_surface__4")
+    key = classical.dispatch_key("_decode_surface__4")
     assert entries["_decode_surface__4"]["dispatch_key"] == key
 
 
@@ -1028,7 +1024,7 @@ def test_links_reach_the_module_and_the_schedule():
     low = pulse.compile(_reset, control_system=machine).lower(Q[0])
     assert "fixed_ns = 5.000000e+01" in low.mlir()
     (call,) = low.classical_report()
-    clock = low.target.clock_ghz
+    clock = low.quantum_system.clock_ghz
     # 24 header bytes + 1 payload byte at 1 byte/ns, plus the fixed 50 ns.
     assert call.submit_duration_cycles == math.ceil((50 + 25) * clock)
     assert call.due_cycles == call.submit_cycles + call.submit_duration_cycles + math.ceil(
@@ -1048,7 +1044,7 @@ def test_links_reach_the_module_and_the_schedule():
 def test_report_and_schedule_events():
     low = pulse.compile(_reset, schedule="asap").lower(Q[0])
     (call,) = low.classical_report()
-    clock = low.target.clock_ghz
+    clock = low.quantum_system.clock_ghz
     assert call.function == "echo" and call.compiled_name == "echo__1"
     assert call.link == 0 and call.iteration == ()
     assert call.submit_cycles == 200 and call.submit_duration_cycles == 1

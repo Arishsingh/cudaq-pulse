@@ -205,8 +205,8 @@ def test_a_check_of_run_time_frame_changes_in_branches_takes_bounded_memory():
         "the program exceeds the controller's limits:\n"
         "  line 0: its waveforms take 72 samples; the controller's waveform memory holds 64"
     )
-    for shots in (2, 400):
-        found = _in_a_child("retuned", shots, "waveform_memory_samples=64")
+    for shots_count in (2, 400):
+        found = _in_a_child("retuned", shots_count, "waveform_memory_samples=64")
         assert found == {"count": 1, "message": message}
 
 
@@ -288,7 +288,7 @@ LIMITS = [
         instruction_cycles=2,
         detectors={0: 0, 1: 0},
         detector_recovery_cycles=30,
-        max_tones_per_line=1,
+        max_frequencies_per_line=1,
         waveform_memory_samples=50,
         feedback_latency_cycles=60,
     ),
@@ -756,7 +756,7 @@ def test_a_long_rolled_loop_of_runtime_qudits_is_summarized_and_checked_as_every
         return walk(*args, **kwargs)
 
     # A runtime qudit's own frequency is one tone wherever it plays.
-    tones = [Controller(max_tones_per_line=1), Controller(max_tones_per_line=2)]
+    tones = [Controller(max_frequencies_per_line=1), Controller(max_frequencies_per_line=2)]
     for limits in [*LIMITS, *tones]:
         if clock is not None:
             limits = dataclasses.replace(limits, **OWN_CLOCKS[clock])
@@ -772,7 +772,7 @@ def test_a_long_rolled_loop_of_runtime_qudits_is_summarized_and_checked_as_every
 def test_a_rolled_loop_of_10_15_iterations_of_a_runtime_qudit_is_checked_in_bounds():
     for limits in (
         "instruction_cycles=4, min_idle_cycles=4",
-        "max_tones_per_line=1, max_amplitude=0.05",
+        "max_frequencies_per_line=1, max_amplitude=0.05",
     ):
         few = _in_a_child("runtime", 20, limits)
         many = _in_a_child("runtime", 10**15, limits)
@@ -821,7 +821,7 @@ def _systems() -> dict[str, Any]:
         "delayed": two(1.0, {("drive", 2): 3.0}, cores=True, instruction_cycles=2),
         "skewed": two(1.0, skew=1, instruction_cycles=2),
         "shared": two(1.0, instruction_cycles=2, feedback_latency_cycles=60, peer_latency_cycles=8),
-        "counted": two(1.0, max_pulses=10, max_tones_per_line=1, waveform_memory_samples=50),
+        "counted": two(1.0, max_pulses=10, max_frequencies_per_line=1, waveform_memory_samples=50),
         "unrolled": two(1.0, supports=[c for c in _CAPABILITIES if c != "loop"], max_pulses=10),
         "unforwarded": two(1.0, supports=[c for c in _CAPABILITIES if c != "forward_outcome"]),
         "gridded": two(1.0, cycles_per_timestep=4, max_amplitude=0.05),
@@ -916,7 +916,7 @@ def _on_system(kernel: Any, schedule: str, qpu: Any) -> Any:
     """The ops of *kernel* compiled for *qpu* (and called, with a float), or
     the limits it exceeds."""
     try:
-        compiled = pulse.compile(kernel, device=qpu, schedule=schedule, unroll_threshold=0)
+        compiled = pulse.compile(kernel, quantum_system=qpu, schedule=schedule, unroll_threshold=0)
         handles = (qpu.qudits[0], qpu.qudits[2])
         if kernel.__wrapped__.__name__ in ("scaled", "loose"):
             return compiled.lower(*handles, 0.6).metrics.op_count
@@ -934,7 +934,7 @@ def test_a_long_rolled_loop_on_a_control_system_is_checked_as_every_iteration(
 ):
     from cudaq_pulse import _system
 
-    qpu = pulse.device(ladder_target(4), control_system=_systems()[system])
+    qpu = ladder_target(4, control_system=_systems()[system])
     kernel = _across(trips)[name]
     kept: list[bool] = []
     summarized = _system.ControlSystem._summarized
@@ -977,9 +977,9 @@ def test_a_rolled_loop_of_10_15_iterations_across_controllers_is_checked_in_boun
         "def _controller(lines):\n"
         "    return pulse.Controller(drive_lines=lines, readout_lines=lines, instruction_cycles=4,"
         " min_idle_cycles=4)\n"
-        "qpu = pulse.device(ladder_target(4), control_system=pulse.ControlSystem("
+        "qpu = ladder_target(4, control_system=pulse.ControlSystem("
         "controllers=[_controller([0, 1]), _controller([2, 3])], reference_clock_ghz=1.0))\n"
-        "options = {'device': qpu}\n"
+        "options = {'quantum_system': qpu}\n"
         "handles = (qpu.qudits[0], qpu.qudits[2])\n"
     )
     few = _in_a_child("across", 20, system=system)

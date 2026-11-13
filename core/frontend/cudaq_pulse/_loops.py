@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from ._clocks import ClockPlan, ControllerClock
     from ._system import Controller, ControlSystem
-    from .compiler import Lowered
+    from .compiler import ScheduledKernel
 
 # Up to this many violations are a list, as without summarized loops.
 LAZY_AFTER = 10_000
@@ -210,7 +210,7 @@ class _Block:
 
 
 class Schedule(Sequence[Any]):
-    """``Lowered.schedule`` past ``LAZY_AFTER`` events: each event built when
+    """``ScheduledKernel.schedule`` past ``LAZY_AFTER`` events: each event built when
     read from its op and the iteration of each loop around it, whose start
     is the op's first plus each iteration's shift. ``len()`` is exact;
     indexing, slicing and iterating give what a list of every event would."""
@@ -264,10 +264,10 @@ class Schedule(Sequence[Any]):
                 yield self._made(item, at)
 
     def _made(self, op: tuple[Any, ...], at: Sequence[int]) -> Any:
-        kind, line, qubit, start, duration, shifts = op
+        kind, line, qudit, start, duration, shifts = op
         if start is not None:
             start += sum(i * s for i, s in zip(at, shifts, strict=True) if s is not None)
-        return self._event(kind, line, qubit, start, duration)
+        return self._event(kind, line, qudit, start, duration)
 
     def latest_end(self) -> int | None:
         """The latest end of an event, or ``None`` when some event has no
@@ -568,7 +568,7 @@ def _rolled_loops(
 
 
 def violations(
-    lowered: Lowered,
+    lowered: ScheduledKernel,
     events: Sequence[Mapping[str, Any]],
     repeats: Sequence[Sequence[int]],
     limits: Controller,
@@ -637,7 +637,7 @@ def labeled(found: list[Any], label: str) -> list[Any]:
 
 
 def parts(
-    lowered: Lowered,
+    lowered: ScheduledKernel,
     events: Sequence[Mapping[str, Any]],
     repeats: Sequence[Sequence[int]],
     limits: Controller,
@@ -690,7 +690,7 @@ def parts(
                 )
             found.append(text)
     issue, gap = limits.instruction_cycles, limits.instruction_cycles + limits.min_idle_cycles
-    num, den = _samples_per_own_cycle(limits, lowered.target.clock_ghz)
+    num, den = _samples_per_own_cycle(limits, lowered.quantum_system.clock_ghz)
     on_lines = sorted({events[i]["line"] for i in _events_of(timed)})
     shared = limits.waveform_memory is WaveformMemoryScope.SHARED
     stored: dict[Any, int] = {}
@@ -717,16 +717,16 @@ def parts(
             _Pairs(events, spacing, budget, (line,)).walk([(n, 0, ()) for n in items], None)[0]
         )
         templates = list(_events_of(items))
-        if limits.max_tones_per_line is not None:
+        if limits.max_frequencies_per_line is not None:
             tones = {
                 events[i]["frequency_hz"]
                 for i in templates
                 if events[i].get("frequency_hz") is not None
             }
-            if len(tones) > limits.max_tones_per_line:
+            if len(tones) > limits.max_frequencies_per_line:
                 found.append(
                     f"line {line}: {len(tones)} tone frequencies; the controller holds "
-                    f"{limits.max_tones_per_line} per line"
+                    f"{limits.max_frequencies_per_line} per line"
                 )
             elif unresolved is not None:
                 unknown = _keep(items, lambda i: events[i].get("frequency_hz") is None)
@@ -735,7 +735,7 @@ def parts(
                 else:
                     count = len({natives[i] for i in _events_of(unknown) if natives[i] >= 0})
                     count += _count(_keep(unknown, lambda i: natives[i] < 0))
-                if len(tones) + count > limits.max_tones_per_line:
+                if len(tones) + count > limits.max_frequencies_per_line:
                     unresolved.append(f"line {line}: tone frequencies")
         if limits.max_amplitude is not None:
             found.extend(_amplitudes(lines[line], items, events, limits.max_amplitude, unresolved))
@@ -1069,7 +1069,7 @@ def loops_of(
 
 
 def summarized_check(
-    lowered: Lowered,
+    lowered: ScheduledKernel,
     limits: Controller | None,
     system: ControlSystem | None,
     clocks: ClockPlan | None,
@@ -1085,7 +1085,7 @@ def summarized_check(
     with fewer summarized."""
     machine = lowered.options.machine
     natives = None
-    if slots and limits is not None and limits.max_tones_per_line is not None:
+    if slots and limits is not None and limits.max_frequencies_per_line is not None:
         with lowered._lock:
             natives, again, moved = lowered._module.controller_native_tones(
                 True, periods is not None

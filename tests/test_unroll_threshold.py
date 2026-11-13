@@ -10,25 +10,25 @@ from cudaq_pulse import ControlSystem
 from cudaq_pulse.classical import Link
 from cudaq_pulse.kernel._unroll import DEFAULT_UNROLL_THRESHOLD
 from cudaq_pulse.kernel.bytecode_bridge import compile_kernel_bytecode
-from cudaq_pulse.targets import Coupling, MicrowaveDrive, Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import Coupling, MicrowaveDrive, PhysicalQudit
 
-TARGET = TargetDescription(
+TARGET = pulse.quantum_system(
     name="unroll-pair",
-    qubits={
-        i: Qubit(
+    qudits={
+        i: PhysicalQudit(
             i,
             5.0e9 + 0.2e9 * i,
-            -300e6,
             0.0,
             0.0,
+            anharmonicity_hz=-300e6,
             drive=MicrowaveDrive(amplitude_scale_rad_per_ns=1.0),
         )
         for i in range(2)
     },
     couplings=[Coupling((0, 1), 2e6)],
 )
-DEV = pulse.device(TARGET)
-Q = DEV.qudit_handles
+DEV = TARGET
+Q = DEV.qudits
 
 
 def _train(n):
@@ -167,7 +167,7 @@ def test_rolled_and_unrolled_programs_are_the_same(name):
 
 
 POLICIES = ("asap", "alap", "rcp", "alap_rcp")
-MACHINE = ControlSystem(links={"host": Link(fixed_ns=4, max_in_flight=4)})
+MACHINE = ControlSystem(links={"host": Link(fixed_ns=4, slots=4)})
 
 
 def _first(bits: pulse.Bits) -> pulse.Bits:

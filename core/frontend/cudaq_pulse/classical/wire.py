@@ -355,7 +355,7 @@ def _manifest(lowered: Any) -> dict[str, Any]:
                 "request_bytes": HEADER_BYTES + sum(a.wire_bytes for a in fn.args),
                 "answer_bytes": HEADER_BYTES + sum(r.wire_bytes for r in fn.results),
                 "slot_bytes": link.slot_bytes,
-                "max_in_flight": link.max_in_flight,
+                "slots": link.slots,
             }
         )
     return {"format": _MANIFEST_FORMAT, "functions": functions}
@@ -423,7 +423,7 @@ def _export(lowered: Any, with_events: bool, part: _Part | None = None) -> dict[
                 "kind": event.kind,
                 "line": event.line,
                 "link": event.link,
-                "qubit": event.qubit,
+                "qudit": event.qudit,
                 "start_cycles": event.start_cycles,
                 "duration_cycles": event.duration_cycles,
                 "segment": (
@@ -442,7 +442,7 @@ def _export(lowered: Any, with_events: bool, part: _Part | None = None) -> dict[
     machine = lowered.options.machine
     data = {
         "format": _EMULATION_FORMAT,
-        "clock_ghz": lowered.target.clock_ghz,
+        "clock_ghz": lowered.quantum_system.clock_ghz,
         "links": {
             str(machine.link_id(fn.link)): {
                 **machine.link(fn.link).cost(),

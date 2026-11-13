@@ -12,12 +12,12 @@ import cudaq_pulse.controller as controller_module
 import numpy as np
 import pytest
 from cudaq_pulse import Controller, ControlSystem
-from cudaq_pulse.classical import qec
 from cudaq_pulse.controller import FORMAT, ControllerLimitError, check, sample_waveform, shape_key
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from tests._handles import Q
+from tests.classical.fake_cudaq_qec import qec
 from tests.property_settings import examples
 
 
@@ -40,7 +40,7 @@ def drive_and_branch(q, r):
 
 def _program(kernel=drive_and_branch, schedule="asap", machine=None, **kwargs):
     compiled = pulse.compile(kernel, schedule=schedule, control_system=machine)
-    return compiled.lower(Q[0], Q[1]).export_controller(**kwargs)
+    return compiled.lower(Q[0], Q[1]).export_to_controller(**kwargs)
 
 
 def test_export_lists_every_timed_operation_with_its_waveform_and_tone():
@@ -146,7 +146,7 @@ def test_a_detuned_tone_gains_phase_between_its_drives():
     # fold_phases folds the phase shift into the last drive.
     lowered = pulse.compile(detuned, schedule="asap").lower(Q[0], Q[1])
     assert "frame_phase_offset" in lowered.mlir()
-    program = lowered.export_controller()
+    program = lowered.export_to_controller()
     clock = program["clock_ghz"]
     drives = [e for e in program["events"] if e["kind"] == "drive"]
     assert [e["start_cycles"] for e in drives] == [0, 116, 132]
@@ -203,7 +203,7 @@ def test_a_line_is_listed_with_its_role_even_when_it_only_waits():
 
 
 def test_export_samples_envelopes_at_a_multiple_of_the_clock():
-    program = _program(sample_rate_ghz=4 * pulse.device().clock_ghz)
+    program = _program(sample_rate_ghz=4 * pulse.quantum_system().clock_ghz)
     first = program["events"][0]
     samples = np.asarray(first["samples"]["re"]) + 1j * np.asarray(first["samples"]["im"])
     assert len(samples) == 16 * 4
@@ -213,7 +213,7 @@ def test_export_samples_envelopes_at_a_multiple_of_the_clock():
     np.testing.assert_allclose(samples.real, 0.5 * np.exp(-0.5 * t**2 / 16.0))
     assert "samples" not in program["events"][2]
     with pytest.raises(ValueError, match="whole multiple"):
-        _program(sample_rate_ghz=1.5 * pulse.device().clock_ghz)
+        _program(sample_rate_ghz=1.5 * pulse.quantum_system().clock_ghz)
 
 
 def test_drag_samples_carry_the_derivative_in_quadrature():
@@ -250,7 +250,7 @@ def sampled_envelopes(q, r):
 
 
 def test_custom_envelopes_are_exported_as_their_samples():
-    program = _program(sampled_envelopes, sample_rate_ghz=pulse.device().clock_ghz)
+    program = _program(sampled_envelopes, sample_rate_ghz=pulse.quantum_system().clock_ghz)
     traced, given = program["events"]
     expected = [(k + 0.5) / 8 for k in range(8)]
     assert traced["waveform"]["shape"] == "custom_samples"
@@ -304,12 +304,12 @@ def two_amplitudes(q, a: float, b: float):
 def test_waveforms_of_one_shape_at_float_amplitudes_share_waveform_memory():
     machine = ControlSystem(
         controllers=[
-            Controller(waveform_memory_samples=60, sample_rate_ghz=pulse.device().clock_ghz)
+            Controller(waveform_memory_samples=60, sample_rate_ghz=pulse.quantum_system().clock_ghz)
         ]
     )
     lowered = pulse.compile(two_amplitudes, control_system=machine).lower(Q[0], 0.5, 0.25)
     assert check(lowered.generic) == []
-    assert len(lowered.export_controller()["events"]) == 2
+    assert len(lowered.export_to_controller()["events"]) == 2
 
 
 @pulse.kernel
@@ -350,13 +350,13 @@ def test_limits_report_instruction_spacing_detectors_and_feedback():
 
 def test_limits_report_clock_tones_memory_and_size():
     lowered = pulse.compile(drive_and_branch, schedule="asap").lower(Q[0], Q[1])
-    clock = lowered.target.clock_ghz
+    clock = lowered.quantum_system.clock_ghz
     # Every operation starts and lasts whole cycles of a controller at half
     # the clock; at an eighth, the readout and the two drives after it do not.
     assert check(lowered, Controller(clock_ghz=clock / 2)) == []
     found = check(lowered, Controller(clock_ghz=clock / 8))
     assert len(found) == 3 and all("moves in timesteps of 8 cycles" in f for f in found)
-    assert check(lowered, Controller(max_tones_per_line=1)) == []
+    assert check(lowered, Controller(max_frequencies_per_line=1)) == []
     # Line 0 plays two shapes of 16 cycles, the readout line one of 100,
     # line 2 two of 20.
     found = check(lowered, Controller(sample_rate_ghz=4.0, waveform_memory_samples=64))
@@ -369,7 +369,7 @@ def test_limits_report_clock_tones_memory_and_size():
 
 def test_a_sample_rate_sets_the_samples_a_waveform_takes():
     lowered = pulse.compile(drive_and_branch, schedule="asap").lower(Q[0], Q[1])
-    clock = lowered.target.clock_ghz
+    clock = lowered.quantum_system.clock_ghz
     # At one and a half samples per cycle, the readout's 100 cycles take 150
     # samples and line 2's two shapes of 20 cycles 30 each.
     found = check(lowered, Controller(sample_rate_ghz=1.5 * clock, waveform_memory_samples=60))
@@ -412,7 +412,7 @@ def strong_drives(q, amplitude: float):
 
 def test_only_the_controller_limits_the_amplitude():
     lowered = pulse.compile(strong_drives).lower(Q[0], 3.0)
-    assert lowered.export_controller()["events"][0]["amplitude"]["re"] == 1.5
+    assert lowered.export_to_controller()["events"][0]["amplitude"]["re"] == 1.5
     found = check(lowered, Controller(max_amplitude=1.0))
     assert found[0] == (
         "line 0 (drive of qudit 0): the drive at 0 peaks at amplitude 1.5; the controller "
@@ -428,9 +428,9 @@ def test_only_the_controller_limits_the_amplitude():
     assert "max_amplitude" not in Controller(clock_ghz=1.0).as_dict()
     machine = ControlSystem(controllers=[Controller(max_amplitude=2.0)])
     compiled = pulse.compile(strong_drives, control_system=machine)
-    assert compiled.lower(Q[0], 0.5).export_controller()["limits"]["max_amplitude"] == 2.0
+    assert compiled.lower(Q[0], 0.5).export_to_controller()["limits"]["max_amplitude"] == 2.0
     with pytest.raises(ControllerLimitError, match=r"peaks at amplitude 3; .* at most 2 \("):
-        compiled.lower(Q[0], 3.0).export_controller()
+        compiled.lower(Q[0], 3.0).export_to_controller()
     for wrong in (0, -1.0, math.inf, math.nan, True, "1"):
         with pytest.raises(pulse.InvalidValueError, match="max_amplitude must be a positive"):
             Controller(max_amplitude=wrong)  # type: ignore[arg-type]
@@ -469,7 +469,7 @@ def test_a_branch_on_a_readout_carried_out_of_a_loop_is_checked_as_written_out(l
     assert found == check(unrolled, limits)
     # An export still has to name it.
     with pytest.raises(pulse.UnsupportedError, match="'scf.for'"):
-        rolled.export_controller()
+        rolled.export_to_controller()
 
 
 def test_a_limit_error_lists_ten_violations_and_counts_the_rest():
@@ -494,7 +494,7 @@ def test_limits_are_part_of_the_control_system_identity():
 
 
 def test_the_limits_travel_with_the_program():
-    limits = Controller(instruction_cycles=1, max_tones_per_line=2)
+    limits = Controller(instruction_cycles=1, max_frequencies_per_line=2)
     program = _program(machine=ControlSystem(controllers=[limits]))
     assert program["limits"] == limits.as_dict()
     assert _program()["limits"] is None
@@ -512,8 +512,8 @@ def test_float_arguments_are_exported_at_their_values():
     lowered = pulse.compile(ramsey).lower(Q[0], 0.75)
     assert lowered.generic is not lowered
     with pytest.raises(ValueError, match="float parameters"):
-        lowered.generic.export_controller()
-    program = lowered.export_controller()
+        lowered.generic.export_to_controller()
+    program = lowered.export_to_controller()
     assert program["events"][1]["phase_rad"] == pytest.approx(0.75)
     assert not math.isnan(program["events"][0]["phase_rad"])
 
@@ -533,16 +533,16 @@ def retuned(q, shift: float):
 
 
 def test_a_float_tone_shift_beyond_the_limit_fails_at_the_call_not_at_export():
-    machine = ControlSystem(controllers=[Controller(max_tones_per_line=1)])
+    machine = ControlSystem(controllers=[Controller(max_frequencies_per_line=1)])
     compiled = pulse.compile(retuned, control_system=machine)
     with pytest.raises(ControllerLimitError, match="2 tone frequencies"):
         compiled.lower(Q[0], 50e6)
     # No shift plays one tone, which fits.
-    assert len(compiled.lower(Q[0], 0.0).export_controller()["events"]) == 2
+    assert len(compiled.lower(Q[0], 0.0).export_to_controller()["events"]) == 2
     # Two tones fit a line that plays two.
-    two = ControlSystem(controllers=[Controller(max_tones_per_line=2)])
+    two = ControlSystem(controllers=[Controller(max_frequencies_per_line=2)])
     lowered = pulse.compile(retuned, control_system=two).lower(Q[0], 50e6)
-    assert len(lowered.export_controller()["events"]) == 2
+    assert len(lowered.export_to_controller()["events"]) == 2
 
 
 @pulse.kernel
@@ -555,12 +555,12 @@ def two_widths(q, a: float, b: float):
 def test_waveforms_of_float_widths_take_memory_by_their_values():
     machine = ControlSystem(
         controllers=[
-            Controller(waveform_memory_samples=60, sample_rate_ghz=pulse.device().clock_ghz)
+            Controller(waveform_memory_samples=60, sample_rate_ghz=pulse.quantum_system().clock_ghz)
         ]
     )
     compiled = pulse.compile(two_widths, control_system=machine)
     # One width is one shape, stored once: it fits.
-    assert len(compiled.lower(Q[0], 10.0, 10.0).export_controller()["events"]) == 2
+    assert len(compiled.lower(Q[0], 10.0, 10.0).export_to_controller()["events"]) == 2
     with pytest.raises(ControllerLimitError, match="80 samples"):
         compiled.lower(Q[0], 10.0, 12.0)
 
@@ -585,7 +585,7 @@ def delayed(q, x: float):
 def test_a_float_parameter_a_call_is_given_is_checked_at_its_value(limits, version):
     machine = ControlSystem(controllers=[Controller(**limits)])
     lowered = pulse.compile(delayed, control_system=machine).lower(Q[0], 0.25)
-    submitted = lowered.export_controller(version=version)["events"][0]
+    submitted = lowered.export_to_controller(version=version)["events"][0]
     assert submitted["operands"] == [{"const": 0.25}]
 
 
@@ -598,7 +598,7 @@ def test_a_call_is_checked_once_per_distinct_values(monkeypatch):
         return check_call(view)
 
     monkeypatch.setattr(controller_module, "_call_violations", counted)
-    machine = ControlSystem(controllers=[Controller(max_tones_per_line=1)])
+    machine = ControlSystem(controllers=[Controller(max_frequencies_per_line=1)])
     compiled = pulse.compile(retuned, control_system=machine)
     for shift in (0.0, 0.0, 0.0, -0.0):
         compiled.lower(Q[0], shift)
@@ -606,11 +606,11 @@ def test_a_call_is_checked_once_per_distinct_values(monkeypatch):
     assert checked == [(0.0,), (-0.0,)]
     # A module no float value can push past a limit is not checked per call.
     lowered = pulse.compile(ramsey, control_system=machine).lower(Q[0], 0.75)
-    assert type(lowered.generic) is pulse.Lowered
+    assert type(lowered.generic) is pulse.ScheduledKernel
 
 
 def test_a_checked_call_names_a_value_that_is_not_a_finite_number():
-    machine = ControlSystem(controllers=[Controller(max_tones_per_line=1)])
+    machine = ControlSystem(controllers=[Controller(max_frequencies_per_line=1)])
     compiled = pulse.compile(retuned, control_system=machine)
     with pytest.raises(pulse.InvalidValueError, match="argument 'shift' is nan"):
         compiled.lower(Q[0], float("nan"))
@@ -636,7 +636,7 @@ def test_a_float_wait_length_is_checked_against_the_limits_at_the_call():
     compiled = pulse.compile(waited, control_system=machine)
     with pytest.raises(ControllerLimitError, match="starts 20 cycles after"):
         compiled.lower(Q[0], 4.0)
-    assert len(compiled.lower(Q[0], 40.0).export_controller()["events"]) == 3
+    assert len(compiled.lower(Q[0], 40.0).export_to_controller()["events"]) == 3
 
 
 @given(
@@ -656,7 +656,7 @@ def test_a_call_that_lowers_exports(shift, widths, tones, samples):
         shift_frequency(d.tone, 25e6)
         drive(d, gaussian(40, 0.5, 10.0))
 
-    limits = Controller(max_tones_per_line=tones, waveform_memory_samples=samples)
+    limits = Controller(max_frequencies_per_line=tones, waveform_memory_samples=samples)
     # The call fails exactly when its program, compiled free, exceeds them.
     expected = check(pulse.compile(program).lower(Q[0], shift, *widths), limits)
     compiled = pulse.compile(program, control_system=ControlSystem(controllers=[limits]))
@@ -666,15 +666,14 @@ def test_a_call_that_lowers_exports(shift, widths, tones, samples):
         assert list(raised.value.violations) == expected
     else:
         lowered = compiled.lower(Q[0], shift, *widths)
-        assert len(lowered.export_controller()["events"]) == 3
+        assert len(lowered.export_to_controller()["events"]) == 3
         assert check(lowered) == []
 
 
 # ── Classical calls ──────────────────────────────────────────────────────────
 
-decoder = qec.Decoder(
-    0, syndrome_count=1, correction_count=1, max_latency_ns=400, decode=lambda b: [b[0]]
-)
+enqueue_syndromes = pulse.classical(qec.enqueue_syndromes)
+get_corrections = pulse.classical(qec.get_corrections, max_latency_ns=400)
 
 
 @pulse.classical(max_latency_ns=400)
@@ -687,8 +686,8 @@ def decoded(q):
     d = get_drive_line(q)
     ro = get_readout_line(q)
     m = readout(ro, square(100, 0.05))
-    qec.enqueue_syndromes(decoder, [m], 0)
-    fix = qec.get_corrections(decoder).result()
+    enqueue_syndromes.submit(0, [m], 0)
+    fix = get_corrections.submit(0, 1, False).result()
     sync(d, ro)
     if fix[0]:
         drive(d, square(20, 0.3))
@@ -706,7 +705,7 @@ def timed_out(q):
 
 
 def test_export_carries_calls_with_their_measurements_and_waits():
-    program = pulse.compile(decoded, schedule="asap").lower(Q[0]).export_controller()
+    program = pulse.compile(decoded, schedule="asap").lower(Q[0]).export_to_controller()
     submits = [e for e in program["events"] if e["kind"] == "submit"]
     answer = next(e for e in program["events"] if e["kind"] == "answer")
     readout = next(e for e in program["events"] if e["kind"] == "readout")
@@ -739,7 +738,7 @@ def test_events_after_a_variable_wait_are_in_its_segment():
         wait(d, tau.submit().result(), bounds=(4, 40))
         drive(d, square(20, 0.1))
 
-    program = pulse.compile(k).lower(Q[0]).export_controller()
+    program = pulse.compile(k).lower(Q[0]).export_to_controller()
     drives = [e for e in program["events"] if e["kind"] == "drive"]
     assert [e["segment"] for e in drives] == [0, 1]
     assert len(program["segments"]) == 2
@@ -749,7 +748,7 @@ def test_a_controller_without_timeouts_rejects_a_timed_wait():
     limits = Controller(supports_timeouts=False)
     assert check(pulse.compile(decoded).lower(Q[0]), limits) == []
     lowered = pulse.compile(timed_out).lower(Q[0])
-    answer = next(e for e in lowered.export_controller()["events"] if e["kind"] == "answer")
+    answer = next(e for e in lowered.export_to_controller()["events"] if e["kind"] == "answer")
     assert answer["wait"] == "timeout" and answer["timeout_ns"] == pytest.approx(300)
     with pytest.raises(ControllerLimitError, match="cannot stop waiting"):
         pulse.compile(timed_out, control_system=ControlSystem(controllers=[limits])).lower(Q[0])
@@ -777,7 +776,7 @@ def answered(q):
 
 
 def test_values_from_answers_are_exported_as_expressions():
-    program = pulse.compile(answered).lower(Q[0]).export_controller()
+    program = pulse.compile(answered).lower(Q[0]).export_to_controller()
     events = program["events"]
     answer = next(e for e in events if e["kind"] == "answer")["index"]
     first, second = (e for e in events if e["kind"] == "drive")
@@ -867,19 +866,19 @@ def retuned_by_answer_changes(events):
 
 def test_each_run_time_frame_change_is_exported_with_where_it_is_made():
     lowered = pulse.compile(retuned_by_answer).lower(Q[0])
-    flat = lowered.export_controller()
+    flat = lowered.export_to_controller()
     places = retuned_by_answer_changes(flat["events"])
     assert [i for i, _ in places] == list(range(6))
     # Format /2 places them as it places its events.
-    structured = lowered.export_controller(version=2)
+    structured = lowered.export_to_controller(version=2)
     assert retuned_by_answer_changes(controller_module.unroll(structured)["events"]) == places
 
 
 def test_a_frame_changes_place_is_in_its_controllers_own_cycles():
-    program = pulse.compile(retuned_by_answer).lower(Q[0]).export_controller()
+    program = pulse.compile(retuned_by_answer).lower(Q[0]).export_to_controller()
     places = retuned_by_answer_changes(program["events"])
     slow = ControlSystem(controllers=[Controller(clock_ghz=program["clock_ghz"] / 2)])
-    own = pulse.compile(retuned_by_answer, control_system=slow).lower(Q[0]).export_controller()
+    own = pulse.compile(retuned_by_answer, control_system=slow).lower(Q[0]).export_to_controller()
     assert retuned_by_answer_changes(own["events"]) == [(i, -(-start // 2)) for i, start in places]
 
 
@@ -909,11 +908,11 @@ def fixed_tones(q):
 
 def test_each_tone_tracked_at_run_time_is_exported_with_its_reset_frame():
     lowered = pulse.compile(retuned_tones).lower(Q[0])
-    flat = lowered.export_controller()
+    flat = lowered.export_to_controller()
     # The frames the tones start in, from a program that changes none.
-    fixed = pulse.compile(fixed_tones).lower(Q[0]).export_controller()
+    fixed = pulse.compile(fixed_tones).lower(Q[0]).export_to_controller()
     assert "runtime_tones" not in fixed
-    assert "runtime_tones" not in pulse.compile(fixed_tones).lower(Q[0]).export_controller(
+    assert "runtime_tones" not in pulse.compile(fixed_tones).lower(Q[0]).export_to_controller(
         version=2
     )
     drive_hz, _, upper_hz = (e["frequency_hz"] for e in fixed["events"])
@@ -926,12 +925,14 @@ def test_each_tone_tracked_at_run_time_is_exported_with_its_reset_frame():
     assert [(e["tone"], e["line"]) for e in played] == [(0, 0), (1, 0)]
     assert list(flat)[list(flat).index("events") + 1] == "runtime_tones"
     persistent = ControlSystem(controllers=[Controller(persistent_frames=True)])
-    kept = pulse.compile(retuned_tones, control_system=persistent).lower(Q[0]).export_controller()
+    kept = (
+        pulse.compile(retuned_tones, control_system=persistent).lower(Q[0]).export_to_controller()
+    )
     keys = list(kept)
     assert keys[keys.index("events") + 1 :][:2] == ["frame_state", "runtime_tones"]
     assert kept["runtime_tones"] == flat["runtime_tones"]
     assert json.loads(json.dumps(flat["runtime_tones"])) == flat["runtime_tones"]
-    structured = lowered.export_controller(version=2)
+    structured = lowered.export_to_controller(version=2)
     assert structured["runtime_tones"] == flat["runtime_tones"]
     assert controller_module.unroll(structured)["runtime_tones"] == flat["runtime_tones"]
 
@@ -952,7 +953,7 @@ def retuned_slot(q: pulse.Qudit):
 def test_a_runtime_qudits_tones_reset_to_the_symbols_of_its_native_frequencies(version):
     compiled = pulse.compile(retuned_slot)
     for qudit in (Q[1], Q[2]):
-        program = compiled.lower(qudit).export_controller(version=version)
+        program = compiled.lower(qudit).export_to_controller(version=version)
         values = {s["symbol"]: s.get("value") for s in program["symbols"]}
         roles = {line["line"]: line["role"] for line in program["lines"]}
         native = {"drive": "s0.f01", "readout": "s0.f_ro"}
@@ -982,7 +983,7 @@ def chained(q):
 
 
 def test_a_submission_carries_its_arguments_in_order():
-    events = pulse.compile(chained).lower(Q[0]).export_controller()["events"]
+    events = pulse.compile(chained).lower(Q[0]).export_to_controller()["events"]
     a, b = (e["index"] for e in events if e["kind"] == "readout")
     first, second = (e for e in events if e["kind"] == "submit")
     answer = next(e for e in events if e["kind"] == "answer")["index"]
@@ -1010,7 +1011,7 @@ def chosen_by_readout(q):
 
 def test_a_value_a_readout_selects_at_run_time_is_exported_as_its_select(monkeypatch):
     monkeypatch.setattr(pulse.compiler, "_can_select_at_runtime", lambda target, kind: True)
-    events = pulse.compile(chosen_by_readout).lower(Q[0]).export_controller()["events"]
+    events = pulse.compile(chosen_by_readout).lower(Q[0]).export_to_controller()["events"]
     readout = next(e for e in events if e["kind"] == "readout")["index"]
     [drive] = (e for e in events if e["kind"] == "drive")
     select = {
@@ -1082,7 +1083,7 @@ def decided_at_compile_time(q):
 
 
 def test_a_program_computing_nothing_at_run_time_exports_no_run_time_keys():
-    events = pulse.compile(decided_at_compile_time).lower(Q[0]).export_controller()["events"]
+    events = pulse.compile(decided_at_compile_time).lower(Q[0]).export_to_controller()["events"]
     keys = {"tone", "frame_updates", "phase_offset_rad", "length", "operands"}
     assert all(not keys & e.keys() for e in events)
     assert all("runtime" not in (e.get("waveform") or {}) for e in events)

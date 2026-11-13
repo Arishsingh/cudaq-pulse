@@ -15,7 +15,7 @@ import random
 import cudaq_pulse as pulse
 import numpy as np
 
-# A 20 ns DRAG X90 for the 17-qubit transmon device.
+# A 20 ns DRAG X90 for the 17-qubit transmon quantum system.
 cal = {
     "x_duration": 20 * pulse.ns,
     "x_sigma": 5 * pulse.ns,
@@ -74,13 +74,13 @@ def rb_sequence(depth, seed):
 
 
 @pulse.kernel
-def clifford_sequence(qubit, gates):
+def clifford_sequence(qudit, gates):
     """Apply native gates (``"X90"`` or ``"Y90"``), then read out.
 
     *gates* is a tuple of names, so the loop unrolls while tracing.
     """
-    drive_line = get_drive_line(qubit)
-    readout_line = get_readout_line(qubit)
+    drive_line = get_drive_line(qudit)
+    readout_line = get_readout_line(qudit)
 
     x90 = drag(cal["x_duration"], cal["half_pi_amp"], cal["x_sigma"], cal["drag_beta"])
 
@@ -97,21 +97,21 @@ def clifford_sequence(qubit, gates):
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
-    qubit = dev.qudit_handles[0]
-    rb = pulse.compile(clifford_sequence, device=dev)
+    qs = pulse.quantum_system("transmon_surface17")
+    qudit = qs.qudits[0]
+    rb = pulse.compile(clifford_sequence, quantum_system=qs)
 
     print("=== RB sequence (depth=2, seed=42) ===")
     gates = rb_sequence(2, 42)
     print(f"  native gates: {' '.join(gates)}")
-    print(rb.lower(qubit, gates).mlir())
+    print(rb.lower(qudit, gates).mlir())
 
     print("\n=== Survival probability against depth (CPU simulation) ===")
     for depth in [1, 5, 10, 20]:
         gates = rb_sequence(depth, seed=depth)
-        compiled_kernel = rb.lower(qubit, gates)
-        survival = pulse.simulate(compiled_kernel, dt_ns=0.25).level_population(0)
+        scheduled = rb.lower(qudit, gates)
+        survival = pulse.simulate(scheduled, dt_ns=0.25).level_population(0)
         print(
             f"  depth={depth:3d} ({len(gates):3d} pulses): P(0) = {survival:.3f}, "
-            f"compiled in {compiled_kernel.metrics.total_ms:.3f} ms"
+            f"compiled in {scheduled.metrics.total_ms:.3f} ms"
         )

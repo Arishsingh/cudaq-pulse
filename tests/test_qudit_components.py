@@ -11,18 +11,19 @@ import sys
 
 import cudaq_pulse as pulse
 import pytest
-from cudaq_pulse.runtime._call_tree import ReadoutModel
-from cudaq_pulse.runtime._calls import IQModel
-from cudaq_pulse.targets import (
+from cudaq_pulse.quantum_systems import (
     DispersiveReadout,
     DragPulse,
     Drive,
     MicrowaveDrive,
-    Qubit,
+    PhysicalQudit,
     Readout,
-    TargetDescription,
-    transmon_17q,
+    SimulationModel,
+    TransmonModel,
+    transmon_surface17,
 )
+from cudaq_pulse.runtime._call_tree import ReadoutModel
+from cudaq_pulse.runtime._calls import IQModel
 
 
 class _Fluorescence(Readout):
@@ -45,7 +46,9 @@ class _Optical(Drive):
 
 
 def _target(**members):
-    return TargetDescription(name="c", qubits={0: Qubit(0, 5e9, -2e8, 10.0, 5.0, **members)})
+    return pulse.quantum_system(
+        name="c", qudits={0: PhysicalQudit(0, 5e9, 10.0, 5.0, anharmonicity_hz=-2e8, **members)}
+    )
 
 
 def test_a_component_is_a_read_only_value():
@@ -93,21 +96,52 @@ def test_the_components_hold_physics_and_not_tuned_pulses():
             DispersiveReadout(**{tuned: 1.0})
 
 
+def test_the_anharmonicity_is_a_keyword_a_qudit_may_leave_out():
+    with pytest.raises(TypeError):
+        PhysicalQudit(0, 5e9, -2e8, 50.0, 30.0)  # type: ignore[misc]
+    qudit = PhysicalQudit(0, 5e9, 50.0, 30.0)
+    assert (qudit.t1_us, qudit.t2_star_us, qudit.anharmonicity_hz) == (50.0, 30.0, None)
+    assert pickle.loads(pickle.dumps(qudit)) == qudit == copy.deepcopy(qudit)
+    two_levels = TransmonModel(levels={0: 2})
+    assert (
+        pulse.quantum_system(name="two", qudits={0: qudit}, model=two_levels).qudit_freq[0] == 5e9
+    )
+    evenly = pulse.quantum_system(
+        name="even", qudits={0: qudit}, model=SimulationModel(levels={0: 3})
+    )
+    assert evenly.transition_freq[0, 1, 2] == 5e9
+    three_levels = pulse.quantum_system(name="three", qudits={0: qudit})
+    with pytest.raises(
+        pulse.InvalidValueError,
+        match=r"qudit 0 gives no anharmonicity_hz, which a transmon of 3 levels needs: .*"
+        r"TransmonModel\(levels=\{0: 2\}\)",
+    ):
+        _ = three_levels.transition_freq
+
+
 def test_the_depletion_comes_from_the_readout():
-    explicit = Qubit(0, 5e9, -2e8, 1, 1, readout=DispersiveReadout(depletion_ns=250.0))
-    from_kappa = Qubit(0, 5e9, -2e8, 1, 1, readout=DispersiveReadout(linewidth_hz=1e6))
+    explicit = PhysicalQudit(
+        0, 5e9, 1, 1, anharmonicity_hz=-2e8, readout=DispersiveReadout(depletion_ns=250.0)
+    )
+    from_kappa = PhysicalQudit(
+        0, 5e9, 1, 1, anharmonicity_hz=-2e8, readout=DispersiveReadout(linewidth_hz=1e6)
+    )
     assert explicit.depletion_ns == 250.0
     assert from_kappa.depletion_ns == pytest.approx(math.log(100) / (2 * math.pi * 1e-3))
-    assert Qubit(0, 5e9, -2e8, 1, 1).depletion_ns == 0.0
-    assert Qubit(0, 5e9, -2e8, 1, 1, readout=_Fluorescence()).depletion_ns == 0.0
+    assert PhysicalQudit(0, 5e9, 1, 1, anharmonicity_hz=-2e8).depletion_ns == 0.0
+    assert (
+        PhysicalQudit(0, 5e9, 1, 1, anharmonicity_hz=-2e8, readout=_Fluorescence()).depletion_ns
+        == 0.0
+    )
 
 
 def test_the_shipped_target_describes_its_drive_and_readout():
-    qubit = transmon_17q().qubits[0]
-    assert isinstance(qubit.drive, MicrowaveDrive) and isinstance(qubit.readout, DispersiveReadout)
-    x = qubit.calibrations[pulse.gates.X]
-    assert (x.duration_ns, x.sigma_ns, x.amplitude) == (40.0, 10.0, None)
-    assert qubit.readout.frequency_hz > 6e9 and qubit.readout.linewidth_hz > 0
+    qudit = transmon_surface17().physical_qudits[0]
+    assert isinstance(qudit.drive, MicrowaveDrive) and isinstance(qudit.readout, DispersiveReadout)
+    x = qudit.get_calibration(pulse.gates.X)
+    # No amplitude is published: the one read is the pi rotation of the pulse's area.
+    assert (x.duration_ns, x.sigma_ns) == (40.0, 10.0) and x.amplitude > 0
+    assert qudit.readout.frequency_hz > 6e9 and qudit.readout.linewidth_hz > 0
 
 
 def test_the_drive_strength_comes_from_the_drive():
@@ -129,23 +163,25 @@ def test_the_drive_strength_comes_from_the_drive():
 def test_a_readout_no_model_knows_is_refused():
     target = _target(readout=_Fluorescence())
     with pytest.raises(pulse.UnsupportedError, match="no readout model for _Fluorescence"):
-        IQModel(target, (0,), decay=False)
+        IQModel(target._description, (0,), decay=False)
     with pytest.raises(pulse.UnsupportedError, match="no readout model for _Fluorescence"):
-        ReadoutModel(target, (0,), (2,), decay=False)
+        ReadoutModel(target._description, (0,), (2,), decay=False)
     # Without a readout, ideal reports, and no IQ points.
-    assert ReadoutModel(_target(), (0,), (2,), decay=True).reports(0, 1) == [(1, 1.0)]
+    assert ReadoutModel(_target()._description, (0,), (2,), decay=True).reports(0, 1) == [(1, 1.0)]
     with pytest.raises(
         pulse.UnsupportedError, match="qudit 0 has no readout: IQ points are synthesized"
     ):
-        IQModel(_target(), (0,), decay=False)
+        IQModel(_target()._description, (0,), decay=False)
 
 
 def test_the_iq_model_needs_the_dispersive_shift_and_the_linewidth():
     given = DispersiveReadout(frequency_hz=7e9, dispersive_shift_hz=1e6, linewidth_hz=2e6)
-    IQModel(_target(readout=given), (0,), decay=False)
+    IQModel(_target(readout=given)._description, (0,), decay=False)
     message = r"qudit 0 need its DispersiveReadout's linewidth_hz, which it does not give"
     with pytest.raises(pulse.UnsupportedError, match=message):
-        IQModel(_target(readout=given.replace(linewidth_hz=None)), (0,), decay=False)
+        IQModel(_target(readout=given.replace(linewidth_hz=None))._description, (0,), decay=False)
     both = r"dispersive_shift_hz and linewidth_hz"
     with pytest.raises(pulse.UnsupportedError, match=both):
-        IQModel(_target(readout=DispersiveReadout(frequency_hz=7e9)), (0,), decay=False)
+        IQModel(
+            _target(readout=DispersiveReadout(frequency_hz=7e9))._description, (0,), decay=False
+        )

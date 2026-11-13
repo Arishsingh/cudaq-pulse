@@ -144,13 +144,13 @@ if sysconfig.get_config_var("Py_GIL_DISABLED"):
 
 
 @pulse.kernel
-def rabi(qubit, duration: int, amplitude: float):
-    drive_line = get_drive_line(qubit)
+def rabi(qudit, duration: int, amplitude: float):
+    drive_line = get_drive_line(qudit)
     drive(drive_line, square(duration, amplitude))
 
 
-device = pulse.device("transmon_17q")
-compiled = pulse.compile(rabi).lower(device.qudit_handles[0], 100, 0.5)
+qs = pulse.quantum_system("transmon_surface17")
+compiled = pulse.compile(rabi).lower(qs.qudits[0], 100, 0.5)
 assert compiled.mlir().strip(), "compile produced no MLIR"
 Path("kernel.mlir").write_text(compiled.mlir())
 print(f"compiled from {package.parent} in {compiled.metrics.total_ms:.3f} ms")
@@ -175,12 +175,12 @@ expect_in() {
 
 # The installed cudaq-pulse-opt verifies, schedules and lowers the kernel
 # smoke_compile.py wrote, and pulse-verify rejects invalid IR with its
-# diagnostic.
+# diagnostic. The kernel is lowered, so already timed: the passes that take
+# an unscheduled function (pulse-merge-waits, ...) ran in lower().
 opt_checks() {
   in_venv cudaq-pulse-opt --pulse-verify kernel.mlir -o verified.mlir
   expect_in verified.mlir "pulse.drive"
-  in_venv cudaq-pulse-opt --pulse-merge-waits --pulse-fold-phases --pulse-fuse-pulses \
-    --pulse-schedule-asap kernel.mlir -o scheduled.mlir
+  in_venv cudaq-pulse-opt --pulse-schedule-asap kernel.mlir -o scheduled.mlir
   expect_in scheduled.mlir "start_cycles = 0"
   in_venv cudaq-pulse-opt --pulse-to-qop --qop-to-cudm --cudm-to-llvm --canonicalize \
     --convert-arith-to-llvm --convert-func-to-llvm --reconcile-unrealized-casts \

@@ -8,6 +8,7 @@
 include "cudaq-pulse/Dialect/Pulse/PulseDialect.td"
 include "cudaq-pulse/Dialect/Pulse/PulseAttrs.td"
 include "cudaq-pulse/Dialect/Pulse/PulseTypes.td"
+include "cudaq-pulse/Dialect/Pulse/PulseTiming.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/IR/OpBase.td"
@@ -25,27 +26,19 @@ def Pulse_ToneResource : Resource<"::pulse::ToneResource">;
 //===----------------------------------------------------------------------===//
 
 def QuditAllocOp : PulseOp<"qudit_alloc", [Pure]> {
-  let summary = "Allocate a pulse-level qudit reference";
+  let summary = "A qudit of the quantum system, by its index";
   let description = [{
-    A reference to one qudit of the device. The frontend sets the `qubit`
-    attribute to the qudit's index on the target. Lines and tones are
-    obtained from the reference with `pulse.get_drive_line` and
-    `pulse.get_readout_line`.
-  }];
-  let results = (outs QrefType:$qref);
-  let assemblyFormat = "attr-dict `:` type($qref)";
-}
+    Qudit `qudit` of the quantum system, by its index there. Lines and
+    tones are obtained from it with `pulse.get_drive_line` and
+    `pulse.get_readout_line`, which find the index here.
 
-def QvecAllocOp : PulseOp<"qvec_alloc", [Pure]> {
-  let summary = "Allocate a vector of pulse-level qudit references";
-  let description = [{
-    `size` qudit references at once, one result each, as `size`
-    `pulse.qudit_alloc` ops would give.
+    ```mlir
+    %q = pulse.qudit_alloc {qudit = 3 : i64} : !pulse.qudit
+    ```
   }];
-  let arguments = (ins I64Attr:$size);
-  let results = (outs Variadic<QrefType>:$qrefs);
-  let assemblyFormat = "$size attr-dict `:` type($qrefs)";
-  let hasVerifier = 1;
+  let arguments = (ins ConfinedAttr<I64Attr, [IntNonNegative]>:$qudit);
+  let results = (outs QuditType:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -58,7 +51,7 @@ def GetDriveLineOp : PulseOp<"get_drive_line", [Pure]> {
     Returns the drive line and native tone associated with a qudit.
     The returned drive line starts at time t=0.
   }];
-  let arguments = (ins QrefType:$qudit);
+  let arguments = (ins QuditType:$qudit);
   let results = (outs DriveLineType:$line, ToneType:$tone);
   let assemblyFormat = "$qudit attr-dict `:` functional-type(operands, results)";
 }
@@ -71,7 +64,7 @@ def GetReadoutLineOp : PulseOp<"get_readout_line", [Pure]> {
     value: each op that uses it returns the updated line, which the next
     op on the line consumes.
   }];
-  let arguments = (ins QrefType:$qudit);
+  let arguments = (ins QuditType:$qudit);
   let results = (outs ReadoutLineType:$line, ToneType:$tone);
   let assemblyFormat = "$qudit attr-dict `:` functional-type(operands, results)";
 }
@@ -248,16 +241,18 @@ def DriveOp : PulseOp<"drive", []> {
   let description = [{
     Applies a waveform to a drive line at the specified tone's frequency and
     phase. Advances line time by pulse duration. Returns the updated drive
-    line and tone.
+    line and tone. The tone's frame is as the frame changes before the drive
+    on that tone left it: a change takes effect at the next pulse.
   }];
-  let arguments = (ins
+  let arguments = !con((ins
     DriveLineType:$line,
     WaveformType:$pulse,
     ToneType:$tone
-  );
+  ),
+                       PulseTimingArgs);
   let results = (outs DriveLineType:$updated_line, ToneType:$updated_tone);
   let assemblyFormat = [{
-    $line `,` $pulse `,` $tone attr-dict `:` qualified(type($line))
+    $line `,` $pulse `,` $tone `` custom<Timing>("getOperationName()", $start_cycles, $duration_cycles, $period_cycles) attr-dict `:` qualified(type($line))
     `,` qualified(type($pulse)) `,` qualified(type($tone))
     `->` qualified(type($updated_line)) `,` qualified(type($updated_tone))
   }];
@@ -270,22 +265,29 @@ def ReadoutOp : PulseOp<"readout", []> {
     returning the updated line and tone and a `!pulse.measurement`. The
     measurement completes at the end of the pulse: `pulse.is_set` and
     `pulse.outcome` read it, and `pulse-verify` checks that ops
-    conditioned on it start after it completes. `mode` names the
-    acquisition; the frontend emits `"iq"`.
+    conditioned on it start after it completes. `mode` names what the
+    acquisition gives: `iq` (demodulated and discriminated into a level, what
+    the frontend emits), `discriminated`, `trace` or `counts`. Only `iq` is
+    simulated and exported so far; the others are refused there.
+
+    ```mlir
+    %r1, %t1, %m = pulse.readout %r0, %w, %t0, iq : ...
+    ```
   }];
-  let arguments = (ins
+  let arguments = !con((ins
     ReadoutLineType:$line,
     WaveformType:$pulse,
     ToneType:$tone,
-    StrAttr:$mode
-  );
+    EnumProp<ReadoutMode>:$mode
+  ),
+                       PulseTimingArgs);
   let results = (outs
     ReadoutLineType:$updated_line,
     ToneType:$updated_tone,
     MeasurementType:$result
   );
   let assemblyFormat = [{
-    $line `,` $pulse `,` $tone `,` $mode attr-dict `:` qualified(type($line))
+    $line `,` $pulse `,` $tone `,` $mode `` custom<Timing>("getOperationName()", $start_cycles, $duration_cycles, $period_cycles) attr-dict `:` qualified(type($line))
     `,` qualified(type($pulse)) `,` qualified(type($tone))
     `->` qualified(type($updated_line)) `,` qualified(type($updated_tone))
     `,` qualified(type($result))
@@ -352,7 +354,10 @@ def WaitOp : PulseOp<"wait", [AllTypesMatch<["line", "updated_line"]>]> {
   let description = [{
     Idles a drive or readout line for `duration` and returns the updated
     line, of the same kind. The scheduler reads the length from a
-    `pulse.duration_from_int` of a constant.
+    `pulse.duration_from_int` of a constant. A wait does not change any
+    tone's frame phase (unlike an OpenPulse delay, which advances the
+    frame); the carrier runs on, so a detuned tone's phase in its qudit's
+    frame advances with the elapsed time as it does during pulses.
 
     A wait marked `pulse.variable_wait` takes its length from a value computed
     from the function's float arguments, so it is known only when they are
@@ -362,12 +367,13 @@ def WaitOp : PulseOp<"wait", [AllTypesMatch<["line", "updated_line"]>]> {
     length to a constant within the bounds, and scheduling again gives the
     exact schedule.
   }];
-  let arguments = (ins
+  let arguments = !con((ins
     AnyLineType:$line,
     DurationType:$duration
-  );
+  ),
+                       PulseTimingArgs);
   let results = (outs AnyLineType:$updated_line);
-  let assemblyFormat = "$line `,` $duration attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$line `,` $duration `` custom<Timing>(\"getOperationName()\", $start_cycles, $duration_cycles, $period_cycles) attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
   let hasFolder = 1;
   let hasCanonicalizer = 1;
@@ -377,7 +383,8 @@ def SyncOp : PulseOp<"sync", []> {
   let summary = "Synchronize multiple lines to the same time";
   let description = [{
     Aligns time state of multiple lines. All returned lines will have
-    time = max(T1, ..., Tk).
+    time = max(T1, ..., Tk). Tones pass through unchanged: a frame change
+    made before a sync applies to the next pulse on its tone after it.
   }];
   let arguments = (ins Variadic<AnyLineType>:$lines);
   let results = (outs Variadic<AnyLineType>:$synced_lines);
@@ -450,9 +457,10 @@ def ShiftFrequencyOp : PulseOp<"shift_frequency", []> {
     Adds `frequency_hz` to the tone's carrier frequency. The frame phase
     stays continuous. It takes no time.
   }];
-  let arguments = (ins ToneType:$tone, F64:$frequency_hz);
+  let arguments = !con((ins ToneType:$tone, F64:$frequency_hz),
+                       PulseTimingArgs);
   let results = (outs ToneType:$updated_tone);
-  let assemblyFormat = "$tone `,` $frequency_hz attr-dict `:` qualified(type($tone)) `,` type($frequency_hz) `->` qualified(type($updated_tone))";
+  let assemblyFormat = "$tone `,` $frequency_hz `` custom<Timing>(\"getOperationName()\", $start_cycles, $duration_cycles, $period_cycles) attr-dict `:` qualified(type($tone)) `,` type($frequency_hz) `->` qualified(type($updated_tone))";
   let hasFolder = 1;
   let hasCanonicalizer = 1;
 }
@@ -463,11 +471,13 @@ def ShiftPhaseOp : PulseOp<"shift_phase", []> {
     Advances the tone's frame phase by `phase_rad`: a virtual Z rotation,
     in the convention of McKay et al., PRA 96, 022330 (2017). A pulse
     played after it turns about an axis rotated by `-phase_rad`. It takes
-    no time, and `pulse-fold-phases` folds it into the next drive.
+    no time and takes effect at the next pulse on the tone, and
+    `pulse-fold-phases` folds it into the next drive.
   }];
-  let arguments = (ins ToneType:$tone, F64:$phase_rad);
+  let arguments = !con((ins ToneType:$tone, F64:$phase_rad),
+                       PulseTimingArgs);
   let results = (outs ToneType:$updated_tone);
-  let assemblyFormat = "$tone `,` $phase_rad attr-dict `:` qualified(type($tone)) `,` type($phase_rad) `->` qualified(type($updated_tone))";
+  let assemblyFormat = "$tone `,` $phase_rad `` custom<Timing>(\"getOperationName()\", $start_cycles, $duration_cycles, $period_cycles) attr-dict `:` qualified(type($tone)) `,` type($phase_rad) `->` qualified(type($updated_tone))";
   let hasFolder = 1;
   let hasCanonicalizer = 1;
 }
@@ -478,9 +488,10 @@ def SetPhaseOp : PulseOp<"set_phase", []> {
     Sets the tone's frame phase to `phase_rad`, with the sign of
     `pulse.shift_phase`. It takes no time.
   }];
-  let arguments = (ins ToneType:$tone, F64:$phase_rad);
+  let arguments = !con((ins ToneType:$tone, F64:$phase_rad),
+                       PulseTimingArgs);
   let results = (outs ToneType:$updated_tone);
-  let assemblyFormat = "$tone `,` $phase_rad attr-dict `:` qualified(type($tone)) `,` type($phase_rad) `->` qualified(type($updated_tone))";
+  let assemblyFormat = "$tone `,` $phase_rad `` custom<Timing>(\"getOperationName()\", $start_cycles, $duration_cycles, $period_cycles) attr-dict `:` qualified(type($tone)) `,` type($phase_rad) `->` qualified(type($updated_tone))";
   let hasFolder = 1;
   let hasCanonicalizer = 1;
 }
@@ -491,9 +502,10 @@ def SetFrequencyOp : PulseOp<"set_frequency", []> {
     Sets the tone's carrier frequency to `frequency_hz`. The frame phase
     stays continuous. It takes no time.
   }];
-  let arguments = (ins ToneType:$tone, F64:$frequency_hz);
+  let arguments = !con((ins ToneType:$tone, F64:$frequency_hz),
+                       PulseTimingArgs);
   let results = (outs ToneType:$updated_tone);
-  let assemblyFormat = "$tone `,` $frequency_hz attr-dict `:` qualified(type($tone)) `,` type($frequency_hz) `->` qualified(type($updated_tone))";
+  let assemblyFormat = "$tone `,` $frequency_hz `` custom<Timing>(\"getOperationName()\", $start_cycles, $duration_cycles, $period_cycles) attr-dict `:` qualified(type($tone)) `,` type($frequency_hz) `->` qualified(type($updated_tone))";
   let hasFolder = 1;
   let hasCanonicalizer = 1;
 }
@@ -586,8 +598,8 @@ def ScheduleBlockOp : PulseOp<"schedule_block", [
                               ["getEntrySuccessorOperands"]>]> {
   let summary = "A subroutine scheduled on its own, then placed as one unit";
   let description = [{
-    The body is scheduled in isolation with its own `policy` ("asap" or
-    "alap"), every input available at local time 0. The enclosing schedule
+    The body is scheduled in isolation with its own `policy` (`asap` or
+    `alap`), every input available at local time 0. The enclosing schedule
     then places the whole block at one start time, so the relative timing of
     the ops inside is the same wherever the block appears.
 
@@ -599,7 +611,7 @@ def ScheduleBlockOp : PulseOp<"schedule_block", [
     enclosing region directly.
 
     ```mlir
-    %d1, %t1 = pulse.schedule_block "asap" (%d0, %t0)
+    %d1, %t1 = pulse.schedule_block asap (%d0, %t0)
         : (!pulse.drive_line, !pulse.tone) -> (!pulse.drive_line, !pulse.tone) {
     ^bb0(%d: !pulse.drive_line, %t: !pulse.tone):
       %d2, %t2 = pulse.drive %d, %x, %t : ...
@@ -615,15 +627,16 @@ def ScheduleBlockOp : PulseOp<"schedule_block", [
     it passes through unchanged. With `max_duration_cycles`, scheduling fails
     if the block can take longer than that many cycles.
   }];
-  let arguments = (ins StrAttr:$policy, Variadic<AnyTimedType>:$inputs,
-                       OptionalAttr<StrAttr>:$callee);
+  let arguments = !con((ins EnumProp<SchedulePolicy>:$policy,
+                       Variadic<AnyTimedType>:$inputs,
+                       OptionalAttr<StrAttr>:$callee),
+                       PulseTimingArgs);
   let results = (outs Variadic<AnyTimedType>:$outputs);
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = [{
-    $policy `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
+    $policy ` ` `(` $inputs `)` `` custom<Timing>("getOperationName()", $start_cycles, $duration_cycles, $period_cycles, $callee) attr-dict `:` functional-type($inputs, $outputs)
     $body
   }];
-  let hasVerifier = 1;
   let hasRegionVerifier = 1;
 }
 
@@ -637,7 +650,9 @@ def IQAcquireOp : PulseOp<"iq_acquire", []> {
     Plays `pulse` on a readout line at `tone` and returns the raw
     demodulated IQ point instead of a discriminated measurement. Like
     `pulse.readout`, it returns the updated line and tone, so one tone can
-    be acquired with again.
+    be acquired with again. Unlike `pulse.readout`, it is not scheduled: it
+    gets no start or duration, and the controller export has no event for
+    it.
   }];
   let arguments = (ins
     ReadoutLineType:$line,

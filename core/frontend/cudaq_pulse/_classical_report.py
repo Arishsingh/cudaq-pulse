@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""``Lowered.classical_report()``: one ``ClassicalCall`` per execution of a
+"""``ScheduledKernel.classical_report()``: one ``ClassicalCall`` per execution of a
 call to a classical function. Loaded on the first report."""
 
 import math
@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from .compiler import _routes
 
 if TYPE_CHECKING:
-    from .compiler import Lowered
+    from .compiler import ScheduledKernel
 
 
 # classical_report() sets the fields without __init__, so there is no
@@ -35,13 +35,13 @@ class ClassicalCall:
     version's, such as ``"adaptive_t1__1"``, for a function whose list
     lengths come from its calls, else the same name. ``dispatch_key`` is the
     key its requests carry: the hash of ``compiled_name``
-    (``classical.function_id``), or the key its controller's firmware fixes
+    (``classical.dispatch_key``), or the key its controller's firmware fixes
     (the ``dispatch_keys`` of the processor that runs it).
 
     ``exposed_cycles`` is how long the first use waits for the answer beyond
     when it could start without the call: after its line is free and after
     the readout resonator of the last readout before the call has depleted
-    (``Qubit.depletion_ns``), when pulses must wait anyway. The rest of the
+    (``PhysicalQudit.depletion_ns``), when pulses must wait anyway. The rest of the
     budget, ``hidden_cycles``, overlaps that work. A latency within the
     depletion time is hidden entirely.
     """
@@ -94,28 +94,28 @@ class _Exposure:
     """How long a call's first use waits beyond when it could start without
     the call (see ``ClassicalCall.exposed_cycles``), in O(log n) per call."""
 
-    def __init__(self, lowered: "Lowered", events: Sequence[Any]) -> None:
+    def __init__(self, lowered: "ScheduledKernel", events: Sequence[Any]) -> None:
         import bisect
 
         self._bisect = bisect.bisect_right
-        clock = lowered.target.clock_ghz
-        qubits = lowered.target.target.qubits
+        clock = lowered.quantum_system.clock_ghz
+        qudits = lowered.quantum_system._description.qudits
         ends: dict[int, list[int]] = {}
         starting: dict[int, list[int]] = {}
         readouts: list[tuple[int, int]] = []
         holds: dict[int, int] = {}
-        for kind, line, qubit, start, duration in events:
+        for kind, line, qudit, start, duration in events:
             if (kind != "drive" and kind != "readout") or start is None or duration is None:
                 continue
             end = start + duration
             ends.setdefault(line, []).append(end)
             starting.setdefault(start, []).append(line)
             if kind == "readout":
-                hold = holds.get(qubit)
+                hold = holds.get(qudit)
                 if hold is None:
-                    q = qubits.get(qubit)
+                    q = qudits.get(qudit)
                     hold = math.ceil(q.depletion_ns * clock) if q is not None else 0
-                    holds[qubit] = hold
+                    holds[qudit] = hold
                 readouts.append((end, end + hold))
         for values in ends.values():
             values.sort()
@@ -149,16 +149,16 @@ class _LoopExposure:
     call asks about counts from the bounds of those ops; only iterations
     that straddle them are looked at one by one."""
 
-    def __init__(self, lowered: "Lowered", nodes: Sequence[Any]) -> None:
-        clock = lowered.target.clock_ghz
-        qubits = lowered.target.target.qubits
+    def __init__(self, lowered: "ScheduledKernel", nodes: Sequence[Any]) -> None:
+        clock = lowered.quantum_system.clock_ghz
+        qudits = lowered.quantum_system._description.qudits
         holds: dict[int, int] = {}
 
-        def hold(qubit: int) -> int:
-            if qubit not in holds:
-                q = qubits.get(qubit)
-                holds[qubit] = math.ceil(q.depletion_ns * clock) if q is not None else 0
-            return holds[qubit]
+        def hold(qudit: int) -> int:
+            if qudit not in holds:
+                q = qudits.get(qudit)
+                holds[qudit] = math.ceil(q.depletion_ns * clock) if q is not None else 0
+            return holds[qudit]
 
         def build(items: Sequence[Any], trips: tuple[int, ...]) -> tuple[list[Any], list[Any]]:
             # (the block's items, every op under it). An op is (readout,
@@ -173,7 +173,7 @@ class _LoopExposure:
                         block.append((item[0], inner, ops))
                         under += ops
                     continue
-                kind, line, qubit, start, duration, shifts = item
+                kind, line, qudit, start, duration, shifts = item
                 if (kind != "drive" and kind != "readout") or start is None or duration is None:
                     continue
                 if any(s is None for s in shifts):
@@ -192,7 +192,7 @@ class _LoopExposure:
                     start,
                     duration,
                     tuple(shifts),
-                    hold(qubit) if kind == "readout" else 0,
+                    hold(qudit) if kind == "readout" else 0,
                     extents,
                 )
                 block.append(op)
@@ -289,7 +289,7 @@ class _Found:
         at.pop()
 
 
-def report(lowered: "Lowered") -> list[ClassicalCall]:
+def report(lowered: "ScheduledKernel") -> list[ClassicalCall]:
     """``lowered.classical_report()``."""
     module = lowered._module if lowered.scheduled and not lowered.carriers else lowered._concrete()
     with lowered._lock:

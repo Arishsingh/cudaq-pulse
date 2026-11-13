@@ -3,7 +3,7 @@
 """Simulation of programs that call classical functions, or that read out
 through a readout model.
 
-The program evolves in segments between events, in time order: the end of a
+The program evolves in intervals between events, in time order: the end of a
 readout and the start of a call. At a readout each outcome continues on its
 own path, as in ``simulate``; with a readout model the outcome a branch and a
 call see is the *reported* one, drawn from the assignment matrix, while the
@@ -74,11 +74,11 @@ class ReadoutModel:
     def __init__(
         self, target: Any, qudits: Sequence[int], dims: Sequence[int], decay: bool
     ) -> None:
-        from cudaq_pulse.targets.base import DispersiveReadout
+        from cudaq_pulse.quantum_systems.base import DispersiveReadout
 
         self.matrices: dict[int, np.ndarray] = {}
         for position, qudit in enumerate(qudits):
-            q = target.qubits[qudit]
+            q = target.qudits[qudit]
             r = q.readout
             d = dims[position]
             m = np.eye(d)
@@ -93,7 +93,7 @@ class ReadoutModel:
                     "outcomes come from a DispersiveReadout's errors"
                 )
             to0, to1 = float(r.error_1to0), float(r.error_0to1)
-            pulse = q.calibrations.get("readout")
+            pulse = q._calibrations.get("readout")
             window = None if pulse is None else pulse.duration_ns
             if decay and q.t1_us > 0 and window is not None:
                 to0 = to0 + (1 - to0) * (1 - math.exp(-float(window) / (2e3 * q.t1_us)))
@@ -134,7 +134,7 @@ def simulate_tree(
     state: Any,
     t_start: float,
     t_end: float | None,
-    shots: int | None,
+    shots_count: int | None,
     rng: np.random.Generator,
     functions: Sequence[ClassicalFunction[..., Any]],
     handlers: Mapping[str, Callable[..., Any]],
@@ -148,7 +148,7 @@ def simulate_tree(
 ) -> tuple[list[_Leaf], dict[tuple[int, tuple[int, ...]], Any]]:
     """Walk every path; returns the leaves and the measurements seen.
 
-    *modes* gives the state's mode of each device qudit. With *sampled*,
+    *modes* gives the state's mode of each quantum system qudit. With *sampled*,
     only the paths some shot takes are walked."""
     by_name = {f.name: f for f in functions}
     with_lists = {f.name for f in functions if not all(s.is_scalar for s in f.results)}
@@ -165,7 +165,7 @@ def simulate_tree(
             end_cache[id(current)] = cached
         return cached[1]
 
-    def segment_module(current: Any) -> Any:
+    def interval_module(current: Any) -> Any:
         key = id(current)
         cached = placeholder_cache.get(key)
         if cached is None or cached[0] is not current:
@@ -187,6 +187,7 @@ def simulate_tree(
 
     def answer_call(
         current: Any,
+        entries: list[list[int]],
         path: list[tuple[tuple[int, tuple[int, ...]], int]],
         truth: dict[tuple[int, tuple[int, ...]], int],
         state: Any,
@@ -206,7 +207,7 @@ def simulate_tree(
                 _answer_values(function, answer)
             calls_here = [*calls, CallRecord(name, callee, start, inputs, answer, True)]
             run(
-                current.bind_call(index, [], *schedule_args),
+                current.bind_call(index, [], *schedule_args, entries),
                 path,
                 truth,
                 state,
@@ -220,7 +221,7 @@ def simulate_tree(
         limit = timeout if timeout >= 0 else function.timeout_ns
         if limit is None:
             run(
-                current.bind_call(index, values, *schedule_args),
+                current.bind_call(index, values, *schedule_args, entries),
                 path,
                 truth,
                 state,
@@ -231,7 +232,7 @@ def simulate_tree(
             )
             return
         p_ok = latency_in_time_probability(function, limit)
-        if shots is None and not latency_branching:
+        if shots_count is None and not latency_branching:
             p_ok = 1.0 if function.nominal_latency_ns <= limit else 0.0
         outcomes_ok = [(True, p_ok), (False, 1.0 - p_ok)]
         counts = (
@@ -242,7 +243,7 @@ def simulate_tree(
                 continue
             bound = [1.0, *values] if in_time else [0.0] * (1 + len(values))
             run(
-                current.bind_call(index, bound, *schedule_args),
+                current.bind_call(index, bound, *schedule_args, entries),
                 path,
                 truth,
                 state,
@@ -256,6 +257,44 @@ def simulate_tree(
             )
         return
 
+    def in_window(
+        current: Any, path: list[tuple[tuple[int, tuple[int, ...]], int]], readouts: int
+    ) -> tuple[list[list[int]], Any]:
+        """A window of the program (see bind_call) numbers its readouts and
+        calls from *readouts* on, and is given only the outcomes of its own
+        measurements, those the path took last: its entries, and its next
+        measurement numbered as in the program."""
+        entries = []
+        for (index, iteration), k in reversed(path):
+            if index < readouts:
+                break
+            entries.append([index - readouts, *iteration, k])
+        entries.reverse()
+        found = current.next_measurement(entries)
+        if found is not None:
+            found = (found[0] + readouts, *found[1:])
+        return entries, found
+
+    def interval(
+        current: Any, path: list[tuple[tuple[int, tuple[int, ...]], int]]
+    ) -> tuple[Any, ...]:
+        """Where a path goes next: its entries, the end of its schedule, its
+        next measurement and call, whether the call comes first, the end
+        of the interval to it, and the index of its window's first readout."""
+        readouts = current.window_bases()[0] if functions else 0
+        if readouts:
+            entries, found = in_window(current, path, readouts)
+        else:
+            entries = [[index, *iteration, k] for (index, iteration), k in path]
+            found = current.next_measurement(entries)
+        end_here = t_end if t_end is not None else schedule_end(current)
+        call = current.next_call(entries) if functions else None
+        measure_at = math.inf if found is None else found[4]
+        call_at = math.inf if call is None else call[1]
+        take_call = call is not None and call_at < measure_at - 1e-9 and call_at <= end_here
+        boundary = min(end_here, call_at if take_call else measure_at)
+        return entries, end_here, found, call, take_call, boundary, readouts
+
     def run(
         current: Any,
         path: list[tuple[tuple[int, tuple[int, ...]], int]],
@@ -265,24 +304,32 @@ def simulate_tree(
         count: int,
         weight: float,
         calls: list[CallRecord],
+        ahead: tuple[Any, ...] | None = None,
     ) -> None:
-        entries = [[index, *iteration, k] for (index, iteration), k in path]
-        end_here = t_end if t_end is not None else schedule_end(current)
-        found = current.next_measurement(entries)
-        call = current.next_call(entries) if functions else None
-        measure_at = math.inf if found is None else found[4]
-        call_at = math.inf if call is None else call[1]
-        take_call = call is not None and call_at < measure_at - 1e-9 and call_at <= end_here
-        boundary = min(end_here, call_at if take_call else measure_at)
-        if boundary > t:
-            engine.module = segment_module(current)
-            state = engine.evolve(state, entries, t, boundary)
-            t = boundary
+        """Walk *path* on from *t*; with *ahead* (its ``interval``), *state*
+        is already evolved to the interval's end."""
+        if ahead is None:
+            entries, end_here, found, call, take_call, boundary, readouts = interval(current, path)
+            if boundary > t:
+                engine.module = interval_module(current)
+                state = engine.evolve(state, entries, t, boundary)
+                t = boundary
+        else:
+            entries, end_here, found, call, take_call, boundary, readouts = ahead
+            t = max(t, boundary)
         if take_call:
             assert call is not None
             index, start, callee, arguments, answered, timeout = call
             function = by_name[callee]
-            outcomes = {key: k for key, k in path}
+            if readouts:
+                # The call reads measurements of its window: the path's last
+                # ones, as many as the window's entries.
+                arguments = [
+                    (kind, r + readouts if kind == 0 else r, it, v) for kind, r, it, v in arguments
+                ]
+                outcomes = dict(path[len(path) - len(entries) :])
+            else:
+                outcomes = dict(path)
             if function.uniform is not None:
                 n = function.uniform
                 draws = (
@@ -295,6 +342,7 @@ def simulate_tree(
                         continue
                     answer_call(
                         current,
+                        entries,
                         path,
                         truth,
                         state,
@@ -315,7 +363,9 @@ def simulate_tree(
                     # A decoder with nothing to decode: its NOT_READY is late.
                     record = CallRecord(function.base_name, callee, start, inputs, None, False)
                     run(
-                        current.bind_call(index, _not_ready(function, call), *schedule_args),
+                        current.bind_call(
+                            index, _not_ready(function, call), *schedule_args, entries
+                        ),
                         path,
                         truth,
                         state,
@@ -326,14 +376,27 @@ def simulate_tree(
                     )
                     return
                 answer_call(
-                    current, path, truth, state, t, count, weight, calls, call, inputs, answer
+                    current,
+                    entries,
+                    path,
+                    truth,
+                    state,
+                    t,
+                    count,
+                    weight,
+                    calls,
+                    call,
+                    inputs,
+                    answer,
                 )
                 return
-            if shots is None or iq_model is None:
+            if shots_count is None or iq_model is None:
                 raise InvalidValueError(
-                    f"{callee}: IQ points are drawn per shot; simulate with shots"
+                    f"{callee}: IQ points are drawn per shot; simulate with shots_count"
                 )
-            drives = {(i, tuple(it)): (f, a) for i, it, f, a in current.readout_drives(entries)}
+            drives = {
+                (i + readouts, tuple(it)): (f, a) for i, it, f, a in current.readout_drives(entries)
+            }
 
             def point(key: tuple[int, tuple[int, ...]]) -> tuple[float, float]:
                 _, _, qudit, begin, finish = seen[key]
@@ -355,6 +418,7 @@ def simulate_tree(
             for inputs, answer, k in groups.values():
                 answer_call(
                     current,
+                    entries,
                     path,
                     truth,
                     state,
@@ -394,6 +458,7 @@ def simulate_tree(
             if count and total > 0
             else np.zeros(len(branches), dtype=np.int64)
         )
+        followed = []
         for (r, k, branch, p), n in zip(branches, counts, strict=False):
             if sampled:
                 if n == 0:
@@ -401,16 +466,32 @@ def simulate_tree(
                 # A path of many measurements is improbable as a whole;
                 # each followed outcome is kept at unit weight instead.
                 branch = branch / engine.weight(branch)
-            run(
-                current,
-                [*path, (key, r)],
-                {**truth, key: k},
-                branch,
-                max(end, t),
-                int(n),
-                weight * p,
-                calls,
+            followed.append(([*path, (key, r)], {**truth, key: k}, branch, int(n), weight * p))
+        t = max(end, t)
+        if not engine.batches:
+            for child_path, child_truth, branch, n, child_weight in followed:
+                run(current, child_path, child_truth, branch, t, n, child_weight, calls)
+            return
+        # Siblings evolve their next intervals together (no call comes
+        # between them and this measurement), then each walks on in turn.
+        steps = [interval(current, child[0]) for child in followed]
+        windows: dict[float, list[int]] = {}
+        for i, (_, _, _, _, _, boundary, _) in enumerate(steps):
+            if boundary > t:
+                windows.setdefault(boundary, []).append(i)
+        states = [child[2] for child in followed]
+        if windows:
+            engine.module = interval_module(current)
+        for boundary, members in windows.items():
+            evolved = engine.evolve_together(
+                [states[i] for i in members], [steps[i][0] for i in members], t, boundary
             )
+            for i, state in zip(members, evolved, strict=True):
+                states[i] = state
+        for (child_path, child_truth, _, n, child_weight), state, step in zip(
+            followed, states, steps, strict=True
+        ):
+            run(current, child_path, child_truth, state, t, n, child_weight, calls, step)
 
-    run(module, [], {}, state, t_start, shots or 0, 1.0, [])
+    run(module, [], {}, state, t_start, shots_count or 0, 1.0, [])
     return leaves, seen

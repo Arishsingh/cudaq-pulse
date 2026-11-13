@@ -11,34 +11,42 @@ second-order perturbation theory. A residual ZZ entry adds exactly its rate.
 from __future__ import annotations
 
 import cmath
-import dataclasses
 import math
 import re
+import shutil
+import subprocess
+from pathlib import Path
 
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
 from cudaq_pulse._native._cudaq_pulse_native import MLIRPipeline, evaluate_callback
-from cudaq_pulse.targets import (
+from cudaq_pulse.quantum_systems import (
     Coupling,
     MicrowaveDrive,
-    Qubit,
+    PhysicalQudit,
     ResidualZZ,
     SimulationModel,
-    TargetDescription,
 )
 
-from tests._handles import Q
+from tests._handles import Q, rebuilt
 from tests.runtime._lowering import on
 
 _TWO_PI_GHZ = 2.0 * math.pi * 1.0e-9
 
 
 def _pair(f0, f1, *, g_hz=0.0, zz_hz=0.0, alphas=(-200.0e6, -180.0e6)):
-    return TargetDescription(
+    return pulse.quantum_system(
         name="coupled-pair",
-        qubits={
-            q: Qubit(q, f, a, 0.0, 0.0, drive=MicrowaveDrive(amplitude_scale_rad_per_ns=1.0))
+        qudits={
+            q: PhysicalQudit(
+                q,
+                f,
+                0.0,
+                0.0,
+                anharmonicity_hz=a,
+                drive=MicrowaveDrive(amplitude_scale_rad_per_ns=1.0),
+            )
             for q, (f, a) in enumerate(zip((f0, f1), alphas, strict=True))
         },
         couplings=[Coupling((0, 1), strength_hz=g_hz)] if g_hz else [],
@@ -146,7 +154,7 @@ def test_detuned_pair_follows_the_generalized_rabi_formula(levels):
 @pytest.mark.slow
 @pytest.mark.parametrize("levels", [2, 3])
 def test_transmons_detuned_by_gigahertz_stay_put(levels):
-    # A data qubit and an ancilla of a surface-code device: 2 GHz apart,
+    # A data qubit and an ancilla of a surface-code quantum system: 2 GHz apart,
     # g = 7 MHz. At most (2 g / D)^2 = 5e-5 of the excitation moves.
     times = [50.0, 333.0, 1000.0]
     swapped = _swapped(_pair(3.9e9, 5.9e9, g_hz=7.0e6), levels, times, dt_ns=0.025)
@@ -188,10 +196,10 @@ def test_residual_zz_is_the_conditional_frequency_shift(levels):
 
 @pytest.mark.parametrize("backend", ["cpu", "gpu"])
 def test_systems_without_a_simulation_model_are_refused(backend):
-    target = dataclasses.replace(_pair(5.0e9, 5.5e9, g_hz=10.0e6), model=None)
+    target = rebuilt(_pair(5.0e9, 5.5e9, g_hz=10.0e6), model=None)
     with pytest.raises(NotImplementedError, match=r"has no simulation model \(its model is None\)"):
         pulse.simulate(_lowered(target), backend=backend)
-    target = dataclasses.replace(target, model=SimulationModel)
+    target = target.replace(model=SimulationModel)
     with pytest.raises(NotImplementedError, match="SimulationModel has no simulator"):
         pulse.simulate(_lowered(target), backend=backend)
 
@@ -289,7 +297,7 @@ def test_gpu_lowering_builds_the_cpu_operator(levels):
         drive(d0, gaussian(40, 0.05, 10.0))
 
     lowered = on(target, driven, Q[0], Q[1])
-    # A CPU run leaves the module with the attributes of its segment, which
+    # A CPU run leaves the module with the attributes of its interval, which
     # the GPU backend lowers the same way.
     pulse.simulate(lowered, levels=levels, t_end=20.0)
     dims = (levels, levels)
@@ -305,3 +313,48 @@ def test_gpu_lowering_builds_the_cpu_operator(levels):
     np.testing.assert_allclose(_at(gpu_terms, times), cpu, atol=1e-12)
     # The coupling turns at the frames' difference frequency.
     assert "coupling_0_0" in text
+
+
+# A build tree stages the package in build/<dir>/python and cudaq-pulse-opt in
+# build/<dir>/bin; an installation puts the cudaq-pulse-tools wheel's on PATH.
+_BUILD_DRIVER = Path(pulse.__file__).parent.parent.parent / "bin" / "cudaq-pulse-opt"
+_UPSTREAM_PASSES = ["--cse", "--canonicalize", "--symbol-dce", "--sccp", "--inline"]
+
+
+@pytest.mark.parametrize(
+    "passes",
+    [[name] for name in _UPSTREAM_PASSES] + [_UPSTREAM_PASSES],
+    ids=[name[2:] for name in _UPSTREAM_PASSES] + ["all"],
+)
+def test_upstream_passes_keep_the_operator(passes):
+    # The partner is coupled but never driven: its drive line is dead and the
+    # passes erase it, so its frame is the quantum system's frequency.
+    driver = str(_BUILD_DRIVER) if _BUILD_DRIVER.exists() else shutil.which("cudaq-pulse-opt")
+    if driver is None:
+        pytest.skip("cudaq-pulse-opt is neither in the build tree nor on PATH")
+
+    def optimized(text):
+        return subprocess.run(
+            [driver, *passes], input=text, capture_output=True, text=True, timeout=60, check=True
+        ).stdout
+
+    @pulse.kernel
+    def driven(q0, q1):
+        d0 = get_drive_line(q0)
+        get_drive_line(q1)
+        drive(d0, gaussian(40, 0.05, 10.0))
+
+    lowered = on(_pair(3.9e9, 5.9e9, g_hz=7.0e6, zz_hz=2.0e4), driven, Q[0], Q[1])
+    pulse.simulate(lowered, levels=3, t_end=20.0)
+    source = lowered._concrete().print()
+    pipeline = MLIRPipeline()
+    reference = pipeline.run_qop_to_cudm(pipeline.run_pulse_to_qop(source))
+    qop = optimized(pipeline.run_pulse_to_qop(optimized(source)))
+    assert "qop.evolve" in qop
+    text = pipeline.run_qop_to_cudm(qop)
+    dims, times = (3, 3), [0.0, 3.3, 11.7, 19.9]
+    expected = _at(list(_cudm_hamiltonian(reference, dims)), times)
+    assert np.abs(expected).max() > 0.04
+    found = _at(list(_cudm_hamiltonian(text, dims)), times)
+    np.testing.assert_allclose(found, expected, atol=1e-12)
+    assert text.count("cudm.evolve") == reference.count("cudm.evolve") == 1

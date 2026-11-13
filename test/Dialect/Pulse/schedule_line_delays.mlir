@@ -7,7 +7,7 @@
 // RUN: cudaq-pulse-opt --pulse-schedule-asap %s | FileCheck %s --check-prefixes=CHECK,ASAP
 // RUN: cudaq-pulse-opt --pulse-schedule-alap %s | FileCheck %s --check-prefixes=CHECK,ALAP
 
-module attributes {pulse.line_delays = {drive = array<i64: 3, 0>, readout = array<i64: 0, 5>}} {
+module attributes {pulse.control_system = #pulse.control_system<clock_period_fs = 1000000, lines = [#pulse.line<drive, qudits = [0], delay_cycles = 3>, #pulse.line<readout, qudits = [1], delay_cycles = 5>]>} {
 
 // CHECK-LABEL: func.func @delayed_lines
 // ASAP: pulse.drive {{.*}}{duration_cycles = 8 : i64, start_cycles = 3 : i64}
@@ -19,11 +19,11 @@ module attributes {pulse.line_delays = {drive = array<i64: 3, 0>, readout = arra
 // ALAP: pulse.wait {{.*}}{duration_cycles = 2 : i64, start_cycles = 11 : i64}
 // ALAP: pulse.readout {{.*}}{duration_cycles = 6 : i64, start_cycles = 15 : i64}
 func.func @delayed_lines() {
-  %qa = pulse.qudit_alloc : !pulse.qref
-  %qb = pulse.qudit_alloc : !pulse.qref
-  %a0, %ta = pulse.get_drive_line %qa {qubit = 0 : i64} : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %b0, %tb = pulse.get_drive_line %qb {qubit = 1 : i64} : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %tr = pulse.get_readout_line %qb {qubit = 1 : i64} : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %qa = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %qb = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %a0, %ta = pulse.get_drive_line %qa : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %b0, %tb = pulse.get_drive_line %qb : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %tr = pulse.get_readout_line %qb : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c8 = arith.constant 8 : i64
   %c6 = arith.constant 6 : i64
   %c4 = arith.constant 4 : i64
@@ -38,7 +38,7 @@ func.func @delayed_lines() {
   %dur = pulse.duration_from_int %c2 : (i64) -> !pulse.duration
   %a2 = pulse.wait %a1, %dur : (!pulse.drive_line, !pulse.duration) -> !pulse.drive_line
   %a3, %r1 = pulse.sync %a2, %r0 : !pulse.drive_line, !pulse.readout_line -> !pulse.drive_line, !pulse.readout_line
-  %r2, %tr1, %m = pulse.readout %r1, %w6, %tr, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+  %r2, %tr1, %m = pulse.readout %r1, %w6, %tr, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   return
 }
 

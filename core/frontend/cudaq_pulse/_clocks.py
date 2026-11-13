@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Clocks: the program's, each controller's, and the grids between them.
 
-A kernel counts time in cycles of the device's *program clock*,
-``Device.clock_ghz``. A controller may run its own clock: at ``f_k`` against
+A kernel counts time in cycles of the quantum system's *program clock*,
+``QuantumSystem.clock_ghz``. A controller may run its own clock: at ``f_k`` against
 the program's ``f_p`` it counts ``r = f_k / f_p`` of its cycles per program
 cycle, and may start operations only every ``cycles_per_timestep`` of them.
 Its lines' timestep (their ``grid``) is the fewest whole program cycles
@@ -45,7 +45,7 @@ _TOLERANCE = 1e-9
 
 
 def _definition_error(message: str) -> Exception:
-    """The error for a device whose clocks do not fit together."""
+    """The error for a quantum system whose clocks do not fit together."""
     return ValueError(message)
 
 
@@ -53,16 +53,44 @@ def _ghz(value: float) -> str:
     return f"{value:g} GHz"
 
 
+def clock_period_fs(clock_ghz: float) -> str:
+    """The period in fs of a *clock_ghz* program clock as
+    ``#pulse.control_system`` writes it: the fraction of smallest
+    denominator whose clock is exactly *clock_ghz* (the first convergent of
+    its continued fraction that is), ``1250000/3`` for 2.4 GHz, ``500000``
+    for 2 GHz. The packed builder finds the same one."""
+    found = _PERIODS.get(clock_ghz)
+    if found is None:
+        x, y = clock_ghz.as_integer_ratio()
+        p0, p1, q0, q1 = 0, 1, 1, 0
+        while y:
+            term = x // y
+            p0, p1, q0, q1 = p1, term * p1 + p0, q1, term * q1 + q0
+            if float(p1) / float(q1) == clock_ghz:
+                break
+            x, y = y, x - term * y
+        numerator, denominator = 1_000_000 * q1, p1
+        common = math.gcd(numerator, denominator)
+        numerator, denominator = numerator // common, denominator // common
+        found = _PERIODS[clock_ghz] = (
+            str(numerator) if denominator == 1 else f"{numerator}/{denominator}"
+        )
+    return found
+
+
+_PERIODS: dict[float, str] = {}
+
+
 def clock_ratio(clock_ghz: float, program_ghz: float) -> Fraction:
     """``clock_ghz / program_ghz`` as a fraction; an error if it is not one."""
-    # Imported here: a device whose clock is only declared needs no fraction.
+    # Imported here: a quantum system whose clock is only declared needs no fraction.
     from fractions import Fraction
 
     ratio = Fraction(clock_ghz / program_ghz).limit_denominator(_MAX_DENOMINATOR)
     if abs(float(ratio) * program_ghz - clock_ghz) > _TOLERANCE * clock_ghz:
         raise _definition_error(
             f"a controller's {_ghz(clock_ghz)} clock has no whole-cycle ratio to the "
-            f"{_ghz(program_ghz)} program clock; give the device a 'clock_ghz' both "
+            f"{_ghz(program_ghz)} program clock; give the quantum system a 'clock_ghz' both "
             "divide into"
         )
     return ratio
@@ -85,19 +113,23 @@ def _lcm(clocks: Sequence[float]) -> float:
 def program_clock_ghz(
     declared: float | None, controller_clocks: Mapping[str, float], default: float
 ) -> float:
-    """The program clock of a device: *declared* (its config's ``clock_ghz``)
+    """The program clock of a quantum system: *declared* (its config's ``clock_ghz``)
     if given, else the fastest of its controllers' clocks when every other
     one divides it, else *default* when it has no controllers.
 
-    Raises the device-definition error when the controllers' clocks do not
+    Raises ``QuantumSystemDefinitionError`` when the controllers' clocks do not
     divide evenly into one and none is declared, listing the clocks that
     work; it never picks one.
     """
     if declared is not None:
         if isinstance(declared, bool) or not isinstance(declared, (int, float)):
-            raise _definition_error(f"the device's clock_ghz must be a number, got {declared!r}")
+            raise _definition_error(
+                f"the quantum system's clock_ghz must be a number, got {declared!r}"
+            )
         if not declared > 0 or not math.isfinite(declared):
-            raise _definition_error(f"the device's clock_ghz must be positive, got {declared}")
+            raise _definition_error(
+                f"the quantum system's clock_ghz must be positive, got {declared}"
+            )
         for clock in controller_clocks.values():
             clock_ratio(clock, declared)
         return float(declared)
@@ -118,7 +150,7 @@ def program_clock_ghz(
     clocks = ", ".join(f"{name} at {_ghz(c)}" for name, c in sorted(controller_clocks.items()))
     raise _definition_error(
         f"the controllers' clocks ({clocks}) do not divide evenly into one, so the "
-        "device needs a program clock: set 'clock_ghz' in its config to one of "
+        "quantum system needs a program clock: set 'clock_ghz' in its config to one of "
         + "; ".join(options)
     )
 
@@ -187,22 +219,6 @@ class ClockPlan:
     def lcm(self) -> int:
         """Where every line can meet."""
         return functools.reduce(math.lcm, (c.grid for c in self.controllers), 1)
-
-    def attributes(self, n_qudits: int) -> str | None:
-        """The module attributes that put the scheduler on the grids."""
-        if self.lcm == 1:
-            return None
-        if self.owners is None:
-            return f"{{pulse.line_grid = {self.controllers[0].grid} : i64}}"
-        # Every carrier a controller plays, for the qudits a call binds.
-        n_qudits = max(n_qudits, 1 + max((q for _, q in self.owners), default=-1))
-        if not n_qudits:
-            return f"{{pulse.line_grid = {self.lcm} : i64}}"
-        arrays = []
-        for role in ("drive", "readout"):
-            grids = ", ".join(str(self.grid_of(role, q)) for q in range(n_qudits))
-            arrays.append(f"pulse.{role}_line_grid = array<i64: {grids}>")
-        return f"{{pulse.line_grid = {self.lcm} : i64, " + ", ".join(arrays) + "}"
 
     def start_uncertainty_ns(
         self, skew_cycles: Mapping[str, int] | None = None
@@ -378,15 +394,15 @@ def line_delays(
     limits: Controller | None,
     plan: ClockPlan | None,
     program_ghz: float,
-    n_qudits: int,
     controllers: Sequence[Controller] | None = None,
     owners: Mapping[tuple[str, int], int] | None = None,
-) -> tuple[str | None, dict[tuple[str, int], float]]:
-    """The ``pulse.line_delays`` attribute that moves each delayed line by
-    whole steps of its grid (``None`` when none moves), and each line's fine
-    delay in ns, the rest. Raises ``ValueError`` for a rest its controller
-    can neither add nor tolerate. With several *controllers*, each line's
-    limits are those of the one *owners* ((role, qudit) -> index) names."""
+) -> tuple[dict[tuple[str, int], int], dict[tuple[str, int], float]]:
+    """How many program cycles each delayed line moves, whole steps of its
+    grid (none for a line that does not move), and each line's fine delay
+    in ns, the rest, both by (role, qudit). Raises ``ValueError`` for a rest
+    its controller can neither add nor tolerate. With several
+    *controllers*, each line's limits are those of the one *owners*
+    ((role, qudit) -> index) names."""
     fine_max = 0.0 if limits is None else limits.max_fine_delay_ns
     tolerance = 0.0 if limits is None else limits.alignment_tolerance_cycles
     shifts: dict[tuple[str, int], int] = {}
@@ -424,16 +440,15 @@ def line_delays(
                 f"{abs(rest) * own_ghz:g}, or calibrate the delay to {low:g} or "
                 f"{low + step_ns:g} ns"
             )
+        if abs(whole * grid) > 2**60:
+            raise InvalidValueError(
+                f"the {role} line of qudit {qudit} is delayed {ns:g} ns (its delay_ns), more "
+                f"than a program lasts: at most 2**60 cycles, {2**60 / program_ghz:.3g} ns"
+            )
         fine[(role, qudit)] = rest if fine_max > 0 else 0.0
         if whole:
             shifts[(role, qudit)] = whole * grid
-    if not shifts:
-        return None, fine
-    arrays = []
-    for role in ("drive", "readout"):
-        cycles = ", ".join(str(shifts.get((role, q), 0)) for q in range(n_qudits))
-        arrays.append(f"{role} = array<i64: {cycles}>")
-    return "{" + ", ".join(arrays) + "}", fine
+    return shifts, fine
 
 
 def off_grid(
@@ -838,7 +853,7 @@ def round_on_grid(n: Any, grid: int, direction: RoundDirection | str) -> int:
 def _program_clock(
     system: ControlSystem | None, declared: Any, default: float
 ) -> tuple[float | None, list[Problem]]:
-    """The program clock of a device of *system*: *declared* (its config's
+    """The program clock of a quantum system of *system*: *declared* (its config's
     ``clock_ghz``), else the fastest of the controllers' own clocks when the
     others divide it, else *default*; with the problems that keep it from
     one, and the controllers' clocks that are not whole multiples of the

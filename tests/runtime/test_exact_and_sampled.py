@@ -12,15 +12,16 @@ from __future__ import annotations
 
 import math
 import time
+import tracemalloc
 
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
 from cudaq_pulse import ControlSystem
 from cudaq_pulse.classical import Link
+from cudaq_pulse.quantum_systems import MicrowaveDrive, PhysicalQudit
 from cudaq_pulse.runtime import _propagate
 from cudaq_pulse.runtime import simulate as simulate_module
-from cudaq_pulse.targets import MicrowaveDrive, Qubit, TargetDescription
 
 from tests._handles import Q
 from tests.runtime._lowering import on
@@ -29,10 +30,10 @@ _PI = math.pi / 20.0
 
 
 def _target(t1_us=30.0, t2_us=20.0, thermal=0.02, offset_hz=0.0):
-    return TargetDescription(
+    return pulse.quantum_system(
         name="propagation-test",
-        qubits={
-            0: Qubit(
+        qudits={
+            0: PhysicalQudit(
                 index=0,
                 frequency_hz=5.0e9 + offset_hz,
                 anharmonicity_hz=-200.0e6,
@@ -113,12 +114,42 @@ def test_a_long_idle_decays_exactly_and_quickly():
     assert elapsed < 2.0
 
 
-def test_a_detuned_plant_is_propagated_like_stepping(monkeypatch):
+def test_a_detuned_system_is_propagated_like_stepping(monkeypatch):
     lowered = on(_target(), _mixed_pulses, Q[0])
-    plant = _target(offset_hz=250e3)
-    stepped = _simulated(lowered, monkeypatch, maps=False, exact=False, plant=plant)
-    rho = _simulated(lowered, monkeypatch, plant=plant)
+    detuned = _target(offset_hz=250e3)
+    stepped = _simulated(lowered, monkeypatch, maps=False, exact=False, quantum_system=detuned)
+    rho = _simulated(lowered, monkeypatch, quantum_system=detuned)
     np.testing.assert_allclose(rho, stepped, atol=1e-7)
+
+
+@pulse.kernel
+def _long_gaussian(q0):
+    d = get_drive_line(q0)
+    drive(d, gaussian(40, _PI, 10))
+
+
+def test_a_long_driven_stretch_builds_its_hamiltonians_a_part_at_a_time():
+    # 16 levels are too many for a kept map, so the pulse steps RK4 on the
+    # state, 8400 steps at the default step. Their Hamiltonians (three of
+    # 16 x 16 a step) take about 100 MB together.
+    lowered = on(_target(), _long_gaussian, Q[0])
+    tracemalloc.start()
+    try:
+        pulse.simulate(lowered, levels=16)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 48 << 20
+
+
+def test_parts_of_a_driven_stretch_step_as_the_whole_stretch(monkeypatch):
+    lowered = on(_target(), _mixed_pulses, Q[0])
+    whole = pulse.simulate(lowered, levels=6).density_matrix
+    with monkeypatch.context() as m:
+        # Seven steps a part, and a shorter last part.
+        m.setattr(simulate_module, "_STRETCH_BYTES", 7 * 96 * 36)
+        parts = pulse.simulate(lowered, levels=6).density_matrix
+    assert parts.tobytes() == whole.tobytes()
 
 
 def test_expm_matches_a_diagonalizable_exponential():
@@ -155,30 +186,30 @@ def _three_measurements(q0):
 def test_sampled_branches_have_the_frequencies_of_the_exact_branches():
     lowered = on(_target(t1_us=0.0, t2_us=0.0, thermal=0.0), _three_measurements, Q[0])
     exact = {b.levels: b.probability for b in pulse.simulate(lowered, levels=2).branches}
-    shots = 4000
-    sampled = pulse.simulate(lowered, shots=shots, seed=5, branches="sampled", levels=2)
-    assert len(sampled.branches) <= shots
+    shots_count = 4000
+    sampled = pulse.simulate(lowered, shots_count=shots_count, seed=5, branches="sampled", levels=2)
+    assert len(sampled.branches) <= shots_count
     assert sum(b.probability for b in sampled.branches) == pytest.approx(1.0)
     assert np.trace(sampled.density_matrix).real == pytest.approx(1.0)
     for branch in sampled.branches:
         p = exact[branch.levels]
-        assert abs(branch.probability - p) < 5 * math.sqrt(p / shots)
-    assert sampled.records is not None and sampled.records.shape == (shots, 3)
+        assert abs(branch.probability - p) < 5 * math.sqrt(p / shots_count)
+    assert sampled.records is not None and sampled.records.shape == (shots_count, 3)
 
 
 def test_sampled_branches_need_shots():
     lowered = on(_target(), _three_measurements, Q[0])
-    with pytest.raises(ValueError, match="shots"):
+    with pytest.raises(ValueError, match="shots_count"):
         pulse.simulate(lowered, branches="sampled", levels=2)
     with pytest.raises(ValueError, match="unknown branches 'some'; choose 'all' or 'sampled'"):
-        pulse.simulate(lowered, shots=1, branches="some", levels=2)
+        pulse.simulate(lowered, shots_count=1, branches="some", levels=2)
 
 
 def test_branch_coverage_takes_its_members_or_their_strings():
     lowered = on(_target(), _three_measurements, Q[0])
-    by_string = pulse.simulate(lowered, shots=50, seed=2, branches="sampled", levels=2)
+    by_string = pulse.simulate(lowered, shots_count=50, seed=2, branches="sampled", levels=2)
     by_member = pulse.simulate(
-        lowered, shots=50, seed=2, branches=pulse.BranchCoverage.SAMPLED, levels=2
+        lowered, shots_count=50, seed=2, branches=pulse.BranchCoverage.SAMPLED, levels=2
     )
     assert by_member.branches == by_string.branches
     assert pulse.BranchCoverage("all") is pulse.BranchCoverage.ALL
@@ -211,12 +242,11 @@ def _adaptive_loop(q0, rounds: int):
 
 
 def test_a_long_adaptive_loop_follows_one_path_per_shot():
-    target = _target(t1_us=5.0)
-    dev = pulse.device(target)
-    lowered = pulse.compile(_adaptive_loop, device=dev, control_system=_MACHINE).lower(
-        dev.qudit_handles[0], 60
+    dev = _target(t1_us=5.0)
+    lowered = pulse.compile(_adaptive_loop, quantum_system=dev, control_system=_MACHINE).lower(
+        dev.qudits[0], 60
     )
-    result = pulse.simulate(lowered, shots=3, seed=1, branches="sampled", levels=2)
+    result = pulse.simulate(lowered, shots_count=3, seed=1, branches="sampled", levels=2)
     assert 1 <= len(result.branches) <= 3
     assert all(len(branch.calls) == 60 for branch in result.branches)
     assert result.records is not None and result.records.shape == (3, 60)

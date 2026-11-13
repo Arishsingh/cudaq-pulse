@@ -7,7 +7,7 @@ import math
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
-from cudaq_pulse.targets import MicrowaveDrive, Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import MicrowaveDrive, PhysicalQudit
 
 from tests._handles import Q
 from tests.runtime._lowering import pulse_mlir
@@ -28,7 +28,7 @@ def test_full_pipeline_mlir():
         drive(d1, wf)
 
     ir = (my_kernel, Q[0], Q[1])
-    mlir = pulse_mlir(ir, clock_ghz=2.0, qubit_freq_hz={0: 5.0e9, 1: 5.1e9})
+    mlir = pulse_mlir(ir, clock_ghz=2.0, qudit_freq_hz={0: 5.0e9, 1: 5.1e9})
 
     assert "module @" in mlir
     assert "func.func @main()" in mlir
@@ -40,10 +40,10 @@ def test_full_pipeline_mlir():
 @gpu
 def test_full_pipeline_gpu():
     """Public device -> lower -> simulate on the GPU: MLIR lowering, JIT, cuDensityMat."""
-    target = TargetDescription(
+    target = pulse.quantum_system(
         name="pipeline-1q",
-        qubits={
-            0: Qubit(
+        qudits={
+            0: PhysicalQudit(
                 index=0,
                 frequency_hz=5.0e9,
                 anharmonicity_hz=-200.0e6,
@@ -53,7 +53,7 @@ def test_full_pipeline_gpu():
             )
         },
     )
-    q0 = pulse.device(target).qudit_handles[0]
+    q0 = target.qudits[0]
 
     @pulse.kernel
     def my_kernel(q0):

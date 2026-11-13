@@ -12,7 +12,7 @@ import math
 
 import cudaq_pulse as pulse
 import pytest
-from cudaq_pulse.targets import MicrowaveDrive, Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import MicrowaveDrive, PhysicalQudit
 
 from tests._handles import Q
 from tests.runtime._lowering import evolve, on, pulse_mlir
@@ -27,10 +27,10 @@ _CLOCK_GHZ = 2.0  # 2 clock cycles per nanosecond
 
 
 def _target():
-    return TargetDescription(
+    return pulse.quantum_system(
         name="idle-evolution-test",
-        qubits={
-            0: Qubit(
+        qudits={
+            0: PhysicalQudit(
                 index=0,
                 frequency_hz=5.0e9,
                 anharmonicity_hz=-200.0e6,
@@ -65,7 +65,7 @@ def _p1_after_wait(wait_ns):
         on(_target(), kernel, Q[0]),
         t_start=0.0,
         t_end=t_end,
-        num_steps=max(1, int(round(t_end))),
+        step_count=max(1, int(round(t_end))),
         integrator="rk4",
     )
     return result.final_state[1, 1].real
@@ -80,7 +80,7 @@ def test_idle_evolution_mlir_structure():
         drive(d0, square(40, math.pi / 20.0))
         wait(d0, 1000)
 
-    mlir = pulse_mlir((kernel, Q[0]), clock_ghz=_CLOCK_GHZ, qubit_freq_hz={0: 5.0e9})
+    mlir = pulse_mlir((kernel, Q[0]), clock_ghz=_CLOCK_GHZ, qudit_freq_hz={0: 5.0e9})
     assert "pulse.wait" in mlir
 
 
@@ -132,7 +132,7 @@ def test_split_idle_matches_single_idle():
             on(_target(), kernel, Q[0]),
             t_start=0.0,
             t_end=1020.0,
-            num_steps=1020,
+            step_count=1020,
             integrator="rk4",
         )
         return result.final_state[1, 1].real

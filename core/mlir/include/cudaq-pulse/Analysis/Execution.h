@@ -118,6 +118,10 @@ private:
   llvm::DenseMap<mlir::Value, mlir::Operation *> roots;
 };
 
+/// On a tone's allocation or `pulse.tone`: its frame where the program
+/// starts, as [frequency Hz, frame frequency Hz, phase, time ns].
+inline constexpr llvm::StringLiteral kToneStateAttr = "pulse.tone_state";
+
 class ExecutionWalker {
 public:
   ExecutionWalker(double clockGHz, const Path &path)
@@ -136,6 +140,8 @@ public:
   /// like one on a measurement without an outcome: its arms run after the
   /// answer is due.
   std::function<bool(const Occurrence &)> onSubmit;
+  /// An op of the function's body the walk ends at, before running it.
+  mlir::Operation *stopBefore = nullptr;
 
   /// The readout whose measurement `value` is, if the walk has seen it.
   std::optional<MeasurementKey> measurementKeyOf(mlir::Value value) const {
@@ -178,7 +184,14 @@ private:
     mlir::Operation *root = roots(tone);
     auto [it, inserted] = tones.try_emplace(root);
     if (inserted && root) {
-      if (auto frequency = root->getAttrOfType<mlir::FloatAttr>("frequency_hz"))
+      // A program that starts part-way through a shot (a simulation
+      // window) gives each tone the frame it is in there.
+      if (auto seed =
+              root->getAttrOfType<mlir::DenseF64ArrayAttr>(kToneStateAttr);
+          seed && seed.size() == 4)
+        it->second = {seed[0], seed[1], seed[2], seed[3]};
+      else if (auto frequency =
+                   root->getAttrOfType<mlir::FloatAttr>("frequency_hz"))
         it->second = {frequency.getValueAsDouble(),
                       frequency.getValueAsDouble(), 0.0, 0.0};
       else if (root->getName().getStringRef() == "pulse.tone" &&
@@ -205,6 +218,10 @@ private:
 
   bool block(mlir::Block &body) {
     for (mlir::Operation &op : body.without_terminator()) {
+      if (&op == stopBefore) {
+        stopped = true;
+        return true;
+      }
       if (!step(&op))
         return false;
       if (stopped)

@@ -18,16 +18,16 @@ AMPS = [0.1, 0.2, 0.3]
 DURS = (16, 32, 48)
 
 
-def _text(kernel, n_qubits=1):
-    args = [Q[0:n_qubits]] if n_qubits > 1 else [Q[0]]
+def _text(kernel, qudit_count=1):
+    args = [Q[0:qudit_count]] if qudit_count > 1 else [Q[0]]
     compiled = kernel.lower(*args)
     return re.sub(r"module @\w+", "module", compiled.mlir())
 
 
-def _same(a, b, n_qubits=1):
-    ta, tb = _text(a, n_qubits), _text(b, n_qubits)
+def _same(a, b, qudit_count=1):
+    ta, tb = _text(a, qudit_count), _text(b, qudit_count)
     assert ta == tb
-    args = [Q[0:n_qubits]] if n_qubits > 1 else [Q[0]]
+    args = [Q[0:qudit_count]] if qudit_count > 1 else [Q[0]]
     assert python_ir(a, *args).op_count() == python_ir(b, *args).op_count()
 
 
@@ -83,10 +83,10 @@ def test_enumerate_zip_reversed_and_dict_items():
 
 def test_lines_and_tones_from_lists_stay_threaded():
     @pulse.kernel(unroll_threshold=0)
-    def zipped(qubits):
+    def zipped(qudits):
         lines = []
         tones = []
-        for q in qubits:
+        for q in qudits:
             d = get_drive_line(q)
             t = d.tone
             lines.append(d)
@@ -98,11 +98,11 @@ def test_lines_and_tones_from_lists_stay_threaded():
             wait(d, 8)
 
     @pulse.kernel(unroll_threshold=0)
-    def by_index(qubits):
+    def by_index(qudits):
         lines = []
         tones = []
-        for i in range(len(qubits)):
-            d = get_drive_line(qubits[i])
+        for i in range(len(qudits)):
+            d = get_drive_line(qudits[i])
             lines.append(d)
             tones.append(d.tone)
         for _ in range(2):
@@ -111,12 +111,12 @@ def test_lines_and_tones_from_lists_stay_threaded():
         for i in range(len(lines)):
             wait(lines[i], 8)
 
-    _same(zipped, by_index, n_qubits=3)
+    _same(zipped, by_index, qudit_count=3)
 
 
-def test_iterating_a_qubit_vector():
-    qubits = Q[0:3]
-    assert list(qubits) == [qubits[i] for i in range(3)]
+def test_iterating_a_qudit_vector():
+    qudits = Q[0:3]
+    assert list(qudits) == [qudits[i] for i in range(3)]
 
     @pulse.kernel
     def each(qs):
@@ -130,7 +130,7 @@ def test_iterating_a_qubit_vector():
             d = get_drive_line(qs[i])
             drive(d, square(16, 0.1))
 
-    _same(each, by_index, n_qubits=3)
+    _same(each, by_index, qudit_count=3)
 
 
 def test_break_continue_and_else():

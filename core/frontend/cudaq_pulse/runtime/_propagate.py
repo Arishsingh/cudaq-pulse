@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Propagators of the CPU reference integrator.
 
-A segment's Lindbladian is a static part plus drive terms whose coefficients
+An interval's Lindbladian is a static part plus drive terms whose coefficients
 come from envelope callbacks. Over a stretch of steps where every coefficient
 is constant (an idle wait, or a square pulse in its own frame) the
 Lindbladian is constant, and the stretch is propagated exactly by the
@@ -100,9 +100,14 @@ def keep(key: Any, value: npt.NDArray[np.complex128]) -> None:
 
 
 def clear_cache() -> None:
-    """Forget every kept propagator."""
+    """Forget every kept propagator, the idle ones (``_idle``) too."""
+    import sys
+
     with _cache_lock:
         _cache.clear()
+    idle = sys.modules.get(__name__.rpartition(".")[0] + "._idle")
+    if idle is not None:
+        idle.forget()
 
 
 def support(params: Sequence[float]) -> tuple[float, float]:

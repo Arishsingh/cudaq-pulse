@@ -10,7 +10,10 @@ requires = [
     "setuptools-scm>=9",
     "nanobind>=2.12",
 ]
-build-backend = "scikit_build_core.build"
+# scikit-build-core, with an sdist that stores copies of the license files
+# packaging/cudaq-pulse-tools links to (tools/backend/cudaq_pulse_build.py).
+build-backend = "cudaq_pulse_build"
+backend-path = ["tools/backend"]
 
 [project]
 name = "cudaq-pulse"
@@ -191,9 +194,13 @@ inherit.cmake.define = "append"
 cmake.define.CUDAQ_PULSE_FREE_THREADED = "ON"
 
 # Only v* tags carry package versions; mlir-toolchain-* tags name toolchain
-# releases.
+# releases. A build of a tag is the tag's version; any other build is a dev
+# release, such as 0.1.1.dev3 three commits after v0.1.0, or 0.1.1.dev0 for
+# a tag's tree with local changes. There is no local segment (+g<commit>),
+# which an index rejects, so every file CI builds can be uploaded as it is.
 [tool.setuptools_scm]
 tag_regex = '^v(?P<version>\d+(?:\.\d+)*(?:(?:a|b|rc)\d+|\.post\d+)?)$'
+local_scheme = "no-local-version"
 
 [tool.setuptools_scm.scm.git]
 describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "v*"]
@@ -233,9 +240,12 @@ before-all = "bash tools/ci/manylinux-before-all.sh"
 environment = { CUDAQ_PULSE_ENABLE_GPU = "ON", CUDAQ_PULSE_CUDA12_ROOT = "/opt/cuda12", CUDAQ_PULSE_CUDA13_ROOT = "/opt/cuda13" }
 # The tests run in the manylinux container, which sees only the variables
 # passed in. With CI passed, a missing tool fails its tests here as it does
-# on the macOS host, instead of skipping them (tests/_tools.py).
-environment-pass = ["CI"]
-repair-wheel-command = "auditwheel repair --exclude libcudensitymat.so.0 --exclude libcudart.so.12 --exclude libcudart.so.13 -w {dest_dir} {wheel}"
+# on the macOS host, instead of skipping them (tests/_tools.py). A rehearsal
+# run of .github/workflows/wheels.yml sets the version to build.
+environment-pass = ["CI", "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CUDAQ_PULSE"]
+# Tagged with the image's manylinux_2_28_<arch> alone ($AUDITWHEEL_PLAT), not
+# also the older tags the binaries would allow.
+repair-wheel-command = "auditwheel repair --only-plat --plat $AUDITWHEEL_PLAT --exclude libcudensitymat.so.0 --exclude libcudart.so.12 --exclude libcudart.so.13 -w {dest_dir} {wheel}"
 
 # macOS wheels are compiler-only: there is no CUDA on macOS.
 [tool.cibuildwheel.macos]

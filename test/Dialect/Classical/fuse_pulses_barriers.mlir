@@ -5,7 +5,7 @@
 // line: the second plays after it.
 // RUN: cudaq-pulse-opt --pulse-fuse-pulses %s | FileCheck %s
 
-classical.callable @f {function_id = 3809224601 : i64, device = 0 : i64,
+classical.callable @f {dispatch_key = 3809224601 : i64, device = 0 : i64,
     args = [], results = ["i64"], latency_min_ns = 0.0,
     latency_nominal_ns = 0.0, latency_max_ns = 10.0, mode = "bounded",
     submit = "eager"}
@@ -14,10 +14,10 @@ classical.callable @f {function_id = 3809224601 : i64, device = 0 : i64,
 // CHECK-COUNT-2: pulse.drive
 // CHECK-NOT: fused
 func.func @across_a_variable_wait() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %p = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %p = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %a = arith.constant 0.05 : f64
   %z = arith.constant 0.0 : f64

@@ -9,7 +9,7 @@
 // RUN: cudaq-pulse-opt --pulse-schedule-asap --pulse-verify %s > /dev/null
 // RUN: cudaq-pulse-opt --pulse-schedule-alap --pulse-verify %s > /dev/null
 
-module attributes {pulse.line_grid = 1 : i64, pulse.drive_line_grid = array<i64: 4, 3>} {
+module attributes {pulse.control_system = #pulse.control_system<clock_period_fs = 1000000, lines = [#pulse.line<drive, qudits = [0], controller = 1>, #pulse.line<drive, qudits = [1], controller = 2>], controllers = [#pulse.controller<>, #pulse.controller<grid_cycles = 4>, #pulse.controller<grid_cycles = 3>]>} {
 
 // The sync after 8 and 6 cycles meets at 12, the first time on both grids.
 // Under ALAP, the 3-cycle drive on qudit 1 ends early, at 18, the latest
@@ -24,10 +24,10 @@ module attributes {pulse.line_grid = 1 : i64, pulse.drive_line_grid = array<i64:
 // ALAP: pulse.drive {{.*}}{duration_cycles = 8 : i64, start_cycles = 12 : i64}
 // ALAP: pulse.drive {{.*}}{duration_cycles = 3 : i64, start_cycles = 15 : i64}
 func.func @sync_on_common_grid() {
-  %qa = pulse.qudit_alloc : !pulse.qref
-  %qb = pulse.qudit_alloc : !pulse.qref
-  %a0, %ta = pulse.get_drive_line %qa {qubit = 0 : i64} : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %b0, %tb = pulse.get_drive_line %qb {qubit = 1 : i64} : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %qa = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %qb = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %a0, %ta = pulse.get_drive_line %qa : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %b0, %tb = pulse.get_drive_line %qb : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c8 = arith.constant 8 : i64
   %c6 = arith.constant 6 : i64
   %c3 = arith.constant 3 : i64
@@ -47,10 +47,10 @@ func.func @sync_on_common_grid() {
 // A 6-cycle drive on a 4-cycle grid repeats every 8 cycles.
 // CHECK-LABEL: func.func @loop_on_grid
 // CHECK: scf.for
-// CHECK: pulse.drive {{.*}}{duration_cycles = 6 : i64, period_cycles = array<i64: 8>, start_cycles = 0 : i64}
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 6 : i64, period_cycles = array<i64: 8>, start_cycles = 0 : i64}>
 func.func @loop_on_grid() {
-  %qa = pulse.qudit_alloc : !pulse.qref
-  %a0, %ta = pulse.get_drive_line %qa {qubit = 0 : i64} : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %qa = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %a0, %ta = pulse.get_drive_line %qa : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c6 = arith.constant 6 : i64
   %amp = arith.constant 0.1 : f64
   %zero = arith.constant 0.0 : f64
@@ -68,11 +68,11 @@ func.func @loop_on_grid() {
 // Samples made for qudit 0's controller, one every 4 cycles: 3 samples last
 // 12 cycles.
 // CHECK-LABEL: func.func @samples_at_the_lines_rate
-// CHECK: pulse.drive {{.*}}{duration_cycles = 12 : i64, start_cycles = 0 : i64}
-// CHECK: pulse.drive {{.*}}{duration_cycles = 8 : i64, start_cycles = 12 : i64}
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 12 : i64, start_cycles = 0 : i64}>
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 8 : i64, start_cycles = 12 : i64}>
 func.func @samples_at_the_lines_rate() {
-  %qa = pulse.qudit_alloc : !pulse.qref
-  %a0, %ta = pulse.get_drive_line %qa {qubit = 0 : i64} : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %qa = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %a0, %ta = pulse.get_drive_line %qa : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %w = pulse.custom_samples [0.1, 0.2, 0.3] {rate = array<i64: 1, 4>} : !pulse.waveform
   %c8 = arith.constant 8 : i64
   %amp = arith.constant 0.1 : f64

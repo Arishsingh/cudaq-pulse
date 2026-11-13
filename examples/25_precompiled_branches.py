@@ -3,7 +3,7 @@
 """Compiling every branch of an adaptive experiment ahead of time.
 
 Builds on ``24_pipelined_calibration.py``. A check measures whether each of
-four qudits of the 17-qudit transmon twin (``transmon_17q``) still has a
+four qudits of the 17-qudit ``transmon_surface17`` quantum system still has a
 good pi pulse. Which qudits fail decides the next calibration step: an
 amplitude sweep of amplified pi trains on exactly those qudits, with the
 others only checked. Four qudits give 15 possible next programs, plus "all
@@ -21,7 +21,7 @@ The decision is made on the host, between shots. Feedback within a shot
 belongs in the kernel (see ``08_readout_and_branching.py``).
 
 What is simulated: the simulator plays the QPU. Each round redraws the
-drive strengths of a "true" device by a few percent. The check and the
+drive strengths of a "true" quantum system by a few percent. The check and the
 sweep are simulated against it up to the point where the readouts start,
 and the shot outcomes are binomial draws from the populations there; the
 readouts themselves are not simulated. The four qudits share no couplings,
@@ -30,7 +30,6 @@ lookup times are real.
 """
 
 import concurrent.futures
-import dataclasses
 import itertools
 import math
 import multiprocessing
@@ -39,9 +38,9 @@ import time
 
 import cudaq_pulse as pulse
 import numpy as np
-from cudaq_pulse.targets import MicrowaveDrive, transmon_17q
+from cudaq_pulse.quantum_systems import MicrowaveDrive, transmon_surface17
 
-target = transmon_17q()
+quantum_system = transmon_surface17()
 qudit_indices = (0, 1, 2, 3)
 repetitions = 9
 pulse_duration = 40 * pulse.ns
@@ -49,7 +48,7 @@ pulse_sigma = 10 * pulse.ns
 readout_duration = 300 * pulse.ns
 scales = np.linspace(0.95, 1.05, 9)
 spec = 0.93  # a qudit whose amplified train reaches P(1) below this is recalibrated
-shots = 400
+shots_count = 400
 rounds = 4
 workers = 4
 sample_rate_ghz = 2.0
@@ -57,7 +56,9 @@ sample_rate_ghz = 2.0
 # The amplitude of a pi pulse: a rotation of pi from the Gaussian's area (ns)
 # and the drive's rad/ns per unit amplitude.
 area_ns = (pulse_sigma / pulse.ns) * math.sqrt(2 * math.pi) * math.erf(2 / math.sqrt(2))
-pi_amplitudes = tuple(math.pi / (area_ns * target.drive_amplitude_scale(q)) for q in qudit_indices)
+pi_amplitudes = tuple(
+    math.pi / (area_ns * quantum_system.drive_amplitude_scale(q)) for q in qudit_indices
+)
 
 
 @pulse.kernel
@@ -87,11 +88,15 @@ def every_outcome():
 
 def compile_branch(kernel: pulse.Kernel[...], qudits: pulse.Register, trained: tuple[int, ...]):
     """The sweep for one outcome: each point bound and exported for the controller."""
-    program = pulse.compile(kernel, device=qudits[0].device).lower(qudits, trained, 1.0).generic
+    program = (
+        pulse.compile(kernel, quantum_system=qudits[0].quantum_system)
+        .lower(qudits, trained, 1.0)
+        .generic
+    )
     sweep = []
     for scale in scales:
         bound = program.bind([scale])
-        sweep.append((bound, bound.export_controller(sample_rate_ghz=sample_rate_ghz)))
+        sweep.append((bound, bound.export_to_controller(sample_rate_ghz=sample_rate_ghz)))
     return trained, sweep
 
 
@@ -99,21 +104,23 @@ def compile_branch(kernel: pulse.Kernel[...], qudits: pulse.Register, trained: t
 
 
 def drifted(factors):
-    """The target with each qudit's drive strength multiplied by its factor."""
-    qubits = dict(target.qubits)
+    """The quantum system with each qudit's drive strength multiplied by its factor."""
+    qudits = dict(quantum_system.physical_qudits)
     for q, factor in zip(qudit_indices, factors, strict=True):
-        strength = target.drive_amplitude_scale(q) * factor
-        given = qubits[q].drive
+        strength = quantum_system.drive_amplitude_scale(q) * factor
+        given = qudits[q].drive
         assert isinstance(given, MicrowaveDrive)
         stronger = given.replace(amplitude_scale_rad_per_ns=strength)
-        qubits[q] = qubits[q].replace(drive=stronger)
-    return dataclasses.replace(target, qubits=qubits)
+        qudits[q] = qudits[q].replace(drive=stronger)
+    return quantum_system.replace(qudits=qudits)
 
 
-def populations(program, plant):
+def populations(program, true_system):
     """P(1) of each qudit where the readouts start."""
     drives_end = repetitions * pulse_duration
-    result = pulse.simulate(program, levels=2, dt_ns=1.0, plant=plant, t_end=drives_end)
+    result = pulse.simulate(
+        program, levels=2, dt_ns=1.0, quantum_system=true_system, t_end=drives_end
+    )
     return [result.level_population(1, qudit=q) for q in qudit_indices]
 
 
@@ -134,8 +141,7 @@ def median_s(operation, repeat):
 
 
 if __name__ == "__main__":
-    device = pulse.device(target)
-    qudits = device.qudit_handles[list(qudit_indices)]
+    qudits = quantum_system.qudits[list(qudit_indices)]
     outcomes = every_outcome()
     compile_branch(pi_trains, qudits, outcomes[-1])  # compile once here before timing anything
 
@@ -164,7 +170,7 @@ if __name__ == "__main__":
     points = sum(len(sweep) for sweep in table.values())
     print(f"  table: {len(table)} outcomes, {points} bound and exported programs")
     same = all(
-        a.export_controller() == b.export_controller()
+        a.export_to_controller() == b.export_to_controller()
         for t in outcomes
         for (a, _), (b, _) in zip(table[t], serial[t], strict=True)
     )
@@ -175,7 +181,7 @@ if __name__ == "__main__":
     lookup_s = median_s(lambda: table.get(some), 10_000)
     on_demand_s = median_s(lambda: compile_branch(pi_trains, qudits, some), 20)
     compile_s = median_s(
-        lambda: pulse.compile(pi_trains, device=device).lower(qudits, some, 1.0), 20
+        lambda: pulse.compile(pi_trains, quantum_system=quantum_system).lower(qudits, some, 1.0), 20
     )
     print(f"  looking up the ready sweep: {lookup_s * 1e6:.2f} us")
     print(
@@ -183,13 +189,15 @@ if __name__ == "__main__":
         f"(compiling {compile_s * 1e3:.2f} ms of it), {on_demand_s / lookup_s:,.0f}x longer"
     )
 
-    print(f"\n=== {rounds} rounds against a drifting device ===")
+    print(f"\n=== {rounds} rounds against a drifting quantum system ===")
     rng = np.random.default_rng(7)
     check = table[tuple(range(len(qudit_indices)))][len(scales) // 2][0]  # every train, scale 1
     for round_ in range(1, rounds + 1):
         factors = 1 + 0.02 * rng.standard_normal(len(qudit_indices))
-        plant = drifted(factors)
-        measured = [rng.binomial(shots, p) / shots for p in populations(check, plant)]
+        true_system = drifted(factors)
+        measured = [
+            rng.binomial(shots_count, p) / shots_count for p in populations(check, true_system)
+        ]
         outcome = tuple(i for i, p in enumerate(measured) if p < spec)
         sweep = table.get(outcome)
         shown = " ".join(f"{p:.3f}" for p in measured)
@@ -201,7 +209,10 @@ if __name__ == "__main__":
             f"    recalibrate qudits {list(outcome)}: {len(sweep)} ready programs, "
             f"{len(sweep[0][1]['events'])} controller events each"
         )
-        p1 = rng.binomial(shots, [populations(bound, plant) for bound, _ in sweep]) / shots
+        p1 = (
+            rng.binomial(shots_count, [populations(bound, true_system) for bound, _ in sweep])
+            / shots_count
+        )
         for i in outcome:
             print(
                 f"    qudit {i}: amplitude x{best_scale(p1[:, i]):.4f} "

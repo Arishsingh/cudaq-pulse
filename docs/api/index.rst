@@ -12,8 +12,8 @@ API Reference
    simulation
    classical
    controller
-   devices
-   targets
+   quantum_systems
+   quantum_system_components
    kernel
    ops
    viz

@@ -22,7 +22,7 @@ cal = {
 
 
 @pulse.kernel
-def pipeline_demo(qubit_0, qubit_1):
+def pipeline_demo(qudit_0, qudit_1):
     """A 2-qubit program with redundancies for the pipeline to clean up.
 
     Includes:
@@ -31,8 +31,8 @@ def pipeline_demo(qubit_0, qubit_1):
         passes, merges them)
       - Adjacent same-amplitude square pulses (FUSE_PULSES merges them)
     """
-    drive_line_0 = get_drive_line(qubit_0)
-    drive_line_1 = get_drive_line(qubit_1)
+    drive_line_0 = get_drive_line(qudit_0)
+    drive_line_1 = get_drive_line(qudit_1)
 
     shift_phase(drive_line_0.tone, math.pi / 4)
     gaussian_envelope = gaussian(cal["x_duration"], 0.3, cal["x_sigma"])
@@ -51,15 +51,18 @@ def pipeline_demo(qubit_0, qubit_1):
 
 
 def main():
-    compiled_kernel = pulse.compile(
-        pipeline_demo, schedule="alap", device=dev, passes=(*DEFAULT_PASSES, pulse.Pass.MERGE_WAITS)
-    ).lower(dev.qudit_handles[0], dev.qudit_handles[1])
+    scheduled = pulse.compile(
+        pipeline_demo,
+        schedule="alap",
+        quantum_system=qs,
+        passes=(*DEFAULT_PASSES, pulse.Pass.MERGE_WAITS),
+    ).lower(qs.qudits[0], qs.qudits[1])
 
     print("=== Compiled MLIR (first 30 lines) ===")
-    for line in compiled_kernel.mlir().splitlines()[:30]:
+    for line in scheduled.mlir().splitlines()[:30]:
         print(f"  {line}")
 
-    metrics = compiled_kernel.metrics
+    metrics = scheduled.metrics
     print("\n=== Compile metrics ===")
     print(f"  Trace     : {metrics.trace_ms:.3f} ms")
     print(f"  Passes    : {metrics.passes_ms:.3f} ms")
@@ -69,7 +72,7 @@ def main():
 
     # Lower to LLVM IR in process with the native MLIR binding.
     try:
-        llvm_ir = compiled_kernel.mlir("llvm")
+        llvm_ir = scheduled.mlir("llvm")
         print(f"\n=== LLVM IR ({len(llvm_ir)} chars, first 10 lines) ===")
         for line in llvm_ir.splitlines()[:10]:
             print(f"  {line}")
@@ -78,5 +81,5 @@ def main():
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
+    qs = pulse.quantum_system("transmon_surface17")
     main()

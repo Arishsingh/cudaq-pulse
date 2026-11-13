@@ -30,6 +30,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/AsmParser/AsmParser.h"
@@ -69,11 +70,13 @@
 #include <pthread.h>
 
 #include "cudaq-pulse/Dialect/Pulse/PulseDialect.h.inc"
+#include "cudaq-pulse/Dialect/Pulse/PulseEnums.h.inc"
 
 #define GET_TYPEDEF_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseTypes.h.inc"
 
 #define GET_OP_CLASSES
+#include "cudaq-pulse/Dialect/Pulse/PulseAttrs.h"
 #include "cudaq-pulse/Dialect/Pulse/PulseOps.h.inc"
 
 #include "cudaq-pulse/Dialect/Classical/ClassicalDialect.h.inc"
@@ -85,6 +88,7 @@
 #include "LengthInference.h"
 #include "cudaq-pulse/Analysis/ClassicalTiming.h"
 #include "cudaq-pulse/Analysis/Execution.h"
+#include "cudaq-pulse/Analysis/LineGrid.h"
 #include "cudaq-pulse/Analysis/LineTrace.h"
 #include "cudaq-pulse/Analysis/Timing.h"
 #include "cudaq-pulse/Dialect/Classical/Answers.h"
@@ -216,6 +220,20 @@ struct PackedValueError : std::invalid_argument {
   size_t word;
 };
 
+/// What the exports cannot say yet; NotImplementedError in Python.
+struct NotSupportedYet : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
+
+/// Refuse a readout whose mode the exports do not support yet: only iq.
+inline void requireExportedMode(mlir::Operation *op) {
+  if (auto readout = mlir::dyn_cast<pulse::ReadoutOp>(op);
+      readout && readout.getMode() != pulse::ReadoutMode::IQ) [[unlikely]]
+    throw NotSupportedYet("readout mode " +
+                          pulse::stringifyReadoutMode(readout.getMode()).str() +
+                          " is not supported by the exports yet; only iq is");
+}
+
 /// `value` as Python's repr() writes a float.
 [[gnu::cold]] std::string pythonFloat(double value) {
   if (std::isnan(value))
@@ -300,38 +318,87 @@ void runPipeline(mlir::PassManager &pm, mlir::Operation *op,
     diagnostics.fail(what);
 }
 
-/// Run `pm` on `op` and verify `op` once at the end, where the pass manager
-/// would verify all of it after each pass that changed it.
+/// Whether CUDAQ_PULSE_VERIFY=1 asks for the verifications that only catch a
+/// bug of the compiler itself: of the module run_passes() leaves, which
+/// scheduling verifies next anyway, and of a specialization rescheduled from
+/// a verified module. The test suite sets it; read once per process.
+bool verifyEverything() {
+  static const bool on = [] {
+    const char *text = std::getenv("CUDAQ_PULSE_VERIFY");
+    if (!text || !*text || std::strcmp(text, "0") == 0)
+      return false;
+    if (std::strcmp(text, "1") == 0)
+      return true;
+    throw std::invalid_argument(
+        std::string("CUDAQ_PULSE_VERIFY must be 0 or 1, not '") + text + "'");
+  }();
+  return on;
+}
+
+/// Run `pm` on `op` and, with `verify`, verify `op` once at the end, where
+/// the pass manager would verify all of it after each pass that changed it.
 void runPipelineVerifyingOnce(mlir::PassManager &pm, mlir::Operation *op,
-                              const std::string &what) {
+                              const std::string &what, bool verify = true) {
   DiagnosticCollector diagnostics(pm.getContext());
   pm.enableVerifier(false);
-  if (mlir::failed(pm.run(op)) || mlir::failed(mlir::verify(op)))
+  if (mlir::failed(pm.run(op)) || (verify && mlir::failed(mlir::verify(op))))
     diagnostics.fail(what);
 }
 
-/// The scheduling pass managers of each context made by makeContext, by the
-/// options that built them, for its next modules scheduled alike: building
-/// one, and its first run on a multithreaded context, which copies its
-/// nested passes for each thread, cost as much as scheduling a small module.
-/// One being run is taken out, so that no two threads run it at once.
-class SchedulePasses {
+/// The discardable attributes the walks over a module read, by their
+/// interned names: reading an attribute by its interned name compares
+/// pointers, where reading it by its spelling compares strings with each
+/// inherent and discardable name of the op, and interning a name is a
+/// lookup in the context's uniquer. None of them is inherent on any op.
+struct AttrNames {
+  explicit AttrNames(mlir::MLIRContext *context)
+      : timeline(mlir::StringAttr::get(context, classical::kTimelineAttr)),
+        variable(mlir::StringAttr::get(context, "classical.variable")),
+        blocking(mlir::StringAttr::get(context, "classical.blocking")),
+        device(mlir::StringAttr::get(context, "classical.device")),
+        instance(mlir::StringAttr::get(context, classical::kInstanceAttr)),
+        budget(mlir::StringAttr::get(context, "classical.budget_cycles")),
+        variableWait(mlir::StringAttr::get(context, "pulse.variable_wait")),
+        minCycles(mlir::StringAttr::get(context, "pulse.min_cycles")),
+        maxCycles(mlir::StringAttr::get(context, "pulse.max_cycles")),
+        framePhaseOffset(mlir::StringAttr::get(context, "frame_phase_offset")),
+        phaseOffset(mlir::StringAttr::get(context, "phase_offset")) {}
+  mlir::StringAttr timeline, variable, blocking, device, instance, budget,
+      variableWait, minCycles, maxCycles, framePhaseOffset, phaseOffset;
+
+  static bool has(mlir::Operation *op, mlir::StringAttr name) {
+    return static_cast<bool>(op->getDiscardableAttr(name));
+  }
+};
+
+/// What each context made by makeContext keeps for its next modules.
+///
+/// Its scheduling pass managers, by the options that built them, for modules
+/// scheduled alike, and its run_passes() pass managers, by their pipeline:
+/// building one, and its first run on a multithreaded context, which copies
+/// its nested passes for each thread, cost as much as scheduling a small
+/// module. One being run is taken out, so that no two threads run it at
+/// once.
+///
+/// Its AttrNames, interned once for the life of the context, and the latest
+/// texts set_attributes() parsed in it.
+class ContextStore {
 public:
   /// (policy, rcp's four resource limits or zeros, whether the classical
   /// calls are checked, whether the frame-changes pass runs).
   using Options =
       std::tuple<std::string, int64_t, int64_t, int64_t, int64_t, bool, bool>;
 
-  explicit SchedulePasses(mlir::MLIRContext *context) : context(context) {
+  explicit ContextStore(mlir::MLIRContext *context) : context(context) {
     std::lock_guard<std::mutex> guard(lock());
     contexts()[context] = this;
   }
-  ~SchedulePasses() {
+  ~ContextStore() {
     std::lock_guard<std::mutex> guard(lock());
     contexts().erase(context);
   }
-  SchedulePasses(const SchedulePasses &) = delete;
-  SchedulePasses &operator=(const SchedulePasses &) = delete;
+  ContextStore(const ContextStore &) = delete;
+  ContextStore &operator=(const ContextStore &) = delete;
 
   /// A kept pass manager of `context` built with `options`, or null.
   static std::unique_ptr<mlir::PassManager> take(mlir::MLIRContext *context,
@@ -369,6 +436,89 @@ public:
     kept.emplace_back(std::move(options), std::move(passes));
   }
 
+  /// A kept run_passes() pass manager of `context` for `pipeline`, or null.
+  static std::unique_ptr<mlir::PassManager>
+  takePipeline(mlir::MLIRContext *context,
+               const std::vector<std::string> &pipeline) {
+    std::lock_guard<std::mutex> guard(lock());
+    auto found = contexts().find(context);
+    if (found == contexts().end())
+      return nullptr;
+    auto &kept = found->second->pipelines;
+    for (auto it = kept.begin(); it != kept.end(); ++it)
+      if (it->first == pipeline) {
+        std::unique_ptr<mlir::PassManager> passes = std::move(it->second);
+        kept.erase(it);
+        return passes;
+      }
+    return nullptr;
+  }
+
+  /// Keep `passes`, built for `pipeline`, if `context` keeps pass managers:
+  /// the latest few.
+  static void keepPipeline(mlir::MLIRContext *context,
+                           std::vector<std::string> pipeline,
+                           std::unique_ptr<mlir::PassManager> passes) {
+    std::unique_ptr<mlir::PassManager> dropped; // destroyed unlocked
+    std::lock_guard<std::mutex> guard(lock());
+    auto found = contexts().find(context);
+    if (found == contexts().end()) {
+      dropped = std::move(passes);
+      return;
+    }
+    auto &kept = found->second->pipelines;
+    if (kept.size() == kMaxKept) {
+      dropped = std::move(kept.front().second);
+      kept.erase(kept.begin());
+    }
+    kept.emplace_back(std::move(pipeline), std::move(passes));
+  }
+
+  /// The AttrNames of `context`: those it keeps, or else interned in `own`.
+  static const AttrNames &names(mlir::MLIRContext *context,
+                                std::optional<AttrNames> &own) {
+    {
+      std::lock_guard<std::mutex> guard(lock());
+      auto found = contexts().find(context);
+      if (found != contexts().end()) {
+        auto &kept = found->second->attrNames;
+        if (!kept)
+          kept = std::make_unique<AttrNames>(context);
+        return *kept;
+      }
+    }
+    return own.emplace(context);
+  }
+
+  /// `text` parsed as an attribute of `context`: one of the latest texts
+  /// parsed in it, when it keeps them, is not parsed again. An attribute is
+  /// immutable, so the same text is the same attribute for the life of the
+  /// context.
+  static mlir::Attribute parsed(mlir::MLIRContext *context,
+                                const std::string &text) {
+    {
+      std::lock_guard<std::mutex> guard(lock());
+      auto found = contexts().find(context);
+      if (found != contexts().end()) {
+        auto &texts = found->second->texts;
+        if (auto it = texts.find(text); it != texts.end())
+          return it->second;
+      }
+    }
+    mlir::Attribute attr = mlir::parseAttribute(text, context);
+    if (!attr)
+      return attr;
+    std::lock_guard<std::mutex> guard(lock());
+    auto found = contexts().find(context);
+    if (found != contexts().end()) {
+      auto &texts = found->second->texts;
+      if (texts.size() >= kMaxTexts)
+        texts.clear();
+      texts.emplace(text, attr);
+    }
+    return attr;
+  }
+
   /// The lock is held across fork, so that a child inherits it unlocked.
   static void handleForks() {
     pthread_atfork([] { lock().lock(); }, [] { lock().unlock(); },
@@ -379,27 +529,33 @@ private:
   static constexpr size_t kMaxKept = 4;
   mlir::MLIRContext *context;
   std::vector<std::pair<Options, std::unique_ptr<mlir::PassManager>>> kept;
+  std::vector<
+      std::pair<std::vector<std::string>, std::unique_ptr<mlir::PassManager>>>
+      pipelines;
+  std::unique_ptr<AttrNames> attrNames;
+  static constexpr size_t kMaxTexts = 64;
+  std::unordered_map<std::string, mlir::Attribute> texts;
 
   // Never destroyed, as the shared pool's last context is not.
   static std::mutex &lock() {
     static auto *mutex = new std::mutex();
     return *mutex;
   }
-  static llvm::DenseMap<mlir::MLIRContext *, SchedulePasses *> &contexts() {
+  static llvm::DenseMap<mlir::MLIRContext *, ContextStore *> &contexts() {
     static auto *all =
-        new llvm::DenseMap<mlir::MLIRContext *, SchedulePasses *>();
+        new llvm::DenseMap<mlir::MLIRContext *, ContextStore *>();
     return *all;
   }
 };
 
-/// A new context with `registry`'s dialects that keeps its modules'
-/// scheduling pass managers (SchedulePasses), destroyed before it.
+/// A new context with `registry`'s dialects and its ContextStore, destroyed
+/// before it.
 std::shared_ptr<mlir::MLIRContext>
 makeContext(const mlir::DialectRegistry &registry) {
   struct Owner {
     explicit Owner(const mlir::DialectRegistry &registry) : context(registry) {}
     mlir::MLIRContext context;
-    SchedulePasses passes{&context};
+    ContextStore store{&context};
   };
   auto owner = std::make_shared<Owner>(registry);
   return std::shared_ptr<mlir::MLIRContext>(owner, &owner->context);
@@ -446,7 +602,7 @@ inline double i2f(int64_t bits) {
 /// only at run time: anything but a line, a tone or a link.
 static bool yieldsValue(mlir::Type type) {
   return !mlir::isa<pulse::DriveLineType, pulse::ReadoutLineType,
-                    pulse::ToneType, pulse::QrefType, classical::LinkType>(
+                    pulse::ToneType, pulse::QuditType, classical::LinkType>(
       type);
 }
 
@@ -459,7 +615,7 @@ static int64_t nativeOffset(mlir::Operation *line) {
     return 0;
   auto function = line->getParentOfType<mlir::func::FuncOp>();
   return llvm::count_if(function.getArgumentTypes(), [](mlir::Type type) {
-    return mlir::isa<pulse::QrefType>(type);
+    return mlir::isa<pulse::QuditType>(type);
   });
 }
 
@@ -474,13 +630,16 @@ struct SegmentWalk {
   using Boundary =
       std::tuple<std::string, int64_t, int64_t, int64_t, int64_t, int64_t>;
 
-  explicit SegmentWalk(mlir::ModuleOp module) {
+  explicit SegmentWalk(mlir::ModuleOp module)
+      : names(ContextStore::names(module.getContext(), ownNames)) {
     module.walk([&](mlir::Operation *op) {
       if (mlir::isa<pulse::GetDriveLineOp, pulse::GetReadoutLineOp>(op))
         lineIndex.try_emplace(op, static_cast<int64_t>(lineIndex.size()));
     });
   }
 
+  std::optional<AttrNames> ownNames;
+  const AttrNames &names;
   llvm::DenseMap<mlir::Operation *, int64_t> lineIndex;
   pulse::AllocationTracer trace;
   std::map<int64_t, int64_t> current;
@@ -544,15 +703,13 @@ struct SegmentWalk {
   }
 
   int64_t timelineOf(mlir::Operation *op) {
-    if (op->hasAttr(classical::kTimelineAttr))
-      return classical::intAttr(op, classical::kTimelineAttr);
+    if (AttrNames::has(op, names.timeline))
+      return classical::intAttr(op, names.timeline);
     for (mlir::Value operand : op->getOperands())
       if (mlir::isa<pulse::DriveLineType, pulse::ReadoutLineType,
                     pulse::ToneType>(operand.getType())) {
         mlir::Operation *allocation = trace(operand);
-        return allocation
-                   ? classical::intAttr(allocation, classical::kTimelineAttr)
-                   : 0;
+        return allocation ? classical::intAttr(allocation, names.timeline) : 0;
       }
     return 0;
   }
@@ -562,8 +719,8 @@ struct SegmentWalk {
   /// answer is taken in the one it opens.
   int64_t visit(mlir::Operation *op, llvm::ArrayRef<int64_t> iteration) {
     int64_t &segment = current[timelineOf(op)];
-    if (!op->hasAttr("classical.variable") &&
-        !op->hasAttr("classical.blocking"))
+    if (!AttrNames::has(op, names.variable) &&
+        !AttrNames::has(op, names.blocking))
       return segment;
     auto start = pulse::scheduledStart(op, iteration);
     if (!start)
@@ -573,11 +730,10 @@ struct SegmentWalk {
       mlir::Operation *allocation = trace(op->getOperand(0));
       boundaries.emplace_back(
           "wait", allocation ? lineIndex.lookup(allocation) : -1, *start,
-          classical::intAttr(op, "pulse.min_cycles"),
-          classical::intAttr(op, "pulse.max_cycles", -1), after);
+          classical::intAttr(op, names.minCycles),
+          classical::intAttr(op, names.maxCycles, -1), after);
     } else {
-      boundaries.emplace_back("answer",
-                              classical::intAttr(op, "classical.device"),
+      boundaries.emplace_back("answer", classical::intAttr(op, names.device),
                               *start, 0, -1, after);
     }
     segment = count();
@@ -662,9 +818,13 @@ struct ControllerEventWalk : ControllerExpressions {
     }
   };
 
-  explicit ControllerEventWalk(double clockGHz, bool track = false)
-      : clockGHz(clockGHz), track(track) {}
+  ControllerEventWalk(mlir::MLIRContext *context, double clockGHz,
+                      bool track = false)
+      : names(ContextStore::names(context, ownNames)), clockGHz(clockGHz),
+        track(track) {}
 
+  std::optional<AttrNames> ownNames;
+  const AttrNames &names;
   double clockGHz;
   llvm::DenseMap<mlir::Operation *, int64_t> lineIndex;
   std::vector<Event> result;
@@ -1063,11 +1223,9 @@ struct ControllerEventWalk : ControllerExpressions {
 
   template <bool RunTime>
   void timed(mlir::Operation *op) {
+    requireExportedMode(op);
     mlir::Operation *allocation = trace(op->getOperand(0));
-    int64_t qubit = -1;
-    if (allocation)
-      if (auto attr = allocation->getAttrOfType<mlir::IntegerAttr>("qubit"))
-        qubit = attr.getInt();
+    int64_t qubit = allocation ? pulse::quditOf(allocation) : -1;
     auto start = pulse::scheduledStart(op, iteration);
     auto duration = pulse::scheduledDuration(op);
     std::vector<WaveformNode> nodes;
@@ -1078,10 +1236,11 @@ struct ControllerEventWalk : ControllerExpressions {
       bool drive = mlir::isa<pulse::DriveOp>(op);
       double offset = 0.0;
       if (drive) {
-        if (auto shift =
-                op->getAttrOfType<mlir::FloatAttr>("frame_phase_offset"))
+        if (auto shift = mlir::dyn_cast_or_null<mlir::FloatAttr>(
+                op->getDiscardableAttr(names.framePhaseOffset)))
           frame.phase += shift.getValueAsDouble();
-        if (auto own = op->getAttrOfType<mlir::FloatAttr>("phase_offset"))
+        if (auto own = mlir::dyn_cast_or_null<mlir::FloatAttr>(
+                op->getDiscardableAttr(names.phaseOffset)))
           offset = own.getValueAsDouble();
       }
       frequency = frame.frequencyHz;
@@ -1151,12 +1310,14 @@ struct ControllerEventWalk : ControllerExpressions {
     next.event = static_cast<int64_t>(result.size());
     if (mlir::isa<pulse::WaitOp>(op)) {
       if (!fromRunTime(op->getOperand(1)) ||
-          !op->hasAttr("pulse.variable_wait"))
+          !AttrNames::has(op, names.variableWait))
         return;
       next.length = expression(op->getOperand(1));
-      if (auto bound = op->getAttrOfType<mlir::IntegerAttr>("pulse.max_cycles"))
+      if (auto bound = mlir::dyn_cast_or_null<mlir::IntegerAttr>(
+              op->getDiscardableAttr(names.maxCycles)))
         next.maxCycles = bound.getInt();
-      if (auto bound = op->getAttrOfType<mlir::IntegerAttr>("pulse.min_cycles"))
+      if (auto bound = mlir::dyn_cast_or_null<mlir::IntegerAttr>(
+              op->getDiscardableAttr(names.minCycles)))
         next.minCycles = bound.getInt();
       known.push_back(std::move(next));
       return;
@@ -1179,11 +1340,12 @@ struct ControllerEventWalk : ControllerExpressions {
           toneIds.try_emplace(root, static_cast<int64_t>(toneIds.size()))
               .first->second;
       if (mlir::isa<pulse::DriveOp>(op)) {
-        if (auto shift =
-                op->getAttrOfType<mlir::FloatAttr>("frame_phase_offset"))
+        if (auto shift = mlir::dyn_cast_or_null<mlir::FloatAttr>(
+                op->getDiscardableAttr(names.framePhaseOffset)))
           frameUpdate(root, "shift_phase",
                       add(Expression::Number, shift.getValueAsDouble()));
-        if (auto own = op->getAttrOfType<mlir::FloatAttr>("phase_offset"))
+        if (auto own = mlir::dyn_cast_or_null<mlir::FloatAttr>(
+                op->getDiscardableAttr(names.phaseOffset)))
           next.offset = own.getValueAsDouble();
       }
       if (auto found = pending.find(root); found != pending.end()) {
@@ -1252,7 +1414,7 @@ struct ControllerEventWalk : ControllerExpressions {
     double timeoutNs = kUnknown;
     if (!submit) {
       latest[op] = static_cast<int64_t>(result.size());
-      mode = op->hasAttr("classical.blocking") ? "blocking" : "bounded";
+      mode = AttrNames::has(op, names.blocking) ? "blocking" : "bounded";
       if (auto timeout = op->getAttrOfType<mlir::FloatAttr>("timeout_ns")) {
         mode = "timeout";
         timeoutNs = timeout.getValueAsDouble();
@@ -1269,9 +1431,8 @@ struct ControllerEventWalk : ControllerExpressions {
     // a per-controller link runs it (-1: none).
     segmentOf(op);
     result.emplace_back(
-        submit ? "submit" : "answer",
-        classical::intAttr(op, "classical.device"),
-        classical::intAttr(op, classical::kInstanceAttr, -1),
+        submit ? "submit" : "answer", classical::intAttr(op, names.device),
+        classical::intAttr(op, names.instance, -1),
         pulse::scheduledStart(op, iteration), pulse::scheduledDuration(op),
         std::vector<int64_t>(iteration.begin(), iteration.end()),
         std::vector<WaveformNode>{}, kUnknown, kUnknown, branches,
@@ -2310,6 +2471,275 @@ struct Slots {
 #include "ControllerProgram.h"
 
 // -----------------------------------------------------------------------
+// Simulation windows
+// -----------------------------------------------------------------------
+// A path through a program with classical calls is simulated by binding
+// each answer and scheduling the program again. In a program whose lines
+// share one timeline, a run-time wait (a variable wait, or a blocking wait)
+// holds back every line: nothing after it starts before it ends, nothing
+// before it ends later, and it keeps the time the ops before it give it.
+// So from such a wait on, the schedule is that of the rest of the program
+// scheduled alone and moved to start where the wait ends, and up to the
+// next one whose length is not bound yet it is that of the program cut
+// there. A window is that part: the top-level ops of the unrolled program
+// between two such waits, after the allocations, lines and links, with the
+// answers it reads from before it as constants and each tone's frame where
+// it starts. Binding an answer on a path schedules only its window, so a
+// long loop of calls costs the same per answer at any length.
+
+/// What windows are cut from: the unrolled simulation module, scheduled,
+/// before any answer is bound, and where each window may start and end.
+struct SimulationProgram {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  /// The top-level ops of main, its terminator excluded.
+  llvm::SmallVector<mlir::Operation *> ops;
+  /// The readouts and calls, in walk order, before each top-level op (one
+  /// more entry than ops).
+  std::vector<int64_t> readoutsBefore, submitsBefore;
+  /// The top-level op each call is in, by call index.
+  std::vector<int64_t> submitAt;
+  /// The call each classical.wait takes the answer of.
+  llvm::DenseMap<mlir::Operation *, int64_t> callOfWait;
+  /// Allocations, lines and links: every window starts with them, in this
+  /// order, so lines are numbered as in the program.
+  llvm::SmallVector<int64_t> roots;
+  /// The op each top-level line, tone or link value continues, and those ops.
+  llvm::DenseMap<mlir::Value, mlir::Operation *> rootOf;
+  llvm::DenseSet<mlir::Operation *> rootOps;
+  /// Top-level run-time waits, with the calls whose answers their length
+  /// depends on.
+  std::map<int64_t, llvm::SmallVector<int64_t, 1>> barriers;
+  /// Barriers a call is in flight across, and barriers some value a window
+  /// cannot start with crosses.
+  llvm::DenseSet<int64_t> crossedByCall, crossed;
+  llvm::DenseMap<mlir::Operation *, int64_t> position;
+  bool eligible = false;
+};
+
+static bool isThreadedType(mlir::Type type) {
+  return mlir::isa<pulse::DriveLineType, pulse::ReadoutLineType,
+                   pulse::ToneType, classical::LinkType>(type);
+}
+
+static bool isReadoutOp(mlir::Operation *op) {
+  return mlir::isa<pulse::ReadoutOp>(op) ||
+         op->getName().getStringRef() == "pulse.iq_acquire";
+}
+
+/// The windows of `source`, a simulation module before any answer is
+/// bound; not eligible where a cut could change its schedule.
+static std::shared_ptr<const SimulationProgram>
+simulationProgram(mlir::ModuleOp source) {
+  auto program = std::make_shared<SimulationProgram>();
+  program->module = mlir::OwningOpRef<mlir::ModuleOp>(source.clone());
+  mlir::ModuleOp module = *program->module;
+  auto main = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!main || !main.getBody().hasOneBlock() || main.getNumArguments() != 0 ||
+      main.getBody().front().getTerminator()->getNumOperands() != 0 ||
+      main->hasAttr("pulse.selected_values"))
+    return program;
+  // Grids, several controllers and line delays place lines apart from the
+  // time a wait ends; a program budget is of the whole shot.
+  pulse::ClockAttributes clocks(module);
+  if (pulse::LineGrid(clocks).enabled() ||
+      (clocks.system && clocks.system.getControllers().size() > 1) ||
+      clocks.delayed() || pulse::programBudget(module) ||
+      pulse::persistentFrames(module) || pulse::blocksOnCalls(module))
+    return program;
+  mlir::WalkResult unsupported = main.walk([](mlir::Operation *op) {
+    if (mlir::isa<pulse::ScheduleBlockOp>(op) ||
+        op->hasAttr(classical::kTimelineAttr) ||
+        op->hasAttr("classical.bound") || op->hasAttr("classical.answers"))
+      return mlir::WalkResult::interrupt();
+    return mlir::WalkResult::advance();
+  });
+  if (unsupported.wasInterrupted())
+    return program;
+
+  mlir::Block &body = main.getBody().front();
+  for (mlir::Operation &op : body.without_terminator()) {
+    program->position[&op] = static_cast<int64_t>(program->ops.size());
+    program->ops.push_back(&op);
+  }
+  const int64_t count = static_cast<int64_t>(program->ops.size());
+  auto topOf = [&](mlir::Operation *op) -> int64_t {
+    while (op && op->getBlock() != &body)
+      op = op->getParentOp();
+    return op ? program->position.lookup(op) : -1;
+  };
+
+  // Readouts and calls in the walk order the module's own numbering uses.
+  llvm::DenseMap<mlir::Operation *, int64_t> callIndex;
+  program->readoutsBefore.assign(count + 1, 0);
+  program->submitsBefore.assign(count + 1, 0);
+  for (int64_t i = 0; i < count; ++i) {
+    int64_t readouts = 0;
+    program->ops[i]->walk([&](mlir::Operation *op) {
+      if (isReadoutOp(op))
+        ++readouts;
+      else if (mlir::isa<classical::SubmitOp>(op)) {
+        callIndex[op] = static_cast<int64_t>(program->submitAt.size());
+        program->submitAt.push_back(i);
+      }
+    });
+    program->readoutsBefore[i + 1] = program->readoutsBefore[i] + readouts;
+    program->submitsBefore[i + 1] =
+        static_cast<int64_t>(program->submitAt.size());
+  }
+  bool unknownFuture = false;
+  main.walk([&](classical::WaitOp wait) {
+    auto submit = wait.getFuture().getDefiningOp<classical::SubmitOp>();
+    if (!submit) {
+      unknownFuture = true;
+      return;
+    }
+    program->callOfWait[wait] = callIndex.lookup(submit);
+  });
+  if (unknownFuture)
+    return program;
+
+  // The op each line, tone and link continues.
+  for (int64_t i = 0; i < count; ++i) {
+    mlir::Operation *op = program->ops[i];
+    if (mlir::isa<pulse::GetDriveLineOp, pulse::GetReadoutLineOp,
+                  pulse::QuditAllocOp>(op) ||
+        op->getName().getStringRef() == "classical.get_link")
+      program->roots.push_back(i);
+    for (mlir::Value result : op->getResults()) {
+      if (!isThreadedType(result.getType()))
+        continue;
+      llvm::SmallVector<mlir::Value, 8> chain;
+      mlir::Operation *root = nullptr;
+      mlir::Value current = result;
+      while (true) {
+        auto known = program->rootOf.find(current);
+        if (known != program->rootOf.end()) {
+          root = known->second;
+          break;
+        }
+        chain.push_back(current);
+        mlir::Value previous = pulse::linearPredecessor(current);
+        if (!previous) {
+          root = current.getDefiningOp();
+          break;
+        }
+        current = previous;
+      }
+      if (root && root->getBlock() != &body)
+        root = nullptr;
+      for (mlir::Value value : chain)
+        program->rootOf[value] = root;
+      if (root)
+        program->rootOps.insert(root);
+    }
+  }
+
+  // Run-time waits and the calls their length depends on.
+  for (int64_t i = 0; i < count; ++i) {
+    mlir::Operation *op = program->ops[i];
+    llvm::SmallVector<int64_t, 1> calls;
+    if (mlir::isa<classical::WaitOp>(op) && op->hasAttr("classical.blocking")) {
+      calls.push_back(program->callOfWait.lookup(op));
+    } else if (mlir::isa<pulse::WaitOp>(op) &&
+               op->hasAttr("classical.variable")) {
+      llvm::SmallVector<mlir::Value> work{op->getOperand(1)};
+      llvm::DenseSet<mlir::Value> seen;
+      bool known = true;
+      while (!work.empty() && known) {
+        mlir::Value value = work.pop_back_val();
+        if (!seen.insert(value).second)
+          continue;
+        mlir::Operation *def = value.getDefiningOp();
+        if (!def || def->getNumRegions() != 0) {
+          known = false;
+          break;
+        }
+        if (mlir::isa<classical::WaitOp>(def)) {
+          calls.push_back(program->callOfWait.lookup(def));
+          continue;
+        }
+        work.append(def->getOperands().begin(), def->getOperands().end());
+      }
+      if (!known)
+        continue;
+    } else {
+      continue;
+    }
+    program->barriers[i] = std::move(calls);
+  }
+
+  // What crosses each top-level position: a call in flight, or a value a
+  // window starting after it could not be given.
+  std::vector<int64_t> calls(count + 1, 0), values(count + 1, 0);
+  auto across = [&](std::vector<int64_t> &marks, int64_t from, int64_t to) {
+    if (from < to) {
+      ++marks[from];
+      --marks[to];
+    }
+  };
+  main.walk([&](classical::SubmitOp submit) {
+    int64_t from = topOf(submit), to = from;
+    for (classical::WaitOp wait : classical::waitsOf(submit))
+      to = std::max(to, topOf(wait));
+    across(calls, from, to);
+  });
+  llvm::DenseMap<mlir::Value, bool> importable;
+  std::function<bool(mlir::Value)> canImport = [&](mlir::Value value) {
+    auto known = importable.find(value);
+    if (known != importable.end())
+      return known->second;
+    bool can = false;
+    mlir::Operation *def = value.getDefiningOp();
+    mlir::Type type = value.getType();
+    if (!def) {
+      can = false;
+    } else if (isThreadedType(type)) {
+      can = program->rootOf.lookup(value) != nullptr;
+    } else if (mlir::isa<classical::WaitOp>(def)) {
+      // Bound by the time a window starts after it, as a constant.
+      can = type.isF64() || type.isSignlessInteger(64);
+    } else if (def->getNumRegions() == 0 && !isReadoutOp(def) &&
+               !mlir::isa<classical::SubmitOp>(def) &&
+               !mlir::isa<pulse::MeasurementType>(type) &&
+               !pulse::isClassicalType(type) &&
+               llvm::none_of(def->getOperandTypes(), isThreadedType)) {
+      // Computed from constants and answers alone (not from where a line
+      // stands, as pulse.get_current_time is).
+      can = llvm::all_of(def->getOperands(), canImport);
+    }
+    importable[value] = can;
+    return can;
+  };
+  for (int64_t i = 0; i < count; ++i)
+    for (mlir::Value result : program->ops[i]->getResults()) {
+      int64_t last = i;
+      for (mlir::Operation *user : result.getUsers())
+        last = std::max(last, topOf(user));
+      if (last > i && !canImport(result))
+        across(values, i, last);
+    }
+  int64_t inFlight = 0, unimportable = 0;
+  for (int64_t i = 0; i < count; ++i) {
+    inFlight += calls[i];
+    unimportable += values[i];
+    if (inFlight > 0)
+      program->crossedByCall.insert(i);
+    if (unimportable > 0)
+      program->crossed.insert(i);
+  }
+  program->eligible = true;
+  return program;
+}
+
+/// Answers a window no longer holds the calls of, newest first: what a
+/// later window reads from before it.
+struct RetiredAnswer {
+  int64_t call;
+  std::vector<double> values;
+  std::shared_ptr<const RetiredAnswer> next;
+};
+
+// -----------------------------------------------------------------------
 // PulseModule: opaque handle around an in-memory mlir::ModuleOp
 // -----------------------------------------------------------------------
 // The wrapper owns the MLIRContext and the ModuleOp; run_passes() looks
@@ -2325,7 +2755,16 @@ public:
     std::lock_guard<std::recursive_mutex> guard(*lock_);
     std::string result;
     llvm::raw_string_ostream os(result);
-    module_->print(os);
+    mlir::OpPrintingFlags flags;
+    // The printer verifies a module first, to print an invalid one in the
+    // generic form; one verified since it last changed is valid.
+    if (verified_ == version_.load()) {
+      if (verifyEverything() && mlir::failed(mlir::verify(*module_)))
+        throw std::runtime_error(
+            "print: a module noted as verified does not verify");
+      flags.assumeVerified();
+    }
+    module_->print(os, flags);
     return result;
   }
 
@@ -2339,11 +2778,17 @@ public:
   void run_passes(const std::vector<std::string> &pipeline) {
     std::lock_guard<std::recursive_mutex> guard(*lock_);
     changed();
-    mlir::PassManager pm(ctx_.get(), mlir::ModuleOp::getOperationName(),
-                         mlir::OpPassManager::Nesting::Implicit);
+    std::unique_ptr<mlir::PassManager> passes =
+        ContextStore::takePipeline(ctx_.get(), pipeline);
+    bool build = !passes;
+    if (build)
+      passes = std::make_unique<mlir::PassManager>(
+          ctx_.get(), mlir::ModuleOp::getOperationName(),
+          mlir::OpPassManager::Nesting::Implicit);
+    mlir::PassManager &pm = *passes;
     llvm::SmallVector<const pulse::RewriteStage *, 4> stages;
     auto flush = [&] {
-      if (!stages.empty())
+      if (build && !stages.empty())
         pm.addNestedPass<mlir::func::FuncOp>(
             pulse::createPulseRewritePass(stages));
       stages.clear();
@@ -2362,6 +2807,8 @@ public:
           continue;
         }
         flush();
+        if (!build)
+          continue;
         const mlir::PassInfo *info = lookupPass(name);
         if (!info)
           throw std::runtime_error("Unknown pass: " + name.str());
@@ -2372,7 +2819,11 @@ public:
       }
     flush();
     programs_.clear();
-    runPipeline(pm, *module_, "MLIR pass pipeline failed");
+    bool verify = verifyEverything();
+    runPipelineVerifyingOnce(pm, *module_, "MLIR pass pipeline failed", verify);
+    if (verify)
+      verified();
+    ContextStore::keepPipeline(ctx_.get(), pipeline, std::move(passes));
   }
 
   /// Keep the selects whose uses all set a parameter of a kind in
@@ -2458,6 +2909,7 @@ public:
     keepSource();
     runSchedule(*module_, true, policy, maxDrives, maxReadouts, readoutLatency,
                 switchPenalty, "pulse scheduling failed");
+    verified();
   }
 
   using Event = std::tuple<std::string, int64_t, int64_t,
@@ -2478,16 +2930,15 @@ public:
     std::vector<Event> result;
     llvm::SmallVector<int64_t, 2> iteration;
     pulse::AllocationTracer trace;
+    std::optional<AttrNames> ownNames;
+    const AttrNames &names = ContextStore::names(ctx_.get(), ownNames);
     std::function<void(mlir::Block &)> collect = [&](mlir::Block &block) {
       for (mlir::Operation &op : block) {
         if (mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp>(op)) {
+          requireExportedMode(&op);
           mlir::Operation *allocation = trace(op.getOperand(0));
           int64_t line = allocation ? lineIndex.lookup(allocation) : -1;
-          int64_t qubit = -1;
-          if (allocation)
-            if (auto attr =
-                    allocation->getAttrOfType<mlir::IntegerAttr>("qubit"))
-              qubit = attr.getInt();
+          int64_t qubit = allocation ? pulse::quditOf(allocation) : -1;
           result.emplace_back(op.getName().stripDialect().str(), line, qubit,
                               pulse::scheduledStart(&op, iteration),
                               pulse::scheduledDuration(&op));
@@ -2495,7 +2946,7 @@ public:
           // A classical call's events are on its link; they have no qudit.
           result.emplace_back(mlir::isa<classical::SubmitOp>(op) ? "submit"
                                                                  : "answer",
-                              classical::intAttr(&op, "classical.device"), -1,
+                              classical::intAttr(&op, names.device), -1,
                               pulse::scheduledStart(&op, iteration),
                               pulse::scheduledDuration(&op));
         } else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
@@ -2562,6 +3013,8 @@ public:
     });
     llvm::SmallVector<int64_t, 2> iteration;
     pulse::AllocationTracer trace;
+    std::optional<AttrNames> ownNames;
+    const AttrNames &names = ContextStore::names(ctx_.get(), ownNames);
     auto node = [&](mlir::Operation &op, std::string kind, int64_t line,
                     int64_t qubit) {
       std::optional<int64_t> start = pulse::scheduledStart(&op, iteration);
@@ -2583,17 +3036,13 @@ public:
                     op)) {
               mlir::Operation *allocation = trace(op.getOperand(0));
               int64_t line = allocation ? lineIndex.lookup(allocation) : -1;
-              int64_t qubit = -1;
-              if (allocation)
-                if (auto attr =
-                        allocation->getAttrOfType<mlir::IntegerAttr>("qubit"))
-                  qubit = attr.getInt();
+              int64_t qubit = allocation ? pulse::quditOf(allocation) : -1;
               out.append(
                   node(op, op.getName().stripDialect().str(), line, qubit));
             } else if (mlir::isa<classical::SubmitOp, classical::WaitOp>(op)) {
               out.append(node(
                   op, mlir::isa<classical::SubmitOp>(op) ? "submit" : "answer",
-                  classical::intAttr(&op, "classical.device"), -1));
+                  classical::intAttr(&op, names.device), -1));
             } else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
               int64_t trips = pulse::constantTripCount(loop).value_or(0);
               nb::list body;
@@ -2719,7 +3168,7 @@ public:
                  std::vector<int64_t> *slots, bool summarize = false,
                  bool unsynced = false, bool trackFrames = true) {
     std::lock_guard<std::recursive_mutex> guard(*lock_);
-    auto walk = std::make_unique<ControllerEventWalk>(clock());
+    auto walk = std::make_unique<ControllerEventWalk>(ctx_.get(), clock());
     walk->summarize = summarize;
     walk->unsynced = unsynced;
     walk->trackFrames = trackFrames;
@@ -2759,9 +3208,7 @@ public:
                .try_emplace(op, static_cast<int64_t>(walk.lineIndex.size()))
                .second)
         return;
-      int64_t qubit = -1;
-      if (auto attr = op->getAttrOfType<mlir::IntegerAttr>("qubit"))
-        qubit = attr.getInt();
+      int64_t qubit = pulse::quditOf(op);
       lines.emplace_back(
           mlir::isa<pulse::GetDriveLineOp>(op) ? "drive" : "readout", qubit);
       if (slots)
@@ -2801,7 +3248,7 @@ public:
     if (!summarize)
       return nb::cast(std::move(trackedWalk()->natives));
     std::lock_guard<std::recursive_mutex> guard(*lock_);
-    ControllerEventWalk walk(clock(), /*track=*/true);
+    ControllerEventWalk walk(ctx_.get(), clock(), /*track=*/true);
     walk.summarize = true;
     walk.unsynced = unsynced;
     module_->walk([&](mlir::Operation *op) {
@@ -2854,9 +3301,7 @@ public:
                .try_emplace(op, static_cast<int64_t>(walk.lineIndex.size()))
                .second)
         return;
-      int64_t qubit = -1;
-      if (auto attr = op->getAttrOfType<mlir::IntegerAttr>("qubit"))
-        qubit = attr.getInt();
+      int64_t qubit = pulse::quditOf(op);
       lines.emplace_back(
           mlir::isa<pulse::GetDriveLineOp>(op) ? "drive" : "readout", qubit);
       if (slots)
@@ -2910,8 +3355,7 @@ public:
     ControllerWalk walk(clock(), rolled ? ControllerWalk::Walk::Rolled
                                         : ControllerWalk::Walk::Every);
     walk.runTime = runTime_;
-    walk.persistent =
-        module_->getOperation()->hasAttr("pulse.persistent_frames");
+    walk.persistent = pulse::persistentFrames(*module_);
     if (segments)
       walk.segments.emplace(*module_);
     std::vector<ControllerLine> lines;
@@ -3090,7 +3534,7 @@ public:
       int64_t issue, int64_t gap, int64_t samplesNum, int64_t samplesDen,
       const std::tuple<int64_t, int64_t, bool, bool, std::vector<std::string>,
                        bool> &memory,
-      int64_t tonesPerLine, int64_t maxEvents,
+      int64_t maxFrequenciesPerLine, int64_t maxEvents,
       const std::map<int64_t, int64_t> &detectors, int64_t detectorRecovery,
       int64_t feedbackLatency, bool answerTimeouts,
       const std::vector<std::string> &timeoutFunctions, bool resolve) {
@@ -3113,7 +3557,7 @@ public:
     limits.scaling = scaling;
     limits.synthesized = {synthesized.begin(), synthesized.end()};
     limits.hold = hold;
-    limits.tonesPerLine = tonesPerLine;
+    limits.maxFrequenciesPerLine = maxFrequenciesPerLine;
     limits.maxEvents = maxEvents;
     limits.detectors = detectors;
     limits.detectorRecovery = detectorRecovery;
@@ -3235,7 +3679,7 @@ public:
                         classical::SubmitOp>(user)) {
             it->second.push_back(user);
           } else if (user->getNumRegions() > 0) {
-            user->walk([&](mlir::Operation *inner) {
+            user->walk([&it = it](mlir::Operation *inner) {
               if (mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp,
                             classical::SubmitOp>(inner))
                 it->second.push_back(inner);
@@ -3247,22 +3691,23 @@ public:
       }
       return it->second;
     };
+    SegmentWalk segments(*module_);
+    const AttrNames &names = segments.names;
     auto startOf = [&](mlir::Operation *op, llvm::ArrayRef<int64_t> iteration) {
       llvm::SmallVector<int64_t, 2> at(iteration.begin(), iteration.end());
       at.resize(pulse::enclosingLoops(op).size(), 0);
       return pulse::scheduledStart(op, at);
     };
-    SegmentWalk segments(*module_);
     llvm::SmallVector<int64_t, 2> iteration;
     llvm::DenseMap<mlir::Operation *, bool> busy;
     auto callsOrBoundaries = [&](mlir::scf::ForOp loop) {
       auto [it, inserted] = busy.try_emplace(loop, false);
       if (inserted)
         it->second =
-            loop->walk([](mlir::Operation *inner) {
+            loop->walk([&](mlir::Operation *inner) {
                   return mlir::isa<classical::SubmitOp>(inner) ||
-                                 inner->hasAttr("classical.variable") ||
-                                 inner->hasAttr("classical.blocking")
+                                 AttrNames::has(inner, names.variable) ||
+                                 AttrNames::has(inner, names.blocking)
                              ? mlir::WalkResult::interrupt()
                              : mlir::WalkResult::advance();
                 })
@@ -3279,8 +3724,8 @@ public:
           auto callable =
               symbols.lookup<classical::CallableOp>(submit.getCallee());
           int64_t duration = pulse::scheduledDuration(&op).value_or(1);
-          int64_t due = *start + duration +
-                        classical::intAttr(&op, "classical.budget_cycles");
+          int64_t due =
+              *start + duration + classical::intAttr(&op, names.budget);
           std::optional<int64_t> taken, firstUse, deadline;
           for (mlir::Operation *user : submit.getFuture().getUsers())
             if (auto wait = mlir::dyn_cast<classical::WaitOp>(user)) {
@@ -3294,13 +3739,12 @@ public:
               deadline = *start +
                          classical::ceilCycles(limit->convertToDouble(), clock);
           calls.emplace_back(
-              submit.getCallee().str(),
-              classical::intAttr(&op, "classical.device"),
+              submit.getCallee().str(), classical::intAttr(&op, names.device),
               std::vector<int64_t>(iteration.begin(), iteration.end()), *start,
               duration, due, taken, firstUse, deadline, segment,
-              op.hasAttr(classical::kInstanceAttr)
+              AttrNames::has(&op, names.instance)
                   ? std::optional<int64_t>(
-                        classical::intAttr(&op, classical::kInstanceAttr))
+                        classical::intAttr(&op, names.instance))
                   : std::nullopt);
         } else if (mlir::isa<classical::WaitOp, pulse::WaitOp>(op)) {
           segments.visit(&op, iteration);
@@ -3377,29 +3821,50 @@ public:
     result.keepSource();
     runSchedule(*result.module_, false, policy, maxDrives, maxReadouts,
                 readoutLatency, switchPenalty, "simulation: scheduling failed");
+    result.verified();
+    result.simulation_ = true;
     return result;
   }
 
-  /// This module with its line delays replaced by `delays` (a
-  /// `pulse.line_delays` dictionary, or empty for none) and scheduled again
-  /// with `policy`: everything before scheduling is kept.
-  PulseModule with_line_delays(const std::string &delays,
+  /// This module with the lines of its control system replaced by `lines`
+  /// (a list of `#pulse.line`, or empty for none), which carry the delays,
+  /// and scheduled again with `policy`: everything before scheduling is
+  /// kept.
+  PulseModule with_line_delays(const std::string &lines,
                                const std::string &policy, int64_t maxDrives,
                                int64_t maxReadouts, int64_t readoutLatency,
                                int64_t switchPenalty) {
     std::lock_guard<std::recursive_mutex> guard(*lock_);
     auto copy = mlir::OwningOpRef<mlir::ModuleOp>(source().clone());
-    if (delays.empty())
-      copy->getOperation()->removeAttr("pulse.line_delays");
-    else
-      copy->getOperation()->setAttr("pulse.line_delays",
-                                    mlir::parseAttribute(delays, ctx_.get()));
+    llvm::SmallVector<pulse::LineAttr> parsed;
+    if (!lines.empty()) {
+      auto list = mlir::dyn_cast_or_null<mlir::ArrayAttr>(
+          mlir::parseAttribute(lines, ctx_.get()));
+      if (!list)
+        throw std::invalid_argument("with_line_delays: not a list of lines");
+      for (mlir::Attribute line : list) {
+        auto parsedLine = mlir::dyn_cast<pulse::LineAttr>(line);
+        if (!parsedLine)
+          throw std::invalid_argument("with_line_delays: not a #pulse.line");
+        parsed.push_back(parsedLine);
+      }
+    }
+    pulse::ControlSystemAttr system = pulse::controlSystemOf(*copy);
+    if (!system)
+      system = pulse::controlSystemAt(ctx_.get(), 1.0);
+    copy->getOperation()->setAttr(
+        pulse::kControlSystemAttr,
+        pulse::ControlSystemAttr::get(ctx_.get(),
+                                      system.getClockPeriodFsNumerator(),
+                                      system.getClockPeriodFsDenominator(),
+                                      parsed, system.getControllers()));
     PulseModule result(ctx_, std::move(copy));
     result.loops_ = loops_;
     result.runTime_ = runTime_;
     result.keepSource();
     runSchedule(*result.module_, true, policy, maxDrives, maxReadouts,
                 readoutLatency, switchPenalty, "pulse scheduling failed");
+    result.verified();
     return result;
   }
 
@@ -3482,12 +3947,25 @@ public:
 
   /// This module with the answer `values` bound to execution `index` of a
   /// call (an empty `values` for a call whose answer is not taken), folded
-  /// and scheduled again with `policy`.
-  PulseModule bind_call(int64_t index, const std::vector<double> &values,
-                        const std::string &policy, int64_t maxDrives,
-                        int64_t maxReadouts, int64_t readoutLatency,
-                        int64_t switchPenalty) {
+  /// and scheduled again with `policy`. Given the measurement `path` taken
+  /// to the call, a simulation module returns the window of the program
+  /// that path plays next (see SimulationProgram); its readouts and calls
+  /// are numbered from window_bases().
+  PulseModule
+  bind_call(int64_t index, const std::vector<double> &values,
+            const std::string &policy, int64_t maxDrives, int64_t maxReadouts,
+            int64_t readoutLatency, int64_t switchPenalty,
+            const std::optional<std::vector<std::vector<int64_t>>> &path) {
     std::lock_guard<std::recursive_mutex> guard(*lock_);
+    if (window_ && !path)
+      throw std::invalid_argument(
+          "bind_call: a simulation window binds along its path");
+    if (path &&
+        (window_ || (simulation_ && (policy == "asap" || policy == "alap"))))
+      if (auto window =
+              bindInWindow(index, values, *path, policy, maxDrives, maxReadouts,
+                           readoutLatency, switchPenalty))
+        return std::move(*window);
     bool unscheduled = static_cast<bool>(source_);
     auto copy = mlir::OwningOpRef<mlir::ModuleOp>(source().clone());
     classical::SubmitOp found;
@@ -3524,6 +4002,15 @@ public:
       result.schedule(policy, maxDrives, maxReadouts, readoutLatency,
                       switchPenalty);
     return result;
+  }
+
+  /// The readouts and calls of the program before this window: its own
+  /// are numbered from there.
+  std::pair<int64_t, int64_t> window_bases() {
+    std::lock_guard<std::recursive_mutex> guard(*lock_);
+    if (!window_)
+      return {0, 0};
+    return {program_->readoutsBefore[first_], program_->submitsBefore[first_]};
   }
 
   /// This module with every answer not bound yet replaced by zeros, for
@@ -3570,8 +4057,7 @@ public:
           std::distance(readouts.begin(), llvm::find(readouts, occurrence.op));
       int64_t qubit = -1;
       if (auto *allocation = trace(occurrence.op->getOperand(0)))
-        if (auto attr = allocation->getAttrOfType<mlir::IntegerAttr>("qubit"))
-          qubit = attr.getInt();
+        qubit = pulse::quditOf(allocation);
       next = Measurement{index, key.iteration, qubit,
                          occurrence.startCycles / clockGHz, end};
       return false;
@@ -3673,14 +4159,14 @@ public:
       throw std::runtime_error(walker.error);
     std::vector<FinalTone> finals;
     for (auto &[root, tone] : walker.toneStates()) {
-      auto qudit = root ? root->getAttrOfType<mlir::IntegerAttr>("qubit")
-                        : mlir::IntegerAttr();
-      if (!qudit ||
-          !mlir::isa<pulse::GetDriveLineOp, pulse::GetReadoutLineOp>(root))
+      if (!mlir::isa_and_nonnull<pulse::GetDriveLineOp,
+                                 pulse::GetReadoutLineOp>(root))
+        continue;
+      int64_t qudit = pulse::quditOf(root);
+      if (qudit < 0)
         continue;
       finals.emplace_back(
-          qudit.getInt(),
-          mlir::isa<pulse::GetDriveLineOp>(root) ? "drive" : "readout",
+          qudit, mlir::isa<pulse::GetDriveLineOp>(root) ? "drive" : "readout",
           value(tone.frequencyHz), value(tone.phase), tone.timeNs);
     }
     std::sort(finals.begin(), finals.end());
@@ -3724,7 +4210,7 @@ public:
 
   /// The Hamiltonian and collapse operators pulse-to-qop builds, as data:
   /// (mode extents, Hamiltonian terms, collapse terms, t_start, t_end,
-  /// num_steps, integrator). A term is (coefficient real, imaginary,
+  /// step_count, integrator). A term is (coefficient real, imaginary,
   /// callback kind or 0, callback parameters, factors), and a factor is
   /// (mode, dimension, column-major interleaved complex matrix). Callback
   /// parameters that depend on the program's float arguments are evaluated
@@ -3765,16 +4251,22 @@ public:
   }
 
   /// Merge a dictionary attribute, written in MLIR syntax, into the module
-  /// attributes.
-  void set_attributes(const std::string &dictionary) {
+  /// attributes, then `then`, another, unless it is empty.
+  void set_attributes(const std::string &dictionary,
+                      const std::string &then = {}) {
     std::lock_guard<std::recursive_mutex> guard(*lock_);
     changed();
-    auto attr = mlir::parseAttribute(dictionary, ctx_.get());
-    auto entries = mlir::dyn_cast_or_null<mlir::DictionaryAttr>(attr);
-    if (!entries)
-      throw std::invalid_argument("expected an MLIR dictionary attribute");
-    for (mlir::NamedAttribute entry : entries)
-      module_->getOperation()->setAttr(entry.getName(), entry.getValue());
+    auto merge = [&](const std::string &text) {
+      auto attr = ContextStore::parsed(ctx_.get(), text);
+      auto entries = mlir::dyn_cast_or_null<mlir::DictionaryAttr>(attr);
+      if (!entries)
+        throw std::invalid_argument("expected an MLIR dictionary attribute");
+      for (mlir::NamedAttribute entry : entries)
+        module_->getOperation()->setAttr(entry.getName(), entry.getValue());
+    };
+    merge(dictionary);
+    if (!then.empty())
+      merge(then);
   }
 
   std::vector<std::string> param_names() {
@@ -3930,7 +4422,8 @@ public:
     mlir::OpBuilder builder(module.getContext());
     builder.setInsertionPointToStart(&entryBlock);
     int64_t n = 0;
-    if (auto attr = module->getAttrOfType<mlir::IntegerAttr>("pulse.n_qubits"))
+    if (auto attr =
+            module->getAttrOfType<mlir::IntegerAttr>("pulse.qudit_count"))
       n = attr.getInt();
     for (unsigned i = 0; i < entryBlock.getNumArguments(); ++i) {
       auto slot = funcOp.getArgAttrOfType<mlir::IntegerAttr>(i, "pulse.slot");
@@ -3957,21 +4450,22 @@ public:
               : frequency;
       for (mlir::Operation *user : arg.getUsers())
         if (mlir::isa<pulse::GetDriveLineOp, pulse::GetReadoutLineOp>(user)) {
-          user->setAttr("qubit", qubit);
           user->setAttr("frequency_hz", mlir::isa<pulse::GetReadoutLineOp>(user)
                                             ? readoutFrequency
                                             : frequency);
           user->setAttr("pulse.slot", slot);
         }
       auto alloc = pulse::QuditAllocOp::create(
-          builder, funcOp.getLoc(), pulse::QrefType::get(module.getContext()));
-      alloc->setAttr("qubit", qubit);
+          builder, funcOp.getLoc(), pulse::QuditType::get(module.getContext()),
+          qubit);
       arg.replaceAllUsesWith(alloc.getResult());
     }
-    module->setAttr("pulse.n_qubits", builder.getI64IntegerAttr(n));
-    module->setAttr("pulse.qubit_freq_hz",
-                    builder.getDenseF64ArrayAttr(llvm::ArrayRef<double>(
-                        slots.frequencies, static_cast<size_t>(n))));
+    module->setAttr("pulse.qudit_count", builder.getI64IntegerAttr(n));
+    module->setAttr(
+        pulse::kQuantumSystemAttr,
+        pulse::quantumSystemAt(
+            module.getContext(),
+            llvm::ArrayRef<double>(slots.frequencies, static_cast<size_t>(n))));
   }
 
   /// Make `main` take no arguments, once every use of them is replaced.
@@ -3992,7 +4486,7 @@ public:
     auto funcOp = module.lookupSymbol<mlir::func::FuncOp>("main");
     llvm::BitVector qrefs(funcOp.getNumArguments());
     for (auto [i, type] : llvm::enumerate(funcOp.getArgumentTypes()))
-      if (mlir::isa<pulse::QrefType>(type))
+      if (mlir::isa<pulse::QuditType>(type))
         qrefs.set(i);
     (void)funcOp.eraseArguments(qrefs);
   }
@@ -4043,7 +4537,7 @@ public:
     if (placed)
       if (auto main = module_->lookupSymbol<mlir::func::FuncOp>("main"))
         for (mlir::Type type : main.getArgumentTypes())
-          numeric |= !mlir::isa<pulse::QrefType>(type);
+          numeric |= !mlir::isa<pulse::QuditType>(type);
     if (placed && !numeric) {
       // Carriers move no op: the schedule stands, and nothing folds.
       auto owning = mlir::OwningOpRef<mlir::ModuleOp>(module_->clone());
@@ -4077,7 +4571,7 @@ public:
     for (unsigned i = 0; i < entryBlock.getNumArguments(); ++i) {
       auto arg = entryBlock.getArgument(i);
       mlir::Value replacement;
-      if (mlir::isa<pulse::QrefType>(arg.getType())) {
+      if (mlir::isa<pulse::QuditType>(arg.getType())) {
         if (!arg.use_empty())
           throw std::invalid_argument(
               "specialize: runtime qudits need carriers");
@@ -4109,7 +4603,10 @@ public:
     result.keepSource();
     runSchedule(*result.module_, true, schedule, maxDrives, maxReadouts,
                 readoutLatency, switchPenalty,
-                "specialize: pass pipeline failed", specialized_.frameChanges);
+                "specialize: pass pipeline failed", specialized_.frameChanges,
+                verifyEverything());
+    // Verified, or trusted as the verified module it is rescheduled from.
+    result.verified();
     return result;
   }
 
@@ -4225,11 +4722,12 @@ private:
 
     mlir::Operation *lindblad = nullptr;
     lowered->walk([&](mlir::Operation *op) {
-      if (op->getName().getStringRef() == "qop.lindblad")
-        lindblad = op;
+      if (op->getName().getStringRef() == "qop.evolve")
+        lindblad = op->getOperand(0).getDefiningOp();
     });
-    if (!lindblad)
-      throw std::runtime_error("pulse-to-qop produced no qop.lindblad");
+    if (!lindblad || lindblad->getName().getStringRef() != "qop.lindblad")
+      throw std::runtime_error("pulse-to-qop produced no qop.evolve of a "
+                               "qop.lindblad");
     auto sumTerms = [&](mlir::Value sum, std::vector<TermTemplate> &terms) {
       for (mlir::Value product : sum.getDefiningOp()->getOperands())
         terms.push_back(term(product));
@@ -4246,10 +4744,10 @@ private:
                              attr.asArrayRef().end());
     else {
       int64_t modes = 1;
-      if (auto attr = top->getAttrOfType<mlir::IntegerAttr>("qop.n_qubits"))
+      if (auto attr = top->getAttrOfType<mlir::IntegerAttr>("qop.qudit_count"))
         modes = attr.getInt();
       else if (auto attr =
-                   top->getAttrOfType<mlir::IntegerAttr>("pulse.n_qubits"))
+                   top->getAttrOfType<mlir::IntegerAttr>("pulse.qudit_count"))
         modes = attr.getInt();
       for (const TermTemplate &t : program.hamiltonian)
         for (const Factor &f : std::get<4>(t.term))
@@ -4264,7 +4762,7 @@ private:
     program.tStart = number("qop.t_start", 0.0);
     program.tEnd = number("qop.t_end", 0.0);
     program.steps = 100;
-    if (auto attr = top->getAttrOfType<mlir::IntegerAttr>("qop.num_steps"))
+    if (auto attr = top->getAttrOfType<mlir::IntegerAttr>("qop.step_count"))
       program.steps = attr.getInt();
     program.integrator = "rk4";
     if (auto attr = top->getAttrOfType<mlir::StringAttr>("qop.integrator"))
@@ -4278,13 +4776,15 @@ private:
   /// declares any, then run the passes that run on a scheduled module,
   /// raising with `what` on failure. `frameChanges`, when known, says
   /// whether the module has frame-change work; otherwise a walk finds out.
+  /// The module is verified at the end, unless not `verify`.
   void runSchedule(mlir::ModuleOp module, bool checkCalls,
                    const std::string &policy, int64_t maxDrives,
                    int64_t maxReadouts, int64_t readoutLatency,
                    int64_t switchPenalty, const std::string &what,
-                   std::optional<bool> frameChanges = std::nullopt) {
+                   std::optional<bool> frameChanges = std::nullopt,
+                   bool verify = true) {
     bool rcp = policy == "rcp" || policy == "alap_rcp";
-    SchedulePasses::Options options{
+    ContextStore::Options options{
         policy,
         rcp ? maxDrives : 0,
         rcp ? maxReadouts : 0,
@@ -4292,18 +4792,18 @@ private:
         rcp ? switchPenalty : 0,
         checkCalls && classical::declaresClassicalCalls(module),
         frameChanges ? *frameChanges : pulse::hasFrameChangeWork(module)};
-    auto passes = SchedulePasses::take(ctx_.get(), options);
+    auto passes = ContextStore::take(ctx_.get(), options);
     if (!passes) {
       passes = std::make_unique<mlir::PassManager>(ctx_.get());
       addSchedule(*passes, options);
     }
-    runPipelineVerifyingOnce(*passes, module, what);
-    SchedulePasses::keep(ctx_.get(), std::move(options), std::move(passes));
+    runPipelineVerifyingOnce(*passes, module, what, verify);
+    ContextStore::keep(ctx_.get(), std::move(options), std::move(passes));
   }
 
   /// Add to `pm` the passes runSchedule runs with `options`.
   static void addSchedule(mlir::PassManager &pm,
-                          const SchedulePasses::Options &options) {
+                          const ContextStore::Options &options) {
     auto &[policy, maxDrives, maxReadouts, readoutLatency, switchPenalty,
            checkCalls, frameChanges] = options;
     if (policy == "asap")
@@ -4331,6 +4831,376 @@ private:
   static void addAfterSchedulePasses(mlir::PassManager &pm, bool frameChanges) {
     if (frameChanges)
       pm.addPass(pulse::createPulseFrameChangesPass());
+  }
+
+  using ToneSeeds = llvm::DenseMap<mlir::Operation *, std::array<double, 4>>;
+
+  /// bind_call() along `path` on a simulation module or window: the window
+  /// that starts after the latest run-time wait the path is past and ends
+  /// at the first whose length is not bound, or the whole program where no
+  /// such wait is. None for a module the program has no windows of.
+  std::optional<PulseModule>
+  bindInWindow(int64_t index, const std::vector<double> &values,
+               const std::vector<std::vector<int64_t>> &path,
+               const std::string &policy, int64_t maxDrives,
+               int64_t maxReadouts, int64_t readoutLatency,
+               int64_t switchPenalty) {
+    if (!program_) {
+      program_ = simulationProgram(*module_);
+      if (program_->eligible) {
+        first_ = 0;
+        last_ = static_cast<int64_t>(program_->ops.size()) - 1;
+        for (mlir::Operation &op :
+             getFuncOp().getBody().front().without_terminator())
+          windowOps_.push_back(&op);
+        for (auto [own, theirs] : llvm::zip(windowOps_, program_->ops))
+          if (program_->rootOps.contains(theirs))
+            windowRoots_[own] = theirs;
+      }
+    }
+    // Without a run-time wait the window is the whole program.
+    if (!program_->eligible || (!window_ && program_->barriers.empty()))
+      return std::nullopt;
+    const SimulationProgram &program = *program_;
+    const int64_t count = static_cast<int64_t>(program.ops.size());
+    const int64_t base = program.submitsBefore[first_];
+    const int64_t call = base + index;
+    if (index < 0 || call >= program.submitsBefore[last_ + 1])
+      throw std::invalid_argument("bind_call: no call execution " +
+                                  std::to_string(index));
+    std::map<int64_t, std::vector<double>> answers = answers_;
+    answers[call] = values;
+    auto bound = [&](int64_t c) { return c < base || answers.count(c) != 0; };
+    auto unbound = [&](int64_t at) {
+      return !llvm::all_of(program.barriers.at(at), bound);
+    };
+    auto whole = [&]() -> std::optional<PulseModule> {
+      std::map<int64_t, std::vector<double>> all = answers;
+      for (const RetiredAnswer *r = retired_.get(); r; r = r->next.get())
+        all.try_emplace(r->call, r->values);
+      auto result = makeWindow(0, count - 1, 0, std::move(all), nullptr,
+                               ToneSeeds(), policy, maxDrives, maxReadouts,
+                               readoutLatency, switchPenalty);
+      if (!result && window_)
+        throw std::runtime_error(
+            "bind_call: the program a window was cut from does not schedule "
+            "whole");
+      return result;
+    };
+
+    // The latest run-time wait that holds every line, is bound, ends by the
+    // time the call starts and that only lines, constants and answers
+    // cross: the window starts after it.
+    const int64_t held = last_ - first_ + 1;
+    mlir::func::FuncOp function = getFuncOp();
+    std::vector<int64_t> lowest(held, std::numeric_limits<int64_t>::max()),
+        highest(held, std::numeric_limits<int64_t>::min());
+    classical::SubmitOp submit;
+    int64_t seenCalls = 0;
+    for (int64_t i = 0; i < held; ++i)
+      windowOps_[i]->walk([&](mlir::Operation *op) {
+        if (auto found = mlir::dyn_cast<classical::SubmitOp>(op);
+            found && seenCalls++ == index)
+          submit = found;
+        if (!mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp,
+                       classical::SubmitOp, classical::WaitOp>(op))
+          return;
+        auto start = pulse::startCycles(op);
+        auto duration = pulse::scheduledDuration(op);
+        if (!start || !duration)
+          return;
+        int64_t end = *start + *duration;
+        for (auto [loop, period] :
+             llvm::zip(pulse::enclosingLoops(op, function),
+                       pulse::periodCycles(op))) {
+          int64_t trips = pulse::constantTripCount(loop).value_or(1);
+          end += std::max<int64_t>(0, trips - 1) * std::max<int64_t>(0, period);
+        }
+        lowest[i] = std::min(lowest[i], *start);
+        highest[i] = std::max(highest[i], end);
+      });
+    if (!submit)
+      throw std::invalid_argument("bind_call: no call execution " +
+                                  std::to_string(index));
+    for (classical::WaitOp wait : classical::waitsOf(submit))
+      if (wait.getValues().size() != values.size())
+        throw std::invalid_argument(
+            "bind_call: " + submit.getCallee().str() + " answers " +
+            std::to_string(wait.getValues().size()) + " values, got " +
+            std::to_string(values.size()));
+    std::optional<int64_t> callStart = pulse::startCycles(submit);
+    if (!callStart)
+      return whole();
+    std::vector<int64_t> before(held + 1, std::numeric_limits<int64_t>::min()),
+        after(held + 1, std::numeric_limits<int64_t>::max());
+    for (int64_t i = 0; i < held; ++i)
+      before[i + 1] = std::max(before[i], highest[i]);
+    for (int64_t i = held - 1; i >= 0; --i)
+      after[i] = std::min(after[i + 1], lowest[i]);
+
+    int64_t head = first_, offset = offsetCycles_;
+    ToneSeeds seeds = *seedsOf(nullptr);
+    const int64_t callAt = program.submitAt[call];
+    auto from = program.barriers.lower_bound(first_);
+    for (auto it = program.barriers.upper_bound(callAt - 1);
+         it != from && head == first_;) {
+      --it;
+      int64_t at = it->first, local = at - first_;
+      if (at >= callAt || program.crossed.contains(at) ||
+          program.crossedByCall.contains(at) || unbound(at))
+        continue;
+      auto start = pulse::startCycles(windowOps_[local]);
+      auto duration = pulse::scheduledDuration(windowOps_[local]);
+      if (!start || !duration)
+        continue;
+      int64_t end = *start + *duration;
+      if (end > *callStart || before[local] > end || after[local + 1] < end)
+        continue;
+      std::optional<ToneSeeds> found = seedsOf(windowOps_[local + 1], &path);
+      if (!found)
+        continue;
+      head = at + 1;
+      offset = end;
+      seeds = std::move(*found);
+    }
+
+    // The first wait after it whose length is not bound yet, that no call
+    // is in flight across: the window ends with it.
+    int64_t tail = count - 1;
+    for (auto it = program.barriers.lower_bound(std::max(head, callAt));
+         it != program.barriers.end(); ++it)
+      if (!program.crossedByCall.contains(it->first) && unbound(it->first)) {
+        tail = it->first;
+        break;
+      }
+
+    std::shared_ptr<const RetiredAnswer> retired = retired_;
+    const int64_t newBase = program.submitsBefore[head];
+    while (!answers.empty() && answers.begin()->first < newBase) {
+      auto node = std::make_shared<RetiredAnswer>();
+      node->call = answers.begin()->first;
+      node->values = std::move(answers.begin()->second);
+      node->next = std::move(retired);
+      retired = std::move(node);
+      answers.erase(answers.begin());
+    }
+    if (auto window = makeWindow(head, tail, offset, std::move(answers),
+                                 std::move(retired), seeds, policy, maxDrives,
+                                 maxReadouts, readoutLatency, switchPenalty))
+      return window;
+    return whole();
+  }
+
+  /// The frame of each tone this module's own starting frame or its ops
+  /// before `stop` leave it in, by the program's op the tone descends from:
+  /// none if a measurement before `stop` has no outcome on `path`, a call
+  /// before it no answer, or a frame is not a number. Without `stop`, the
+  /// frames the module starts with.
+  std::optional<ToneSeeds>
+  seedsOf(mlir::Operation *stop,
+          const std::vector<std::vector<int64_t>> *path = nullptr) {
+    ToneSeeds seeds;
+    for (auto [own, theirs] : windowRoots_)
+      if (auto seed = own->getAttrOfType<mlir::DenseF64ArrayAttr>(
+              pulse::kToneStateAttr))
+        seeds[theirs] = {seed[0], seed[1], seed[2], seed[3]};
+    if (!stop)
+      return seeds;
+    pulse::Path chosen = toPath(*path, readoutOps());
+    pulse::ExecutionWalker walker(clock(), chosen);
+    walker.stopBefore = stop;
+    bool unanswered = false;
+    walker.onSubmit = [&](const pulse::Occurrence &occurrence) {
+      unanswered |= !occurrence.op->hasAttr("classical.bound");
+      return false;
+    };
+    if (!walker.run(getFuncOp()) || unanswered || !walker.undecided.empty())
+      return std::nullopt;
+    for (auto &[root, tone] : walker.toneStates()) {
+      auto theirs = windowRoots_.find(root);
+      if (theirs == windowRoots_.end() || !tone.frequencyHz.isConstant() ||
+          !tone.frameFrequencyHz.isConstant() || !tone.phase.isConstant())
+        return std::nullopt;
+      seeds[theirs->second] = {tone.frequencyHz.constant,
+                               tone.frameFrequencyHz.constant,
+                               tone.phase.constant, tone.timeNs};
+    }
+    return seeds;
+  }
+
+  /// The window of top-level ops [head, tail] of the program, after its
+  /// allocations, lines and links and what the window reads from before
+  /// it, with `answers` bound (and `retired`, for what it reads), the tones
+  /// starting in `seeds`, scheduled and moved `offset` cycles later. None
+  /// if it reads a value from before it that it cannot be given, or if its
+  /// lines do not share one timeline.
+  std::optional<PulseModule>
+  makeWindow(int64_t head, int64_t tail, int64_t offset,
+             std::map<int64_t, std::vector<double>> answers,
+             std::shared_ptr<const RetiredAnswer> retired,
+             const ToneSeeds &seeds, const std::string &policy,
+             int64_t maxDrives, int64_t maxReadouts, int64_t readoutLatency,
+             int64_t switchPenalty) {
+    const SimulationProgram &program = *program_;
+    mlir::ModuleOp source = *program.module;
+    auto sourceMain = source.lookupSymbol<mlir::func::FuncOp>("main");
+    mlir::Block &sourceBody = sourceMain.getBody().front();
+    mlir::OpBuilder b(ctx_.get());
+    auto module = mlir::OwningOpRef<mlir::ModuleOp>(
+        mlir::ModuleOp::create(source.getLoc()));
+    (*module)->setAttrs(source->getAttrDictionary());
+    b.setInsertionPointToEnd(module->getBody());
+    mlir::func::FuncOp main;
+    for (mlir::Operation &op : *source.getBody()) {
+      if (&op != sourceMain.getOperation()) {
+        b.clone(op);
+        continue;
+      }
+      main = mlir::cast<mlir::func::FuncOp>(b.cloneWithoutRegions(op));
+    }
+    mlir::Block *body = main.addEntryBlock();
+    b.setInsertionPointToEnd(body);
+
+    mlir::IRMapping map;
+    llvm::DenseMap<mlir::Operation *, mlir::Operation *> roots;
+    auto answerOf = [&](int64_t call) -> const std::vector<double> * {
+      auto found = answers.find(call);
+      if (found != answers.end())
+        return &found->second;
+      for (const RetiredAnswer *r = retired.get(); r; r = r->next.get())
+        if (r->call == call)
+          return &r->values;
+      return nullptr;
+    };
+    std::function<bool(mlir::Operation *)> importOp;
+    std::function<bool(mlir::Value)> importValue = [&](mlir::Value value) {
+      if (map.contains(value))
+        return true;
+      mlir::Operation *def = value.getDefiningOp();
+      if (!def)
+        return false;
+      if (isThreadedType(value.getType())) {
+        mlir::Operation *root = program.rootOf.lookup(value);
+        if (!root || !importOp(root))
+          return false;
+        for (mlir::Value result : root->getResults())
+          if (result.getType() == value.getType()) {
+            map.map(value, map.lookup(result));
+            return true;
+          }
+        return false;
+      }
+      if (auto wait = mlir::dyn_cast<classical::WaitOp>(def)) {
+        const std::vector<double> *values =
+            answerOf(program.callOfWait.lookup(def));
+        unsigned n = mlir::cast<mlir::OpResult>(value).getResultNumber();
+        if (!values || n >= values->size())
+          return false;
+        mlir::Type type = value.getType();
+        mlir::TypedAttr attr;
+        if (type.isF64())
+          attr = b.getF64FloatAttr((*values)[n]);
+        else if (type.isSignlessInteger(64))
+          attr = b.getI64IntegerAttr(
+              static_cast<int64_t>(std::round((*values)[n])));
+        else
+          return false;
+        map.map(value, mlir::arith::ConstantOp::create(b, wait.getLoc(), attr));
+        return true;
+      }
+      return importOp(def);
+    };
+    importOp = [&](mlir::Operation *op) {
+      if (op->getNumResults() && map.contains(op->getResult(0)))
+        return true;
+      if (op->getNumRegions() != 0)
+        return false;
+      for (mlir::Value operand : op->getOperands())
+        if (!importValue(operand))
+          return false;
+      mlir::Operation *copy = b.clone(*op, map);
+      if (program.rootOps.contains(op)) {
+        roots[copy] = op;
+        if (auto seed = seeds.find(op); seed != seeds.end())
+          copy->setAttr(pulse::kToneStateAttr,
+                        mlir::DenseF64ArrayAttr::get(ctx_.get(), seed->second));
+      }
+      return true;
+    };
+    for (int64_t root : program.roots)
+      if (root < head && !importOp(program.ops[root]))
+        return std::nullopt;
+    for (int64_t i = head; i <= tail; ++i) {
+      mlir::WalkResult result = program.ops[i]->walk([&](mlir::Operation *op) {
+        for (mlir::Value operand : op->getOperands()) {
+          mlir::Operation *def = operand.getDefiningOp();
+          bool outside =
+              def ? def->getBlock() == &sourceBody &&
+                        program.position.lookup(def) < head
+                  : mlir::cast<mlir::BlockArgument>(operand).getOwner() ==
+                        &sourceBody;
+          if (outside && !importValue(operand))
+            return mlir::WalkResult::interrupt();
+        }
+        return mlir::WalkResult::advance();
+      });
+      if (result.wasInterrupted())
+        return std::nullopt;
+    }
+    llvm::SmallVector<mlir::Operation *> ops;
+    for (int64_t i = head; i <= tail; ++i) {
+      mlir::Operation *copy = b.clone(*program.ops[i], map);
+      ops.push_back(copy);
+      if (program.rootOps.contains(program.ops[i]))
+        roots[copy] = program.ops[i];
+    }
+    b.clone(*sourceBody.getTerminator(), map);
+
+    // The answers bound so far, on the calls in the window.
+    int64_t call = program.submitsBefore[head];
+    bool fits = true;
+    main.walk([&](classical::SubmitOp submit) {
+      auto found = answers.find(call++);
+      if (found == answers.end())
+        return;
+      submit->setAttr("classical.bound", mlir::UnitAttr::get(ctx_.get()));
+      for (classical::WaitOp wait : classical::waitsOf(submit)) {
+        if (wait.getValues().size() != found->second.size())
+          fits = false;
+        else
+          bindConstants(wait, found->second);
+      }
+    });
+    if (!fits)
+      throw std::invalid_argument("bind_call: an answer does not fit its call");
+
+    PulseModule result(ctx_, std::move(module));
+    result.loops_ = loops_;
+    result.runTime_ = runTime_;
+    result.schedule(policy, maxDrives, maxReadouts, readoutLatency,
+                    switchPenalty);
+    mlir::WalkResult split = result.module_->walk([](mlir::Operation *op) {
+      return op->hasAttr(classical::kTimelineAttr)
+                 ? mlir::WalkResult::interrupt()
+                 : mlir::WalkResult::advance();
+    });
+    if (split.wasInterrupted())
+      return std::nullopt;
+    if (offset != 0)
+      result.module_->walk([&](mlir::Operation *op) {
+        if (auto start = pulse::startCycles(op))
+          pulse::setStartCycles(op, *start + offset);
+      });
+    result.program_ = program_;
+    result.window_ = true;
+    result.first_ = head;
+    result.last_ = tail;
+    result.offsetCycles_ = offset;
+    result.answers_ = std::move(answers);
+    result.retired_ = std::move(retired);
+    result.windowOps_ = std::move(ops);
+    result.windowRoots_ = std::move(roots);
+    return result;
   }
 
   /// Bind `values` to the results of `wait`: the wait stays, so what it
@@ -4370,12 +5240,7 @@ private:
     return path;
   }
 
-  double clock() {
-    if (auto attr = module_->getOperation()->getAttrOfType<mlir::FloatAttr>(
-            "pulse.clock_ghz"))
-      return attr.getValueAsDouble();
-    return 1.0;
-  }
+  double clock() { return pulse::clockGHz(*module_); }
 
   mlir::func::FuncOp getFuncOp() {
     return module_->lookupSymbol<mlir::func::FuncOp>("main");
@@ -4429,6 +5294,9 @@ private:
     specialized_.ops.store(-1);
   }
 
+  /// Note that the module, as it is now, has been verified.
+  void verified() { verified_ = version_.load(); }
+
   struct Specialized {
     std::string key;
     uint64_t version;       // of this module when it was built
@@ -4467,6 +5335,9 @@ private:
 
   std::shared_ptr<mlir::MLIRContext> ctx_;
   mlir::OwningOpRef<mlir::ModuleOp> module_;
+  // The version_ at which the module was last verified (verified()): none
+  // yet for a module just built or copied.
+  uint64_t verified_ = UINT64_MAX;
   // Whether the program can compute something at run time or change a frame
   // in a branch: false only where the builder saw neither, so that
   // controller_program() looks for them only where there can be any.
@@ -4557,6 +5428,20 @@ private:
   Version version_;
   // Its specialized modules by their arguments (specialize_shared).
   SpecializedCache specialized_;
+  // Made by simulation_module(): bind_call() along a path cuts windows of
+  // it (see SimulationProgram).
+  bool simulation_ = false;
+  // A window: top-level ops [first_, last_] of program_, the first moved
+  // offsetCycles_ later, with answers_ of its calls bound and retired_ of
+  // calls before it; windowOps_ are its ops for those, windowRoots_ the
+  // program's op each of its allocations, lines, links and tones is.
+  bool window_ = false;
+  std::shared_ptr<const SimulationProgram> program_;
+  int64_t first_ = 0, last_ = -1, offsetCycles_ = 0;
+  std::map<int64_t, std::vector<double>> answers_;
+  std::shared_ptr<const RetiredAnswer> retired_;
+  llvm::SmallVector<mlir::Operation *> windowOps_;
+  llvm::DenseMap<mlir::Operation *, mlir::Operation *> windowRoots_;
   // Python threads may call into one module concurrently once the GIL is
   // released; MLIR does not allow concurrent mutation of one module.
   std::shared_ptr<std::recursive_mutex> lock_;
@@ -4735,8 +5620,12 @@ pulse::ScheduleBlockOp buildScheduleBlock(mlir::OpBuilder &builder,
   for (mlir::Value output : outputs)
     types.push_back(output.getType());
   auto block = pulse::ScheduleBlockOp::create(
-      builder, loc, types, builder.getStringAttr(policy), inputs,
-      callee.empty() ? mlir::StringAttr() : builder.getStringAttr(callee));
+      builder, loc, types,
+      policy == "alap" ? pulse::SchedulePolicy::ALAP
+                       : pulse::SchedulePolicy::ASAP,
+      inputs,
+      callee.empty() ? mlir::StringAttr() : builder.getStringAttr(callee),
+      /*start_cycles=*/{}, /*duration_cycles=*/{}, /*period_cycles=*/{});
   block.getBody().push_back(body.release());
   mlir::Block *inner = &block.getBody().front();
   for (mlir::Value input : inputs) {
@@ -4790,11 +5679,11 @@ public:
   // ─── Packed-buffer decoder (zero-copy path) ──────────────────────────
   PulseModule build_from_packed(
       nb::ndarray<int64_t, nb::ndim<1>, nb::c_contig> stream, double clock_ghz,
-      int64_t n_qubits,
+      int64_t qudit_count,
       nb::ndarray<double, nb::ndim<1>, nb::c_contig> qubit_freqs,
       std::vector<std::string> param_names = {},
       std::vector<std::string> param_types = {},
-      const std::string &name = "main", int64_t n_slots = 0,
+      const std::string &name = "main", int64_t slot_count = 0,
       std::optional<nb::ndarray<const double, nb::ndim<1>, nb::c_contig>>
           readout_freqs = std::nullopt) {
     std::lock_guard<std::mutex> guard(lock_);
@@ -4806,13 +5695,13 @@ public:
 
     if (clock_ghz <= 0.0)
       throw std::invalid_argument("packed: clock_ghz must be positive");
-    if (n_qubits < 0)
-      throw std::invalid_argument("packed: n_qubits cannot be negative");
-    if (n_slots < 0)
-      throw std::invalid_argument("packed: n_slots cannot be negative");
-    if (qubit_freqs.shape(0) < static_cast<size_t>(n_qubits))
+    if (qudit_count < 0)
+      throw std::invalid_argument("packed: qudit_count cannot be negative");
+    if (slot_count < 0)
+      throw std::invalid_argument("packed: slot_count cannot be negative");
+    if (qubit_freqs.shape(0) < static_cast<size_t>(qudit_count))
       throw std::invalid_argument(
-          "packed: fewer qubit frequencies than n_qubits");
+          "packed: fewer qubit frequencies than qudit_count");
     if (param_names.size() != param_types.size())
       throw std::invalid_argument(
           "packed: parameter names and types have different lengths");
@@ -4820,15 +5709,23 @@ public:
     auto module = mlir::ModuleOp::create(loc, mlir::StringRef(name));
     // Owned from the start, so a record that fails frees what was built.
     mlir::OwningOpRef<mlir::ModuleOp> owningModule(module);
-    module->setAttr("pulse.n_qubits", builder_->getI64IntegerAttr(n_qubits));
-    module->setAttr("pulse.clock_ghz", builder_->getF64FloatAttr(clock_ghz));
+    module->setAttr("pulse.qudit_count",
+                    builder_->getI64IntegerAttr(qudit_count));
+    auto controlSystem =
+        pulse::controlSystemAt(builder_->getContext(), clock_ghz);
+    if (!controlSystem)
+      throw std::invalid_argument("packed: clock_ghz " +
+                                  std::to_string(clock_ghz) +
+                                  " has no exact period in femtoseconds");
+    module->setAttr(pulse::kControlSystemAttr, controlSystem);
 
-    // Encode the frequencies of qudits 0 to n_qubits - 1 as module attribute
+    // The frequencies of qudits 0 to qudit_count - 1, in the module's
+    // quantum system.
     const double *fdata = qubit_freqs.data();
-    size_t flen = static_cast<size_t>(n_qubits);
+    size_t flen = static_cast<size_t>(qudit_count);
     llvm::SmallVector<double> freqVec(fdata, fdata + flen);
-    module->setAttr("pulse.qubit_freq_hz",
-                    builder_->getDenseF64ArrayAttr(freqVec));
+    module->setAttr(pulse::kQuantumSystemAttr,
+                    pulse::quantumSystemAt(builder_->getContext(), freqVec));
     // A readout line's tone, by qudit: the readout frequency where given.
     const double *readoutData = readout_freqs ? readout_freqs->data() : fdata;
     size_t readoutLen = readout_freqs ? readout_freqs->shape(0) : flen;
@@ -4849,12 +5746,12 @@ public:
 
     // Runtime qudits follow the numeric parameters: qref arguments with
     // their slot, bound to carriers by specialize().
-    auto qrefTy = pulse::QrefType::get(ctx_.get());
+    auto qrefTy = pulse::QuditType::get(ctx_.get());
     const unsigned firstSlot = argTypes.size();
-    argTypes.append(static_cast<size_t>(n_slots), qrefTy);
+    argTypes.append(static_cast<size_t>(slot_count), qrefTy);
     auto funcType = builder_->getFunctionType(argTypes, {});
     auto funcOp = mlir::func::FuncOp::create(loc, "main", funcType);
-    for (int64_t k = 0; k < n_slots; ++k)
+    for (int64_t k = 0; k < slot_count; ++k)
       funcOp.setArgAttr(firstSlot + k, "pulse.slot",
                         builder_->getI64IntegerAttr(k));
     module.push_back(funcOp);
@@ -4940,9 +5837,9 @@ public:
 
     // A negative index -1 - k is slot k.
     auto getQubit = [&](int64_t q) -> mlir::Value {
-      if (q < 0 && -1 - q < n_slots)
+      if (q < 0 && -1 - q < slot_count)
         return entryBlock->getArgument(firstSlot + (-1 - q));
-      if (q < 0 || q >= n_qubits)
+      if (q < 0 || q >= qudit_count)
         throw std::invalid_argument("packed: qubit index out of range: " +
                                     std::to_string(q));
       auto it = qubitSSA.find(q);
@@ -4952,8 +5849,8 @@ public:
       mlir::OpBuilder::InsertionGuard guard(*builder_);
       if (!regions.empty())
         builder_->setInsertionPointToEnd(regions.front().parent);
-      auto alloc = pulse::QuditAllocOp::create(*builder_, loc, qrefTy);
-      alloc->setAttr("qubit", builder_->getI64IntegerAttr(q));
+      auto alloc = pulse::QuditAllocOp::create(*builder_, loc, qrefTy,
+                                               builder_->getI64IntegerAttr(q));
       auto v = alloc.getResult();
       qubitSSA[q] = v;
       return v;
@@ -5352,11 +6249,9 @@ public:
         auto qref = getQubit(p[0]);
         auto gdl = pulse::GetDriveLineOp::create(*builder_, loc, driveTy,
                                                  toneTy, qref);
-        if (p[0] >= 0) {
-          gdl->setAttr("qubit", builder_->getI64IntegerAttr(p[0]));
+        if (p[0] >= 0)
           gdl->setAttr("frequency_hz",
                        builder_->getF64FloatAttr(freqVec[p[0]]));
-        }
         bind(p[1], gdl.getLine());
         bind(p[2], gdl.getTone());
         break;
@@ -5368,7 +6263,6 @@ public:
         auto grl = pulse::GetReadoutLineOp::create(*builder_, loc, readoutTy,
                                                    toneTy, qref);
         if (p[0] >= 0) {
-          grl->setAttr("qubit", builder_->getI64IntegerAttr(p[0]));
           grl->setAttr(
               "frequency_hz",
               builder_->getF64FloatAttr(static_cast<size_t>(p[0]) < readoutLen
@@ -5654,14 +6548,11 @@ public:
 
       case kOpDrive: {
         requirePayload(7);
-        auto driveOp =
-            pulse::DriveOp::create(*builder_, loc, driveTy, toneTy, look(p[0]),
-                                   look(p[1]), look(p[2]));
-        if (p[5] != -1)
-          driveOp->setAttr("start_cycles", builder_->getI64IntegerAttr(p[5]));
-        if (p[6] != -1)
-          driveOp->setAttr("duration_cycles",
-                           builder_->getI64IntegerAttr(p[6]));
+        auto driveOp = pulse::DriveOp::create(
+            *builder_, loc, driveTy, toneTy, look(p[0]), look(p[1]), look(p[2]),
+            p[5] != -1 ? std::optional<int64_t>(p[5]) : std::nullopt,
+            p[6] != -1 ? std::optional<int64_t>(p[6]) : std::nullopt,
+            /*period_cycles=*/{});
         bind(p[3], driveOp.getUpdatedLine());
         bind(p[4], driveOp.getUpdatedTone());
         lengthen(waveformCycles(driveOp.getPulse()), cur);
@@ -5670,10 +6561,10 @@ public:
 
       case kOpReadout: {
         requirePayload(6);
-        auto mode = builder_->getStringAttr("iq");
-        auto roOp =
-            pulse::ReadoutOp::create(*builder_, loc, readoutTy, toneTy, measTy,
-                                     look(p[0]), look(p[1]), look(p[2]), mode);
+        auto roOp = pulse::ReadoutOp::create(
+            *builder_, loc, readoutTy, toneTy, measTy, look(p[0]), look(p[1]),
+            look(p[2]), pulse::ReadoutMode::IQ, /*start_cycles=*/{},
+            /*duration_cycles=*/{}, /*period_cycles=*/{});
         bind(p[3], roOp.getUpdatedLine());
         bind(p[4], roOp.getUpdatedTone());
         bind(p[5], roOp.getResult());
@@ -5711,8 +6602,9 @@ public:
                   .getResult();
         auto durOp =
             pulse::DurationFromIntOp::create(*builder_, loc, durTy, durCycles);
-        auto waitOp = pulse::WaitOp::create(*builder_, loc, lineVal.getType(),
-                                            lineVal, durOp.getResult());
+        auto waitOp = pulse::WaitOp::create(
+            *builder_, loc, lineVal.getType(), lineVal, durOp.getResult(),
+            /*start_cycles=*/{}, /*duration_cycles=*/{}, /*period_cycles=*/{});
         bind(p[1], waitOp.getResult());
         lengthen((pmask & (1 << 2))
                      ? pulse::constantIndex(durCycles).value_or(0)
@@ -5728,8 +6620,9 @@ public:
         auto dur =
             pulse::DurationFromIntOp::create(*builder_, loc, durTy, look(p[2]));
         mlir::Value line = look(p[0]);
-        auto waitOp = pulse::WaitOp::create(*builder_, loc, line.getType(),
-                                            line, dur.getResult());
+        auto waitOp = pulse::WaitOp::create(
+            *builder_, loc, line.getType(), line, dur.getResult(),
+            /*start_cycles=*/{}, /*duration_cycles=*/{}, /*period_cycles=*/{});
         waitOp->setAttr("pulse.variable_wait", builder_->getUnitAttr());
         waitOp->setAttr("pulse.min_cycles", builder_->getI64IntegerAttr(p[3]));
         if (p[4] >= 0)
@@ -5778,8 +6671,9 @@ public:
       case kOpShiftPhase: {
         requirePayload(3);
         mlir::Value phaseVal = finite(2, "shift_phase phase");
-        auto spOp = pulse::ShiftPhaseOp::create(*builder_, loc, toneTy,
-                                                look(p[0]), phaseVal);
+        auto spOp = pulse::ShiftPhaseOp::create(
+            *builder_, loc, toneTy, look(p[0]), phaseVal, /*start_cycles=*/{},
+            /*duration_cycles=*/{}, /*period_cycles=*/{});
         bind(p[1], spOp.getResult());
         runTime |= openIfs > 0;
         break;
@@ -5788,8 +6682,9 @@ public:
       case kOpSetPhase: {
         requirePayload(3);
         mlir::Value phaseVal = finite(2, "set_phase phase");
-        auto spOp = pulse::SetPhaseOp::create(*builder_, loc, toneTy,
-                                              look(p[0]), phaseVal);
+        auto spOp = pulse::SetPhaseOp::create(
+            *builder_, loc, toneTy, look(p[0]), phaseVal, /*start_cycles=*/{},
+            /*duration_cycles=*/{}, /*period_cycles=*/{});
         bind(p[1], spOp.getResult());
         runTime |= openIfs > 0;
         break;
@@ -5798,8 +6693,9 @@ public:
       case kOpShiftFreq: {
         requirePayload(3);
         mlir::Value fVal = finite(2, "shift_frequency frequency");
-        auto sfOp = pulse::ShiftFrequencyOp::create(*builder_, loc, toneTy,
-                                                    look(p[0]), fVal);
+        auto sfOp = pulse::ShiftFrequencyOp::create(
+            *builder_, loc, toneTy, look(p[0]), fVal, /*start_cycles=*/{},
+            /*duration_cycles=*/{}, /*period_cycles=*/{});
         bind(p[1], sfOp.getResult());
         runTime |= openIfs > 0;
         break;
@@ -5808,8 +6704,9 @@ public:
       case kOpSetFreq: {
         requirePayload(3);
         mlir::Value fVal = finite(2, "set_frequency frequency");
-        auto sfOp = pulse::SetFrequencyOp::create(*builder_, loc, toneTy,
-                                                  look(p[0]), fVal);
+        auto sfOp = pulse::SetFrequencyOp::create(
+            *builder_, loc, toneTy, look(p[0]), fVal, /*start_cycles=*/{},
+            /*duration_cycles=*/{}, /*period_cycles=*/{});
         bind(p[1], sfOp.getResult());
         runTime |= openIfs > 0;
         break;
@@ -5877,7 +6774,8 @@ public:
         auto submit = classical::SubmitOp::create(
             *builder_, loc, classical::LinkType::get(ctx_.get()),
             classical::FutureType::get(ctx_.get()), linkOf(device),
-            mlir::FlatSymbolRefAttr::get(callable.getSymNameAttr()), args);
+            mlir::FlatSymbolRefAttr::get(callable.getSymNameAttr()), args,
+            /*start_cycles=*/{}, /*duration_cycles=*/{}, /*period_cycles=*/{});
         links[device] = submit.getUpdatedLink();
         bind(p[1], submit.getFuture());
         runTime = true;
@@ -5897,7 +6795,8 @@ public:
         auto wait = classical::WaitOp::create(
             *builder_, loc, types, look(p[1]),
             mlir::FlatSymbolRefAttr::get(callable.getSymNameAttr()),
-            p[2] ? builder_->getF64FloatAttr(i2f(p[3])) : mlir::FloatAttr());
+            p[2] ? builder_->getF64FloatAttr(i2f(p[3])) : mlir::FloatAttr(),
+            /*start_cycles=*/{}, /*duration_cycles=*/{}, /*period_cycles=*/{});
         for (int64_t i = 0; i < p[4]; ++i)
           bind(p[5 + i], wait.getValues()[i]);
         break;
@@ -6261,13 +7160,33 @@ void freezeType(nb::handle cls) {
 #endif
 }
 
+// The span CUDA-Q passes a std::vector<bool> to a device function as.
+struct DecoderBits {
+  std::uint8_t *buffer;
+  std::uint64_t length;
+};
+
+template <typename Call>
+void guardedDecoderCall(Call &&call) {
+  std::string message;
+  try {
+    call();
+    return;
+  } catch (const std::exception &error) {
+    message = error.what();
+  } catch (...) {
+    message = "the decoder raised an unknown C++ exception";
+  }
+  throw std::runtime_error(message);
+}
+
 } // namespace
 
 NB_MODULE(_cudaq_pulse_native, m) {
   m.doc() = "cudaq-pulse native MLIR pipeline bindings";
   // Fork takes the locks in the reverse order of these: the pool's is held
-  // while a context, and its SchedulePasses, is made or destroyed.
-  SchedulePasses::handleForks();
+  // while a context, and its ContextStore, is made or destroyed.
+  ContextStore::handleForks();
   SharedContextPool::handleForks();
 
   // Kept for the life of the process, like the module that holds it.
@@ -6286,6 +7205,8 @@ NB_MODULE(_cudaq_pulse_native, m) {
         } catch (const PackedValueError &e) {
           nb::object args = nb::make_tuple(e.what(), e.word);
           PyErr_SetObject(packedValueError, args.ptr());
+        } catch (const NotSupportedYet &e) {
+          PyErr_SetString(PyExc_NotImplementedError, e.what());
         }
       });
 
@@ -6368,7 +7289,7 @@ NB_MODULE(_cudaq_pulse_native, m) {
       .def("controller_check", &PulseModule::controller_check,
            nb::call_guard<nb::gil_scoped_release>(), nb::arg("issue"),
            nb::arg("gap"), nb::arg("samples_num"), nb::arg("samples_den"),
-           nb::arg("memory"), nb::arg("max_tones_per_line"),
+           nb::arg("memory"), nb::arg("max_frequencies_per_line"),
            nb::arg("max_pulses"), nb::arg("detectors"),
            nb::arg("detector_recovery"), nb::arg("feedback_latency"),
            nb::arg("supports_timeouts"), nb::arg("timeout_functions"),
@@ -6378,7 +7299,7 @@ NB_MODULE(_cudaq_pulse_native, m) {
       .def("with_line_delays", &PulseModule::with_line_delays,
            nb::call_guard<nb::gil_scoped_release>(),
            "This module with other line delays, scheduled again",
-           nb::arg("delays"), nb::arg("policy"), nb::arg("max_drives") = 4,
+           nb::arg("lines"), nb::arg("policy"), nb::arg("max_drives") = 4,
            nb::arg("max_readouts") = 2, nb::arg("readout_latency") = 0,
            nb::arg("switch_penalty") = 0)
       .def("simulation_module", &PulseModule::simulation_module,
@@ -6389,7 +7310,14 @@ NB_MODULE(_cudaq_pulse_native, m) {
            "Per call, by its submit index, the ns from its start until its "
            "answer is due")
       .def("bind_call", &PulseModule::bind_call,
-           "This module with one call's answer bound, scheduled again")
+           "This module with one call's answer bound, scheduled again; "
+           "along a path, the window of the program it plays next",
+           nb::arg("index"), nb::arg("values"), nb::arg("policy"),
+           nb::arg("max_drives"), nb::arg("max_readouts"),
+           nb::arg("readout_latency"), nb::arg("switch_penalty"),
+           nb::arg("path") = nb::none())
+      .def("window_bases", &PulseModule::window_bases,
+           "The readouts and calls of the program before this window")
       .def("placeholders", &PulseModule::placeholders,
            "This module with unbound answers set to zero")
       .def("segment_boundaries", &PulseModule::segment_boundaries,
@@ -6416,8 +7344,9 @@ NB_MODULE(_cudaq_pulse_native, m) {
            nb::arg("arguments") = std::vector<double>{})
       .def("set_attributes", &PulseModule::set_attributes,
            nb::call_guard<nb::gil_scoped_release>(),
-           "Merge an MLIR dictionary attribute into the module attributes",
-           nb::arg("dictionary"))
+           "Merge an MLIR dictionary attribute into the module attributes, "
+           "then another unless it is empty",
+           nb::arg("dictionary"), nb::arg("then") = "")
       .def("param_names", &PulseModule::param_names,
            nb::call_guard<nb::gil_scoped_release>(), "Get parameter names")
       .def(
@@ -6477,12 +7406,12 @@ NB_MODULE(_cudaq_pulse_native, m) {
            nb::call_guard<nb::gil_scoped_release>(),
            "Build an in-memory PulseModule from a packed int64 numpy buffer; "
            "qubit_freqs and readout_freqs give each qudit's 0-1 frequency "
-           "and readout tone by index (the first n_qubits are recorded)",
-           nb::arg("stream"), nb::arg("clock_ghz"), nb::arg("n_qubits"),
+           "and readout tone by index (the first qudit_count are recorded)",
+           nb::arg("stream"), nb::arg("clock_ghz"), nb::arg("qudit_count"),
            nb::arg("qubit_freqs"),
            nb::arg("param_names") = std::vector<std::string>{},
            nb::arg("param_types") = std::vector<std::string>{},
-           nb::arg("name") = "main", nb::arg("n_slots") = 0,
+           nb::arg("name") = "main", nb::arg("slot_count") = 0,
            nb::arg("readout_freqs").none() = nb::none())
       .def(
           "load",
@@ -6513,6 +7442,55 @@ NB_MODULE(_cudaq_pulse_native, m) {
   m.def("shared_context_stats", &SharedContextPool::stats,
         "(contexts created, builders on the current context, its packed "
         "words)");
+  m.def("verifies_everything", &verifyEverything,
+        "Whether CUDAQ_PULSE_VERIFY=1 asks for the verifications that only "
+        "catch a bug of the compiler itself");
+
+  // CUDA-Q QEC's simulation decoder functions (those a CUDA-Q kernel on a
+  // simulator calls, in cudaq-qec 0.6.0 to 0.8.1) throw C++ exceptions for an
+  // unconfigured decoder or a wrong size, which must not unwind through
+  // ctypes: they are called here, by address, and raised as RuntimeError.
+  m.def(
+      "decoder_reset",
+      [](std::uintptr_t address, std::uint64_t decoder_id) {
+        auto fn = reinterpret_cast<void (*)(std::uint64_t)>(address);
+        guardedDecoderCall([&] { fn(decoder_id); });
+      },
+      nb::arg("address"), nb::arg("decoder_id"),
+      "Call cudaq::qec::decoding::simulation::reset_decoder at address");
+  m.def(
+      "decoder_enqueue",
+      [](std::uintptr_t address, std::uint64_t decoder_id,
+         const nb::bytes &syndromes, std::uint64_t tag) {
+        auto fn = reinterpret_cast<void (*)(std::uint64_t, DecoderBits,
+                                            std::uint64_t)>(address);
+        std::vector<std::uint8_t> bits(
+            reinterpret_cast<const std::uint8_t *>(syndromes.c_str()),
+            reinterpret_cast<const std::uint8_t *>(syndromes.c_str()) +
+                syndromes.size());
+        guardedDecoderCall(
+            [&] { fn(decoder_id, {bits.data(), bits.size()}, tag); });
+      },
+      nb::arg("address"), nb::arg("decoder_id"), nb::arg("syndromes"),
+      nb::arg("tag"),
+      "Call simulation_enqueue_syndromes at address, one byte per syndrome "
+      "bit");
+  m.def(
+      "decoder_get",
+      [](std::uintptr_t address, std::uint64_t decoder_id, std::uint64_t count,
+         bool reset) {
+        auto fn = reinterpret_cast<void (*)(std::uint64_t, DecoderBits, bool)>(
+            address);
+        std::vector<std::uint8_t> bits(count, 0);
+        guardedDecoderCall(
+            [&] { fn(decoder_id, {bits.data(), bits.size()}, reset); });
+        return nb::bytes(reinterpret_cast<const char *>(bits.data()),
+                         bits.size());
+      },
+      nb::arg("address"), nb::arg("decoder_id"), nb::arg("count"),
+      nb::arg("reset"),
+      "Call simulation_get_corrections at address; the corrections, one byte "
+      "per bit");
 
   cudaq_pulse::loadLengthInference();
   m.def(

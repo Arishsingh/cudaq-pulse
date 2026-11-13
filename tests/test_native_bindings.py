@@ -59,8 +59,8 @@ def test_pipeline_exposes_only_the_live_entry_points():
 def test_pass_failures_carry_the_diagnostics():
     text = (
         "func.func @main() {\n"
-        "  %q = pulse.qudit_alloc : !pulse.qref\n"
-        "  %d, %t = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)\n"
+        "  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit\n"
+        "  %d, %t = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)\n"
         "  %c = arith.constant 40 : i64\n"
         "  %a = arith.constant 0.1 : f64\n"
         "  %w = pulse.square %c, %a, %a : i64, f64, f64 -> !pulse.waveform\n"
@@ -81,7 +81,7 @@ def test_pass_failures_carry_the_diagnostics():
 def test_a_pass_by_name_takes_its_options():
     from tests.workloads import w4_syndrome
 
-    text = pulse.compile(w4_syndrome.build).lower(*Q[: w4_syndrome.NUM_QUBITS]).mlir()
+    text = pulse.compile(w4_syndrome.build).lower(*Q[: w4_syndrome.NUM_QUDITS]).mlir()
     pipeline = native.MLIRPipeline()
     scheduled = pipeline.parse_to_module(text)
     scheduled.schedule("alap_rcp", 1, 1, 3, 2)
@@ -94,4 +94,24 @@ def test_a_pass_by_name_takes_its_options():
 def test_compiled_module_is_named_after_the_kernel():
     compiled = _x.lower(Q[0], 0.1)
     assert compiled.mlir().startswith("module @_x")
-    assert "pulse.qubit_freq_hz = array<f64: 5.000000e+09>" in compiled.mlir()
+    assert (
+        "pulse.quantum_system = #pulse.quantum_system<qudit_frequency_hz = [5.000000e+09]>"
+        in compiled.mlir()
+    )
+
+
+@pulse.kernel
+def _measured(q):
+    r = get_readout_line(q)
+    return readout(r, square(400, 0.05))
+
+
+def test_the_exports_refuse_a_readout_mode_they_do_not_support_yet():
+    text = pulse.compile(_measured).lower(Q[0]).mlir()
+    assert ", iq <{" in text
+    module = native.MLIRPipeline().parse_to_module(text.replace(", iq <{", ", trace <{"))
+    message = "readout mode trace is not supported by the exports yet; only iq is"
+    with pytest.raises(NotImplementedError, match=message):
+        module.events()
+    with pytest.raises(NotImplementedError, match=message):
+        module.controller_events([], [])

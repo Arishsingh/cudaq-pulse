@@ -29,7 +29,7 @@ levels or numbers, ``list[complex]`` IQ points and ``list[float]`` numbers;
 the call: a function called with lists of two lengths compiles to two
 versions, each named by its lengths (``decode__4``). Results are typed the
 same way, and a list result's length is inferred from the body per version.
-``pulse.Length[pulse.Bits, 8]`` states a fixed length, for a device that
+``pulse.Length[pulse.Bits, 8]`` states a fixed length, for a quantum system that
 takes one size.
 
 Inside a kernel, ``.submit(...)`` sends a request and returns a future at
@@ -74,7 +74,7 @@ __all__ = [
     "Pending",
     "external",
     "function",
-    "function_id",
+    "dispatch_key",
     "random_index",
 ]
 
@@ -262,7 +262,7 @@ class _Bytes(ValueType):
         super().__init__(f"u8[{n}]", n, "integer", "i64", n, n)
 
 
-def function_id(name: str) -> int:
+def dispatch_key(name: str) -> int:
     """The dispatch key of a function compiled as *name*, unless its
     controller fixes one: 32-bit FNV-1a, the hash CUDA-Q Realtime registers
     handlers by."""
@@ -274,11 +274,13 @@ def function_id(name: str) -> int:
 
 # Keys built-in protocols send, by the protocol: a user function given one
 # (by its name's hash or a controller) is a compile error. These are the
-# function_id of enqueue_syndromes, get_corrections and reset_decoder.
+# dispatch_key of enqueue_syndromes, get_corrections, get_logical_measurements
+# and reset_decoder, which pulse.classical(cudaq_qec.qec.<name>) sends.
 _RESERVED_KEYS = {
-    0x7ED8BE82: "cudaq_pulse.classical.qec",
-    0x882D5BA1: "cudaq_pulse.classical.qec",
-    0x977A59CF: "cudaq_pulse.classical.qec",
+    0x7ED8BE82: "CUDA-Q QEC's decoding server",
+    0x882D5BA1: "CUDA-Q QEC's decoding server",
+    0x3056A149: "CUDA-Q QEC's decoding server",
+    0x977A59CF: "CUDA-Q QEC's decoding server",
 }
 
 #: A CUDA-QX decoder's status for corrections it has not decoded yet.
@@ -819,9 +821,9 @@ class ClassicalFunction[**P, R]:
         self.link = link
         # The key it is dispatched by unless its controller fixes one: its
         # compiled name's hash, or a built-in protocol's key.
-        self._dispatch_key = function_id(name) if _dispatch_key is None else _dispatch_key
-        # For a built-in that shares its key (QEC's decoder calls): the first
-        # argument that picks it out, CUDA-QX's decoder id. None for a
+        self._dispatch_key = dispatch_key(name) if _dispatch_key is None else _dispatch_key
+        # For a built-in that shares its key (CUDA-Q QEC's decoder calls): the
+        # first argument that picks it out, the decoder id. None for a
         # function with a key of its own.
         self._key_route = _key_route
         # For an on-device random source: how many equally likely values.
@@ -880,6 +882,9 @@ class ClassicalFunction[**P, R]:
                 f' pulse.simulate(..., handlers={{"{self.base_name}": fn}})'
             )
         if kwargs or len(args) != len(self.args):
+            if getattr(self.implementation, "_route", None) is not None:
+                # A CUDA-Q QEC function: its arguments pick the version.
+                return self.implementation(*args, **kwargs)
             # A template has args == (): its calls give the list lengths.
             expected = len(self.args) if self._plan is None else len(self._plan)
             if kwargs or len(args) != expected:
@@ -1147,7 +1152,7 @@ def _make(template: ClassicalFunction[..., Any], key: Any) -> ClassicalFunction[
             raise CompilationError(str(error)) from None
     suffix = "_".join(str(n) if n >= 0 else f"i{-n}" for n in _key_items(key))
     version.name = f"{template.name}__{suffix}"
-    version._dispatch_key = function_id(version.name)
+    version._dispatch_key = dispatch_key(version.name)
     version._template = template
     version._key = key
     version.base_name = template.name
@@ -1293,7 +1298,7 @@ def function(implementation: Callable[..., Any] | None = None, /, **options: Any
     ``"lazy"``), ``deadline_ns``, ``reaction_deadline_ns``, ``link`` (the
     link its requests travel on: a name from ``ControlSystem.links``, such as
     ``"controller"``, or a link id; default 0; ``device`` is not used for
-    it, because a cudaq-pulse device is the QPU) and ``name``. A latency,
+    it, because a cudaq-pulse quantum system is the QPU) and ``name``. A latency,
     timeout or deadline is a time (``400 * pulse.ns``) or a number of ns.
 
     With ``reaction_deadline_ns``, compiling fails unless every call's answer
@@ -1315,6 +1320,11 @@ def function(implementation: Callable[..., Any] | None = None, /, **options: Any
 
 
 def _declare(fn: Callable[..., Any], options: dict[str, Any]) -> ClassicalFunction[..., Any]:
+    if fn.__class__ is not types.FunctionType:
+        from . import _cudaqx
+
+        if _cudaqx.is_cudaq_qec(fn):
+            return _cudaqx.declare(fn, options)
     if not isinstance(fn, types.FunctionType) or fn.__name__ == "<lambda>":
         raise InvalidTypeError(
             f"@pulse.classical takes a function defined with def, whose type hints say what it"
@@ -1343,7 +1353,7 @@ def external[**Q, T](
     slice of one, whose length the result takes; a ``None`` result needs no
     return. A list parameter of no stated length takes its length from the
     call, one version per length as for ``pulse.classical``; state the
-    length the device takes, ``pulse.Length[pulse.Bits, 3]``, and a call of
+    length the quantum system takes, ``pulse.Length[pulse.Bits, 3]``, and a call of
     another length is a compile error.
 
     It takes the keyword options of ``pulse.classical``. Simulating a program
@@ -1437,13 +1447,12 @@ class ClassicalDecorator(_Declare, Protocol):
     Pending: type[Pending[Any]]
     function: _Declare
     external: _External
-    function_id: Callable[[str], int]
+    dispatch_key: Callable[[str], int]
     random_index: Callable[..., _IndexFunction]
     # Submodules, once imported.
     calibration: types.ModuleType
     emulation: types.ModuleType
     loop: types.ModuleType
-    qec: types.ModuleType
     wire: types.ModuleType
 
 

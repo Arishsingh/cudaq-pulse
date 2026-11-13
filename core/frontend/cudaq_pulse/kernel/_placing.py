@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Kernels with list, qudit or register parameters: the module depends on a
-list only through its length and, with runtime qudits, on the device only
+list only through its length and, with runtime qudits, on the quantum system only
 through its structure, and each call binds them. ``_kernel`` imports it for
 the first such kernel.
 """
@@ -14,12 +14,11 @@ from typing import TYPE_CHECKING, Any
 from .._device import Qudit, Register
 from .._errors import InvalidTypeError
 from .._programs import _PLACEMENTS, _Role, _structure
-from ..compiler import CompileOptions, Lowered, build
+from ..compiler import CompileOptions, ScheduledKernel, build
 from ._kernel import (
     _FLOAT,
     _QUDIT,
     _VECTOR,
-    _devices,
     _Dispatcher,
     _Entry,
     _execute,
@@ -28,40 +27,39 @@ from ._kernel import (
     _pin_mismatch,
     _QuditTwiceError,
     _static_key,
+    _systems,
     _ticks,
 )
 from .ir_builder import Parameter
 
 if TYPE_CHECKING:
-    from .._device import Device
+    from .._device import QuantumSystem
     from ._kernel import Kernel
 
 
 class _Placing(_Dispatcher):
     """The dispatcher of a kernel with list, qudit or register parameters:
     the module depends on lists only through their lengths and, with runtime
-    qudits, on the device only through its structure; each call binds them."""
+    qudits, on the quantum system only through its structure; each call binds them."""
 
-    def _device(self, values: tuple[Any, ...]) -> Device:
-        kernel = self.kernel
+    def _device(self, values: tuple[Any, ...], kernel: Kernel[...]) -> QuantumSystem:
         slotted = kernel._slotted
         if len(slotted) == 1 and not kernel._split[0]:
             value = values[slotted[0]]
             if type(value) is Qudit:
-                device: Device = value.device
+                quantum_system: QuantumSystem = value.quantum_system
                 pin = self.pin
-                if pin is None or pin is device:
-                    return device
-                if device != pin:
-                    raise _pin_mismatch(kernel.__name__, pin, device)
+                if pin is None or pin is quantum_system:
+                    return quantum_system
+                if quantum_system != pin:
+                    raise _pin_mismatch(kernel.__name__, pin, quantum_system)
                 return pin
-        name = kernel.__name__
-        found: Device | None = None
+        found: QuantumSystem | None = None
         seen: set[int] = set()
         wrong = None
         try:
             for i in kernel._split[0]:
-                found = _devices(values[i], found, name, seen)
+                found = _systems(values[i], found, kernel, seen)
             for i in kernel._slotted:
                 value = values[i]
                 if type(value) is not Qudit and not (
@@ -69,28 +67,30 @@ class _Placing(_Dispatcher):
                 ):
                     wrong = i
                     continue
-                found = _devices(value, found, name, seen)
+                found = _systems(value, found, kernel, seen)
         except _QuditTwiceError as twice:
             names = kernel._names
             met = [*kernel._split[0], *kernel._slotted]
-            raise _passed_twice(name, twice.qudit, [(names[i], values[i]) for i in met]) from None
+            raise _passed_twice(
+                kernel.__name__, twice.qudit, [(names[i], values[i]) for i in met]
+            ) from None
         pin = self.pin
         if wrong is not None:
             if found is None and pin is None:
-                raise _no_device(name)
+                raise _no_device(kernel.__name__)
             raise InvalidTypeError(
-                f"{name}(): argument {kernel._names[wrong]!r} must be a qudit handle "
+                f"{kernel.__name__}(): argument {kernel._names[wrong]!r} must be a qudit handle "
                 f"or a register of them, not {type(values[wrong]).__name__}"
             )
         if pin is not None:
             if found is not None and found != pin:
-                raise _pin_mismatch(name, pin, found)
+                raise _pin_mismatch(kernel.__name__, pin, found)
             return pin
         if found is not None:
             return found
-        raise _no_device(name)
+        raise _no_device(kernel.__name__)
 
-    def _key(self, target: Device, values: tuple[Any, ...]) -> Any:
+    def _key(self, target: QuantumSystem, values: tuple[Any, ...]) -> Any:
         kernel = self.kernel
         static = kernel._split[0]
         fingerprint = (
@@ -101,20 +101,34 @@ class _Placing(_Dispatcher):
 
     def lookup(self, values: tuple[Any, ...]) -> _Entry:
         kernel = self.kernel
-        target = self._device(values)
+        target = self._device(values, kernel)
         key = self._key(target, values)
         entry = self._entries.get(key)
         if entry is not None and entry.guard.check():
             entry.tick = next(_ticks)
+            if target._drift:
+                from ..quantum_systems.drift import _entry_for
+
+                return _entry_for(entry, target)
             return entry
         with self._lock:
             entry = self._entries.get(key)
             if entry is not None and entry.guard.check():
+                if target._drift:
+                    from ..quantum_systems.drift import _entry_for
+
+                    return _entry_for(entry, target)
                 return entry
             entry = kernel._specialize(values, target, self.options)
             self.misses += 1
             # Tracing may have made float parameters static.
             key = self._key(target, values)
+            if target._drift:
+                from ..quantum_systems.drift import _kept
+
+                kept, entry = _kept(entry, target, kernel)
+                self._insert(key, kept)
+                return entry
             self._insert(key, entry)
         return entry
 
@@ -123,11 +137,11 @@ class _Placing(_Dispatcher):
         entry = self.lookup(values)
         return _execute(self._bound(entry, values), entry.returns)
 
-    def lower(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Lowered:
+    def lower(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> ScheduledKernel:
         values = self.kernel._bind(*args, **kwargs)
         return self._bound(self.lookup(values), values)
 
-    def _bound(self, entry: _Entry, values: tuple[Any, ...]) -> Lowered:
+    def _bound(self, entry: _Entry, values: tuple[Any, ...]) -> ScheduledKernel:
         kernel = self.kernel
         if entry.lowered._role is not None:
             return _relocate(kernel, entry.lowered, values, entry.runtime)
@@ -137,14 +151,14 @@ class _Placing(_Dispatcher):
 
 
 def _relocate(
-    kernel: Kernel[Any], lowered: Lowered, values: tuple[Any, ...], runtime: tuple[int, ...]
-) -> Lowered:
+    kernel: Kernel[Any], lowered: ScheduledKernel, values: tuple[Any, ...], runtime: tuple[int, ...]
+) -> ScheduledKernel:
     """The call's view of a module with list or qudit parameters: its
     float values flattened, and the carrier of each slot."""
     kinds = kernel._kinds
     numbers: list[float] = []
     carriers: list[int] = []
-    device = None
+    quantum_system = None
     for i in runtime:
         kind = kinds[i]
         v = values[i]
@@ -157,24 +171,24 @@ def _relocate(
             numbers.extend(_vector_values(kernel, v, i))
         elif kind == _QUDIT:
             carriers.append(v.index)
-            device = v.device
+            quantum_system = v.quantum_system
         else:
             for q in v:
                 carriers.append(q.index)
-                device = q.device
+                quantum_system = q.quantum_system
     role = lowered._role
     placement = tuple(carriers)
     views = None
-    if not numbers and role is not None and device is not None:
+    if not numbers and role is not None and quantum_system is not None:
         views = role.views
-        view = views.get((placement, device))
+        view = views.get((placement, quantum_system))
         if view is not None:
             return view
     # A module with list or qudit parameters is a _Placed or _CheckedPlaced.
-    place: Callable[..., Lowered] = lowered.bind
-    view = place(numbers, placement, device)
-    if views is not None and device is not None and len(views) < _PLACEMENTS:
-        views[(placement, device)] = view
+    place: Callable[..., ScheduledKernel] = lowered.bind
+    view = place(numbers, placement, quantum_system)
+    if views is not None and quantum_system is not None and len(views) < _PLACEMENTS:
+        views[(placement, quantum_system)] = view
     return view
 
 
@@ -195,7 +209,7 @@ def _build_placed(
     runtime: tuple[int, ...],
     target: Any,
     options: CompileOptions,
-) -> tuple[Lowered, Any]:
+) -> tuple[ScheduledKernel, Any]:
     """``build`` for a kernel with list, qudit or register parameters:
     *trace_args*, the call's values, gets their tracing stand-ins."""
     names = kernel._names

@@ -12,6 +12,7 @@
 #include "cudaq-pulse/Transforms/Passes.h"
 
 #include "cudaq-pulse/Dialect/Pulse/PulseDialect.h.inc"
+#include "cudaq-pulse/Dialect/Pulse/PulseEnums.h.inc"
 
 #define GET_TYPEDEF_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseTypes.h.inc"
@@ -139,14 +140,12 @@ struct FuseAdjacentSquareDrives
     auto fusedDrive = pulse::DriveOp::create(
         rewriter, loc, firstDrive.getUpdatedLine().getType(),
         firstDrive.getUpdatedTone().getType(), firstDrive.getLine(),
-        fusedWf.getResult(), firstDrive.getTone());
+        fusedWf.getResult(), firstDrive.getTone(), firstDrive.getStartCycles(),
+        fusedDur, firstDrive.getPeriodCycles());
 
-    for (llvm::StringRef name : {"start_cycles", "period_cycles",
-                                 "frame_phase_offset", "phase_offset"})
+    for (llvm::StringRef name : {"frame_phase_offset", "phase_offset"})
       if (auto a = firstDrive->getAttr(name))
         fusedDrive->setAttr(name, a);
-    fusedDrive->setAttr("duration_cycles",
-                        rewriter.getI64IntegerAttr(fusedDur));
     fusedDrive->setAttr("fused", rewriter.getUnitAttr());
 
     rewriter.replaceOp(secondDrive, fusedDrive->getResults());

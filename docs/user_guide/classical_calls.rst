@@ -20,7 +20,7 @@ reports, for every call, how much slack the answer has.
 
 ``examples/19_classical_calls.py`` uses everything on this page end to end,
 and ``examples/20_adaptive_calibration.py`` calibrates against a drifting
-device with the estimators described under "Calibrating while the QPU runs";
+quantum system with the estimators described under "Calibrating while the QPU runs";
 see :doc:`../examples`.
 
 Declaring a function
@@ -36,9 +36,9 @@ implementation: simulation and emulation run it in place of the service.
    import cudaq_pulse as pulse
 
    @pulse.classical(
-       min_latency_ns=200,
-       nominal_latency_ns=300,
-       max_latency_ns=400,
+       min_latency_ns=3000,
+       nominal_latency_ns=3500,
+       max_latency_ns=4500,
        link="gpu",
    )
    def decode(syndrome: pulse.Bits) -> bool:
@@ -88,7 +88,7 @@ end, two returns of different lengths), compiling says so and names the
 line; return a fixed maximum and a count instead (``positions = [0] *
 len(syndrome)``, fill the first ``count`` items, ``return count,
 positions``). ``flip.specialize(outcomes=3)`` is the version of one length,
-for ``wire.schema``, ``wire.native`` or ``controller.analyze``.
+for ``wire.schema``, ``wire.native`` or ``processor.usage``.
 
 **Fixed lengths.** Where one size is wanted, the signature states it with
 ``pulse.Length`` (``typing.Annotated``, so checkers read the type inside
@@ -97,7 +97,7 @@ it); the function then has one version, named as declared:
 .. code-block:: python
    :class: fragment
 
-   @pulse.classical(max_latency_ns=900, link="gpu")
+   @pulse.classical(max_latency_ns=4500, link="gpu")
    def frozen(
        syndromes: pulse.Length[pulse.Bits, 24],
        counts: pulse.Length[list[int], 4],
@@ -114,7 +114,7 @@ whose lengths come from their calls need none of this.
 
 **Dispatch keys.** Each request carries the key its service is registered
 under: the 32-bit FNV-1a hash of the compiled name
-(``classical.function_id("flip__3")``), the hash CUDA-Q Realtime registers
+(``classical.dispatch_key("flip__3")``), the hash CUDA-Q Realtime registers
 handlers by. ``call.dispatch_key`` gives it next to ``call.compiled_name``,
 and the call manifest's ``"dispatch_key"``. A controller whose firmware
 fixes the keys of the functions it runs lists them by name in its
@@ -122,7 +122,8 @@ description's ``dispatch_keys``; every function on its links must be
 listed, with a fixed size, and the manifest marks each such entry with
 ``"dispatch_key_fixed_by"``. Two names of one program that hash to one key
 on one link are a compile error that asks to rename one; the keys of
-``classical.qec`` are reserved for its decoder messages.
+CUDA-Q QEC's decoding-server messages are reserved for its decoder calls
+(below).
 
 The hints are read when a program that calls the function is first
 compiled, and a mistake in them is raised there, naming the function. The
@@ -140,11 +141,11 @@ that gives the result's shape:
    def table(index: pulse.Length[pulse.Bits, 3]) -> float:
        return float()
 
-   @pulse.classical.external(max_latency_ns=900, link="gpu")
+   @pulse.classical.external(max_latency_ns=4500, link="gpu")
    def decode(syndrome: pulse.Bits) -> tuple[float, pulse.Bits]:
        return (float(), syndrome[:2])
 
-   @pulse.classical.external(max_latency_ns=900, link="gpu")
+   @pulse.classical.external(max_latency_ns=4500, link="gpu")
    def echo(outcomes: pulse.Bits) -> pulse.Bits:
        return outcomes
 
@@ -154,7 +155,7 @@ states), an input or a slice of one. A ``None`` result needs no return.
 mypy and pyright check these bodies like any other. A list parameter of no
 stated length works as for ``pulse.classical``: ``decode`` called with 6 and
 with 8 bits is two versions, ``decode__6`` and ``decode__8``, each served
-under its own id and listed in the manifest with its layout. A device that
+under its own id and listed in the manifest with its layout. A service that
 takes one size is declared with it, as ``table`` is. Calling an external
 function in Python is an error that says to give it a handler.
 
@@ -190,7 +191,7 @@ use the same functions as kernels.
 Links
 -----
 
-A link is a path to a classical device with a cost: a fixed time per
+A link is a path to a classical service with a cost: a fixed time per
 request, a bandwidth, a feedback time from an answer arriving to a pulse
 using it, a number of requests it holds at once and the largest request it
 takes. They belong to the control system, by name:
@@ -203,10 +204,10 @@ takes. They belong to the control system, by name:
    control_system = pulse.ControlSystem(
        links={
            "gpu": Link(fixed_ns=100, bytes_per_ns=10, feedback_ns=50),
-           "controller": Link(fixed_ns=4, feedback_ns=8, max_in_flight=4),
+           "controller": Link(fixed_ns=4, feedback_ns=8, slots=4),
        }
    )
-   lowered = pulse.compile(kernel, device=dev, control_system=control_system).lower(q)
+   scheduled = pulse.compile(kernel, quantum_system=qs, control_system=control_system).lower(q)
 
 A function's ``link=`` names a link of the control system, or gives a link
 id: the link's position, so the first is link 0, the default. A link id the
@@ -229,7 +230,7 @@ In a kernel, ``fn.submit(...)`` sends the request and returns a future, and
        d = get_drive_line(q)
        r = get_readout_line(q)
        readout_time = 500 * pulse.ns
-       decode_deadline = 350 * pulse.ns
+       decode_deadline = 4 * pulse.us
        pi_time = 20 * pulse.ns
        pi_amplitude = 0.16  # square(pi_time, pi_amplitude) is a pi pulse
        m = readout(r, square(readout_time, 0.05))
@@ -245,7 +246,7 @@ In a kernel, ``fn.submit(...)`` sends the request and returns a future, and
 With ``timeout`` the result starts with a flag that is true when the
 answer came in time; the other values are zero when it did not, and the
 program takes its fallback. ``timeout`` is a duration like any other: an
-``int`` number of program cycles, or a time such as ``350 * pulse.ns``,
+``int`` number of program cycles, or a time such as ``4 * pulse.us``,
 which converts once when the kernel compiles. A future is taken in the loop iteration that
 submitted it. It may be passed to a kernel the program calls, or returned
 from one, and taken there; an answer taken inside a kernel called with its
@@ -268,7 +269,7 @@ nanoseconds:
 Such a variable wait is a barrier for the lines that depend on it, and it
 opens a new *segment* for them. The static schedule places it at its lower
 bound, and what follows it on those lines shifts by the wait's actual length,
-which is clamped to the bounds. ``Lowered.segments()`` lists the segments. A
+which is clamped to the bounds. ``ScheduledKernel.segments()`` lists the segments. A
 variable wait may not be inside a ``schedule_block`` or a branch; a blocking
 wait is a barrier in the same way.
 
@@ -301,7 +302,7 @@ same way:
 
 - A request is submitted once its arguments are ready (eager, the default)
   or as late as the budget allows (lazy). It holds its link for
-  ``fixed_ns + bytes / bytes_per_ns``, and a link holds ``max_in_flight``
+  ``fixed_ns + bytes / bytes_per_ns``, and a link holds ``slots``
   requests at once: one more waits until a slot is free, so a program never
   fails for having too many requests in flight.
 - Its answer is due after the budget: the maximum latency (or the timeout),
@@ -314,24 +315,24 @@ same way:
 - A blocking wait, like a variable wait, starts once every line of its
   timeline is done.
 
-``Lowered.classical_report()`` gives one ``ClassicalCall`` per execution of a
+``ScheduledKernel.classical_report()`` gives one ``ClassicalCall`` per execution of a
 call, in clock cycles: when it is submitted (``submit_cycles``), when its answer
 is due (``due_cycles``) and taken, the first operation that uses it, its slack
 (``slack_cycles``, how much later the answer could arrive without delaying a
 pulse) and, with ``deadline_ns``, how far inside its deadline it is.
 ``exposed_cycles`` is how long the first use waits for the answer beyond when it
 could start anyway: after its line is free and after the readout resonator
-has depleted (``Qubit.depletion_ns``, from its ``DispersiveReadout``'s
+has depleted (``PhysicalQudit.depletion_ns``, from its ``DispersiveReadout``'s
 ``depletion_ns`` or ``linewidth_hz``). The rest of the budget, ``hidden_cycles``, overlaps
 work that had to happen anyway, so a latency within the depletion time costs
 nothing. The
-timeline (``Lowered.timeline()``) draws each link as a row of its own,
+timeline (``ScheduledKernel.timeline()``) draws each link as a row of its own,
 labelled with its name.
 
 After scheduling, ``pulse-classical-check`` verifies that every request and
 answer fits its link's slots, that deadlines and reaction times hold, that no
 answer is taken before it is due, that no link holds more requests than
-``max_in_flight``, and that the submissions on a link go out one after
+``slots``, and that the submissions on a link go out one after
 another, in program order.
 
 Simulation
@@ -346,7 +347,7 @@ it.
 .. code-block:: python
    :class: fragment
 
-   result = pulse.simulate(lowered, initial_state=plus, latency_branching=True)
+   result = pulse.simulate(scheduled, initial_state=plus, latency_branching=True)
    for branch in result.branches:
        print(branch.levels, branch.probability, branch.answers("decode"))
 
@@ -359,7 +360,7 @@ it.
   ``decode_surface returned 3 bits; its result is pulse.Length[pulse.Bits,
   2]``.
 - ``latency_branching=True`` branches a timeout on whether the answer came
-  in time, with the probability of the latency model; with ``shots`` that
+  in time, with the probability of the latency model; with ``shots_count`` that
   outcome is sampled.
 - ``readout="model"`` reports outcomes through each qubit's assignment
   errors, and ``"model_with_decay"`` adds relaxation during the readout.
@@ -368,7 +369,7 @@ it.
 - A function that takes IQ points (``complex`` or ``list[complex]``) gets
   them synthesized per shot from a
   dispersive readout model, at the true level of each readout, from the
-  frequency of its tone and the amplitude of its pulse. It needs ``shots``.
+  frequency of its tone and the amplitude of its pulse. It needs ``shots_count``.
   The model reads each qubit's ``DispersiveReadout`` and its ``READOUT``
   calibration (a ``ReadoutPulse``): it puts the resonator at the readout's
   ``frequency_hz`` and scales the points by the pulse's amplitude over the
@@ -384,16 +385,18 @@ it.
   answers of one function, in call order.
 
 A whole program with unanswered calls does not lower to LLVM:
-``Lowered.mlir("llvm")`` points to ``pulse.simulate``, which lowers each
-segment with its answers bound, on the CPU or the GPU.
+``ScheduledKernel.mlir("llvm")`` points to ``pulse.simulate``, which lowers the
+program one interval between answers at a time, with the answers bound, on the
+CPU or the GPU.
 
-``plant=`` simulates another target description than the device the program
-was compiled for, keeping the program as compiled: its qubits' frequencies,
-T1, T2, drive strength and readout parameters apply. That is how a drifting
-device is simulated (see below).
+``quantum_system=`` simulates another quantum system than the one the program
+was compiled for, keeping the program as compiled: its qudits' frequencies,
+T1, T2, drive strength and readout parameters apply. A program compiled from
+an estimate is simulated this way on a quantum system that drifts (see
+below).
 
-Native and QEC handlers
------------------------
+Native handlers
+---------------
 
 ``cudaq_pulse.classical.wire`` encodes requests and answers in the CUDA-Q
 real-time format: a 24-byte header, then the arguments packed by type.
@@ -402,21 +405,76 @@ the CUDA-Q host-call signature, ``void handler(const void *request, void
 *answer, size_t slot_bytes)``, so the same compiled handler serves
 simulation, emulation and a real dispatcher.
 
-``cudaq_pulse.classical.qec.Decoder`` declares the calls of a CUDA-QX
-real-time decoder (enqueue syndromes, get corrections, reset) with their wire
-ids, so a program built with it talks to a CUDA-QX decoding server
-unchanged. Its Python ``decode`` function runs with the state such a server
-keeps: a get decodes what was enqueued since the last decode or reset, and
-with nothing to decode answers NOT_READY, which a wait with a timeout takes
-as late. Each path keeps its own state in simulation, as does each shot in
-emulation; ``serve_udp`` keeps one per decoder. Its ``min_latency_ns``,
-``nominal_latency_ns``, ``max_latency_ns`` and ``timeout_ns`` are those of
-``get_corrections``, and work as a classical function's do.
+.. _cudaq-qec-decoders:
+
+CUDA-Q QEC decoders
+-------------------
+
+Decoders are defined in CUDA-Q QEC (``cudaq_qec``), and a pulse program
+calls them as a CUDA-Q kernel does: ``pulse.classical`` takes CUDA-Q QEC's
+real-time decoding functions themselves, with a link and a latency budget.
+A configured decoder answers in simulation and emulation, and on hardware
+the requests are the messages of CUDA-Q QEC's decoding server.
+
+.. code-block:: python
+   :class: fragment
+
+   import cudaq_qec
+
+   cudaq_qec.configure_decoders_from_file("decoders.yaml")   # decoder 0
+
+   enqueue_syndromes = pulse.classical(cudaq_qec.qec.enqueue_syndromes, link="gpu")
+   get_corrections = pulse.classical(cudaq_qec.qec.get_corrections, link="gpu",
+                                     max_latency_ns=75_000)
+
+   @pulse.kernel
+   def qec_round(data, ancillas, deadline_ns: int):
+       s0 = readout(get_readout_line(ancillas[0]), square(400 * pulse.ns, 0.05))
+       s1 = readout(get_readout_line(ancillas[1]), square(400 * pulse.ns, 0.05))
+       enqueue_syndromes.submit(0, [s0, s1], 0)       # decoder 0, round 0
+       in_time, fix = get_corrections.submit(0, 3, False).result(timeout=deadline_ns * pulse.ns)
+       ...
+
+The calls take CUDA-Q QEC's arguments:
+``enqueue_syndromes(decoder_id, syndromes, tag)`` sends one round's
+measurements and answers nothing; ``get_corrections(decoder_id,
+return_size, reset)`` answers ``return_size`` correction bits, and with
+``reset`` clears them once read; ``reset_decoder(decoder_id)`` starts the
+decoder over. The decoder id and ``return_size`` must be known when the
+kernel is compiled (a number, or a kernel argument given to ``lower``):
+each message's dispatch key is shared by all decoders, which the server
+tells apart by the id, and every pair is one version of the call
+(``get_corrections__0_3``: decoder 0, three bits). The calls without an
+answer need no ``max_latency_ns`` (it is 0 unless given); the other
+options work as a classical function's do. ``cudaq_qec`` is imported only
+when such a call has to be answered, and cudaq-pulse takes these functions
+from cudaq-qec 0.6.0 to 0.8.1.
+
+Simulation and emulation answer with the decoders the process configured
+(``cudaq_qec.configure_decoders``, ``configure_decoders_from_file`` or
+``configure_decoders_from_str``), through CUDA-Q QEC's simulation library,
+as a CUDA-Q kernel on a simulator does: each enqueued round is decoded and
+the corrections accumulate until a reset. One difference: where nothing was
+enqueued since the decoder was reset (by ``reset_decoder`` or a get with
+``reset``), the get answers NOT_READY, as the decoding server does, rather
+than the library's zeros; a wait with a timeout takes it as late. Each path
+in simulation, and each shot in emulation, starts from a reset decoder and
+replays its own earlier calls of it; ``serve_udp`` and a call outside a
+kernel use the library's one state. A handler given for a call
+(``handlers={"get_corrections": fn}``) answers instead, taking the
+message's fields: ``(decoder_id, tag, syndrome_mapping_id, count,
+syndromes)``, ``(decoder_id, return_size, reset)`` or ``(decoder_id,)``.
+
+CUDA-Q QEC installs on Linux (x86_64 and aarch64) with Python 3.11 to 3.13;
+``nv-qldpc-decoder`` also needs an NVIDIA GPU. Installed next to
+``cudaq-pulse[cu12]``, pip settles on cudaq-qec 0.6.0, the release whose
+CUDA-Q brings the cuDensityMat the GPU extra pins; next to plain
+``cudaq-pulse`` it takes the latest.
 
 Emulation
 ---------
 
-``Lowered.export_emulation()`` writes what a controller or an emulator runs
+``ScheduledKernel.export_to_emulator()`` writes what a controller or an emulator runs
 the program from, as JSON-ready data: the static schedule, each event's
 segment, the segments, the calls, the links and the call manifest (every
 function's dispatch key, link, payload sizes, latency and slots).
@@ -441,9 +499,9 @@ or id; a name the control system has no link for is an ``InvalidValueError``.
    from cudaq_pulse.classical import emulation
 
    run = emulation.emulate(
-       lowered,
-       shots=200,
-       transport={"gpu": emulation.Transport(fixed_ns=120, jitter_ns=40)},
+       scheduled,
+       shots_count=200,
+       transport={"gpu": emulation.Transport(fixed_ns=1500, jitter_ns=300)},
        seed=1,
    )
    print(run.late_fraction, run.calls_per_second)
@@ -538,19 +596,83 @@ when it is known.
        longest_wait = 20 * pulse.us
        wait(d, read_wait.submit().result() * pulse.ns, bounds=(0, longest_wait))
 
-   compiled = pulse.compile(shot, device=dev, control_system=control_system)
+   compiled = pulse.compile(shot, quantum_system=qs, control_system=control_system)
    for i in range(10_000):
-       lowered = compiled.lower(q, amplitude)   # no compiling after the first
+       scheduled = compiled.lower(q, amplitude)  # no compiling after the first
        ...
        store.set("wait_ns", next_wait, iteration=i)
 
-**A drifting device.** ``cudaq_pulse.runtime.drift.DriftingPlant`` moves one
-qubit's T1 (``TelegraphT1``, switching between two values), frequency and
-drive amplitude (``OrnsteinUhlenbeck``) as time advances, and records every
-state in ``plant.truth``. ``plant.target()`` is the device now, for
-``pulse.simulate(..., plant=...)``; ``p_survive``, ``p_ramsey`` and
-``p_rabi`` give the standard experiments' outcome probabilities directly, for
-loops of many iterations.
+**A drifting quantum system.** ``pulse.quantum_system(...,
+parameter_drift=True)`` builds a simulated quantum system whose qudit
+parameters drift as a chip's do. It holds two sets of values:
+``qs.physical_qudits``, the calibrated ones, which are all that compiling
+reads, and ``qs.true_qudits``, the same ``PhysicalQudit`` type, which
+``pulse.simulate`` plays. So a drifting system has the fingerprint, the
+compiled programs and the exports of its non-drifting twin, and a program
+compiled for it plays its calibration against the truth. The truth starts at
+the calibrated values and moves with drift time:
+
+- each ``simulate`` call advances drift time by its shots: ``shots_count``
+  (or one) times the program's duration plus ``reset_time``, the time
+  between shots (by default five times the longest calibrated T1 of the
+  program's qudits, a passive reset). The true values are held for the call;
+  a call longer than the shortest correlation time of the drift is split
+  into chunks of whole shots, each at least that long and each played at the
+  true values at its start.
+- ``qs.advance(20 * pulse.ms)`` moves time on between experiments. It takes
+  a time, not a bare number, and raises on a system without drift.
+  ``qs.parameter_drift_time`` is the drift time so far.
+
+.. code-block:: python
+   :class: fragment
+
+   from cudaq_pulse.quantum_systems.drift import OrnsteinUhlenbeck, ParameterDrift
+
+   # Qudit 0's frequency wanders by 200 kHz with a 10 s correlation time.
+   fast = ParameterDrift(frequency=OrnsteinUhlenbeck(200e3, 10 * pulse.s), t1=None, amplitude=None)
+   qs = pulse.quantum_system("transmon_surface17", parameter_drift={0: fast}, parameter_drift_seed=5)
+   scheduled = fringe.lower(qs.qudits[0])               # the calibrated values
+   result = pulse.simulate(scheduled, shots_count=400)  # the true values; time moves on
+   offset_hz = qs.true_qudits[0].frequency_hz - qs.physical_qudits[0].frequency_hz
+   qs.advance(20 * pulse.ms)
+
+``parameter_drift`` takes ``True`` (the default ``ParameterDrift()`` on every
+qudit), one model for every qudit, or ``{qudit: model}``; ``qs.replace(
+parameter_drift=True)`` gives drift to a system a factory built.
+``parameter_drift_seed`` repeats a run, with each qudit on its own random
+stream. A drifting system pickles with its truth and random state, so a
+worker continues where it was. The default ``ParameterDrift()`` moves the
+frequency by about 20 kHz with an hour's correlation time, halves T1 and back
+with a ten-minute dwell time, and moves the drive amplitude by about 0.2% over
+an hour: slow drift, of the size reported for transmons in P. V. Klimov et
+al., Phys. Rev. Lett. 121, 090502 (2018), J. J. Burnett et al., npj Quantum
+Information 5, 54 (2019) and S. Schlör et al., Phys. Rev. Lett. 123, 190502
+(2019). Examples that want visible drift in seconds pass faster parts.
+
+A model of your own is any object with ``start(calibrated, rng)`` and
+``advance(true, calibrated, seconds, rng)``, each returning the qudit's
+``PhysicalQudit`` (``true.replace(...)`` of any field the simulator reads),
+and optionally a ``correlation_time``:
+
+.. code-block:: python
+   :class: fragment
+
+   @dataclasses.dataclass(frozen=True)
+   class LinearFrequencyDrift:
+       hz_per_s: float
+
+       def start(self, calibrated, rng):
+           return calibrated
+
+       def advance(self, true, calibrated, seconds, rng):
+           return true.replace(frequency_hz=true.frequency_hz + self.hz_per_s * seconds)
+
+   qs = pulse.quantum_system("transmon_surface17", parameter_drift={3: LinearFrequencyDrift(50.0)})
+
+Loops of many iterations draw shots without simulating them from
+``cal.survival_probability``, ``cal.ramsey_probability`` and
+``cal.rabi_probability`` at the true values, with their own generator:
+``rng.random() < cal.ramsey_probability(wait_ns, phase, offset_hz)``.
 
 A calibration chain on the controller
 -------------------------------------
@@ -586,10 +708,10 @@ amplitudes, the delays come from the T1 estimate.
 
 The estimators in ``cudaq_pulse.classical.calibration`` that the chain uses
 (``adaptive_t1_update``, ``binary_search_update``, ``decay_time``,
-``sparse_phase`` and their helpers) are in *controller form*: a fixed
-number of scalars of state, closed-form arithmetic, branches and loops of a
-trip count fixed when the program compiles, and no allocation or
-exceptions. An estimate that cannot be formed is a result
+``sparse_phase`` and their helpers) run on a controller's processor: a
+fixed number of scalars of state, closed-form arithmetic, branches and
+loops of a trip count fixed when the program compiles, and no allocation
+or exceptions. An estimate that cannot be formed is a result
 (``decay_time`` returns whether it formed one), not an error.
 
 Compile the chain with ALAP scheduling (the default). A pulse just before a
@@ -598,18 +720,24 @@ answer's length; under ASAP the excitation plays as early as it can, and
 the qubit also decays through the call's latency.
 
 A program that measures hundreds of times in one shot is simulated one
-path per shot: ``pulse.simulate(lowered, shots=n, branches="sampled")``. Idle
+path per shot: ``pulse.simulate(scheduled, shots_count=n, branches="sampled")``. Idle
 waits and square pulses are propagated exactly, so a shot's cost does not
-grow with its waits.
+grow with its waits. Under ``branches="sampled"``, a loop that waits each
+round for a variable wait or a blocking call (scheduled ``"asap"`` or
+``"alap"``, with its lines on one timeline) costs the same host time per
+round at any length: each answer is bound and scheduled only in the part of
+the program between two such waits. Any other program with calls is
+scheduled again whole after each answer, so its host time per interval
+grows with the rounds before it.
 
 What it costs the controller
 ----------------------------
 
-``cudaq_pulse.controller.resources(lowered)`` reads each classical
-function's body once and reports its operations by class on its longest
-path, how many it holds, its state in bytes, its compute time against its
-``max_latency_ns``, and its calls, slots and bytes per shot. An expression
-of constants costs nothing, as it folds when the program compiles, and
+``scheduled.controller_usage`` reads the body of each classical function a
+processor runs once and reports how many operations it holds, its state in
+bytes, its compute time against its ``max_latency_ns`` and its calls per
+shot, with each link's calls, slots and bytes per shot. An expression of
+constants costs nothing, as it folds when the program compiles, and
 dividing by a constant counts as a multiply. The costs and limits come
 from the ``Processor`` of a controller that runs the functions on its
 ``links``:
@@ -618,8 +746,6 @@ from the ``Processor`` of a controller that runs the functions on its
 
 .. code-block:: python
    :class: fragment
-
-   from cudaq_pulse import controller
 
    processor = pulse.Processor(
        links=["controller"],
@@ -633,19 +759,21 @@ from the ``Processor`` of a controller that runs the functions on its
        controllers=[pulse.Controller(processors=[processor])],
        links={"controller": Link(fixed_ns=4)},
    )
-   lowered = pulse.compile(chain, device=dev, control_system=system).lower(q)
-   print(controller.resources(lowered))
+   scheduled = pulse.compile(chain, quantum_system=qs, control_system=system).lower(q)
+   print(scheduled.controller_usage)
 
 .. :spellcheck-enable:
 
 The report is a table: for the chain's adaptive T1 update, 47 operations
 (one ``exp``, one ``log``, eight divisions) and 0.5 us at these costs, called
-50 times per shot. A function that computes past its budget, holds too many
+50 times per shot. ``processor.usage(fn)`` is one function's cost on a
+processor on its own: its cycles always, its time only when the processor
+has a ``clock_ghz``, and no calls per shot, which come from a compiled
+program. A function that computes past its budget, holds too many
 operations or bytes, or (with ``fixed_cost_only=True``) uses a ``while``
 loop, a list or an exception fails to compile with ``ControllerLimitError``
-naming it, the limit and the line (``Lowered.controller_usage`` reports what
-each processor holds against its limits). Without processors, compiling
-does not read function bodies.
+naming it, the limit and the line. Without processors, compiling does not
+read function bodies.
 
 Running on hardware
 -------------------

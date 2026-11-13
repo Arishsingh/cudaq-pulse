@@ -1,17 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Skeletons of fast bring-up experiments, with toy estimators, each on a
-generic transmon and on the 17-qubit transmon twin.
+generic transmon and on the 17-qubit transmon_surface17 quantum system.
 
 Each skeleton is expressed, scheduled, simulated and, where it calls
 estimators while the QPU runs, exported for emulation. They check the
 structure (what is called with what, what the timeline does) and that the
-estimators recover what the simulated device is.
+estimators recover what the simulated quantum system is.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import math
 
@@ -22,9 +21,15 @@ from cudaq_pulse import ControlSystem
 from cudaq_pulse.classical import Link, random_index
 from cudaq_pulse.classical import calibration as cal
 from cudaq_pulse.classical.loop import EstimateLog, ParameterStore
+from cudaq_pulse.quantum_systems import (
+    DispersiveReadout,
+    MicrowaveDrive,
+    ReadoutPulse,
+    transmon_lattice,
+    transmon_surface17,
+)
+from cudaq_pulse.quantum_systems.drift import OrnsteinUhlenbeck, ParameterDrift, TelegraphT1
 from cudaq_pulse.runtime._calls import IQModel
-from cudaq_pulse.runtime.drift import DriftingPlant, OrnsteinUhlenbeck, TelegraphT1
-from cudaq_pulse.targets import DispersiveReadout, ReadoutPulse, transmon_17q, transmon_generic
 
 PI_AMP = math.pi / 20  # square(40, PI_AMP) is a pi pulse (unit drive scale)
 CLOCK = 2.0  # GHz on both targets
@@ -34,8 +39,8 @@ MACHINE = ControlSystem(links={"controller": Link(fixed_ns=4, feedback_ns=8)})
 def _generic():
     # The generic target has no readout parameters; give it a dispersive
     # readout so the readout skeletons have something to optimize.
-    target = transmon_generic(1)
-    qubit = target.qubits[0].replace(
+    target = transmon_lattice(1)
+    qudit = target.physical_qudits[0].replace(
         readout=DispersiveReadout(
             frequency_hz=7.0e9,
             dispersive_shift_hz=-1.5e6,
@@ -45,10 +50,10 @@ def _generic():
         ),
         calibrations={pulse.gates.READOUT: ReadoutPulse(integration_ns=400.0)},
     )
-    return dataclasses.replace(target, qubits={0: qubit})
+    return target.replace(qudits={0: qudit})
 
 
-TARGETS = {"generic": _generic, "transmon_17q": transmon_17q}
+TARGETS = {"generic": _generic, "transmon_surface17": transmon_surface17}
 
 
 @pytest.fixture(params=sorted(TARGETS))
@@ -57,7 +62,7 @@ def target(request):
 
 
 def _device(target):
-    return pulse.device(target)
+    return target
 
 
 # ── K11: adaptive T1 with a variable wait ───────────────────────────────────
@@ -96,8 +101,8 @@ def adaptive_t1(q, rounds: int):
 
 def test_k11_adaptive_t1_tracks_its_posterior_per_path(target):
     dev = _device(target)
-    lowered = pulse.compile(adaptive_t1, device=dev, control_system=MACHINE).lower(
-        dev.qudit_handles[0], 2
+    lowered = pulse.compile(adaptive_t1, quantum_system=dev, control_system=MACHINE).lower(
+        dev.qudits[0], 2
     )
     assert [e.opened_by for e in lowered.segments()] == ["start", "wait", "wait"]
     result = pulse.simulate(lowered, dt_ns=4.0, levels=2)
@@ -109,10 +114,10 @@ def test_k11_adaptive_t1_tracks_its_posterior_per_path(target):
             assert call.answer == pytest.approx((alpha, beta, tau))
     # The first shot survives the 5 us wait (plus the 200 ns readout) at
     # exp(-t / T1).
-    t1_ns = target.qubits[0].t1_us * 1e3
+    t1_ns = target.physical_qudits[0].t1_us * 1e3
     survived = sum(b.probability for b in result.branches if b.levels[0] == 1)
     assert survived == pytest.approx(math.exp(-(5000 + 200) / t1_ns), abs=0.02)
-    artifact = json.loads(json.dumps(lowered.export_emulation()))
+    artifact = json.loads(json.dumps(lowered.export_to_emulator()))
     assert len(artifact["segments"]) == 3
     assert artifact["manifest"]["functions"][0]["link_name"] == "controller"
 
@@ -161,26 +166,25 @@ def binary_search(q, rounds: int):
     readout(r, square(400, 0.05))
 
 
-def test_k12_frequency_binary_search_follows_a_detuned_plant(target):
+def test_k12_frequency_binary_search_follows_a_detuned_qudit(target):
     dev = _device(target)
     offset = 300e3
-    plant = DriftingPlant(target, frequency=OrnsteinUhlenbeck(1.0, 1.0), seed=0)
-    detuned = dataclasses.replace(
-        target,
-        qubits={
-            **target.qubits,
-            0: target.qubits[0].replace(frequency_hz=target.qubits[0].frequency_hz + offset),
-        },
+    detuned = target.replace(
+        qudits={
+            **target.physical_qudits,
+            0: target.physical_qudits[0].replace(
+                frequency_hz=target.physical_qudits[0].frequency_hz + offset
+            ),
+        }
     )
-    lowered = pulse.compile(binary_search, device=dev, control_system=MACHINE).lower(
-        dev.qudit_handles[0], 1
+    lowered = pulse.compile(binary_search, quantum_system=dev, control_system=MACHINE).lower(
+        dev.qudits[0], 1
     )
-    result = pulse.simulate(lowered, plant=detuned, dt_ns=1.0, levels=2)
-    # The first shot's outcome follows the surrogate's fringe (decay lowers
-    # the contrast a little).
-    plant.state = dataclasses.replace(plant.state, frequency_offset_hz=offset)
+    result = pulse.simulate(lowered, quantum_system=detuned, dt_ns=1.0, levels=2)
+    # The first shot's outcome follows the ideal fringe (decay lowers the
+    # contrast a little).
     p1 = sum(b.probability for b in result.branches if b.levels[0] == 1)
-    assert p1 == pytest.approx(plant.p_ramsey(W0, PHASE0), abs=0.04)
+    assert p1 == pytest.approx(cal.ramsey_probability(W0, PHASE0, offset), abs=0.04)
     for branch in result.branches:
         (call,) = branch.calls
         mean, sigma, _, _ = call.answer
@@ -212,8 +216,8 @@ def ramsey_shot(q, wait_cycles: int, phase: float):
 
 def test_k13_three_point_decay_and_phase_recover_the_device(target):
     dev = _device(target)
-    q = dev.qudit_handles[0]
-    compiled = pulse.compile(t1_shot, device=dev)
+    q = dev.qudits[0]
+    compiled = pulse.compile(t1_shot, quantum_system=dev)
     spacing_cycles = 8000
     p = [
         pulse.simulate(compiled.lower(q, 2000 + k * spacing_cycles), dt_ns=4.0, levels=2)
@@ -222,22 +226,25 @@ def test_k13_three_point_decay_and_phase_recover_the_device(target):
         for k in range(3)
     ]
     t1_us = cal.three_point_decay(*p, spacing=spacing_cycles / CLOCK) / 1e3
-    assert t1_us == pytest.approx(target.qubits[0].t1_us, rel=0.02)
-    # A detuned plant puts a phase 2 pi d T on the Ramsey fringe.
+    assert t1_us == pytest.approx(target.physical_qudits[0].t1_us, rel=0.02)
+    # A detuned qudit puts a phase 2 pi d T on the Ramsey fringe.
     offset = 250e3
-    detuned = dataclasses.replace(
-        target,
-        qubits={
-            **target.qubits,
-            0: target.qubits[0].replace(frequency_hz=target.qubits[0].frequency_hz + offset),
-        },
+    detuned = target.replace(
+        qudits={
+            **target.physical_qudits,
+            0: target.physical_qudits[0].replace(
+                frequency_hz=target.physical_qudits[0].frequency_hz + offset
+            ),
+        }
     )
-    ramsey = pulse.compile(ramsey_shot, device=dev)
+    ramsey = pulse.compile(ramsey_shot, quantum_system=dev)
     wait_cycles, theta, delta = 600, math.pi / 2, 0.5
     # The simulated fringe is a - b cos(theta + e) at kernel phase pi - theta.
     p = [
         pulse.simulate(
-            ramsey.lower(q, wait_cycles, math.pi - (theta + k * delta)), plant=detuned, levels=2
+            ramsey.lower(q, wait_cycles, math.pi - (theta + k * delta)),
+            quantum_system=detuned,
+            levels=2,
         )
         .density_matrix[1, 1]
         .real
@@ -258,23 +265,24 @@ def spectroscopy(q, detuning_hz: float):
     drive(d, square(800, math.pi / 400))  # a 400 ns pi pulse
 
 
-def test_k14_golden_section_finds_the_qubit_frequency(target):
+def test_k14_golden_section_finds_the_qudit_frequency(target):
     dev = _device(target)
-    q = dev.qudit_handles[0]
+    q = dev.qudits[0]
     offset = 1.3e6
-    detuned = dataclasses.replace(
-        target,
-        qubits={
-            **target.qubits,
-            0: target.qubits[0].replace(frequency_hz=target.qubits[0].frequency_hz + offset),
-        },
+    detuned = target.replace(
+        qudits={
+            **target.physical_qudits,
+            0: target.physical_qudits[0].replace(
+                frequency_hz=target.physical_qudits[0].frequency_hz + offset
+            ),
+        }
     )
-    compiled = pulse.compile(spectroscopy, device=dev)
+    compiled = pulse.compile(spectroscopy, quantum_system=dev)
     state = cal.GoldenSection.start(-4e6, 4e6, tolerance=2e4)
     x, done, steps = state.next_point(), False, 0
     while not done:
         p1 = (
-            pulse.simulate(compiled.lower(q, x), plant=detuned, dt_ns=1.0, levels=2)
+            pulse.simulate(compiled.lower(q, x), quantum_system=detuned, dt_ns=1.0, levels=2)
             .density_matrix[1, 1]
             .real
         )
@@ -288,9 +296,9 @@ def test_k14_golden_section_finds_the_qubit_frequency(target):
 def test_k14_nelder_mead_optimizes_readout_frequency_and_amplitude(target):
     # The cost of a readout setting: minus the separation of the |0> and |1>
     # points, plus a penalty on photons (amplitude squared).
-    model = IQModel(target, (0,), decay=False)
-    resonator = target.qubits[0].readout.frequency_hz
-    tau = target.qubits[0].get_calibration(pulse.gates.READOUT).integration_ns
+    model = IQModel(target._description, (0,), decay=False)
+    resonator = target.physical_qudits[0].readout.frequency_hz
+    tau = target.physical_qudits[0].get_calibration(pulse.gates.READOUT).integration_ns
 
     def cost(point):
         offset_mhz, amplitude = point
@@ -344,8 +352,8 @@ def golden_in_shot(q, iterations: int):
 
 def test_k14_golden_section_in_a_shot_uses_the_converged_pattern(target):
     dev = _device(target)
-    lowered = pulse.compile(golden_in_shot, device=dev, control_system=MACHINE).lower(
-        dev.qudit_handles[0], 4
+    lowered = pulse.compile(golden_in_shot, quantum_system=dev, control_system=MACHINE).lower(
+        dev.qudits[0], 4
     )
     assert len(lowered.classical_report()) == 4
     result = pulse.simulate(lowered, dt_ns=1.0, levels=2)
@@ -377,8 +385,8 @@ def cadence_shot(q, amplitude: float):
 
 def test_k15_the_closed_loop_runs_ten_thousand_iterations_on_one_compile(target):
     dev = _device(target)
-    q = dev.qudit_handles[0]
-    compiled = pulse.compile(cadence_shot, device=dev, control_system=MACHINE)
+    q = dev.qudits[0]
+    compiled = pulse.compile(cadence_shot, quantum_system=dev, control_system=MACHINE)
     log = EstimateLog()
     for i in range(10_000):
         STORE.set("wait_cycles", 2000.0 + (i % 100) * 20.0, iteration=i)
@@ -392,56 +400,55 @@ def test_k15_the_closed_loop_runs_ten_thousand_iterations_on_one_compile(target)
     assert len(log) == 4
 
 
-# ── K16: tracking a drifting plant against its truth ────────────────────────
+# ── K16: tracking a drifting quantum system against its truth ───────────────
 
 
-def test_k16_tracking_a_drifting_plant_against_its_truth(target):
-    plant = DriftingPlant(
-        target,
-        t1=TelegraphT1(target.qubits[0].t1_us / 4, target.qubits[0].t1_us, rate_hz=0.5),
-        frequency=OrnsteinUhlenbeck(100e3, correlation_s=5.0),
-        seed=21,
+def test_k16_tracking_a_drifting_quantum_system_against_its_truth(target):
+    drift = ParameterDrift(
+        frequency=OrnsteinUhlenbeck(100e3, correlation_time=5 * pulse.s),
+        t1=TelegraphT1(low_fraction=0.25, dwell_time=2 * pulse.s),
+        amplitude=None,
     )
+    qs = target.replace(parameter_drift={0: drift}, parameter_drift_seed=21)
+    calibrated = qs.physical_qudits[0]
+    shots = np.random.default_rng(21)
     log = EstimateLog()
     alpha, beta = 1.0, 10_000.0
     mean, sigma = 0.0, 1e6
     for i in range(6000):
+        true = qs.true_qudits[0]
+        offset_hz = true.frequency_hz - calibrated.frequency_hz
         wait_ns = cal.t1_wait(alpha, beta)
-        alpha, beta = cal.t1_update(
-            alpha, beta, bool(plant.sample(plant.p_survive(wait_ns))), wait_ns
-        )
+        survived = shots.random() < cal.survival_probability(wait_ns, true.t1_us)
+        alpha, beta = cal.t1_update(alpha, beta, bool(survived), wait_ns)
         t, phase = cal.ramsey_setting(mean, sigma, max_wait_ns=2000.0)
-        mean, sigma = cal.frequency_update(
-            mean, sigma, plant.sample(plant.p_ramsey(t, phase)), t, phase
-        )
+        outcome = int(shots.random() < cal.ramsey_probability(t, phase, offset_hz))
+        mean, sigma = cal.frequency_update(mean, sigma, outcome, t, phase)
         if (i + 1) % 150 == 0:
-            log.record(i, "t1_us", beta / alpha / 1e3, truth=plant.state.t1_us)
-            log.record(
-                i, "offset_hz", mean, uncertainty=sigma, truth=plant.state.frequency_offset_hz
-            )
+            log.record(i, "t1_us", beta / alpha / 1e3, truth=true.t1_us)
+            log.record(i, "offset_hz", mean, uncertainty=sigma, truth=offset_hz)
             alpha, beta = 2.0, 2.0 * beta / alpha
             sigma = max(sigma, 200e3)  # forget, to follow the drift
-        plant.advance(1e-3)
+        qs.advance(1 * pulse.ms)
     assert len(log.series("t1_us")) == 40
-    split = (plant.t1.low_us + plant.t1.high_us) / 2
+    split = calibrated.t1_us * (1 + 0.25) / 2
     right = sum((e.value > split) == (e.truth > split) for e in log.series("t1_us"))
     assert right >= 30
     assert log.tracking_error("offset_hz") < 50e3
-    assert len(plant.truth_trace()["time_s"]) == 6001
+    assert qs.parameter_drift_time == 6000 * pulse.ms
 
 
 # ── K17: hidden and exposed latency ─────────────────────────────────────────
 
 
 def test_k17_latency_within_depletion_is_hidden(target):
-    depleting = dataclasses.replace(
-        target,
-        qubits={
-            **target.qubits,
-            0: target.qubits[0].replace(
-                readout=target.qubits[0].readout.replace(depletion_ns=250.0),
+    depleting = target.replace(
+        qudits={
+            **target.physical_qudits,
+            0: target.physical_qudits[0].replace(
+                readout=target.physical_qudits[0].readout.replace(depletion_ns=250.0),
             ),
-        },
+        }
     )
     dev = _device(depleting)
     for latency_ns, exposed_ns in ((200.0, 0.0), (400.0, 150.0)):
@@ -458,7 +465,9 @@ def test_k17_latency_within_depletion_is_hidden(target):
             if decide.submit([m]).result()[0]:  # noqa: B023
                 drive(d, square(40, PI_AMP))
 
-        (call,) = pulse.compile(feedback, device=dev).lower(dev.qudit_handles[0]).classical_report()
+        (call,) = (
+            pulse.compile(feedback, quantum_system=dev).lower(dev.qudits[0]).classical_report()
+        )
         assert call.exposed_cycles / CLOCK == pytest.approx(exposed_ns, abs=1.0)
 
 
@@ -466,15 +475,23 @@ def test_k17_latency_within_depletion_is_hidden(target):
 
 
 def test_k18_readout_models_on_the_target(target):
-    qubit = target.qubits[0]
-    given = qubit.readout
+    qudit = target.physical_qudits[0]
+    given = qudit.readout
     params = given.replace(error_0to1=given.error_0to1 or 0.02, error_1to0=given.error_1to0 or 0.05)
-    pulses = qubit.calibrations
-    window = (pulses.get(pulse.gates.READOUT) or ReadoutPulse()).replace(duration_ns=400.0)
-    calibrations = {**pulses, pulse.gates.READOUT: window}
-    modelled = dataclasses.replace(
-        target,
-        qubits={**target.qubits, 0: qubit.replace(readout=params, calibrations=calibrations)},
+    # The qudit's calibrations, read through get_calibration, with a longer readout window.
+    calibrations = {}
+    for gate, default in ((pulse.gates.X, None), (pulse.gates.READOUT, ReadoutPulse())):
+        try:
+            calibrations[gate] = qudit.get_calibration(gate)
+        except pulse.NotFoundError:
+            if default is not None:
+                calibrations[gate] = default
+    calibrations[pulse.gates.READOUT] = calibrations[pulse.gates.READOUT].replace(duration_ns=400.0)
+    modelled = target.replace(
+        qudits={
+            **target.physical_qudits,
+            0: qudit.replace(readout=params, calibrations=calibrations),
+        }
     )
     dev = _device(modelled)
 
@@ -486,7 +503,7 @@ def test_k18_readout_models_on_the_target(target):
         sync(d, r)
         readout(r, square(800, 0.05))
 
-    lowered = pulse.compile(excite_and_measure, device=dev).lower(dev.qudit_handles[0])
+    lowered = pulse.compile(excite_and_measure, quantum_system=dev).lower(dev.qudits[0])
     ideal = {b.levels: b.probability for b in pulse.simulate(lowered, dt_ns=1.0, levels=2).branches}
     model = pulse.simulate(lowered, dt_ns=1.0, readout="model", levels=2)
     decay = pulse.simulate(lowered, dt_ns=1.0, readout="model_with_decay", levels=2)
@@ -499,7 +516,7 @@ def test_k18_readout_models_on_the_target(target):
     )
     assert reported_zero(decay) > reported_zero(model)
     # The dispersive IQ model separates the states on this target.
-    iq = IQModel(modelled, (0,), decay=False)
+    iq = IQModel(modelled._description, (0,), decay=False)
     c0, c1 = (iq.center(0, k, params.frequency_hz, 1.0, 400.0) for k in (0, 1))
     assert abs(c1 - c0) > 1.0
     assert iq.depletion_ns(0) > 0
@@ -544,18 +561,23 @@ def pauli_rb(q):
 
 def test_k19_pauli_benchmarking_returns_to_zero_unless_miscalibrated(target):
     dev = _device(target)
-    lowered = pulse.compile(pauli_rb, device=dev, control_system=MACHINE).lower(
-        dev.qudit_handles[0]
+    lowered = pulse.compile(pauli_rb, quantum_system=dev, control_system=MACHINE).lower(
+        dev.qudits[0]
     )
     ideal = pulse.simulate(lowered, initial_state=[1, 0], dt_ns=1.0, levels=2)
     assert len(ideal.branches) == 64  # every sequence of three Paulis
     # Each sequence and its recovery multiply to the identity.
     assert ideal.density_matrix[0, 0].real == pytest.approx(1.0, abs=0.01)
-    plant = DriftingPlant(target, amplitude=OrnsteinUhlenbeck(1e-9, 1.0), seed=1)
-    plant.state = dataclasses.replace(plant.state, amplitude_scale=1.1)
+    qudit = target.physical_qudits[0]
+    drive = (qudit.drive or MicrowaveDrive()).replace(
+        amplitude_scale_rad_per_ns=1.1 * target.drive_amplitude_scale(0)
+    )
+    overdriven = target.replace(qudits={**target.physical_qudits, 0: qudit.replace(drive=drive)})
     drifted = pulse.simulate(
-        lowered, initial_state=[1, 0], dt_ns=1.0, plant=plant.target(), levels=2
+        lowered, initial_state=[1, 0], dt_ns=1.0, quantum_system=overdriven, levels=2
     )
     assert drifted.density_matrix[0, 0].real < ideal.density_matrix[0, 0].real - 0.01
-    shots = pulse.simulate(lowered, initial_state=[1, 0], dt_ns=1.0, shots=200, seed=3, levels=2)
-    assert shots.records is not None and len(shots.records) == 200
+    shots_count = pulse.simulate(
+        lowered, initial_state=[1, 0], dt_ns=1.0, shots_count=200, seed=3, levels=2
+    )
+    assert shots_count.records is not None and len(shots_count.records) == 200

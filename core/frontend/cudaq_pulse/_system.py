@@ -7,17 +7,17 @@ reads out (``drive_lines``, ``readout_lines``: carrier indices of the
 quantum system), its latency to its peers, what it supports
 (``Capability``), what it computes (``Processor``) and the backend that
 lowers its programs. A ``ControlSystem`` is the controllers of one QPU, the links to
-the classical devices beside them (by name) and the limits that apply to
+the classical services beside them (by name) and the limits that apply to
 all of them::
 
     controllers = [pulse.Controller(drive_lines=range(8), readout_lines=range(8))]
-    qpu = pulse.device(
-        "transmon_17q", control_system=pulse.ControlSystem(controllers=controllers)
+    qpu = pulse.quantum_system(
+        "transmon_surface17", control_system=pulse.ControlSystem(controllers=controllers)
     )
-    compiled = pulse.compile(kernel, device=qpu)
+    compiled = pulse.compile(kernel, quantum_system=qpu)
 
-``Device.as_dict()`` writes a QPU as one JSON-serializable mapping (format
-``SYSTEM_FORMAT``), which ``Device.from_dict`` reads back (``Device.load`` from a
+``QuantumSystem.as_dict()`` writes a QPU as one JSON-serializable mapping (format
+``SYSTEM_FORMAT``), which ``QuantumSystem.from_dict`` reads back (``QuantumSystem.load`` from a
 file).
 """
 
@@ -37,11 +37,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ._errors import (
-    DeviceDefinitionError,
     InvalidTypeError,
     InvalidValueError,
     NotFoundError,
     Problem,
+    QuantumSystemDefinitionError,
     UpgradeNotice,
     _closest,
     _count,
@@ -58,12 +58,13 @@ if TYPE_CHECKING:
 
     from . import _clocks
     from ._capability import Capability
-    from ._device import Device
+    from ._controller_cost import FunctionUsage
+    from ._device import QuantumSystem
     from ._op_classes import OpClass
     from ._op_tables import OpCycles
-    from .compiler import Lowered, _MachineModel
+    from .compiler import ScheduledKernel, _MachineModel
     from .controller import WaveformMemoryScope
-    from .targets.base import TargetDescription
+    from .quantum_systems.base import _Description
 else:
     from ._errors import _dataclass_when_used
 
@@ -80,15 +81,22 @@ SYSTEM_FORMAT = "cudaq-pulse.system/1"
 
 
 _PLAYED = frozenset({"drive", "readout"})
-_NEEDS = MappingProxyType({"drive": "play", "readout": "acquire", "wait": "wait"})
+# A dedicated line's max_concurrent_tones (an int 1 is this object).
+_ONE_TONE = 1
+_NEEDS = MappingProxyType({"drive": "play", "readout": "readout", "wait": "wait"})
 
 
-class _Line(tuple[int, float]):
-    """A line a controller plays: the qudit it drives or reads out (its
-    carrier index in the quantum system), and its calibrated delay in ns,
+class _Line(tuple[Any, ...]):
+    """A line a controller plays: the qudits it drives or reads out (their
+    carrier indices in the quantum system), its calibrated delay in ns,
     from cables and electronics, which the scheduler plays the line early
-    by. A line is read-only and compares by content; it is the pair
-    ``(qudit, delay_ns)``."""
+    by, and the tones it plays at once. A line reaching one qudit is
+    dedicated; one reaching several is shared, and a kernel's
+    ``get_drive_line(q)`` or ``get_readout_line(q)`` of any of them takes
+    one of its tones, for that qudit. A line is read-only and compares by
+    content; it is ``(qudit, delay_ns)``, or on a shared line ``(qudits,
+    max_concurrent_tones, delay_ns)``, whose item 1 is never 0, so that a
+    line whose item 1 is 0 is an undelayed dedicated one."""
 
     __slots__ = ()
     _role: ClassVar[str]
@@ -97,7 +105,13 @@ class _Line(tuple[int, float]):
 
         @property
         def qudit(self) -> int:
-            """The qudit it drives or reads out, by carrier index."""
+            """The qudit it drives or reads out, by carrier index; an error
+            on a shared line (read ``qudits``)."""
+            ...
+
+        @property
+        def qudits(self) -> tuple[int, ...]:
+            """The qudits it drives or reads out, by carrier index."""
             ...
 
         @property
@@ -105,24 +119,73 @@ class _Line(tuple[int, float]):
             """Its calibrated delay, in ns."""
             ...
 
-    else:
-        qudit = property(itemgetter(0), doc="The qudit it drives or reads out, by carrier index.")
-        delay_ns = property(itemgetter(1), doc="Its calibrated delay, in ns.")
+        @property
+        def max_concurrent_tones(self) -> int:
+            """The most tones it plays at once (1 on a dedicated line)."""
+            ...
 
-    def __new__(cls, qudit: int, delay_ns: float | Time = 0.0) -> Self:
+    else:
+
+        @property
+        def qudit(self):
+            """The qudit it drives or reads out, by carrier index; an error
+            on a shared line (read ``qudits``)."""
+            qudit = self[0]
+            if qudit.__class__ is int:
+                return qudit
+            raise InvalidValueError(
+                f"{self!r} reaches qudits {_ranges(qudit)}, so it has no one qudit; read its "
+                ".qudits"
+            )
+
+        @property
+        def qudits(self):
+            """The qudits it drives or reads out, by carrier index."""
+            qudit = self[0]
+            return (qudit,) if qudit.__class__ is int else qudit
+
+        @property
+        def delay_ns(self):
+            """Its calibrated delay, in ns."""
+            return self[1] if len(self) == 2 else self[2]
+
+        @property
+        def max_concurrent_tones(self):
+            """The most tones it plays at once (1 on a dedicated line)."""
+            return self[1] if len(self) > 2 else 1
+
+    def __new__(
+        cls,
+        qudits: int | Iterable[int],
+        delay_ns: float | Time = 0.0,
+        *,
+        max_concurrent_tones: int = 1,
+    ) -> Self:
         name = cls.__name__
-        if qudit.__class__ is not int:
-            if isinstance(qudit, bool) or not isinstance(qudit, int):
+        if qudits.__class__ is not int:
+            if (
+                isinstance(qudits, bool)
+                or not isinstance(qudits, (int, Iterable))
+                or isinstance(qudits, (str, bytes))
+            ):
                 raise InvalidTypeError(
-                    f"{name} names a line by the carrier index of its qudit, got {qudit!r}; "
-                    "named and shared lines are not supported yet"
+                    f"{name} reaches a qudit or a list of qudits, by carrier index, got {qudits!r}"
                 )
-            qudit = int(qudit)
-        if qudit < 0:
-            raise InvalidValueError(f"{name} has a negative carrier index {qudit}")
+            if not isinstance(qudits, int):
+                from ._shared_lines import line
+
+                shared: Self = line(cls, qudits, delay_ns, max_concurrent_tones)
+                return shared
+            qudits = int(qudits)
+        if qudits < 0:
+            raise InvalidValueError(f"{name} has a negative carrier index {qudits}")
+        if max_concurrent_tones is not _ONE_TONE:
+            from ._shared_lines import tone_count
+
+            tone_count(name, qudits, max_concurrent_tones)
         if delay_ns.__class__ is not float or not 0.0 <= delay_ns < math.inf:
-            delay_ns = _delay_ns(delay_ns, f"{name}({qudit}).delay_ns")
-        return tuple.__new__(cls, (qudit, delay_ns))
+            delay_ns = _delay_ns(delay_ns, f"{name}({qudits}).delay_ns")
+        return tuple.__new__(cls, (qudits, delay_ns))
 
     def __eq__(self, other: object) -> bool:
         if other.__class__ is not self.__class__:
@@ -137,16 +200,33 @@ class _Line(tuple[int, float]):
     __hash__ = tuple.__hash__
 
     def __repr__(self) -> str:
-        qudit, delay = self
+        try:
+            qudit, delay = self
+        except ValueError:
+            from ._shared_lines import text
+
+            return text(self)
         return f"{type(self).__name__}({qudit}{f', delay_ns={delay!r}' if delay else ''})"
 
     def __reduce__(self) -> tuple[Any, ...]:
+        if len(self) > 2:
+            from ._shared_lines import line
+
+            qudits, tones, delay = self
+            return (line, (type(self), qudits, delay, tones))
         return (type(self), tuple(self))
 
     def _data(self) -> int | dict[str, Any]:
         """The line as a system file holds it: its qudit, or with a delay
-        ``{"qudit": 5, "delay_ns": 4.0}``."""
-        qudit, delay = self
+        ``{"qudit": 5, "delay_ns": 4.0}``; a shared line as ``{"qudits": [0,
+        1, 2, 3], "max_concurrent_tones": 4, "delay_ns": 12.0}``, without
+        the defaults."""
+        try:
+            qudit, delay = self
+        except ValueError:
+            from ._shared_lines import data
+
+            return data(self)
         return {"qudit": qudit, "delay_ns": delay} if delay else qudit
 
 
@@ -163,7 +243,9 @@ class ReadoutLine(_Line):
     """A readout line of a controller (``Controller.readout_lines``):
     ``ReadoutLine(5, delay_ns=12.0)`` reads out qudit 5, its pulses played
     12 ns early. A bare carrier index in ``readout_lines`` is an undelayed
-    ``ReadoutLine``."""
+    ``ReadoutLine``. A feedline reading out several qudits is shared:
+    ``ReadoutLine([0, 1, 2, 3], max_concurrent_tones=4)`` plays up to four
+    readout tones at once (1 by default, at most the qudits it reaches)."""
 
     __slots__ = ()
     _role = "readout"
@@ -175,13 +257,15 @@ _DELAY: Callable[[Any], float] = itemgetter(1)
 _PLAIN = frozenset({int})
 # By class, an undelayed line made from a (qudit, 0.0) pair.
 _UNDELAYED: dict[type[_Line], Callable[[tuple[int, float]], Any]] = {
-    cls: partial(tuple.__new__, cls) for cls in (DriveLine, ReadoutLine)
+    DriveLine: partial(tuple.__new__, DriveLine),
+    ReadoutLine: partial(tuple.__new__, ReadoutLine),
 }
 _NO_DELAY = repeat(0.0)
 
 
 def _lines_data(lines: Sequence[Any]) -> list[Any]:
-    """*lines* as a system file holds them: undelayed ones as carrier indices."""
+    """*lines* as a system file holds them: undelayed dedicated ones as
+    carrier indices (a shared line's item 1 is never 0)."""
     if any(map(_DELAY, lines)):
         return [line._data() for line in lines]
     return list(map(_QUDIT, lines))
@@ -224,15 +308,20 @@ def _lines(value: Iterable[Any], name: str, cls: type[_Line]) -> tuple[Any, ...]
             if isinstance(line, bool) or not isinstance(line, int):
                 raise InvalidTypeError(
                     f"Controller.{name} names a line by the carrier index of its qudit, "
-                    f"or as {cls.__name__}(qudit, delay_ns=...), got {line!r}; named and "
-                    "shared lines are not supported yet"
+                    f"or as {cls.__name__}(qudit, delay_ns=...), or a line reaching several "
+                    f"qudits as {cls.__name__}([0, 1, 2, 3], max_concurrent_tones=...), "
+                    f"got {line!r}"
                 )
             if line < 0:
                 raise InvalidValueError(f"Controller.{name} has a negative carrier index {line}")
             line = tuple.__new__(cls, (int(line), 0.0))
         lines.append(line)
     carriers = list(map(_QUDIT, lines))
-    if len(set(carriers)) != len(carriers):
+    if not _PLAIN.issuperset(map(type, carriers)):
+        from ._shared_lines import reached_once
+
+        reached_once(lines, cls)
+    elif len(set(carriers)) != len(carriers):
         raise InvalidValueError(f"Controller.{name} lists a carrier twice: {carriers}")
     return tuple(lines)
 
@@ -456,6 +545,18 @@ class Processor:
         ``unsupported``); without, its loops are unrolled."""
         return "loop" not in self.unsupported
 
+    def usage(self, function: Any) -> FunctionUsage:
+        """What the classical *function* uses of this processor on its own:
+        its operations, state and messages, and its cycles on the longest
+        path; ``compute_ns`` only when the processor has ``clock_ghz`` (else
+        ``None``), and ``calls_per_shot`` ``None`` (a compiled program's
+        ``controller_usage`` has both). A function whose list lengths come
+        from its calls has a cost per version: ask for one,
+        ``processor.usage(flip.specialize(outcomes=3))``."""
+        from ._controller_cost import function_usage
+
+        return function_usage(self, function)
+
     def as_dict(self) -> dict[str, Any]:
         """The processor as JSON-serializable data, as a system file holds it:
         its ``cycles_per_op`` a table of the classes not 1 cycle."""
@@ -473,7 +574,7 @@ class Controller:
     every limit is in its own clock cycles.
 
     ``clock_ghz``: the controller's clock (``None``: the program clock,
-    ``Device.clock_ghz``). It must be a whole-cycle ratio of the program
+    ``QuantumSystem.clock_ghz``). It must be a whole-cycle ratio of the program
     clock; its program counts its own cycles.
     ``cycles_per_timestep``: the controller starts and times operations only
     every this many of its own cycles; every operation on its lines must
@@ -496,7 +597,7 @@ class Controller:
     ``waveform_memory``: ``"per_line"`` (each line has a memory of
     ``waveform_memory_samples``) or ``"shared"`` (one memory serves every
     line); see ``WaveformMemoryScope``.
-    ``max_tones_per_line``: distinct tone frequencies one line plays.
+    ``max_frequencies_per_line``: distinct frequencies one line plays over a program.
     ``max_amplitude``: the largest magnitude of a sample its lines play
     (``None``: no limit). The compiler sets no amplitude limit of its own;
     a drive or readout whose envelope peaks above this one is a violation
@@ -551,7 +652,9 @@ class Controller:
     delay_ns=12.0)``, each with its qudit (its carrier index in the quantum
     system) and calibrated delay, or a bare carrier index for an undelayed
     line (they read back as lines); the only controller of a system that
-    lists none plays every line.
+    lists none plays every line. A line may reach several qudits
+    (``ReadoutLine([0, 1, 2, 3], max_concurrent_tones=4)``, a shared line);
+    each qudit is reached by at most one line of each kind.
     ``peer_latency_cycles`` is the time an outcome this controller reads
     takes to reach another controller, in this controller's own cycles: one
     number for every receiver, or a mapping from the receiving controller's
@@ -571,7 +674,7 @@ class Controller:
     min_idle_cycles: int = 0
     sample_rate_ghz: float | None = None
     waveform_memory_samples: int | None = None
-    max_tones_per_line: int | None = None
+    max_frequencies_per_line: int | None = None
     max_amplitude: float | None = None
     detectors: Mapping[int, int] = field(default_factory=dict)
     detector_recovery_cycles: int = 0
@@ -657,7 +760,7 @@ class Controller:
             raise InvalidValueError(
                 f"Controller.sample_rate_ghz must be a positive number or None, got {rate!r}"
             )
-        for name in ("waveform_memory_samples", "max_tones_per_line", "max_pulses"):
+        for name in ("waveform_memory_samples", "max_frequencies_per_line", "max_pulses"):
             value = getattr(self, name)
             if value is not None and value < 1:
                 raise InvalidValueError(f"Controller.{name} must be positive or None")
@@ -825,8 +928,8 @@ def _one_controller(controller: Controller) -> ControlSystem:
     the whole system."""
     try:
         system = ControlSystem(controllers=[controller])
-    except DeviceDefinitionError as error:
-        raise DeviceDefinitionError(
+    except QuantumSystemDefinitionError as error:
+        raise QuantumSystemDefinitionError(
             f"{_count(len(error.problems), 'problem')} in the control system of the one "
             f"Controller compile() was given; {_DESCRIBE}",
             problems=error.problems,
@@ -884,7 +987,7 @@ class ControlSystem:
     A system without controllers states only its links, lanes, reference
     clock and line delays, and nothing checks what its controllers can
     play.
-    ``links`` are the links to classical devices, by name (``"feedback"``,
+    ``links`` are the links to classical services, by name (``"feedback"``,
     ``"controller"``); a classical function's ``link=`` names one, or gives
     its id: the links' positions, so the first is link 0, the default. A
     link id a program uses that is not listed gets ``Link()``.
@@ -920,7 +1023,7 @@ class ControlSystem:
         _placement: Mapping[int, Mapping[int, int]] = field(init=False)
         # The clocks of the controllers that run their own, by label.
         _own_clocks: Mapping[str, float] = field(init=False)
-        # Whether a device of it checks its program clock against its clocks.
+        # Whether a quantum system of it checks its program clock against its clocks.
         _needs_clock: bool = field(init=False)
         # (role, carrier) -> the index of the controller that plays the line.
         _line_owners: Mapping[tuple[str, int], int] = field(init=False)
@@ -932,6 +1035,8 @@ class ControlSystem:
         _lines_up: bool = field(init=False)
         # The indices of the controllers that block on calls.
         _blocking: tuple[int, ...] = field(init=False)
+    # Whether a line reaches several qudits (_shared_lines); set only then.
+    _shares = False
 
     def __post_init__(self) -> None:
         from .compiler import _NO_DELAYS, _MachineModel
@@ -966,19 +1071,40 @@ class ControlSystem:
             raise InvalidValueError(
                 f"ControlSystem.reference_clock_ghz must be positive, got {ghz}"
             )
-        delays = {
-            (line._role, line.qudit): line.delay_ns
-            for controller in controllers
-            for line in filter(_DELAY, controller._all_lines)
+        owners = {
+            (role, carrier): index
+            for index, controller in enumerate(controllers)
+            for role, lines in (
+                ("drive", controller.drive_lines),
+                ("readout", controller.readout_lines),
+            )
+            for carrier in map(_QUDIT, lines)
         }
+        if owners and not _PLAIN.issuperset(map(type, map(_DELAY, owners))):
+            # A shared line: each of its qudits gets its controller and delay.
+            from ._shared_lines import tables
+
+            owners, delays = tables(controllers)
+            object.__setattr__(self, "_shares", True)
+            repeated = False
+        else:
+            delays = {
+                (line._role, line[0]): line[1]
+                for controller in controllers
+                for line in filter(_DELAY, controller._all_lines)
+            }
+            # Fewer (role, qudit) than lines: a qudit's line on two controllers.
+            repeated = len(owners) < sum(
+                len(c.drive_lines) + len(c.readout_lines) for c in controllers
+            )
         object.__setattr__(
             self,
             "_line_delays",
             MappingProxyType(dict(sorted(delays.items()))) if delays else _NO_DELAYS,
         )
-        problems = _structure_problems(self, "")
+        problems = _structure_problems(self, "", repeated)
         if problems:
-            raise DeviceDefinitionError(
+            raise QuantumSystemDefinitionError(
                 f"{_count(len(problems), 'problem')} in the control system",
                 problems=problems,
             )
@@ -1005,21 +1131,7 @@ class ControlSystem:
             "_needs_clock",
             bool(self._own_clocks) or self.reference_clock_ghz is not None,
         )
-        object.__setattr__(
-            self,
-            "_line_owners",
-            MappingProxyType(
-                {
-                    (role, carrier): index
-                    for index, controller in enumerate(controllers)
-                    for role, lines in (
-                        ("drive", controller.drive_lines),
-                        ("readout", controller.readout_lines),
-                    )
-                    for carrier in map(_QUDIT, lines)
-                }
-            ),
-        )
+        object.__setattr__(self, "_line_owners", MappingProxyType(owners))
         object.__setattr__(self, "_plans", {})
         object.__setattr__(
             self,
@@ -1215,41 +1327,34 @@ class ControlSystem:
             table.append(row)
         return table
 
-    def _controllers_attribute(self, program_ghz: float, n_qudits: int) -> str:
-        """The module attribute ``pulse.controllers`` of a program at
-        *program_ghz* on *n_qudits* qudits: the controller of each line, the
-        outcome latencies between controllers, how far apart their starts may
-        be (in program cycles) and each one's start uncertainty in ns; with
-        ``pulse.blocks_on_calls``, those that block on calls."""
+    def _controllers_attribute(self, program_ghz: float, max_duration_cycles: int | None) -> str:
+        """The ``controllers`` of the control system of a program at
+        *program_ghz* (``#pulse.control_system``): each controller's grid,
+        how long after one of its readouts the outcome is usable on each
+        controller and how far apart their starts may be (in program
+        cycles), its start uncertainty in ns, whether it blocks on calls, and
+        *max_duration_cycles*."""
         from fractions import Fraction
 
         clocks = self._clock_plan(program_ghz)
         uncertainty = self._start_uncertainty(clocks)
-        count = len(self.controllers)
-        owners = self._line_owners
-
-        def array(kind: str, values: Iterable[Any]) -> str:
-            text = ", ".join(map(str, values))
-            return f"array<{kind}: {text}>" if text else f"array<{kind}>"
-
-        fields = [
-            f"{role} = " + array("i64", (owners.get((role, q), -1) for q in range(n_qudits)))
-            for role in ("drive", "readout")
-        ]
-        latency = (v for row in self._outcome_latencies(clocks) for v in row)
-        spread = (
-            0 if a == b else math.ceil(uncertainty[a] + uncertainty[b])
-            for a in range(count)
-            for b in range(count)
-        )
-        ns = (repr(float(u / Fraction(program_ghz))) for u in uncertainty)
-        fields.append(f"outcome_latency = {array('i64', latency)}")
-        fields.append(f"spread = {array('i64', spread)}")
-        fields.append(f"uncertainty_ns = {array('f64', ns)}")
-        text = "{pulse.controllers = {" + ", ".join(fields) + "}"
-        if self._blocking:
-            text += f", pulse.blocks_on_calls = {array('i64', self._blocking)}"
-        return text + "}"
+        latencies = self._outcome_latencies(clocks)
+        everyone = range(len(self.controllers))
+        entries = []
+        for a, controller in enumerate(self.controllers):
+            fields = []
+            if clocks is not None and clocks.controllers[a].grid > 1:
+                fields.append(f"grid_cycles = {clocks.controllers[a].grid}")
+            spread = (0 if a == b else math.ceil(uncertainty[a] + uncertainty[b]) for b in everyone)
+            fields.append(f"outcome_latency_cycles = [{', '.join(map(str, latencies[a]))}]")
+            fields.append(f"spread_cycles = [{', '.join(map(str, spread))}]")
+            fields.append(f"uncertainty_ns = {float(uncertainty[a] / Fraction(program_ghz))!r}")
+            if controller.blocks_on_calls:
+                fields.append("blocks_on_calls")
+            if max_duration_cycles is not None:
+                fields.append(f"max_duration_cycles = {int(max_duration_cycles)}")
+            entries.append(f"#pulse.controller<{', '.join(fields)}>")
+        return f"[{', '.join(entries)}]"
 
     def _links_attribute(
         self, machine: _MachineModel, used: Sequence[int], program_ghz: float
@@ -1455,14 +1560,19 @@ class ControlSystem:
                 return self
             import dataclasses
 
-            controllers = [
-                dataclasses.replace(
-                    c,
-                    drive_lines=[line.qudit for line in c._all_lines if line._role == "drive"],
-                    readout_lines=[line.qudit for line in c._all_lines if line._role == "readout"],
-                )
-                for c in self.controllers
-            ]
+            if self._shares:
+                from ._shared_lines import undelayed
+
+                controllers = undelayed(self.controllers)
+            else:
+                controllers = [
+                    dataclasses.replace(
+                        c,
+                        drive_lines=list(map(_QUDIT, c.drive_lines)),
+                        readout_lines=list(map(_QUDIT, c.readout_lines)),
+                    )
+                    for c in self.controllers
+                ]
             links = {
                 name: link
                 if link.controllers is None
@@ -1507,7 +1617,7 @@ class ControlSystem:
 
     def _violations(
         self,
-        lowered: Lowered,
+        lowered: ScheduledKernel,
         lines: Sequence[Mapping[str, Any]],
         events: Sequence[dict[str, Any]],
         clocks: _clocks.ClockPlan | None,
@@ -1525,6 +1635,10 @@ class ControlSystem:
         from .controller import _computes_at_run_time, _violations
 
         owners, found = self._owners(lines)
+        if self._shares:
+            from . import _shared_lines
+
+            found.extend(_shared_lines.violations(self, lowered, lines, events, unresolved))
         if len(self.controllers) == 1:
             found.extend(
                 _violations(
@@ -1544,7 +1658,9 @@ class ControlSystem:
         else:
             needs = self._needs(lowered, events, owners, unresolved)
             needs.extend(self._forwarding(events, owners, clocks))
-            needs.extend(self._alignment(lines, events, owners, clocks, lowered.target.clock_ghz))
+            needs.extend(
+                self._alignment(lines, events, owners, clocks, lowered.quantum_system.clock_ghz)
+            )
             if self._blocking:
                 needs.extend(self._held(lowered, events, owners))
             if clocks is not None and clocks.owners is not None:
@@ -1592,7 +1708,7 @@ class ControlSystem:
 
     def _held(
         self,
-        lowered: Lowered,
+        lowered: ScheduledKernel,
         events: Sequence[Mapping[str, Any]],
         owners: Sequence[int | None],
     ) -> list[str]:
@@ -1632,7 +1748,7 @@ class ControlSystem:
 
     def _summarized(
         self,
-        lowered: Lowered,
+        lowered: ScheduledKernel,
         lines: Sequence[Mapping[str, Any]],
         events: Sequence[dict[str, Any]],
         repeats: Sequence[Sequence[int]],
@@ -1720,6 +1836,13 @@ class ControlSystem:
                                 return None
         if self._needs(lowered, events, owners, unresolved):
             return None
+        if self._shares:
+            from . import _shared_lines
+
+            shared = _shared_lines.summarized(self, lowered, lines, events, repeats, unresolved)
+            if shared is None:
+                return None
+            found.extend(shared)
         if not several:
             from .controller import _native_clock
 
@@ -1777,7 +1900,7 @@ class ControlSystem:
 
     def _needs(
         self,
-        lowered: Lowered,
+        lowered: ScheduledKernel,
         events: Sequence[Mapping[str, Any]],
         owners: Sequence[int | None],
         unresolved: list[str] | None = None,
@@ -1920,7 +2043,7 @@ class ControlSystem:
 
     def _reach(
         self,
-        lowered: Lowered,
+        lowered: ScheduledKernel,
         event: Mapping[str, Any],
         indices: Sequence[int],
         verb: str,
@@ -1951,9 +2074,10 @@ class ControlSystem:
                 )
 
 
-def _structure_problems(system: ControlSystem, prefix: str) -> list[Problem]:
-    """What is wrong with *system* on its own: lines on two controllers,
-    peers that are not in it, links that reach controllers it does not have."""
+def _structure_problems(system: ControlSystem, prefix: str, repeated: bool) -> list[Problem]:
+    """What is wrong with *system* on its own: lines on two controllers
+    (*repeated*: some qudit has a line of a kind on two), peers that are not
+    in it, links that reach controllers it does not have."""
     problems: list[Problem] = []
     controllers = system.controllers
     for index, controller in enumerate(controllers):
@@ -1966,11 +2090,14 @@ def _structure_problems(system: ControlSystem, prefix: str) -> list[Problem]:
                         fix="give each controller of the system its own Controller",
                     )
                 )
-    for role in ("drive_lines", "readout_lines"):
+    if system._shares:
+        from ._shared_lines import reach_problems
+
+        problems.extend(reach_problems(system, prefix))
+    for role in ("drive_lines", "readout_lines") if repeated else ():
         first: dict[int, int] = {}
         for index, controller in enumerate(controllers):
-            for position, line in enumerate(getattr(controller, role)):
-                carrier = line.qudit
+            for position, carrier in enumerate(map(_QUDIT, getattr(controller, role))):
                 if carrier in first:
                     problems.append(
                         Problem(
@@ -2068,15 +2195,20 @@ def _placement(system: ControlSystem) -> dict[int, dict[int, int]]:
     return found
 
 
-def _wiring_problems(system: ControlSystem, target: TargetDescription) -> list[Problem]:
+def _wiring_problems(system: ControlSystem, target: _Description) -> list[Problem]:
     """The lines and detectors of *system* that name carriers *target* lacks."""
-    carriers = set(target.qubits)
+    carriers = set(target.qudits)
     problems: list[Problem] = []
+    # Whether some line reaches a qudit not in it (each (role, qudit) a line reaches).
+    stray = not carriers.issuperset(map(_DELAY, system._line_owners))
     for index, controller in enumerate(system.controllers):
         path = f"control_system.controllers[{index}]"
-        for role in ("drive_lines", "readout_lines"):
-            for position, line in enumerate(getattr(controller, role)):
-                carrier = line.qudit
+        if stray and system._shares:
+            from ._shared_lines import wiring_problems
+
+            problems.extend(wiring_problems(controller, path, carriers))
+        for role in ("drive_lines", "readout_lines") if stray and not system._shares else ():
+            for position, carrier in enumerate(map(_QUDIT, getattr(controller, role))):
                 if carrier not in carriers:
                     problems.append(
                         Problem(
@@ -2162,7 +2294,7 @@ def _parse_description(path: str) -> Controller:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         where = re.search(r"\(at line (\d+), column (\d+)\)", str(error))
-        raise DeviceDefinitionError(
+        raise QuantumSystemDefinitionError(
             "the controller description is not valid TOML",
             problems=[
                 Problem(
@@ -2197,7 +2329,7 @@ def _parse_description(path: str) -> Controller:
                 )
             )
     if problems:
-        raise DeviceDefinitionError(
+        raise QuantumSystemDefinitionError(
             f"{_count(len(problems), 'problem')} in the controller description",
             problems=problems,
         )
@@ -2205,7 +2337,7 @@ def _parse_description(path: str) -> Controller:
     try:
         return Controller(**given)
     except (TypeError, ValueError) as error:
-        raise DeviceDefinitionError(
+        raise QuantumSystemDefinitionError(
             "the controller description has a bad value",
             problems=[Problem(str(error), file=path)],
         ) from None
@@ -2301,15 +2433,6 @@ _COUPLING_REQUIRED = MappingProxyType(
 _RESIDUAL_ZZ_REQUIRED = MappingProxyType(
     {"qudits": _QUDITS_FIX, "rate_hz": "give the ZZ rate in Hz"}
 )
-_SYSTEM_KEYS = (
-    "name",
-    "model",
-    "attribution",
-    "clock_ghz",
-    "qudits",
-    "couplings",
-    "residual_zz",
-)
 _CONTROL_KEYS = (
     "controllers",
     "links",
@@ -2322,7 +2445,7 @@ _LINK_KEYS = (
     "fixed_ns",
     "bytes_per_ns",
     "feedback_ns",
-    "max_in_flight",
+    "slots",
     "slot_bytes",
     "controllers",
     "per_controller",
@@ -2340,7 +2463,7 @@ def _plain(value: Any) -> Any:
 def _component_kinds() -> dict[str, dict[str, type[Any]]]:
     """The modality components of a qudit a system file holds, by the member
     they set and the kind it writes."""
-    from .targets.base import DispersiveReadout, MicrowaveDrive
+    from .quantum_systems.base import DispersiveReadout, MicrowaveDrive
 
     return {"drive": {"microwave": MicrowaveDrive}, "readout": {"dispersive": DispersiveReadout}}
 
@@ -2380,8 +2503,8 @@ def _qudit_data(q: Any) -> dict[str, Any]:
         for key in _QUDIT_FIELDS
         for value in (getattr(q, key),)
     }
-    if q.calibrations:
-        data["calibrations"] = _calibration_data(q.calibrations)
+    if q._calibrations:
+        data["calibrations"] = _calibration_data(q._calibrations)
     if q.metadata:
         data["metadata"] = _plain(q.metadata)
     return data
@@ -2389,7 +2512,7 @@ def _qudit_data(q: Any) -> dict[str, Any]:
 
 def _model_kinds() -> dict[str, type]:
     """The simulation models a system file holds, by the kind it writes."""
-    from .targets.models import SimulationModel, TransmonModel
+    from .quantum_systems.models import SimulationModel, TransmonModel
 
     return {"transmon": TransmonModel, "generic": SimulationModel}
 
@@ -2410,16 +2533,14 @@ def _model_data(model: Any) -> dict[str, Any] | None:
     return data
 
 
-def _quantum_data(target: TargetDescription) -> dict[str, Any]:
+def _quantum_data(target: _Description) -> dict[str, Any]:
     return {
-        "name": target.name,
         "model": _model_data(target.model),
         "attribution": target.attribution,
-        "clock_ghz": target.clock_ghz,
-        "qudits": [_qudit_data(q) for q in sorted(target.qubits.values(), key=lambda q: q.index)],
+        "qudits": [_qudit_data(q) for q in sorted(target.qudits.values(), key=lambda q: q.index)],
         "couplings": [
             {"qudits": list(c.qudits), "strength_hz": c.strength_hz}
-            | ({"calibrations": _calibration_data(c.calibrations)} if c.calibrations else {})
+            | ({"calibrations": _calibration_data(c._calibrations)} if c._calibrations else {})
             for c in target.couplings
         ],
         "residual_zz": [
@@ -2429,23 +2550,28 @@ def _quantum_data(target: TargetDescription) -> dict[str, Any]:
     }
 
 
-def _device_data(device: Device) -> dict[str, Any]:
+def _device_data(quantum_system: QuantumSystem) -> dict[str, Any]:
     import json
 
     from . import __version__
-    from .targets.calibration import Calibration
+    from .quantum_systems.calibration import Calibration
 
     data: dict[str, Any] = {"format": SYSTEM_FORMAT, "written_by": f"cudaq-pulse {__version__}"}
-    spec = device._spec
-    data["quantum_system"] = spec if spec is not None else _quantum_data(device._base_target)
-    data["layout"] = list(device.layout)
-    if device.clock_ghz != device._base_target.clock_ghz:
-        data["clock_ghz"] = device.clock_ghz
-    calibration = device.calibration
+    spec = quantum_system._spec
+    base = quantum_system._base_target
+    data["name"] = spec if spec is not None else base.name
+    if spec is None:
+        data |= _quantum_data(base)
+    data["layout"] = list(quantum_system.layout)
+    if spec is None or quantum_system.clock_ghz != base.clock_ghz:
+        data["clock_ghz"] = quantum_system.clock_ghz
+    calibration = quantum_system.calibration
     if calibration is not None:
         shipped = None
         try:
-            shipped = Calibration.load(calibration.name, cooldown=calibration.cooldown)
+            shipped = Calibration.load(
+                calibration.name, measurement_run=calibration.measurement_run
+            )
         except (OSError, ValueError):
             pass
         data["calibration"] = (
@@ -2453,26 +2579,31 @@ def _device_data(device: Device) -> dict[str, Any]:
             if shipped == calibration
             else json.loads(json.dumps(calibration._data))
         )
-        data["cooldown"] = calibration.cooldown
-    if device.control_system is not None:
-        data["control_system"] = device.control_system.as_dict()
+        data["measurement_run"] = calibration.measurement_run
+    if quantum_system.control_system is not None:
+        data["control_system"] = quantum_system.control_system.as_dict()
     return data
 
 
 def _config_systems(
-    config: Mapping[str, Any], key: str, source: str, problems: list[Problem]
-) -> tuple[TargetDescription | None, ControlSystem | None]:
-    """The quantum and control systems of a device config that is a system
-    file or gives a control system, each ``None`` with *problems* noted."""
+    config: Mapping[str, Any],
+    source: str,
+    problems: list[Problem],
+    described: _Description | None = None,
+) -> tuple[_Description | None, ControlSystem | None]:
+    """The quantum and control systems of a quantum system config that is a system
+    file, builds its quantum system or gives a control system, each ``None``
+    with *problems* noted; *described* is one ``pulse.quantum_system`` built."""
     from ._device import _target
 
     problems.extend(_check_format(config))
     reader = _Reader(source if source.startswith("file ") else None)
-    spec = config.get(key)
-    if isinstance(spec, Mapping):
-        target = reader.quantum_system(spec, key)
+    if described is not None:
+        target: _Description | None = described
+    elif "qudits" in config:
+        target = reader.quantum_system(config)
     else:
-        target = _target(spec, problems, key)
+        target = _target(config.get("name"), problems)
     control = config.get("control_system")
     if isinstance(control, Mapping):
         control = reader.control_system(control, "control_system")
@@ -2545,15 +2676,17 @@ class _Reader:
             self.problem(path, str(error))
             return None
 
-    def quantum_system(self, data: Any, path: str) -> TargetDescription | None:
-        from .targets.base import Coupling, Qubit, ResidualZZ, TargetDescription
+    def quantum_system(self, system: Mapping[str, Any]) -> _Description | None:
+        """The quantum system a system file builds, from its top-level keys."""
+        from .quantum_systems.base import Coupling, PhysicalQudit, ResidualZZ, _Description
 
-        system = self.mapping(data, path, _SYSTEM_KEYS)
-        if system is None:
-            return None
         qudits: dict[int, Any] = {}
-        for i, item in enumerate(system.get("qudits", ())):
-            where = f"{path}.qudits[{i}]"
+        given = system.get("qudits")
+        if not isinstance(given, Sequence) or isinstance(given, (str, bytes)):
+            self.problem("qudits", f"must be a list of qudits, got {type(given).__name__}", given)
+            given = ()
+        for i, item in enumerate(given):
+            where = f"qudits[{i}]"
             entry = self.mapping(item, where, (*_QUDIT_FIELDS, *_QUDIT_EXTRAS))
             if entry is not None:
                 entry = {
@@ -2564,13 +2697,13 @@ class _Reader:
                     else value
                     for key, value in entry.items()
                 }
-                qudit = self.build(f"{path}.qudits[{i}]", Qubit, **entry)
+                qudit = self.build(where, PhysicalQudit, **entry)
                 if qudit is not None:
                     qudits[qudit.index] = qudit
         # The entries read, each with its index in the file.
         entries: dict[str, list[tuple[int, Any]]] = {"couplings": [], "residual_zz": []}
         for i, item in enumerate(system.get("couplings", ())):
-            where = f"{path}.couplings[{i}]"
+            where = f"couplings[{i}]"
             entry = self.mapping(item, where, _COUPLING_FIELDS)
             if entry is None or self.missing(entry, where, _COUPLING_REQUIRED):
                 continue
@@ -2583,7 +2716,7 @@ class _Reader:
             if coupling is not None:
                 entries["couplings"].append((i, coupling))
         for i, item in enumerate(system.get("residual_zz", ())):
-            where = f"{path}.residual_zz[{i}]"
+            where = f"residual_zz[{i}]"
             entry = self.mapping(item, where, _RESIDUAL_ZZ_FIELDS)
             if entry is None or self.missing(entry, where, _RESIDUAL_ZZ_REQUIRED):
                 continue
@@ -2592,20 +2725,20 @@ class _Reader:
             if residual is not None:
                 entries["residual_zz"].append((i, residual))
         if "name" not in system:
-            self.problem(path, "has no 'name'")
+            self.problem("name", "is missing", fix="give the quantum system's name")
             return None
         rest = {k: system[k] for k in ("attribution", "clock_ghz") if k in system}
         if "model" in system:
-            rest["model"] = self.model(system["model"], f"{path}.model")
+            rest["model"] = self.model(system["model"], "model")
         try:
-            return TargetDescription(
+            return _Description(
                 name=system["name"],
-                qubits=qudits,
+                qudits=qudits,
                 couplings=[c for _, c in entries["couplings"]],
                 residual_zz=[x for _, x in entries["residual_zz"]],
                 **rest,
             )
-        except DeviceDefinitionError as error:
+        except QuantumSystemDefinitionError as error:
             # The path in the file of an entry's problem, which the system
             # gives as couplings[3]... by its own index: entries the file
             # gives that could not be read are not in the system.
@@ -2617,20 +2750,20 @@ class _Reader:
             self.problems.extend(
                 Problem(
                     p.message,
-                    path=f"{path}.{in_file(p.path)}",
+                    path=in_file(p.path),
                     value=p.value,
                     fix=p.fix,
                 )
                 for p in error.problems
             )
         except (TypeError, ValueError) as error:
-            self.problem(path, str(error))
+            self.problem("name", str(error))
         return None
 
     def calibrations(self, data: Any, path: str, owner: str) -> dict[Any, Any]:
         """The calibrations of a qudit or coupling (*owner*), by gate (or
         ``(gate, transition)``), from their entries in the file."""
-        from .targets.base import _CALIBRATION_TYPES, _COUPLING_GATES, _QUDIT_GATES
+        from .quantum_systems.base import _CALIBRATION_TYPES, _COUPLING_GATES, _QUDIT_GATES
 
         allowed = _QUDIT_GATES if owner == "qudit" else _COUPLING_GATES
         found: dict[Any, Any] = {}
@@ -2725,14 +2858,22 @@ class _Reader:
         return controller
 
     def line(self, data: Any, path: str, cls: type[_Line]) -> Any:
-        """A system file's line: a carrier index, or ``{"qudit": 5,
-        "delay_ns": 4.0}``."""
+        """A system file's line: a carrier index, ``{"qudit": 5,
+        "delay_ns": 4.0}``, or a shared line ``{"qudits": [0, 1, 2, 3],
+        "max_concurrent_tones": 4, "delay_ns": 12.0}``."""
         if not isinstance(data, Mapping):
             return data
+        if "qudits" in data:
+            known = ("qudits", "max_concurrent_tones", "delay_ns")
+            entry = self.mapping(data, path, known)
+            if entry is None:
+                return None
+            return self.build(path, cls, **{k: v for k, v in entry.items() if k in known})
         entry = self.mapping(data, path, ("qudit", "delay_ns"))
         if entry is None or self.missing(entry, path, {"qudit": "give its qudit, as 5"}):
             return None
-        return self.build(path, cls, **entry)
+        given = dict(entry)
+        return self.build(path, cls, qudits=given.pop("qudit"), **given)
 
     def control_system(self, data: Any, path: str) -> ControlSystem | None:
         system = self.mapping(data, path, _CONTROL_KEYS)
@@ -2770,7 +2911,7 @@ class _Reader:
         rest = {k: system[k] for k in _CONTROL_KEYS[2:] if k in system}
         try:
             return ControlSystem(controllers=controllers, links=links, **rest)
-        except DeviceDefinitionError as error:
+        except QuantumSystemDefinitionError as error:
             self.problems.extend(
                 Problem(p.message, path=f"{path}.{p.path}", value=p.value, fix=p.fix)
                 for p in error.problems

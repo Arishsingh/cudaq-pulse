@@ -9,14 +9,14 @@ Each GitHub release takes its notes from the section for its version, so
 every change worth telling users about goes in the top section, the next
 release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-13
 
 The first public release, a research preview: APIs, dialects and numerical
 behavior may change in any 0.x release.
 
 ### Added
 
-- **Gate calibrations.** `pulse.gates` names the gates a device is
+- **Gate calibrations.** `pulse.gates` names the gates a quantum system is
   calibrated for (`X`, `X90`, `Y`, `Y90`, `READOUT`, `CZ`), and
   `get_calibration(gate, transition=(0, 1))` gives each one's pulse: in a
   kernel from a line, `get_drive_line(q).get_calibration(pulse.gates.X)` (a
@@ -26,20 +26,37 @@ behavior may change in any 0.x release.
   `dev.qudits[i].get_calibration(...)`, and from a coupling,
   `dev.coupling(a, b).get_calibration(pulse.gates.CZ)` (a `FluxCZ`). A
   qudit's `drive` and `readout` (`MicrowaveDrive`, `DispersiveReadout`)
-  hold its physics; its tuned pulses are its `calibrations`, by gate.
-  What a device does not publish is derived: an `X` amplitude from the
+  hold its physics; its tuned pulses are given as `calibrations=`, by gate,
+  and read only through `get_calibration`, as a coupling's are.
+  What a quantum system does not publish is derived: an `X` amplitude from the
   pulse's area, `X90` at half of it, `Y` and `Y90` at +90 degrees; an
   unpublished `CZ`, `READOUT` or other transition is an error naming the
   coupling or qudit. A qudit's `metadata` holds the user's own JSON
-  values, which the library never reads and which do not make two devices
+  values, which the library never reads and which do not make two quantum systems
   differ; system files keep them.
+- **Shared lines.** A `DriveLine` or `ReadoutLine` may reach several
+  qudits and play several tones at once: a readout feedline is
+  `ReadoutLine([0, 1, 2, 3], max_concurrent_tones=4)` (1 by default, at most
+  the qudits it reaches). Every line has `qudits`; only a dedicated line has
+  `qudit`. A kernel's `get_readout_line(q)` of a qudit on it gives one of
+  its tones, for `q`. The compiler checks that a line reaching several
+  qudits plays at most `max_concurrent_tones` tones at once (a kernel with
+  runtime qudits, when a call binds them); spacing and `max_amplitude`
+  apply per tone, waveform memory and `max_frequencies_per_line` per physical
+  line. Format `/2` of the controller export lists a shared line once,
+  with its `max_concurrent_tones`, and gives each event on it its
+  `tone_slot` and `qudits`; format `/1` raises `UnsupportedError` for a
+  program on a shared line. System files hold one as `{"qudits": [...],
+  "max_concurrent_tones": 4, "delay_ns": 12.0}`. A qudit is reached by at
+  most one line of each kind. A program on a delayed shared line does not
+  export yet.
 - **Pickling, for process pools and caches on disk.** Kernels pickle as
   functions do: by reference, or with cloudpickle (Ray, Dask) by value
-  when defined in `__main__`, at the prompt or inside a function. Targets, devices, qudit handles and registers
+  when defined in `__main__`, at the prompt or inside a function. Quantum systems, qudit handles and registers
   pickle as what they were built from and unpickle equal, with equal
-  hashes; a process builds each device it unpickles once. A device's
-  fingerprint covers its calibration: a target with and without one are
-  two devices. A shipped calibration pickles as its name, checked against
+  hashes; a process builds each quantum system it unpickles once. A quantum system's
+  fingerprint covers its calibration: a quantum system with and without one are
+  two quantum systems. A shipped calibration pickles as its name, checked against
   the file shipped where it unpickles; any other, as its values. Programs
   (`ck.lower(...)`, bound or not) pickle as MLIR bytecode stamped with the
   build that compiled them (hashes of its native and Python sources, taken
@@ -47,10 +64,10 @@ behavior may change in any 0.x release.
   without compiling again; another build refuses them with
   `UnsupportedError`, saying to compile again. Errors pickle with what they
   report, so a process pool re-raises them in the parent as they were
-  raised. Targets now compare by content.
+  raised. Quantum systems now compare by content.
 - **Controllers with their own clocks.** Kernels count cycles of the
-  device's program clock, `pulse.device(..., clock_ghz=)` (or the
-  target's). A controller whose clock is slower starts and times operations
+  quantum system's program clock, `pulse.quantum_system(..., clock_ghz=)` (or the
+  quantum system's own). A controller whose clock is slower starts and times operations
   only every few program cycles: the scheduler puts each line's operations
   on its controller's grid and a `sync` on the grid its lines share, an
   operation off the grid is a compile error naming the line, its controller
@@ -62,20 +79,33 @@ behavior may change in any 0.x release.
   line's controller clock.
 - **Runtime qudits.** A parameter annotated `Qudit` or `Register` (or
   `list[Qudit]`, `tuple[Qudit, ...]`) is bound at each call, like a float:
-  the kernel compiles once and runs on any qudits of a device with the same
+  the kernel compiles once and runs on any qudits of a quantum system with the same
   structure, including a recalibrated one. An unannotated qudit parameter
   stays static, whatever the call passes. `list[float]` parameters are runtime vectors. Their
   controller exports carry a `program_id`, shared by every call of one
   compile, and `symbols`: each symbol's value in the call, and per event the
   symbols its qudit, frequency, phase and waveform depend on.
-- **Control systems.** A device can hold the controllers that play it:
+- **Variadic qudits.** A kernel may take `*qudits`:
+  `def k(tau: float, *qudits: Qudit)` is called as `k(tau, q0, q1, ...)` or
+  `k(tau, *dev.qudits[0:4])`, and from another kernel as
+  `k(tau, *qudits)`. In the kernel `qudits` is a register of the call's
+  qudits, which indexes, slices, iterates and has a `len()`. Annotated
+  `Qudit` it is a runtime register, compiled once per number of qudits;
+  unannotated, the kernel is specialized on the qudits. A call may pass
+  none. A `*` parameter takes only qudit handles: another annotation is a
+  `TypeError` when the kernel is defined, another value one when it is
+  called. Kernels still cannot take `**kwargs`. A list or tuple of qudit
+  handles is not a register: pass a `Register` (`qs.qudits[0:4]`) or use
+  `*qudits`. `kernel.static_parameters` and `kernel.runtime_parameters`
+  list parameters in the order of the signature.
+- **Control systems.** A quantum system can hold the controllers that play it:
   `pulse.Controller` (a controller's limits, the drive and readout lines it
   plays, its peer latency, clock skew and alignment tolerance, its
   `supports`, `backend`, `model` and `version`) and `pulse.ControlSystem`
   (its controllers, its links by name, each `Link` with the `controllers`
-  it reaches). `pulse.device(quantum_system, control_system=...)` checks
+  it reaches). `pulse.quantum_system(quantum_system, control_system=...)` checks
   the wiring against the quantum system and raises one
-  `DeviceDefinitionError` listing every problem. `compile(kernel, device=qpu)` checks every program against
+  `QuantumSystemDefinitionError` listing every problem. `compile(kernel, quantum_system=qpu)` checks every program against
   the system: a line on no controller, each controller's own limits, a
   capability (`pulse.Capability`) a controller lacks, and a call over a link
   that does not reach its controllers fail to compile.
@@ -93,9 +123,9 @@ behavior may change in any 0.x release.
   a bare carrier index is an undelayed line), and a control system's
   `reference_clock_ghz` is its shared clock; new delays alone schedule its
   programs again without tracing them. Without a
-  declared `clock_ghz`, a device's program clock is its fastest
+  declared `clock_ghz`, a quantum system's program clock is its fastest
   controller clock when every other one divides it; clocks that do not
-  divide evenly are a `DeviceDefinitionError` that lists the program clocks
+  divide evenly are a `QuantumSystemDefinitionError` that lists the program clocks
   that work, and every controller clock must be a whole multiple of the
   reference clock. Each controller of a system may run its own clock: every
   line is scheduled on its own controller's grid, a `sync` and a wait from
@@ -104,7 +134,7 @@ behavior may change in any 0.x release.
   controller's limits, line delays and `rcp` readout latency count its own
   cycles, and `custom()` samples an envelope at the rate of the line that
   plays it, while samples given at another rate fail to compile.
-  `export_controller(controller=k)` and `export_emulation(controller=k)`
+  `export_to_controller(controller=k)` and `export_to_emulator(controller=k)`
   export controller `k`'s part of the program in its own cycles: its
   lines, the events it plays, submits or takes the answer of, its calls and
   its limits, with the program's event and line ids. A program that plays
@@ -151,7 +181,7 @@ behavior may change in any 0.x release.
   `FunctionCost.ops` is an `OpCounts`, and a built-in's `controller_cost`
   hook returns one. `pulse.controller.ExpressionTerm` names the terms of an
   exported run-time expression. `dispatch_keys={"name": key}` gives the
-  functions a processor runs fixed dispatch keys. `lowered.controller_usage` reports
+  functions a processor runs fixed dispatch keys. `scheduled.controller_usage` reports
   each processor's functions and totals against its limits
   (`.within_limits`; `print` it for a table). A program over them does not
   compile: its `ControllerLimitError` carries the report as `usage`, every
@@ -162,9 +192,11 @@ behavior may change in any 0.x release.
   drive_lines=..., readout_lines=...)` loads a controller from a TOML
   description installed with cudaq-pulse (or one given by path), parsed
   once, with the installation's wiring. `reference.controller` ships.
-- **System files.** `Device.as_dict()` writes a QPU as one mapping, format
-  `cudaq-pulse.system/1`, which `pulse.Device.from_dict(data)` reads back,
-  and `pulse.Device.load(path)` from a JSON file, reporting each problem
+- **System files.** `QuantumSystem.as_dict()` writes a QPU as one mapping, format
+  `cudaq-pulse.system/1`, with the keys of `pulse.quantum_system`'s keywords
+  (`"name"`, and `"qudits"`, `"couplings"`, ... for one not registered),
+  which `pulse.QuantumSystem.from_dict(data)` reads back,
+  and `pulse.QuantumSystem.load(path)` from a JSON file, reporting each problem
   with its line. A file written from
   another version of an installed description is noticed once
   (`UpgradeNotice`). `python -m cudaq_pulse.doctor --system FILE` checks a
@@ -177,7 +209,9 @@ behavior may change in any 0.x release.
   it; trip counts multiply without overflow. A wait whose length a float
   sets is counted at its lowest length, and the call checks the length
   again with its value; in an `if` arm, it counts only as far as it makes
-  that arm the longer one.
+  that arm the longer one. A line's `delay_ns` counts too: a delay longer
+  than 2**60 cycles, or one that takes the scheduled program past them, is
+  a `CompilationError`.
 
 ### Changed
 
@@ -187,10 +221,10 @@ behavior may change in any 0.x release.
   found with every iteration played, in the same order. Past 10,000
   violations, `ControllerLimitError.violations` and `check()` give a
   sequence that builds each violation when read, with an exact `len()`;
-  `str(error)` is unchanged. `Lowered.schedule` is a list up to 10,000
+  `str(error)` is unchanged. `ScheduledKernel.schedule` is a list up to 10,000
   events and past that a sequence that builds each event when read, from
   its op and its loops' iterations, so its type is now
-  `Sequence[ScheduledEvent]`; `Lowered.duration` no longer lists the
+  `Sequence[ScheduledEvent]`; `ScheduledKernel.duration` no longer lists the
   events. `classical_report()` takes a long loop without classical calls
   once instead of once per iteration, with the same report.
 
@@ -203,7 +237,7 @@ behavior may change in any 0.x release.
   levels, or the detuning of coupled qudits) issues a `PulseWarning` at the
   caller's line, naming that frequency and a step that resolves it; such a
   step damped the coherence of levels 0 and 2 silently. Examples 03, 14,
-  19, 20 and `transmon/transmon_17q_evolve_gpu.py` take steps that resolve
+  19, 20 and `transmon/transmon_surface17_evolve_gpu.py` take steps that resolve
   their qudits, so two print converged values: example 14's survival at
   depth 20 is 0.952 (was 0.954), and example 20's level-2 branch
   probabilities change (outcomes `(1, 2, 2)` 0.002, was 0.006).
@@ -213,7 +247,7 @@ behavior may change in any 0.x release.
   200 MHz anharmonicity, whose levels spread over 2 GHz and which 0.05 ns
   dephased. Wherever 0.05 ns already resolved the simulation (a transmon
   of up to four levels whose anharmonicity is under 333 MHz, as every
-  qudit of `transmon_17q`), the step and the results are unchanged.
+  qudit of `transmon_surface17`), the step and the results are unchanged.
 - **A simulation that diverges raises instead of returning NaN.** A step
   too coarse for the integrator (4 transmon levels at `dt_ns=1.0`, about
   two steps per period of their 552 MHz spread) made its state overflow,
@@ -227,8 +261,8 @@ behavior may change in any 0.x release.
   as built-in types are: setting or deleting one of their attributes raises
   `TypeError`. Subclass them to change what they give a qudit; a subclass
   is not immutable. `simulate` keeps the step it
-  resolves for a target with one of them, so a second call on that target
-  skips the checks, and drops it when the target is freed.
+  resolves for a quantum system with one of them, so a second call on that
+  quantum system skips the checks, and drops it when the quantum system is freed.
 - **Calibration on the controller.** `cudaq_pulse.classical.calibration`
   adds the estimators of millisecond on-controller calibration in controller
   form: adaptive T1 tracking with assignment errors (`adaptive_t1_update`,
@@ -247,24 +281,30 @@ behavior may change in any 0.x release.
   superconducting qubits", arXiv:2506.09576 (2025);
   `benchmarks/classical/calibration_protocol.py` checks it end to end over
   many seeds against the published numbers.
-- **What classical functions cost a controller.** `controller.resources()`
-  reports each classical function's operations by class (read from its
-  body; an expression of constants folds, and dividing by a constant is a
-  multiply), state in bytes, compute time against `max_latency_ns`, and calls,
-  slots and buffer bytes per shot, and whether its body is in controller
-  form (fixed-size state, bounded loops, no allocation or exceptions), its
-  compute time on the `Processor` that runs it.
+- **What classical functions cost a controller.** `scheduled.controller_usage`
+  reports each classical function's operations (read from its body; an
+  expression of constants folds, and dividing by a constant is a multiply),
+  state in bytes and compute time against `max_latency_ns` on the
+  `Processor` that runs it, and each link's calls, slots and bytes per
+  shot. `processor.usage(fn)` is one function's cost on a processor on its
+  own: its cycles, and its time when the processor has a clock.
 - **Faster simulation of long programs.** Idle waits and square pulses in
   their frame are propagated exactly, at a cost independent of their
   length, and driven stretches on registers of up to four levels by RK4
-  maps built at once (a 100 us T1 shot: 104 s to under 1 ms).
+  maps built at once (a 100 us T1 shot: 104 s to under 1 ms). Idle waits of
+  coupled qudits are exact too, in the frame that turns with their
+  couplings, and on `backend="gpu"` a long idle stretch is propagated
+  exactly on the host while the GPU steps the drives around it.
   `simulate(branches="sampled")` (or `pulse.BranchCoverage.SAMPLED`) follows
   only the branches the shots take, so a program that measures many times in
-  one shot costs time linear in its measurements. Finding a program's next measurement and next call is now
-  linear in its length.
+  one shot does not cost time exponential in its measurements. A loop that waits each round on a variable
+  or blocking wait costs the same host time per round at any length (example 19's T1 tracker, 30 to 120
+  rounds: about 0.55 ms per interval throughout, was 1.5 to 4.7 ms); other programs with calls are scheduled
+  again whole after each answer, so their host time per interval grows with the rounds before it. Finding a
+  program's next measurement and next call is now linear in its length.
 
 - **Kernels.** `@pulse.kernel` traces a Python function into Pulse-dialect
-  MLIR. Calling a kernel with qudit handles compiles it for their device on
+  MLIR. Calling a kernel with qudit handles compiles it for their quantum system on
   first use, caches the specialization, and runs it; `kernel.lower(...)`
   stops before running, and `pulse.compile(kernel)` compiles ahead of the
   call. `float` parameters stay symbolic, so a parameter sweep compiles once.
@@ -274,17 +314,17 @@ behavior may change in any 0.x release.
   results. A number the arms of an `if` on a measurement set differently
   (`if m: amp = 0.3` / `else: amp = 0.1`) holds the value of the arm that
   ran, as one `arith.select` on the measurement, in `elif` chains, nested
-  ifs and rolled loops too. Lowering keeps the select where the target
+  ifs and rolled loops too. Lowering keeps the select where the quantum system
   takes that amplitude, phase or frequency at run time, so every use reads
   the one value; otherwise, and for durations and waveform shapes, each op
-  that reads it runs in both arms of an `if` on the measurement. No target
+  that reads it runs in both arms of an `if` on the measurement. No quantum system
   takes one at run time yet. Either way the ops wait for the measurement
   and schedule and simulate alike. A name assigned in only one arm, with no
   value before the
   `if`, raises a `CompilationError` naming it and the line of the `if`.
   Kernels take their qudits as parameters; a call without qudit
-  handles raises `NoDeviceError` unless the kernel was compiled for a device
-  (`pulse.compile(k, device=dev)`).
+  handles raises `NoQuantumSystemError` unless the kernel was compiled for a quantum system
+  (`pulse.compile(k, quantum_system=dev)`).
 - **Lines and their tones.** `get_drive_line(q)` and `get_readout_line(q)`
   return the line alone, one value that is not unpacked or iterated;
   `line.tone` is its own tone, and `line.tones[(lower, upper)]`, a
@@ -373,9 +413,9 @@ behavior may change in any 0.x release.
   (sampled once per clock cycle).
 - **Editor support with no configuration.** The wheel installs
   `__builtins__.pyi` at the root of site-packages, generated at build time
-  from `cudaq_pulse.ops.__all__`, so Pylance, Cursor, pyright and
-  basedpyright know the operations used by bare name inside kernels: no
-  undefined-name warnings, with completion, hover documentation and checked
+  from `cudaq_pulse.ops.__all__`, so Pylance (in VS Code and VS Code-based
+  editors), pyright and basedpyright know the operations used by bare name
+  inside kernels: no undefined-name warnings, with completion, hover documentation and checked
   arguments. The names are builtins in the whole environment, outside
   kernels too; see the new Editor Support page. The getting-started advice
   to add a `pyrightconfig.json` is gone.
@@ -401,14 +441,14 @@ behavior may change in any 0.x release.
 - **Compilation.** Verification, constant and phase folding and pulse
   fusion by default; ASAP, ALAP and resource-constrained schedules
   (`pulse.compile(control_system=...)`); per-kernel schedule policies and
-  schedule blocks. `pulse.Lowered.mlir(level)` returns the module at an IR
+  schedule blocks. `pulse.ScheduledKernel.mlir(level)` returns the module at an IR
   level (`cudaq_pulse.compiler.IRLevel`: `"pulse"`, the scheduled Pulse
-  MLIR, `"qop"`, `"cudm"` or `"llvm"`), `Lowered.schedule` the timed events
-  (`cudaq_pulse.compiler.ScheduledEvent`), `Lowered.duration` how long the
-  program runs as a `pulse.Time`, `Lowered.metrics` the compile
-  times (`cudaq_pulse.compiler.CompileMetrics`), and `Lowered.timeline()` a
-  plot (with the `[viz]` extra). `Device.qudit(label)` finds a qudit by
-  its label and `TargetDescription.coupling(a, b)` the coupling of two.
+  MLIR, `"qop"`, `"cudm"` or `"llvm"`), `ScheduledKernel.schedule` the timed events
+  (`cudaq_pulse.compiler.ScheduledEvent`), `ScheduledKernel.duration` how long the
+  program runs as a `pulse.Time`, `ScheduledKernel.metrics` the compile
+  times (`cudaq_pulse.compiler.CompileMetrics`), and `ScheduledKernel.timeline()` a
+  plot (with the `[viz]` extra). `QuantumSystem.qudit(label)` finds a qudit by
+  its label and `QuantumSystem.coupling(a, b)` the coupling of two.
 - **Optimization passes.** `passes=` takes members of `pulse.Pass`, a
   string enum, or their names, in any order and combination: `VERIFY`,
   `FOLD_CONSTANTS` (constant arithmetic computed at compile time),
@@ -431,78 +471,81 @@ behavior may change in any 0.x release.
   `pulse-hoist-loop-invariants`), as well as `pulse-unroll-classical-loops`
   and `pulse-schedule-rcp` with the control system's lanes as options (`max-drives`,
   `max-readouts`, `readout-latency`, `switch-penalty`, `alap`).
-- **Devices and targets.** `pulse.device` is the one device getter: it
-  describes a machine as a target plus a qudit layout, from a registered
-  target name (`pulse.device("transmon_17q")`) or a `TargetDescription`,
-  with `layout=`, `calibration=`, `cooldown=`, `control_system=` and
-  `clock_ghz=` keywords, or, with no argument, the process target; a string
-  is always a name, and `Device.load` / `Device.from_dict` read system
-  files. Devices compare by
-  content and share compiled kernels, but handles of two devices, even
+- **Quantum systems.** `pulse.quantum_system` is the one quantum system getter: it
+  describes a machine's physics and a qudit layout, from a registered
+  name (`pulse.quantum_system("transmon_surface17")`) or built directly
+  (`pulse.quantum_system(name="chip", qudits={...}, couplings=[...],
+  model=...)`), with `layout=`, `calibration=`, `measurement_run=`,
+  `control_system=` and `clock_ghz=` keywords, or, with no argument, the
+  process quantum system; a string is always a name, and
+  `QuantumSystem.load` / `QuantumSystem.from_dict` read system files.
+  `qs.replace(...)` makes a variant of a quantum system with the same
+  keywords, as `dataclasses.replace` does; a `QuantumSystem` passed to
+  `pulse.quantum_system` is a `TypeError`. Quantum systems compare by
+  content and share compiled kernels, but handles of two quantum systems, even
   equal ones, do not mix in one call or in a kernel compiled for one
-  (`DeviceMismatchError`), and an empty `layout` is a
-  `DeviceDefinitionError`. Target descriptions are
-  `cudaq_pulse.targets.TargetDescription`; the shipped target,
-  `"transmon_17q"`, is a 17-qubit transmon device built from
+  (`QuantumSystemMismatchError`), and an empty `layout` is a
+  `QuantumSystemDefinitionError`. The shipped quantum system,
+  `"transmon_surface17"`, is a 17-qubit transmon quantum system built from
   Krinner et al., Nature 605, 669 (2022).
-  A target's `model` (`cudaq_pulse.targets.TransmonModel` by default, a
+  A quantum system's `model` (`cudaq_pulse.quantum_systems.TransmonModel` by default, a
   `SimulationModel` class or instance, or `None`) says how the simulator
   treats its qudits and which operator its couplings are (the exchange
   g (a^dagger b + a b^dagger), in the rotating-wave approximation, for
   `TransmonModel`); each model class declares its levels (3 for
   transmons), and `TransmonModel(levels={0: 4})` sets a qudit's own. No
-  label changes the physics: targets have no `architecture`.
+  label changes the physics: quantum systems have no `architecture`.
   A coupling is `Coupling(qudits=(a, b), strength_hz, calibrations={})`: the
   qudits it couples, in order (two in this release), the strength in Hz of
   the model's operator (g / 2 pi of the exchange), or `None` when it
   is not measured yet, which compiles, schedules and exports while
   `simulate` refuses it by name, and its tuned gates,
   `{pulse.gates.CZ: FluxCZ(duration_ns, buffer_ns=None,
-  interaction_frequency_hz=None)}`; the `transmon_17q` target gives its
-  published CZ values, and `cudaq_pulse.targets.transmon.CZ_LAYERS` the
-  (auxiliary, data) pairs of each of its CZ time steps. A target's
+  interaction_frequency_hz=None)}`; the `transmon_surface17` quantum system gives its
+  published CZ values, and `cudaq_pulse.quantum_systems.transmon.CZ_LAYERS` the
+  (auxiliary, data) pairs of each of its CZ time steps. A quantum system's
   `residual_zz` lists `ResidualZZ(qudits, rate_hz)` entries, a static ZZ
   rate beyond what the couplings produce; the simulator's module carries
-  them as typed `pulse.static_terms`
-  (`#pulse.static_term<zz, qudits = [a, b], rate_hz = ...>`, checked when
-  parsed), and their Hamiltonian term is `static_zz`. Couplings and residual ZZ entries
+  them as typed static terms of its quantum system
+  (`static_terms = [#pulse.static_term<zz, qudits = [a, b], rate_hz = ...>]`,
+  checked when parsed), and their Hamiltonian term is `static_zz`. Couplings and residual ZZ entries
   are checked when the system is built, all of them at once: each is
   between two distinct qudits of the system (three or more are refused in
   this release), one per pair in either order, with finite strengths and
   rates (zero and negative allowed), a gate's non-empty name, times of 0 ns
   or more and an interaction frequency above 0 Hz. A config or file with
-  problems raises `pulse.DeviceDefinitionError` (a `ValueError`) listing all
+  problems raises `pulse.QuantumSystemDefinitionError` (a `ValueError`) listing all
   of them in `problems`, each a `pulse.Problem` with its path in the config
   (`layout[2]`), the offending value and a fix, and for a file its line and
-  column; an unknown key or target name suggests the closest one, and the
+  column; an unknown key or quantum system name suggests the closest one, and the
   reserved keys (`zones`, `sites`, `moves`, `transport`) are problems too.
   `python -m cudaq_pulse.doctor --system FILE [--json]` runs the same checks.
-- **Calibrations and the transmon model.** `cudaq_pulse.targets.Calibration`
-  loads fitted values, each with its kind, source, uncertainty and cooldown,
-  apart from the published target, and `pulse.device` takes `calibration=`
-  and `cooldown=`. `cudaq_pulse.targets.transmon_model` computes
+- **Calibrations and the transmon model.** `cudaq_pulse.quantum_systems.Calibration`
+  loads fitted values, each with its kind, source, uncertainty and measurement run,
+  apart from the published quantum system, and `pulse.quantum_system` takes `calibration=`
+  and `measurement_run=`. `cudaq_pulse.quantum_systems.transmon_model` computes
   flux-tunable transmon levels and charge-coupled pairs from circuit values.
-  The shipped `transmon_17q` calibration has one device-wide charge coupling,
+  The shipped `transmon_surface17` calibration has one system-wide charge coupling,
   fitted to the measured `|11>`-`|20>` coupling of X2-D4, so the
-  `transmon_17q` target's exchange (5.67-6.08 MHz) and idle ZZ (-4.5 to -7.3 kHz) depend on
+  `transmon_surface17` quantum system's exchange (5.67-6.08 MHz) and idle ZZ (-4.5 to -7.3 kHz) depend on
   each pair's frequencies; calibrated qubits convert detunings to and from flux quanta.
   It also holds in-model sudden-net-zero CZ knobs for all 24 pairs (mean
   duration 65.0 +- 4.8 ns against the published 68(7) ns), each with its
   predicted phase and leakage, flags and alternatives.
 - **Simulation.** `pulse.simulate` evolves a compiled call with T1, T2 or
   Hahn-echo dephasing, thermal populations, exchange couplings, residual ZZ
-  and any number of transmon levels (by default those the target's model
+  and any number of transmon levels (by default those the quantum system's model
   declares, 3 for a transmon; `levels=` sets them for every qudit or, as a
   dict, per qudit), either with a NumPy reference
   integrator (`backend="cpu"`) or on NVIDIA GPUs through cuDensityMat
   (`backend="gpu"`, Linux, experimental). Programs that measure and branch
   are evolved as an exact ensemble over outcomes. The simulated space holds
-  only the qudits the program gets a line on, whatever their device indices
+  only the qudits the program gets a line on, whatever their quantum system indices
   (a pair at qudits 13 and 3 is a two-mode problem); `SimulationResult.qudits`
-  and `Lowered.qudits` give the device qudit of each mode, and the other
+  and `ScheduledKernel.qudits` give the quantum system qudit of each mode, and the other
   qudits are classical spectators. `result.level_population(level, qudit)`
   and `result.level_populations(qudit)` give a qudit's level probabilities
-  from its reduced state, for any number of levels; `qudit` (a device index
+  from its reduced state, for any number of levels; `qudit` (a quantum system index
   or handle) may be left out when the result models one qudit, and a qudit
   or level the result does not have is an `InvalidValueError` listing those
   it has. `result.branches` holds one `Branch` per measurement path: its
@@ -539,35 +582,63 @@ behavior may change in any 0.x release.
   `.submit()` returns a `Pending` of the result's type. Links are named in
   `ControlSystem(links={...})`. Every schedule budgets the worst-case
   latency, holds link slots and reports each call's slack and its hidden and
-  exposed latency (`Lowered.classical_report()`); `pulse-classical-check`
+  exposed latency (`ScheduledKernel.classical_report()`); `pulse-classical-check`
   verifies slots, deadlines and ordering. A wait whose length is an answer,
   and a blocking wait for an answer, are barriers for the lines that depend
   on them (through a `sync`, a measurement or answer, a branch or a shared
-  tone): those lines split into segments (`Lowered.segments()`) whose start
+  tone): those lines split into segments (`ScheduledKernel.segments()`) whose start
   shifts with the run-time lengths before them, and other lines keep their
   time, so qubits waiting on answers of their own run side by side.
 - **Simulating and emulating calls.** `pulse.simulate` binds answers per
   measurement path, with timeouts from the latency model, assignment errors
   and relaxation during readout, IQ points from a dispersive readout model,
-  and `plant=` to simulate a drifted device without compiling again.
-  `Lowered.export_emulation()` writes the schedule, segments and call manifest
+  and `quantum_system=` to simulate a drifted quantum system without compiling again.
+  `ScheduledKernel.export_to_emulator()` writes the schedule, segments and call manifest
   for a controller; `classical.emulation.emulate` runs a program in virtual
   time against real services, in process or over UDP. Requests and answers
-  use the CUDA-Q real-time wire format (`classical.wire`);
-  `classical.qec.Decoder` talks to a CUDA-QX real-time decoder. The
+  use the CUDA-Q real-time wire format (`classical.wire`). The
   cuDensityMat runtime keeps a classical handler table per run.
+- **CUDA-Q QEC decoders.** `pulse.classical` takes CUDA-Q QEC's real-time
+  decoding functions (`cudaq_qec.qec.enqueue_syndromes`, `get_corrections`,
+  `reset_decoder`, cudaq-qec 0.6.0 to 0.8.1): a kernel calls a decoder
+  configured in CUDA-Q QEC with CUDA-Q QEC's arguments, its requests are the
+  decoding server's messages, and simulation and emulation answer with the
+  configured decoders through CUDA-Q QEC's simulation library. Example
+  `27_realtime_decoding.py`.
 - **Calibrating while the QPU runs.** `classical.calibration` (adaptive T1,
   a frequency binary search, three-point decay and phase estimators,
   golden-section and Nelder-Mead steps), `classical.random_index` (an
   on-device random source), `classical.loop` (a parameter store whose values
-  programs read at run time, and an estimate log) and `runtime.drift` (a
-  drifting device with its truth trace and surrogates). Every time an
+  programs read at run time, and an estimate log), and the outcome
+  probabilities of those experiments with ideal pulses
+  (`survival_probability`, `ramsey_probability`, `rabi_probability`), for
+  drawing shots without simulating them. Every time an
   estimator takes is a `pulse.Time` or a number of ns
   (`ramsey_detuning(mean_hz, theta, 2 * pulse.us)`); converting it costs a
   controller nothing. Examples
   `19_classical_calls.py` and `20_adaptive_calibration.py`, and the
   "Classical Calls at QPU Runtime" guide.
-- **Controller backends.** `Lowered.export_controller()` exports a
+- **Parameter drift.** `pulse.quantum_system(..., parameter_drift=True,
+  parameter_drift_seed=5)` (or `qs.replace(parameter_drift=...)`) builds a
+  simulated quantum system whose qudit frequencies, T1 and drive amplitudes
+  drift: `True` for the default `ParameterDrift()` on every qudit, a model
+  for every qudit, or `{qudit: model}`. Compiling reads only its calibrated
+  values (`qs.physical_qudits`), so it has its non-drifting twin's
+  fingerprint, compiled programs and exports; `pulse.simulate` plays its
+  true values (`qs.true_qudits`, the same `PhysicalQudit` type), which start
+  at the calibration. Drift time follows the run clock: each `simulate`
+  advances it by `shots_count` times the program's duration plus
+  `reset_time` (a new `simulate` keyword, by default five times the longest
+  calibrated T1 of the program's qudits), holding the true values for the
+  call and splitting a call longer than the drift's correlation time into
+  chunks of shots; `qs.advance(20 * pulse.ms)` moves time on between
+  experiments and `qs.parameter_drift_time` reads it. The defaults
+  (`cudaq_pulse.quantum_systems.drift`: `OrnsteinUhlenbeck` frequency and
+  amplitude, `TelegraphT1`) are slow, transmon-sized drift; a model of your
+  own is any object with `start(calibrated, rng)` and
+  `advance(true, calibrated, seconds, rng)`. Example
+  `26_drift_following.py` follows a drifting qudit by swapping programs.
+- **Controller backends.** `ScheduledKernel.export_to_controller()` exports a
   scheduled kernel for an out-of-tree controller backend, format
   `cudaq-pulse.controller/1` (`cudaq_pulse.controller.FORMAT`): the lines
   with their roles, and every drive, readout, wait, sync and classical call
@@ -600,7 +671,7 @@ behavior may change in any 0.x release.
   both `BackendError`s. `examples/controller_backend/` is a toy backend, and
   the "Writing a Controller Backend" guide walks through one.
 - **Controller programs that keep their loops.**
-  `export_controller(version=2)` exports format `cudaq-pulse.controller/2`,
+  `export_to_controller(version=2)` exports format `cudaq-pulse.controller/2`,
   which grows with a program's operations rather than its executions: a
   loop whose iterations repeat is one `loop` event holding its body, with
   its trip count, period and each tone's phase step per iteration; each
@@ -667,7 +738,7 @@ behavior may change in any 0.x release.
   one shape at `float` amplitudes share memory, and a limit that only some
   `float` values exceed is checked when a call supplies them.
 - **Event kinds.** `pulse.Event` names the kinds of event in format /2 for
-  what a controller does, whatever the modality: `play`, `acquire`,
+  what a controller does, whatever the modality: `play`, `readout`,
   `wait`, `sync`, `loop`, `call` and `answer` (/1 keeps `drive`, `readout`
   and `submit`). The export holds the plain strings.
 - **Backend validation.** `backends.validate(backend, controller=...)` runs
@@ -677,20 +748,30 @@ behavior may change in any 0.x release.
   emitted events back (`events()`) is checked for timing, order, program
   count and limits, and one with an emulator (`emulate()`) against the
   simulator. The report's `ok` and `str()` say what failed.
-- **Public API.** The top level is exactly `kernel`, `Kernel`, `compile`,
-  `CompiledKernel`, `Lowered`, `Pass`, `simulate`, `SimulationResult`,
-  `BranchCoverage`, `device`, `Device`, `Qudit`, `Register`,
-  `PulseError`, `Problem`, `DeviceDefinitionError`, `InvalidValueError`,
-  `InvalidTypeError`, `NotFoundError`, `IndexOutOfRangeError`,
-  `UnsupportedError`, `CompilationError`, `TimingError`, `ExecutionError`, `InternalError`,
-  `PulseWarning`, `UpgradeNotice`, `NoTargetError`, `NoDeviceError`,
-  `DeviceMismatchError`, `GpuRuntimeError`, `viz`, `classical`,
-  `controller` and `backends`, plus `__version__`.
+- **Public API.** The top level is exactly:
+  - kernels and programs: `kernel`, `Kernel`, `compile`, `CompiledKernel`,
+    `ScheduledKernel`, `Pass`, `simulate`, `SimulationResult`,
+    `BranchCoverage`;
+  - quantum and control systems: `quantum_system`, `QuantumSystem`, `Qudit`,
+    `Register`, `Controller`, `ControlSystem`, `Processor`, `Capability`,
+    `Link`, and `gates`;
+  - time: `Time`, `ns`, `us`, `ms`, `s`, `round_duration`, `RoundDirection`;
+  - classical calls and exports: `classical`, `Bits`, `Length`, `Event`;
+  - errors and warnings: `PulseError`, `Problem`, `InvalidValueError`,
+    `InvalidTypeError`, `NotFoundError`, `IndexOutOfRangeError`,
+    `UnsupportedError`, `CompilationError`, `TimingError`, `ExecutionError`,
+    `InternalError`, `QuantumSystemDefinitionError`, `NoQuantumSystemError`,
+    `NoProcessQuantumSystemError`, `QuantumSystemMismatchError`,
+    `GpuRuntimeError`, `PulseWarning`, `UpgradeNotice`;
+  - modules: `viz`, `controller` and `backends`;
+
+  plus `__version__`.
+
   `simulate(program, *args, **options)` is the one way to simulate: it
   takes a kernel and its arguments as `compile` takes a kernel, or a
   program compiled already, such as one a worker process receives pickled,
   without compiling it again. A module with run-time float parameters
-  (`lowered.generic`) takes their values as `bind` does; the module of a
+  (`scheduled.generic`) takes their values as `bind` does; the module of a
   call, from `kernel.lower(*args)` or `bind`, takes none. `bind(values)`
   takes one real number per parameter, in the order of `parameters`; too
   few or too many values are an `InvalidTypeError` naming the parameters.
@@ -700,28 +781,53 @@ behavior may change in any 0.x release.
   Every error cudaq-pulse raises on purpose derives from `PulseError` and
   has the built-in base of its kind: `InvalidValueError` is a `ValueError`,
   `InvalidTypeError` a `TypeError`, `NotFoundError` a `KeyError`,
-  `IndexOutOfRangeError` an `IndexError`, `UnsupportedError` a `NotImplementedError`, and `CompilationError`,
-  `ExecutionError` and `InternalError` are `RuntimeError`s. An
+  `IndexOutOfRangeError` an `IndexError`, `UnsupportedError` a
+  `NotImplementedError`, and `CompilationError`, `ExecutionError` and
+  `InternalError` are `RuntimeError`s. An
   `InternalError` is a bug in cudaq-pulse, and its message asks for a
   report. `Calibration.load` of a calibration that is neither shipped nor a
   file raises `NotFoundError`, and a malformed request or answer on a
   classical channel an `ExecutionError`. Every warning cudaq-pulse issues
   is a `PulseWarning`.
   `cudaq_pulse.compiler`, `cudaq_pulse.runtime.simulate` and
-  `cudaq_pulse.targets.transmon_model` list their public names in `__all__`,
-  as the other documented modules do. `cudaq_pulse.targets.UnknownTargetError`
-  (an unregistered target name) and
+  `cudaq_pulse.quantum_systems.transmon_model` list their public names in
+  `__all__`, as the other documented modules do.
+  `cudaq_pulse.quantum_systems.UnknownQuantumSystemError` (an unregistered
+  quantum system name) and
   `cudaq_pulse.compiler.UnsupportedInterpreterError` (a Python whose bytecode
   the kernel tracer does not know) are public, and every public name is in
   the API reference, errors on their own page.
-- Target registration, the shipped targets and calibrations, and the kernel
+- Quantum system registration, the shipped quantum systems and calibrations, and the kernel
   tracer's caches are safe to use from several threads on free-threaded
-  CPython: each target and calibration is built once.
+  CPython: each quantum system and calibration is built once.
 - **Dialects and tools.** The Pulse, Classical, QOp and CuDensityMat MLIR
-  dialects with their lowerings to LLVM; `cudaq-pulse-opt`, the MLIR driver, which
+  dialects with their lowerings to LLVM. A module describes the quantum
+  system it plays on in `pulse.quantum_system`
+  (`#pulse.quantum_system<qudit_frequency_hz = [..], level_counts = [..],
+  anharmonicity_hz = [..], t1_ns = [..], t2_ns = [..],
+  drive_scale_rad_per_ns = [..], static_terms = [..]>`, lists by qudit,
+  each field optional): a compiled module gives the frequencies it is
+  compiled for, a module lowered for simulation the simulated system,
+  whose frequencies may differ from its tones'. It describes the control
+  system in `pulse.control_system` (`#pulse.control_system<clock_period_fs
+  = 1250000/3, lines = [#pulse.line<drive, qudits = [0], delay_cycles =
+  3>], controllers = [#pulse.controller<grid_cycles = 2, ...>]>`): the
+  program clock's period in femtoseconds as an exact fraction, each line's
+  qudits, tones at once, delay and controller, and each controller's grid,
+  outcome latencies, start spread and uncertainty, persistent frames,
+  blocking on calls and `max_duration_cycles`. A function's
+  `pulse.schedule_state` (`#pulse.schedule_state<unscheduled|timed|placed>`,
+  unscheduled when absent) says how far it is scheduled: scheduling marks it
+  `timed`, or `placed` when a line delay moved some op; `pulse-verify`
+  requires a start and duration on every timed op of a timed or placed
+  function, and `pulse-merge-waits` takes only an unscheduled one. The
+  tools: `cudaq-pulse-opt`, the MLIR driver, which
   also loads out-of-tree pass plugins and whose `--version` prints the
   cudaq-pulse version and the LLVM it was built with; `python -m cudaq_pulse.doctor`, which
   reports what an installation contains and whether GPU execution works.
+  A program in the dialects keeps its meaning through MLIR's standard
+  passes, such as `cse`, `canonicalize` and `inline`: an operator program
+  ends in `qop.evolve`, which evolves the state, so the passes keep it.
 - **Packaging.** One abi3 wheel per platform for CPython 3.12 and newer:
   Linux x86_64 and aarch64 (manylinux_2_28) with the CUDA 12 and CUDA 13
   GPU runtimes, selected by the `[cu12]` or `[cu13]` extra, and macOS arm64
@@ -733,7 +839,9 @@ behavior may change in any 0.x release.
   `pip install cudaq-pulse` installs automatically (`cudaq-pulse` requires
   it at the same version). Each
   wheel carries its license files and `THIRD_PARTY_NOTICES`, generated from
-  what its binaries link, with each third-party license's text.
+  what its binaries link, with each third-party license's text. The wheels
+  are on PyPI (`pip install cudaq-pulse`, with `[cu12]`, `[cu13]` or `[gpu]`
+  for GPU simulation); each GitHub release also carries them and the sdist.
 
 ### Fixed
 
@@ -768,10 +876,10 @@ behavior may change in any 0.x release.
   `Controller.max_instructions` operations (unset: no limit); a loop
   that unrolls past them stops tracing as soon as the program does, with a
   `CompilationError` at the loop's line naming the loop, about how many
-  operations it unrolls to and the limit. `simulate(shots=...)` and `emulate(shots=...)`
+  operations it unrolls to and the limit. `simulate(shots_count=...)` and `emulate(shots_count=...)`
   take a positive `int` (`InvalidTypeError` or `InvalidValueError`
   otherwise; `simulate`'s default `None` still samples nothing), and a
-  qudit index past a device or register is an `IndexOutOfRangeError`, an
+  qudit index past a quantum system or register is an `IndexOutOfRangeError`, an
   `IndexError`, that says how many qudits it has. A NaN or infinite float argument is an
   `InvalidValueError` naming the parameter wherever the program is used:
   run, simulated, exported or printed. Finding the line of a value the

@@ -24,9 +24,6 @@ This example shows:
 3. The classical-call report, simulation with the Python bodies standing in
    for the services, and the emulation artifact and call manifest a
    controller or emulator runs the program from.
-
-NOTE: Requires cudaq-pulse native C++ bindings (see README for build
-instructions).
 """
 
 import json
@@ -37,7 +34,7 @@ from pathlib import Path
 import cudaq_pulse as pulse
 from cudaq_pulse import ControlSystem
 from cudaq_pulse.classical import Link, emulation
-from cudaq_pulse.targets import Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import PhysicalQudit
 
 # A 20 ns pi pulse: with H = amplitude * X / 2, this amplitude (rad/ns)
 # rotates by pi.
@@ -49,11 +46,13 @@ cal = {
 }
 
 # Two links, by name: one to a GPU decoder, and the controller's own FPGA
-# logic. Functions name the link their requests travel on.
+# logic. Functions name the link their requests travel on. A GPU decoder
+# answers in a few microseconds (measured round trips are about 3-4 us), so
+# its budget is 4.5 us; the controller's logic answers within 200 ns.
 control_system = ControlSystem(
     links={
         "gpu": Link(fixed_ns=100, bytes_per_ns=10, feedback_ns=50),
-        "controller": Link(fixed_ns=4, feedback_ns=8, max_in_flight=4),
+        "controller": Link(fixed_ns=4, feedback_ns=8, slots=4),
     }
 )
 
@@ -61,19 +60,19 @@ control_system = ControlSystem(
 # ── 1. Real-time decoding with feed-forward ─────────────────────────────────
 
 
-@pulse.classical(min_latency_ns=200, nominal_latency_ns=300, max_latency_ns=400, link="gpu")
+@pulse.classical(min_latency_ns=3000, nominal_latency_ns=3500, max_latency_ns=4500, link="gpu")
 def decode(syndrome: pulse.Bits) -> bool:
     """A toy decoder: correct when the syndrome bit is set."""
     return bool(syndrome[0])
 
 
 @pulse.kernel
-def decoded_feed_forward(qubit):
+def decoded_feed_forward(qudit):
     """Measure, decode, and correct; the raw measurement if the decoder is late."""
-    drive_line = get_drive_line(qubit)
-    readout_line = get_readout_line(qubit)
+    drive_line = get_drive_line(qudit)
+    readout_line = get_readout_line(qudit)
 
-    decode_deadline = 350 * pulse.ns
+    decode_deadline = 4 * pulse.us
     m = readout(readout_line, square(cal["readout_duration"], 0.05))
     in_time, correction = decode.submit([m]).result(timeout=decode_deadline)
     sync(drive_line, readout_line)
@@ -121,10 +120,10 @@ def update_t1(
 
 
 @pulse.kernel
-def track_t1(qubit, rounds: int, alpha: float, beta: float, first_wait):
+def track_t1(qudit, rounds: int, alpha: float, beta: float, first_wait):
     """Excite, wait, measure, update the estimate, reset; repeat."""
-    drive_line = get_drive_line(qubit)
-    readout_line = get_readout_line(qubit)
+    drive_line = get_drive_line(qudit)
+    readout_line = get_readout_line(qudit)
     pi_pulse = square(cal["pi_duration"], cal["pi_amp"])
     readout_pulse = square(cal["short_readout_duration"], 0.05)
 
@@ -147,12 +146,12 @@ def track_t1(qubit, rounds: int, alpha: float, beta: float, first_wait):
 # ── 3. Report, simulation and emulation export ──────────────────────────────
 
 
-def print_report(lowered):
+def print_report(scheduled):
     """Each call's issue time, the time its answer is due, and its slack
     (how much later the answer could come without delaying a pulse)."""
-    clock = lowered.target.clock_ghz
+    clock = scheduled.quantum_system.clock_ghz
     print(f"  {'function':<10} {'link':>10} {'issue ns':>9} {'ready ns':>9} {'slack ns':>9}")
-    for call in lowered.classical_report():
+    for call in scheduled.classical_report():
         slack = "-" if call.slack_cycles is None else f"{call.slack_cycles / clock:.1f}"
         print(
             f"  {call.function:<10} {call.link_name:>10} {call.submit_cycles / clock:>9.1f} "
@@ -160,8 +159,8 @@ def print_report(lowered):
         )
 
 
-def export(lowered, name, directory):
-    artifact = lowered.export_emulation()
+def export(scheduled, name, directory):
+    artifact = scheduled.export_to_emulator()
     path = Path(directory) / f"{name}.json"
     path.write_text(json.dumps(artifact, indent=1))
     print(
@@ -179,25 +178,26 @@ def export(lowered, name, directory):
 
 if __name__ == "__main__":
     # A single transmon with T1 = 10 us, for simulation.
-    target = TargetDescription(
+    qs = pulse.quantum_system(
         name="classical-demo",
-        qubits={
-            0: Qubit(index=0, frequency_hz=5e9, anharmonicity_hz=-2e8, t1_us=10.0, t2_star_us=0.0)
+        qudits={
+            0: PhysicalQudit(
+                index=0, frequency_hz=5e9, anharmonicity_hz=-2e8, t1_us=10.0, t2_star_us=0.0
+            )
         },
     )
-    dev = pulse.device(target)
-    q = dev.qudit_handles[0]
+    q = qs.qudits[0]
     # A 0.25 ns step resolves the third level's 200 MHz anharmonicity, with
     # 20 steps per period.
     dt_ns = 0.25
 
     print("=== 1. Decoding with feed-forward ===")
-    decoded = pulse.compile(decoded_feed_forward, device=dev, control_system=control_system).lower(
-        q
-    )
+    decoded = pulse.compile(
+        decoded_feed_forward, quantum_system=qs, control_system=control_system
+    ).lower(q)
     print_report(decoded)
     # Branch on whether the answer is in time, with the decoder's latency
-    # model (triangular over 200-400 ns, mode 300 ns): P(L <= 350) = 0.875.
+    # model (triangular over 3-4.5 us, mode 3.5 us): P(L <= 4 us) = 0.833.
     result = pulse.simulate(
         decoded, initial_state=[2**-0.5, 2**-0.5, 0.0], latency_branching=True, dt_ns=dt_ns
     )
@@ -209,7 +209,7 @@ if __name__ == "__main__":
 
     print("\n=== 2. Adaptive T1 tracking (3 rounds, true T1 = 10 us) ===")
     rounds, alpha0, beta0, first_wait = 3, 1.0, 5000.0, 5 * pulse.us  # prior T1 = 5 us
-    tracker = pulse.compile(track_t1, device=dev, control_system=control_system).lower(
+    tracker = pulse.compile(track_t1, quantum_system=qs, control_system=control_system).lower(
         q, rounds, alpha0, beta0, first_wait
     )
     # The static schedule places each variable wait at its lower bound; every
@@ -234,11 +234,11 @@ if __name__ == "__main__":
         export(decoded, "decoded_feed_forward", directory)
         export(tracker, "track_t1", directory)
     # Run the decoder program in virtual time against its Python body, with
-    # 120 ns fixed delay and 40 ns mean jitter each way on the link.
+    # 1.5 us fixed delay and 300 ns mean jitter each way on the link.
     run = emulation.emulate(
         decoded,
-        shots=200,
-        transport=emulation.Transport(fixed_ns=120, jitter_ns=40),
+        shots_count=200,
+        transport=emulation.Transport(fixed_ns=1500, jitter_ns=300),
         service_time="none",
         seed=1,
     )

@@ -5,7 +5,7 @@
 ``cudaq_pulse.compile(k)`` returns a callable ``CompiledKernel`` (see
 ``kernel/_kernel.py``); this module holds what it is built from: the options
 that pick passes and a schedule, the native build of one specialization, and
-``Lowered``, the read-only view of one compiled module.
+``ScheduledKernel``, the read-only view of one compiled module.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
     from . import _clocks
     from ._classical_report import ClassicalCall as ClassicalCall
-    from ._device import Device
+    from ._device import QuantumSystem
     from ._programs import _Role
     from ._system import Controller, ControlSystem
     from ._waits import _WaitLengths
@@ -45,11 +45,13 @@ if TYPE_CHECKING:
     from .controller import UsageReport
     from .kernel._kernel import CompiledKernel, Kernel
 
+    type _Kernel = ScheduledKernel
+
 __all__ = [
     "DEFAULT_PASSES",
     "CompileMetrics",
     "IRLevel",
-    "Lowered",
+    "ScheduledKernel",
     "Pass",
     "ScheduledEvent",
     "UnsupportedInterpreterError",
@@ -169,16 +171,16 @@ _LEVELS = tuple(IRLevel)
 # The parameters a measurement can select while the program runs, in the
 # order lowering asks about them, and those any target takes that way.
 _RUNTIME_KINDS = ("amplitude", "phase", "frequency")
-# Lowered.schedule is a list up to this many events.
+# ScheduledKernel.schedule is a list up to this many events.
 _LISTED_EVENTS = 10_000
 _SELECTED_AT_RUNTIME: frozenset[str] = frozenset()
 
 
-def _can_select_at_runtime(target: Device, parameter_kind: str) -> bool:
+def _can_select_at_runtime(target: QuantumSystem, parameter_kind: str) -> bool:
     """Whether a program compiled for *target* can take a value of
     *parameter_kind* that a measurement selects while it runs.
 
-    *target* is the device the program is built for. *parameter_kind* is
+    *target* is the quantum system the program is built for. *parameter_kind* is
     ``"amplitude"`` (of a waveform, or the factor of ``wf_scale``),
     ``"phase"`` (of ``shift_phase`` and ``set_phase``) or ``"frequency"``
     (of ``shift_frequency`` and ``set_frequency``). Durations, waveform
@@ -189,9 +191,9 @@ def _can_select_at_runtime(target: Device, parameter_kind: str) -> bool:
     once the measurement is in. Everywhere else, each op that uses the value
     runs in both arms of an if on the measurement, with that arm's value.
     Simulation gives the same result either way. No target takes any kind
-    at run time: ``export_controller`` gives a kept value as ``null`` with
+    at run time: ``export_to_controller`` gives a kept value as ``null`` with
     its expression beside it (the select on the measurement), and
-    ``export_emulation`` carries no parameters.
+    ``export_to_emulator`` carries no parameters.
     """
     return parameter_kind in _SELECTED_AT_RUNTIME
 
@@ -427,12 +429,12 @@ class ScheduledEvent:
 
     A call to a classical function adds a ``"submit"`` event, while the
     request holds its link, and a zero-length ``"answer"`` event, when the
-    answer is taken. For those, ``line`` is the link id and ``qubit`` is -1.
+    answer is taken. For those, ``line`` is the link id and ``qudit`` is -1.
     """
 
     kind: str
     line: int
-    qubit: int
+    qudit: int
     start_cycles: int | None
     duration_cycles: int | None
 
@@ -456,7 +458,7 @@ class ScheduledEvent:
 
 @dataclass(frozen=True)
 class Segment:
-    """One segment of a compiled kernel, from ``Lowered.segments()``.
+    """One segment of a compiled kernel, from ``ScheduledKernel.segments()``.
 
     A variable wait (its length computed from a classical answer) or a
     blocking classical wait is a barrier for the lines that depend on it:
@@ -492,7 +494,7 @@ class CompileMetrics:
     schedule_ms: float = 0.0
     total_ms: float = 0.0
     op_count: int = 0
-    target: str = ""
+    quantum_system: str = ""
 
 
 @dataclass(frozen=True)
@@ -588,7 +590,7 @@ def _bind_count_error(parameters: tuple[str, ...], values: Any) -> InvalidTypeEr
 
 def _bind_checked(parameters: tuple[str, ...], values: Any) -> list[float]:
     """*values* as floats, one per parameter, or the error for their count or
-    naming the first parameter whose value is not a real number."""
+    naming the first parameter whose value is not a real number, or is NaN."""
     try:
         fits = len(values) == len(parameters)
     except TypeError:
@@ -605,11 +607,16 @@ def _bind_checked(parameters: tuple[str, ...], values: Any) -> list[float]:
             raise InvalidTypeError(
                 f"bind(): the value of {name!r} must be a real number, got complex {v!r}"
             )
-        out.append(float(v))
+        v = float(v)
+        if v != v:
+            raise InvalidValueError(
+                f"bind(): the value of {name!r} is nan; a float argument must be a number"
+            )
+        out.append(v)
     return out
 
 
-class Lowered:
+class ScheduledKernel:
     """One compiled module of a kernel: read-only text, schedule and metrics.
 
     ``kernel.lower(*args)`` and ``compiled.lower(*args)`` return the module
@@ -623,10 +630,10 @@ class Lowered:
     call's schedule, text and simulation come from the module with the call's
     values bound and scheduled again.
 
-    ``qudits`` holds the device qudits the program drives or measures (gets
+    ``qudits`` holds the quantum system qudits the program drives or measures (gets
     a line on), in increasing order: the qudits ``simulate()`` models.
 
-    A module pickles as MLIR bytecode with its device and options, and runs
+    A module pickles as MLIR bytecode with its quantum system and options, and runs
     unpickled without compiling again, in any process of the build that
     compiled it; another build raises ``UnsupportedError``. A call's view
     pickles its values with its generic module.
@@ -634,7 +641,7 @@ class Lowered:
     Qudit parameters annotated ``Qudit`` or ``Register`` are runtime qudits:
     the module takes them as slots, numbered in parameter order, and a call
     binds each slot to its handle's carrier (``carriers``), on the call's
-    device. Calls with other handles of the same shape share the module.
+    quantum system. Calls with other handles of the same shape share the module.
 
     The module with a call's values substituted is shared by every view
     with them once they recur, so exporting or lowering the same call again
@@ -647,7 +654,7 @@ class Lowered:
         "_text",
         "_lock",
         "_concrete_module",
-        "target",
+        "quantum_system",
         "metrics",
         "parameters",
         "arguments",
@@ -678,7 +685,7 @@ class Lowered:
         self,
         module: Any,
         *,
-        target: Device,
+        quantum_system: QuantumSystem,
         metrics: CompileMetrics,
         parameters: tuple[str, ...],
         qudits: tuple[int, ...],
@@ -690,7 +697,7 @@ class Lowered:
         self._text: str | None = None
         self._lock = threading.Lock()
         self._concrete_module: Any = None
-        self.target = target
+        self.quantum_system = quantum_system
         self.metrics = metrics
         self.parameters = parameters
         self.arguments: tuple[float, ...] = ()
@@ -698,14 +705,14 @@ class Lowered:
         self.options = options
         self.scheduled = scheduled
         # The module a call's view shares; None for that module itself.
-        self._generic: Lowered | None = None
+        self._generic: ScheduledKernel | None = None
         self.waits = waits
         # The classical functions the program calls, in declaration order.
         self.classical: tuple[Any, ...] = ()
         # Whether ops read values measurements select while the program runs.
         self.runtime_selects = False
 
-    def bind(self, values: Sequence[float]) -> Lowered:
+    def bind(self, values: Sequence[float]) -> ScheduledKernel:
         """This module with values for its float parameters, sharing it.
 
         *values* holds one real number per entry of ``parameters``, in that
@@ -713,9 +720,9 @@ class Lowered:
         the parameters, and a wait length computed from the values that is not
         a non-negative number of cycles within the wait's bounds a
         ``ValueError``. A value that is not a real number (a bool or a str) is
-        an ``InvalidTypeError``, and a NaN or infinity an
-        ``InvalidValueError``, each naming the parameter, where the module is
-        used: run, simulated, exported or printed."""
+        an ``InvalidTypeError``, and a NaN an ``InvalidValueError``, each
+        naming the parameter; an infinity is an ``InvalidValueError`` naming
+        it where the module is used: run, simulated, exported or printed."""
         try:
             arity = self._arity
             arguments = tuple(values)
@@ -727,6 +734,9 @@ class Lowered:
             return self._with_values(_bind_checked(self.parameters, values))
         if len(arguments) != arity:
             raise _bind_count_error(self.parameters, arguments)
+        for v in arguments:
+            if v.__class__ is float and v != v:
+                _bind_checked(self.parameters, arguments)
         # The view is made here as in _with_values: a call to it would be a
         # third of a bind.
         waits = self.waits
@@ -741,7 +751,7 @@ class Lowered:
         view._text = None
         view._lock = self._lock
         view._concrete_module = None
-        view.target = self.target
+        view.quantum_system = self.quantum_system
         view.metrics = self.metrics
         view.parameters = ()
         view.arguments = arguments
@@ -754,10 +764,10 @@ class Lowered:
         view.runtime_selects = self.runtime_selects
         return view
 
-    def _with_values(self, values: Sequence[float]) -> Lowered:
-        """``bind`` for *values* known to be one real number per parameter,
-        such as a kernel call's. Whether each is a finite float is checked
-        where the module uses them (``_concrete`` and simulation)."""
+    def _with_values(self, values: Sequence[float]) -> ScheduledKernel:
+        """``bind`` for *values* known to be one real number per parameter and
+        none NaN, such as a kernel call's. Whether each is a finite float is
+        checked where the module uses them (``_concrete`` and simulation)."""
         waits = self.waits
         if waits is not None:
             waits.check(values)
@@ -766,7 +776,7 @@ class Lowered:
         view._text = None
         view._lock = self._lock
         view._concrete_module = None
-        view.target = self.target
+        view.quantum_system = self.quantum_system
         view.metrics = self.metrics
         view.parameters = ()
         view.arguments = tuple(values)
@@ -780,7 +790,7 @@ class Lowered:
         return view
 
     @property
-    def generic(self) -> Lowered:
+    def generic(self) -> ScheduledKernel:
         """The module without values: the one a call's view shares, or this
         module when it holds no values. ``generic.bind(values)`` makes a call
         of it with new values."""
@@ -869,27 +879,28 @@ class Lowered:
         decide it. A wait a float parameter sets counts once the module has
         values."""
         # The clock exactly as its float holds it, as Fraction(clock_ghz) is.
-        numerator, denominator = self.target.clock_ghz.as_integer_ratio()
-        schedule = self.schedule
-        if type(schedule) is list:
+        numerator, denominator = self.quantum_system.clock_ghz.as_integer_ratio()
+        module = self._concrete() if self._retimed or self.carriers else self._module
+        with self._lock:
+            events = module.event_tree(_LISTED_EVENTS)
+        if type(events) is list:
             end: int | None = 0
-            for event in schedule:
-                if event.start_cycles is None or event.duration_cycles is None:
+            for _, _, _, start, length in events:
+                if start is None or length is None:
                     end = None
                     break
-                end = max(end, event.start_cycles + event.duration_cycles)
+                end = max(end, start + length)
         else:
             from ._loops import Schedule
 
-            assert isinstance(schedule, Schedule)
-            end = schedule.latest_end()
+            end = Schedule(events[0], ScheduledEvent).latest_end()
         if end is None:
             raise ValueError(
                 "the module is scheduled when it has the values of its float "
                 f"parameters ({', '.join(self.parameters)}); lower it with them first"
             )
         if end.__class__ is not int:
-            return Time(end / self.target.clock_ghz)
+            return Time(end / self.quantum_system.clock_ghz)
         return _time(end * denominator, numerator)
 
     @property
@@ -948,7 +959,7 @@ class Lowered:
     @property
     def controller_usage(self) -> UsageReport:
         """What the classical functions use of the processors of the
-        device's control system (``cudaq_pulse.controller.UsageReport``),
+        quantum system's control system (``cudaq_pulse.controller.UsageReport``),
         built when read; ``print`` it for a table."""
         from .controller import usage
 
@@ -961,7 +972,7 @@ class Lowered:
         """
         return (_report or _load_report())(self)
 
-    def export_emulation(self, *, controller: int | None = None) -> dict[str, Any]:
+    def export_to_emulator(self, *, controller: int | None = None) -> dict[str, Any]:
         """The program for a controller emulator: its schedule by segment, its
         calls and the manifest of its classical functions (see
         ``cudaq_pulse.classical.emulation``). On a control system of several
@@ -970,7 +981,7 @@ class Lowered:
 
         return export(self, controller)
 
-    def export_controller(
+    def export_to_controller(
         self,
         sample_rate_ghz: float | None = None,
         *,
@@ -999,10 +1010,10 @@ class Lowered:
         return plot_schedule(self, figsize=figsize, title=title)
 
     # Read-only: a copy is the module itself.
-    def __copy__(self) -> Lowered:
+    def __copy__(self) -> ScheduledKernel:
         return self
 
-    def __deepcopy__(self, memo: dict[int, Any]) -> Lowered:
+    def __deepcopy__(self, memo: dict[int, Any]) -> ScheduledKernel:
         return self
 
     def __reduce__(self) -> tuple[Any, ...]:
@@ -1012,12 +1023,14 @@ class Lowered:
 
     def __repr__(self) -> str:
         params = f", parameters={list(self.parameters)}" if self.parameters else ""
-        return f"<Lowered {self.metrics.op_count} ops on {self.target.name}{params}>"
+        return (
+            f"<ScheduledKernel {self.metrics.op_count} ops on {self.quantum_system.name}{params}>"
+        )
 
 
-class _View(Lowered):
+class _View(ScheduledKernel):
     """A call's view of a module, made by ``bind``: ``_View()`` runs no
-    ``__init__`` and is the cheapest way to make a ``Lowered``."""
+    ``__init__`` and is the cheapest way to make a ``ScheduledKernel``."""
 
     __slots__ = ()
     if TYPE_CHECKING:
@@ -1034,12 +1047,12 @@ def _lowered(
     fine_delays: Mapping[tuple[str, int], float] | None,
     role: _Role | None = None,
     **fields: Any,
-) -> Lowered:
+) -> ScheduledKernel:
     if role is None and clocks is None and fine_delays is None:
-        return Lowered(module, **fields)
+        return ScheduledKernel(module, **fields)
     from ._programs import _ClockedLowered, _Placed
 
-    lowered: Lowered
+    lowered: ScheduledKernel
     if role is not None:
         lowered = _Placed(module, role=role, **fields)
     else:
@@ -1049,10 +1062,10 @@ def _lowered(
     return lowered
 
 
-_report: Callable[[Lowered], list[ClassicalCall]] | None = None
+_report: Callable[[ScheduledKernel], list[ClassicalCall]] | None = None
 
 
-def _load_report() -> Callable[[Lowered], list[ClassicalCall]]:
+def _load_report() -> Callable[[ScheduledKernel], list[ClassicalCall]]:
     global _report
     from ._classical_report import report
 
@@ -1105,12 +1118,12 @@ def build(
     fn: Any,
     trace_args: Sequence[Any],
     parameters: tuple[str, ...],
-    target: Device,
+    target: QuantumSystem,
     options: CompileOptions,
     slots: int = 0,
     role: _Role | None = None,
     max_duration_cycles: int | None = None,
-) -> tuple[Lowered, Any]:
+) -> tuple[ScheduledKernel, Any]:
     """Trace *fn* and build its module on *target*.
 
     *trace_args* holds a ``Parameter`` sentinel for every float parameter
@@ -1128,7 +1141,7 @@ def build(
     from .kernel.bytecode_bridge import _trace_kernel_with_builder
     from .kernel.packed_ir_builder import PackedIRBuilder
 
-    metrics = CompileMetrics(target=target.name)
+    metrics = CompileMetrics(quantum_system=target.name)
     name = getattr(fn, "__name__", "kernel")
     t0 = time.perf_counter()
     machine = options.machine
@@ -1157,11 +1170,11 @@ def build(
             error.pulse_callers = frames[1:]  # type: ignore[attr-defined]
         raise error
     check_root_schedule(options.schedule, builder)
-    qudits = builder.qubits
-    # The device's tables, of which the module records qudits 0 to
+    qudits = builder.qudits
+    # The quantum system's tables, of which the module records qudits 0 to
     # qudit_count - 1: when the target defines all of those, it defines every
     # qudit of the program, else they are checked.
-    qudit_count = builder.n_qubits
+    qudit_count = builder.qudit_count
     carrier_count, freq, readout_freqs = target._tables
     if carrier_count < qudit_count:
         carrier_count, freq, readout_freqs = target._frequency_tables(qudit_count)
@@ -1174,7 +1187,7 @@ def build(
                     defined = sorted(target.frequencies)
                     span = f"{defined[0]}..{defined[-1]}" if defined else "none"
                     raise CompilationError(
-                        f"{name}() uses qudit {', '.join(map(str, missing))}, which target "
+                        f"{name}() uses qudit {', '.join(map(str, missing))}, which quantum system "
                         f"{target.name!r} does not define (it defines qudits {span})"
                     )
     buf: Any = builder.get_buffer()
@@ -1194,7 +1207,7 @@ def build(
                 list(parameters),
                 ["f64"] * len(parameters),
                 name=name,
-                n_slots=slots,
+                slot_count=slots,
                 readout_freqs=readout_freqs,
             )
         elif parameters:
@@ -1226,14 +1239,11 @@ def build(
             if system is None or machine.controller is not None
             else system._links_attribute(machine, links, target.clock_ghz)
         )
-    if max_duration_cycles is not None:
-        module.set_attributes(f"{{pulse.max_duration_cycles = {int(max_duration_cycles)} : i64}}")
-    if machine.controller is not None:
-        if machine.controller.persistent_frames:
-            module.set_attributes("{pulse.persistent_frames}")
-        if machine.controller.blocks_on_calls:
-            module.set_attributes("{pulse.blocks_on_calls}")
-    fine_delays = None if plain else _clocked_module(module, machine, target, clocks, builder)
+    fine_delays = (
+        None
+        if plain and max_duration_cycles is None
+        else _clocked_module(module, machine, target, clocks, max_duration_cycles)
+    )
     metrics.ffi_ms = (time.perf_counter() - t0) * 1000
 
     t0 = time.perf_counter()
@@ -1261,9 +1271,15 @@ def build(
     try:
         module.schedule(*schedule_args)
     except Exception as e:
+        text = str(e)
+        # Delayed lines take the program past what a schedule counts, with
+        # every wait at its lowest length: with any values.
+        at = text.find("the program lasts more than 2**60 cycles with its lines delayed")
+        if at >= 0:
+            raise CompilationError(text[at:].partition("\n")[0]) from None
         # A timing budget counts every wait at its highest length, so it
         # fails the same way with any values.
-        if not parameters or any(name in str(e) for name in _BUDGETS):
+        if not parameters or any(name in text for name in _BUDGETS):
             raise
         scheduled = False
     metrics.schedule_ms = (time.perf_counter() - t0) * 1000
@@ -1281,18 +1297,18 @@ def build(
             module.program_length(),
         )
     if plain and role is None:
-        lowered = Lowered(
+        lowered = ScheduledKernel(
             module,
-            target=target,
+            quantum_system=target,
             metrics=metrics,
             parameters=parameters,
-            qudits=builder.used_qubits or qudits,
+            qudits=builder.used_qudits or qudits,
             options=options,
             scheduled=scheduled,
             waits=waits,
         )
     else:
-        used = builder.used_qubits
+        used = builder.used_qudits
         if slots:
             qudits = tuple(q for q in qudits if q >= 0)
             used = tuple(q for q in used if q >= 0)
@@ -1301,7 +1317,7 @@ def build(
             clocks,
             fine_delays,
             role,
-            target=target,
+            quantum_system=target,
             metrics=metrics,
             parameters=parameters,
             qudits=used or qudits,
@@ -1326,7 +1342,7 @@ def build(
 
 
 def _clocked_builder(
-    builder: Any, machine: _MachineModel, target: Device
+    builder: Any, machine: _MachineModel, target: QuantumSystem
 ) -> _clocks.ClockPlan | None:
     """Set *builder* up for *machine*'s controllers; their clock plan."""
     from . import _clocks
@@ -1367,30 +1383,80 @@ def _clocked_builder(
 def _clocked_module(
     module: Any,
     machine: _MachineModel,
-    target: Device,
+    target: QuantumSystem,
     clocks: _clocks.ClockPlan | None,
-    builder: Any,
+    max_duration_cycles: int | None,
 ) -> Mapping[tuple[str, int], float] | None:
-    """Set the grid, controller and line delay attributes of *module*; the
-    fine delays."""
-    if clocks is not None:
-        grids = clocks.attributes(builder.n_qubits)
-        if grids is not None:
-            module.set_attributes(grids)
-    system = machine._system
-    if system is not None and machine.controller is None:
-        module.set_attributes(system._controllers_attribute(target.clock_ghz, builder.n_qubits))
+    """Give *module* its control system (``pulse.control_system``): the
+    controller and delay of each line, and each controller's grid, outcome
+    latencies, start uncertainty, frames, calls and *max_duration_cycles*,
+    where any differs from the default; the fine delays."""
+    from . import _clocks
+
+    shifts: Mapping[tuple[str, int], int] = {}
     fine_delays = None
     if machine._line_delays:
-        shifts, fine_delays = _line_delays(machine, target, clocks, builder.n_qubits)
-        if shifts is not None:
-            module.set_attributes(f"{{pulse.line_delays = {shifts}}}")
+        shifts, fine_delays = _line_delays(machine, target, clocks)
+    lines = _lines(machine, shifts)
+    system = machine._system
+    if system is not None and machine.controller is None:
+        controllers = system._controllers_attribute(target.clock_ghz, max_duration_cycles)
+    else:
+        controllers = _controller_attribute(machine.controller, clocks, max_duration_cycles)
+    if lines or controllers:
+        text = "{pulse.control_system = #pulse.control_system<clock_period_fs = "
+        text += _clocks.clock_period_fs(target.clock_ghz)
+        if lines:
+            text += f", lines = {lines}"
+        if controllers:
+            text += f", controllers = {controllers}"
+        module.set_attributes(text + ">}")
     return fine_delays
 
 
+def _controller_attribute(
+    controller: Controller | None,
+    clocks: _clocks.ClockPlan | None,
+    max_duration_cycles: int | None,
+) -> str:
+    """The ``controllers`` of a program's control system on one controller:
+    its grid, frames, calls and *max_duration_cycles*; empty when all are
+    the defaults."""
+    fields = []
+    if clocks is not None and clocks.controllers[0].grid > 1:
+        fields.append(f"grid_cycles = {clocks.controllers[0].grid}")
+    if controller is not None:
+        if controller.persistent_frames:
+            fields.append("persistent_frames")
+        if controller.blocks_on_calls:
+            fields.append("blocks_on_calls")
+    if max_duration_cycles is not None:
+        fields.append(f"max_duration_cycles = {int(max_duration_cycles)}")
+    return f"[#pulse.controller<{', '.join(fields)}>]" if fields else ""
+
+
+def _lines(machine: _MachineModel, shifts: Mapping[tuple[str, int], int]) -> str:
+    """The ``lines`` of a program's control system: each line the system
+    gives a controller of (on several) or that *shifts* moves, with its
+    controller and delay in program cycles; empty for none."""
+    system = machine._system if machine.controller is None else None
+    owners: Mapping[tuple[str, int], int] = {} if system is None else system._line_owners
+    lines = []
+    for role, qudit in sorted({*owners, *shifts}):
+        line = f"#pulse.line<{role}, qudits = [{qudit}]"
+        if shift := shifts.get((role, qudit)):
+            line += f", delay_cycles = {shift}"
+        if owner := owners.get((role, qudit)):
+            line += f", controller = {owner}"
+        lines.append(line + ">")
+    return f"[{', '.join(lines)}]" if lines else ""
+
+
 def _line_delays(
-    machine: _MachineModel, target: Device, clocks: _clocks.ClockPlan | None, n_qudits: int
-) -> tuple[str | None, dict[tuple[str, int], float]]:
+    machine: _MachineModel,
+    target: QuantumSystem,
+    clocks: _clocks.ClockPlan | None,
+) -> tuple[dict[tuple[str, int], int], dict[tuple[str, int], float]]:
     from . import _clocks
 
     system = machine._system if machine.controller is None else None
@@ -1400,7 +1466,6 @@ def _line_delays(
             machine.controller,
             clocks,
             target.clock_ghz,
-            n_qudits,
             None if system is None else system.controllers,
             None if system is None else system._line_owners,
         )
@@ -1408,7 +1473,7 @@ def _line_delays(
         raise CompilationError(str(e)) from None
 
 
-def _check_controller(lowered: Lowered) -> Lowered:
+def _check_controller(lowered: ScheduledKernel) -> ScheduledKernel:
     """*lowered*, checked against its controller limits: those it exceeds
     whatever its float values fail now, and when some values may exceed
     others, each call's values are checked when they are bound."""
@@ -1433,21 +1498,21 @@ def _check_controller(lowered: Lowered) -> Lowered:
     return (_CheckedPerCall if lowered._role is None else _CheckedPlaced)(lowered)
 
 
-def with_line_delays(lowered: Lowered, options: CompileOptions, n_qudits: int) -> Lowered | None:
-    """*lowered*, a scheduled module of *n_qudits* qudits, compiled again for
-    *options*, which differ from its own only in the machine's line delays:
+def with_line_delays(lowered: _Kernel, options: CompileOptions) -> _Kernel | None:
+    """*lowered*, a scheduled module, compiled again for *options*, which
+    differ from its own only in the machine's line delays:
     its module before scheduling is kept, and only scheduling, the checks and
     the exports are done again. ``None`` when scheduling it again fails, for
     a full compile to report, and for a module with list or qudit
     parameters, whose calls share what its own schedule gives them."""
     if lowered._role is not None:
         return None
-    target = lowered.target
+    target = lowered.quantum_system
     clocks = lowered.clocks
     fine_delays = None
-    shifts = None
+    shifts: Mapping[tuple[str, int], int] = {}
     if options.machine._line_delays:
-        shifts, fine_delays = _line_delays(options.machine, target, clocks, n_qudits)
+        shifts, fine_delays = _line_delays(options.machine, target, clocks)
     if clocks is None or clocks.readout_latency_cycles is None:
         schedule_args = options.schedule_args()
     else:
@@ -1457,11 +1522,13 @@ def with_line_delays(lowered: Lowered, options: CompileOptions, n_qudits: int) -
     t0 = time.perf_counter()
     try:
         with lowered._lock:
-            module = lowered._module.with_line_delays(shifts or "", *schedule_args)
+            module = lowered._module.with_line_delays(
+                _lines(options.machine, shifts), *schedule_args
+            )
     except Exception:
         return None
     old = lowered.metrics
-    metrics = CompileMetrics(target=old.target)
+    metrics = CompileMetrics(quantum_system=old.quantum_system)
     metrics.op_count = old.op_count
     metrics.schedule_ms = (time.perf_counter() - t0) * 1000
     metrics.total_ms = metrics.schedule_ms
@@ -1469,7 +1536,7 @@ def with_line_delays(lowered: Lowered, options: CompileOptions, n_qudits: int) -
         module,
         clocks,
         fine_delays,
-        target=target,
+        quantum_system=target,
         metrics=metrics,
         parameters=lowered.parameters,
         qudits=lowered.qudits,
@@ -1494,7 +1561,7 @@ class _ClassicalFunctions(tuple[Any, ...]):
 _NO_KEYS: dict[str, tuple[int, str | None]] = {}
 
 
-def _dispatch_keys(lowered: Lowered) -> dict[str, tuple[int, str | None]]:
+def _dispatch_keys(lowered: ScheduledKernel) -> dict[str, tuple[int, str | None]]:
     """Per compiled name of a classical function *lowered* calls, its
     dispatch key and the controller that fixes it."""
     called = lowered.classical
@@ -1509,7 +1576,7 @@ def _dispatch_keys(lowered: Lowered) -> dict[str, tuple[int, str | None]]:
     return keys
 
 
-def _routes(lowered: Lowered) -> Sequence[tuple[int, int, str | None]]:
+def _routes(lowered: ScheduledKernel) -> Sequence[tuple[int, int, str | None]]:
     """Per classical function *lowered* calls, its link id, dispatch key and
     the controller that fixes the key."""
     routes: Sequence[tuple[int, int, str | None]] = getattr(lowered.classical, "routes", ())
@@ -1577,18 +1644,18 @@ def compile[**P](
     schedule: str | None = None,
     passes: Sequence[str] | None = None,
     control_system: ControlSystem | Controller | None = None,
-    device: Device | None = None,
+    quantum_system: QuantumSystem | None = None,
     flatten_schedules: bool = False,
     unroll_threshold: int | None = None,
 ) -> CompiledKernel[P]:
     """Compile a ``@cudaq_pulse.kernel`` without its arguments.
 
     Returns a ``CompiledKernel``, a family of specializations. Calling it
-    with the kernel's arguments runs the kernel on the device of the qudit
+    with the kernel's arguments runs the kernel on the quantum system of the qudit
     handles passed and returns what the kernel returns. Float parameters
     stay symbolic: the module takes them as function arguments, so calls
     with new values never recompile. Parameters of any other type (qudits,
-    ints) shape the program; each distinct value, on each device, is
+    ints) shape the program; each distinct value, on each quantum system, is
     compiled on first use and kept for the life of the compiled object.
 
     Parameters
@@ -1609,7 +1676,7 @@ def compile[**P](
         system of that controller alone; what it cannot take (a line it
         does not play, a link it does not have) is an error that says to
         describe the whole system. By default the control system of
-        *device*, if it has one.
+        *quantum_system*, if it has one.
     flatten_schedules:
         Ignore the ``schedule=`` of every called kernel and schedule the whole
         program with *schedule*.
@@ -1621,17 +1688,17 @@ def compile[**P](
         non-negative ``int``; 0 never unrolls, so every such loop stays
         rolled, even one of no or one iteration. Either way the
         program, its schedule and its simulation are the same.
-    device:
-        Pin the compiled kernel to one device: a call with handles of
-        another raises ``DeviceMismatchError``, and a call without handles
+    quantum system:
+        Pin the compiled kernel to one quantum system: a call with handles of
+        another raises ``QuantumSystemMismatchError``, and a call without handles
         runs on it. A pinned kernel without static parameters is built now.
     """
     from .kernel._kernel import CompiledKernel, Kernel
 
     if not isinstance(kernel, Kernel):
         raise TypeError(f"compile() expects a @cudaq_pulse.kernel, got {type(kernel).__name__}")
-    if control_system is None and device is not None:
-        control_system = device.control_system
+    if control_system is None and quantum_system is not None:
+        control_system = quantum_system.control_system
     options = CompileOptions.make(
         root_schedule(kernel.schedule, schedule),
         passes,
@@ -1639,4 +1706,4 @@ def compile[**P](
         flatten_schedules,
         kernel.unroll_threshold if unroll_threshold is None else unroll_threshold,
     )
-    return CompiledKernel(kernel, options, device)
+    return CompiledKernel(kernel, options, quantum_system)

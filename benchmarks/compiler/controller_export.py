@@ -30,20 +30,19 @@ _CHILD = r"""
 import inspect, json, resource, sys, time
 import cudaq_pulse as pulse
 from cudaq_pulse import Controller, ControlSystem
-from cudaq_pulse.targets import Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import PhysicalQudit
 
 name, lines, rounds, trips = sys.argv[1], *map(int, sys.argv[2:5])
-target = TargetDescription(
+dev = pulse.quantum_system(
     name="export-bench",
     clock_ghz=1.0,
-    qubits={i: Qubit(i, 5.0e9 + 1.0e6 * i, -2.0e8, 50.0, 30.0) for i in range(lines)},
+    qudits={i: PhysicalQudit(i, 5.0e9 + 1.0e6 * i, 50.0, 30.0, anharmonicity_hz=-2.0e8) for i in range(lines)},
 )
-dev = pulse.device(target)
 readers = lines // 2
 limits = Controller(
     clock_ghz=1.0,
     waveform_memory_samples=1 << 20,
-    max_tones_per_line=4,
+    max_frequencies_per_line=4,
     detectors={q: q for q in range(readers)},
     detector_recovery_cycles=4,
     max_pulses=10**8,
@@ -90,12 +89,12 @@ def nest(qs):
 
 kernel = nest if name == "nest" else repeated
 threshold = 10**9 if name == "unrolled" else 0
-handles = dev.qudit_handles[0:lines]
+handles = dev.qudits[0:lines]
 t0 = time.perf_counter()
 lowered = pulse.compile(kernel, control_system=system, unroll_threshold=threshold).lower(handles)
 compile_s = time.perf_counter() - t0
 t0 = time.perf_counter()
-program = lowered.export_controller()
+program = lowered.export_to_controller()
 export_s = time.perf_counter() - t0
 events = len(program["events"])
 default_bytes = len(json.dumps(program))
@@ -104,9 +103,9 @@ out = {
     "program": name, "events": events, "compile_s": compile_s,
     "export_s": export_s, "export_bytes": default_bytes,
 }
-if "version" in inspect.signature(lowered.export_controller).parameters:
+if "version" in inspect.signature(lowered.export_to_controller).parameters:
     t0 = time.perf_counter()
-    rolled = lowered.export_controller(version=2)
+    rolled = lowered.export_to_controller(version=2)
     out["rolled_export_s"] = time.perf_counter() - t0
     out["rolled_export_bytes"] = len(json.dumps(rolled))
 scale = 1 if sys.platform == "darwin" else 1024

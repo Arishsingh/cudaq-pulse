@@ -11,6 +11,7 @@
 
 #include "cudaq-pulse/Dialect/Pulse/PulseDialect.h.inc"
 #include "cudaq-pulse/Dialect/Pulse/PulseEnums.h.inc"
+#include "cudaq-pulse/Dialect/Pulse/PulseTimingFormat.h"
 #define GET_TYPEDEF_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseTypes.h.inc"
 
@@ -72,16 +73,16 @@ LogicalResult CallableOp::verify() {
   if (auto reaction = getReactionDeadlineNs())
     if (!(reaction->convertToDouble() > 0.0))
       return emitOpError("reaction_deadline_ns must be positive");
-  int64_t id = getFunctionIdAttr().getInt();
+  int64_t id = getDispatchKeyAttr().getInt();
   if (id < 0 || id > 0xFFFFFFFFll)
-    return emitOpError("function_id must be a 32-bit unsigned value");
-  if (!getFunctionIdOverride()) {
+    return emitOpError("dispatch_key must be a 32-bit unsigned value");
+  if (!getDispatchKeyOverride()) {
     uint32_t expected = cudaq_pulse::wire::fnv1a32(
         std::string_view(getSymName().data(), getSymName().size()));
     if (static_cast<uint32_t>(id) != expected)
-      return emitOpError("function_id ")
+      return emitOpError("dispatch_key ")
              << id << " is not the FNV-1a hash of '" << getSymName() << "' ("
-             << expected << "); set function_id_override to use another id";
+             << expected << "); set dispatch_key_override to use another id";
   }
   if (getDeviceAttr().getInt() < 0)
     return emitOpError("device must not be negative");
@@ -157,6 +158,9 @@ LogicalResult WaitOp::verifySymbolUses(SymbolTableCollection &symbols) {
   }
   return success();
 }
+
+using pulse::parseTiming;
+using pulse::printTiming;
 
 } // namespace classical
 

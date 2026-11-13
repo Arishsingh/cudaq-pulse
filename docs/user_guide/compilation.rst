@@ -20,23 +20,25 @@ only run it.
        drive_line = get_drive_line(qubit)
        drive(drive_line, gaussian(cal["x_duration"], amplitude, cal["x_sigma"]))
 
-   dev = pulse.device("transmon_17q")
-   q = dev.qudit_handles[0]
+   qs = pulse.quantum_system("transmon_surface17")
+   q = qs.qudits[0]
 
    rabi(q, 0.3)                    # compiles, then runs; returns None
    rabi(q, 0.4)                    # same compilation, new amplitude
-   lowered = rabi.lower(q, 0.3)    # compiles (or reuses), does not run
-   print(lowered.mlir())
+   scheduled = rabi.lower(q, 0.3)   # compiles (or reuses), does not run
+   print(scheduled.mlir())
 
 Arguments
 ---------
 
 Arguments bind exactly as for a Python function: positional and keyword
 arguments, defaults, keyword-only parameters, and ``TypeError`` for a call
-that does not match the signature. Kernels cannot take ``*args`` or
-``**kwargs``. A kernel, ``kernel.lower`` and ``pulse.compile(kernel)`` keep
-the decorated function's signature for type checkers, so editors check each
-call against it.
+that does not match the signature. A ``*qudits`` parameter takes the
+call's remaining positional arguments, which must be qudit handles, and
+binds them as one register; a kernel cannot take ``**kwargs``. A kernel,
+``kernel.lower`` and ``pulse.compile(kernel)`` keep the decorated
+function's signature for type checkers, so editors check each call against
+it.
 
 Annotations decide what a compilation depends on:
 
@@ -48,10 +50,17 @@ Annotations decide what a compilation depends on:
   :ref:`wait-lengths`.
 - A parameter annotated ``Qudit`` or ``Register`` is a runtime value too:
   the compiled module takes the qudits as arguments, so calling on other
-  qudits of the device never recompiles.
-- Every other parameter (``int``, a list of handles, anything
-  unannotated, including an unannotated qudit or a duration passed as a
-  time) is *static*: the kernel is specialized on its value. Annotate a
+  qudits of the quantum system never recompiles.
+- ``*qudits: Qudit`` is a runtime register of the call's qudits: the kernel
+  compiles once for each number of qudits passed. An unannotated
+  ``*qudits`` is a static register, like an unannotated register parameter.
+  Any other annotation of a ``*`` parameter is a ``TypeError`` when the
+  kernel is defined; pass other values as named parameters (a
+  ``list[float]`` for a runtime list of numbers).
+- Every other parameter (``int``, anything unannotated, including an
+  unannotated qudit or a duration passed as a time) is *static*: the kernel
+  is specialized on its value. A list or tuple of qudit handles is
+  rejected: pass a Register (``qs.qudits[0:4]``) or use ``*qudits``. Annotate a
   qudit parameter to compile once for every placement. A time passed to a
   ``float`` parameter is a ``TypeError``; see :ref:`durations`.
 - A ``float`` the program needs while it compiles -- one that sets a
@@ -67,15 +76,15 @@ measurement's outcome (0, 1, ...) for a measurement made at the top level of
 the kernel, values known at compile time, or tuples and lists of these.
 Returning a value computed from a ``float`` parameter is an error.
 
-Devices
--------
+Quantum systems
+---------------
 
-A kernel runs on the device of the qudit handles it is called with; see
-:doc:`devices`. One kernel serves every device it is called with, each with
-its own specializations. A call without handles raises ``NoDeviceError``,
-unless the kernel is compiled for one device (``device=`` below); the
-process target is never used for it. Qudit frequencies and the pulse clock
-come from the device.
+A kernel runs on the quantum system of the qudit handles it is called with; see
+:doc:`quantum_systems`. One kernel serves every quantum system it is called with, each with
+its own specializations. A call without handles raises ``NoQuantumSystemError``,
+unless the kernel is compiled for one quantum system (``quantum_system=`` below); the
+process quantum system is never used for it. Qudit frequencies and the pulse clock
+come from the quantum system.
 
 Caching and Python semantics
 ----------------------------
@@ -107,7 +116,7 @@ never evicted.
    for amplitude in (0.1, 0.2, 0.3):
        sweep(q, amplitude)          # one compilation for the whole sweep
 
-   pinned = pulse.compile(rabi, device=dev, schedule="asap")
+   pinned = pulse.compile(rabi, quantum_system=qs, schedule="asap")
 
 Options, all keyword-only:
 
@@ -144,12 +153,12 @@ Options, all keyword-only:
    lanes of the RCP schedules set the schedule. One ``Controller`` stands
    for a system of that controller alone; what it cannot take (a line it
    does not play, a link it does not have) is an error that says to
-   describe the whole ``ControlSystem``. By default the device's control
+   describe the whole ``ControlSystem``. By default the quantum system's control
    system, if it has one.
 
-``device`` *(Device, optional)*
-   Pin the compiled kernel to one device. A call with handles of another
-   device, even an equal one, raises ``DeviceMismatchError``; a call without
+``quantum_system`` *(QuantumSystem, optional)*
+   Pin the compiled kernel to one quantum system. A call with handles of another
+   quantum system, even an equal one, raises ``QuantumSystemMismatchError``; a call without
    handles runs on it.
    A pinned kernel whose parameters are all ``float`` is built when it is
    compiled, so ``.mlir()``, ``.schedule`` and ``.metrics`` work on the
@@ -205,7 +214,7 @@ caller is an error that names the fix, as is ``flatten_schedules=True``.
 Inspecting a compilation
 ------------------------
 
-``kernel.lower(*args)`` and ``compiled.lower(*args)`` return a ``Lowered``,
+``kernel.lower(*args)`` and ``compiled.lower(*args)`` return a ``ScheduledKernel``,
 the module of one call:
 
 ``.mlir(level="pulse")``
@@ -226,11 +235,11 @@ the module of one call:
 ``.duration``
    How long the program runs, as a time: the latest end of its operations,
    over both arms of every branch (``float(duration)`` is in ns). Only a
-   ``Lowered`` has one: a kernel or ``CompiledKernel`` has no duration until
+   ``ScheduledKernel`` has one: a kernel or ``CompiledKernel`` has no duration until
    it is lowered for a call, since the call's arguments decide it.
 
-The device's handles find a qudit by its label, ``dev.qudit("D1")``, and the
-device gives the coupling of two of them, ``dev.coupling(a, b)``.
+The quantum system's handles find a qudit by its label, ``qs.qudit("D1")``, and the
+quantum system gives the coupling of two of them, ``qs.coupling(a, b)``.
 
 ``.timeline(figsize=(14, 4), title=None)``
    A matplotlib figure of the schedule, one row per line.
@@ -238,7 +247,7 @@ device gives the coupling of two of them, ``dev.coupling(a, b)``.
 ``.metrics``
    A ``CompileMetrics`` with per-stage timing in milliseconds (``trace_ms``,
    ``ffi_ms``, ``passes_ms``, ``schedule_ms``, ``total_ms``), ``op_count``
-   and the device name.
+   and the quantum system name.
 
 ``.arguments`` and ``.generic``
    The call's float values, and the module without them, in which the float
@@ -289,6 +298,6 @@ compiled:
 Each must be a whole number from 1 to 2\ :sup:`40`; any other value makes
 compiling raise ``ValueError`` naming the variable. Lower values bound the
 memory a long session keeps (a loop that compiles a large program for many
-devices, for example) at the cost of creating contexts more often, about
+quantum systems, for example) at the cost of creating contexts more often, about
 0.4 ms each. ``python -m cudaq_pulse.doctor`` prints the limits in effect,
-the process target and the kernel cache size.
+the process quantum system and the kernel cache size.

@@ -28,12 +28,14 @@ from typing import Any
 import cudaq_pulse as pulse
 
 
-def _device(frequencies: dict[int, float]) -> pulse.Device:
-    """A device with these drive frequencies, indexed by qudit."""
-    from cudaq_pulse.targets import Qubit, TargetDescription
+def _device(frequencies: dict[int, float]) -> pulse.QuantumSystem:
+    """A quantum system with these drive frequencies, indexed by qudit."""
+    from cudaq_pulse.quantum_systems import PhysicalQudit
 
-    qubits = {q: Qubit(q, f, -300e6, 50.0, 30.0) for q, f in frequencies.items()}
-    return pulse.device(TargetDescription(name="bench", qubits=qubits))
+    qudits = {
+        q: PhysicalQudit(q, f, 50.0, 30.0, anharmonicity_hz=-300e6) for q, f in frequencies.items()
+    }
+    return pulse.quantum_system(name="bench", qudits=qudits)
 
 
 _STAGES = ("trace_ms", "ffi_ms", "passes_ms", "schedule_ms", "total_ms")
@@ -93,25 +95,25 @@ BENCHMARKS = [
 ]
 
 
-def _compile(kernel, n_qubits: int, **kwargs: Any) -> pulse.Lowered:
-    device = _device({i: 5.0e9 + i * 0.1e9 for i in range(n_qubits)})
+def _compile(kernel, qudit_count: int, **kwargs: Any) -> pulse.ScheduledKernel:
+    quantum_system = _device({i: 5.0e9 + i * 0.1e9 for i in range(qudit_count)})
     # A fresh compiled kernel holds no specializations: this compiles.
-    return pulse.compile(kernel, **kwargs).lower(*device.qudit_handles[:n_qubits])
+    return pulse.compile(kernel, **kwargs).lower(*quantum_system.qudits[:qudit_count])
 
 
-def bench_stages(kernel, n_qubits: int, repeats: int) -> dict[str, float]:
-    _compile(kernel, n_qubits)
+def bench_stages(kernel, qudit_count: int, repeats: int) -> dict[str, float]:
+    _compile(kernel, qudit_count)
     samples: dict[str, list[float]] = {stage: [] for stage in _STAGES}
     for _ in range(repeats):
-        metrics = _compile(kernel, n_qubits).metrics
+        metrics = _compile(kernel, qudit_count).metrics
         for stage in _STAGES:
             samples[stage].append(getattr(metrics, stage))
     return {stage: statistics.median(xs) for stage, xs in samples.items()}
 
 
-def bench_pass(kernel, n_qubits: int, name: str, repeats: int) -> float:
+def bench_pass(kernel, qudit_count: int, name: str, repeats: int) -> float:
     return statistics.median(
-        _compile(kernel, n_qubits, passes=(name,)).metrics.passes_ms for _ in range(repeats)
+        _compile(kernel, qudit_count, passes=(name,)).metrics.passes_ms for _ in range(repeats)
     )
 
 

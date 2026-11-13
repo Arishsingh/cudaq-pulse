@@ -19,10 +19,12 @@
 #include <functional>
 
 #include "cudaq-pulse/Dialect/Pulse/PulseDialect.h.inc"
+#include "cudaq-pulse/Dialect/Pulse/PulseEnums.h.inc"
 
 #define GET_TYPEDEF_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseTypes.h.inc"
 #define GET_OP_CLASSES
+#include "cudaq-pulse/Dialect/Pulse/PulseAttrs.h"
 #include "cudaq-pulse/Dialect/Pulse/PulseOps.h.inc"
 
 #include "cudaq-pulse/Dialect/Classical/ClassicalDialect.h.inc"
@@ -81,16 +83,15 @@ public:
       checkOp(&op);
   }
 
-  /// A function is scheduled as a whole or not at all: once any of its
-  /// timed ops has a schedule, every one that runs needs one.
+  /// A timed or placed function (pulse.schedule_state) is scheduled as a
+  /// whole: every timed op that runs has a schedule.
   void checkFunction(mlir::func::FuncOp function) {
     checkBlock(function.getBody().front());
-    if (scheduled && unscheduled && report(unscheduled))
-      unscheduled
-              ->emitError("operation is not scheduled, but other "
-                          "operations of its function are")
-              .attachNote(scheduled->getLoc())
-          << "scheduled here";
+    pulse::ScheduleState state = pulse::scheduleStateOf(function);
+    if (state != pulse::ScheduleState::Unscheduled && unscheduled &&
+        report(unscheduled))
+      unscheduled->emitError("operation is not scheduled, but its function is ")
+          << pulse::stringifyScheduleState(state);
   }
 
 private:
@@ -125,8 +126,6 @@ private:
         unscheduled = op;
       return;
     }
-    if (!scheduled)
-      scheduled = op;
     if (!start)
       return error(op, "a scheduled operation needs start_cycles");
     if (!duration)
@@ -140,8 +139,7 @@ private:
             << *duration << ", but the operation takes " << *cycles
             << " cycles";
     }
-    auto periods = op->getAttrOfType<mlir::DenseI64ArrayAttr>("period_cycles");
-    if (static_cast<size_t>(periods ? periods.size() : 0) != iteration.size()) {
+    if (pulse::periodCycles(op).size() != iteration.size()) {
       error(op,
             "scheduled operation needs one period_cycles entry per enclosing "
             "scf.for");
@@ -171,7 +169,7 @@ private:
     auto trips = pulse::constantTripCount(loop);
     if (!trips) {
       for (mlir::Operation &inner : loop.getBody()->without_terminator())
-        if (isTimedOp(&inner) && inner.hasAttr("start_cycles")) {
+        if (isTimedOp(&inner) && pulse::hasStart(&inner)) {
           error(&inner, "a scheduled loop needs constant bounds");
           return;
         }
@@ -199,9 +197,8 @@ private:
     loop.getBody()->walk([&](mlir::Operation *op) {
       if (!isTimedOp(op))
         return;
-      auto periods =
-          op->getAttrOfType<mlir::DenseI64ArrayAttr>("period_cycles");
-      if (!periods || periods.size() <= level)
+      llvm::ArrayRef<int64_t> periods = pulse::periodCycles(op);
+      if (periods.size() <= level)
         return;
       int64_t period = periods[level];
       if (period < 0) {
@@ -256,8 +253,8 @@ private:
 
   llvm::DenseMap<mlir::Operation *, int64_t> lastEnd;
   llvm::DenseSet<mlir::Operation *> reported;
-  /// The first timed op with a schedule and the first without, if any.
-  mlir::Operation *scheduled = nullptr, *unscheduled = nullptr;
+  /// The first timed op without a schedule, if any.
+  mlir::Operation *unscheduled = nullptr;
   llvm::SmallVector<int64_t, 2> iteration;
   int64_t measured = std::numeric_limits<int64_t>::min();
 };
@@ -480,7 +477,7 @@ struct PulseVerifyPass
     bool hadError = false;
 
     // Check 1: Linearity -- lines must be consumed. The warning names the
-    // qubit instead of attaching the op: printing an op numbers every value
+    // qudit instead of attaching the op: printing an op numbers every value
     // of its function, which is linear in the program per warning.
     auto warnUnused = [](mlir::Operation *op, mlir::Value line,
                          llvm::StringRef kind) {
@@ -488,8 +485,8 @@ struct PulseVerifyPass
         return;
       auto diagnostic = mlir::emitWarning(op->getLoc())
                         << kind << " line allocated but never used";
-      if (auto qubit = op->getAttrOfType<mlir::IntegerAttr>("qubit"))
-        diagnostic << " (qubit " << qubit.getInt() << ")";
+      if (int64_t qudit = pulse::quditOf(op); qudit >= 0)
+        diagnostic << " (qudit " << qudit << ")";
     };
     module.walk([&](pulse::GetDriveLineOp op) {
       warnUnused(op, op.getLine(), "drive");
@@ -667,7 +664,7 @@ struct PulseVerifyPass
     });
     // A call of a controller that blocks on calls holds every line, which a
     // schedule block, placed whole, cannot.
-    if (module->hasAttr(classical::kBlocksOnCallsAttr))
+    if (pulse::blocksOnCalls(module))
       module.walk([&](classical::SubmitOp op) {
         if (op->getParentOfType<pulse::ScheduleBlockOp>()) {
           op.emitError(classical::kBlockingCallInBlock);

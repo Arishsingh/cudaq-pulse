@@ -4,6 +4,12 @@
 
 Demonstrates cross-resonance driving: the control qubit's drive line
 is modulated at the target qubit's frequency (via the target's tone).
+
+Why cross-resonance on ``transmon_surface17``: that quantum system's own
+two-qubit gate is a flux-pulsed CZ, and flux lines are not modeled yet (its
+``FluxCZ`` calibrations do not play). Cross-resonance needs only drive lines,
+so it shows a two-qubit pulse sequence on the shipped quantum system. The
+amplitudes and durations here are illustrative, not calibrated for it.
 """
 
 import cudaq_pulse as pulse
@@ -18,10 +24,10 @@ cal = {
 
 
 @pulse.kernel
-def echoed_cr(qubit_ctrl, qubit_tgt):
-    """Echoed cross-resonance CNOT from *qubit_ctrl* to *qubit_tgt*."""
-    drive_line_ctrl = get_drive_line(qubit_ctrl)
-    drive_line_tgt = get_drive_line(qubit_tgt)
+def echoed_cr(qudit_ctrl, qudit_tgt):
+    """Echoed cross-resonance CNOT from *qudit_ctrl* to *qudit_tgt*."""
+    drive_line_ctrl = get_drive_line(qudit_ctrl)
+    drive_line_tgt = get_drive_line(qudit_tgt)
 
     sync(drive_line_ctrl, drive_line_tgt)
 
@@ -39,9 +45,7 @@ def echoed_cr(qubit_ctrl, qubit_tgt):
 
 
 if __name__ == "__main__":
-    dev = pulse.device("transmon_17q")
-    compiled_kernel = pulse.compile(echoed_cr, device=dev).lower(
-        dev.qudit_handles[0], dev.qudit_handles[1]
-    )
-    print(compiled_kernel.mlir())
-    print(f"  Compile metrics: {compiled_kernel.metrics}")
+    qs = pulse.quantum_system("transmon_surface17")
+    scheduled = pulse.compile(echoed_cr, quantum_system=qs).lower(qs.qudits[0], qs.qudits[1])
+    print(scheduled.mlir())
+    print(f"  Compile metrics: {scheduled.metrics}")

@@ -19,8 +19,8 @@ PUBLIC_MODULES = [
     "cudaq_pulse",
     "cudaq_pulse.ops",
     "cudaq_pulse.compiler",
-    "cudaq_pulse.targets",
-    "cudaq_pulse.targets.transmon_model",
+    "cudaq_pulse.quantum_systems",
+    "cudaq_pulse.quantum_systems.transmon_model",
     "cudaq_pulse.runtime",
     "cudaq_pulse.runtime.simulate",
     "cudaq_pulse.viz",
@@ -28,11 +28,10 @@ PUBLIC_MODULES = [
     "cudaq_pulse.backends",
     "cudaq_pulse.classical",
     "cudaq_pulse.classical.wire",
-    "cudaq_pulse.classical.qec",
     "cudaq_pulse.classical.emulation",
     "cudaq_pulse.classical.calibration",
     "cudaq_pulse.classical.loop",
-    "cudaq_pulse.runtime.drift",
+    "cudaq_pulse.quantum_systems.drift",
 ]
 
 _DIRECTIVE = re.compile(r"^\.\. auto(\w+):: (\S+)", re.M)

@@ -30,10 +30,12 @@ listing LLVM and every library grafted into the wheel, with each listed
 license in License-Expression; and no CUDA runtime library (those come from
 the CUDA wheels) and no GPL or LGPL library or license.
 
-For an sdist: LICENSE, NOTICE, THIRD_PARTY_NOTICES and LICENSES/; a
-PKG-INFO requiring exactly cudaq-pulse-tools==<its version>; and no lock file
-(uv.lock, poetry.lock, pdm.lock, Pipfile.lock, or a requirements*.txt with
-hashes). Exits 1 listing every problem.
+For an sdist: LICENSE, NOTICE, THIRD_PARTY_NOTICES and LICENSES/; the
+license files of packaging/cudaq-pulse-tools as regular files, all but
+THIRD_PARTY_NOTICES byte for byte the repository's; a PKG-INFO requiring
+exactly cudaq-pulse-tools==<its version>; and no lock file (uv.lock,
+poetry.lock, pdm.lock, Pipfile.lock, or a requirements*.txt with hashes).
+Exits 1 listing every problem.
 """
 
 from __future__ import annotations
@@ -256,7 +258,7 @@ def check_wheel(path: Path) -> list[str]:
         "cudaq_pulse/__init__.py",
         "cudaq_pulse/py.typed",
         "cudaq_pulse/_native/_cudaq_pulse_native.pyi",
-        "cudaq_pulse/targets/calibrations/transmon_17q.json",
+        "cudaq_pulse/quantum_systems/calibrations/transmon_surface17.json",
     ]
     if linux:
         required += [f"cudaq_pulse/lib/libcudm-runtime-cu{major}.so" for major in (12, 13)]
@@ -299,12 +301,25 @@ def check_pairs(wheels: list[Path]) -> list[str]:
 
 
 def check_sdist(path: Path) -> list[str]:
+    problems = []
     with tarfile.open(path) as sdist:
         members = {"/".join(m.name.split("/")[1:]): m for m in sdist.getmembers()}
         pkg_info = members.get("PKG-INFO")
         file = sdist.extractfile(pkg_info) if pkg_info is not None else None
         metadata = Parser().parsestr(file.read().decode()) if file is not None else None
-        problems: list[str] = []
+        # The tools wheel is built from an unpacked sdist too; its license
+        # files are links in the repository, and must be files here.
+        for f in _TOOLS_LICENSES:
+            item = f"packaging/{_TOOLS}/{f}"
+            member = members.get(item)
+            if member is None:
+                problems.append(f"missing {item}")
+            elif not member.isfile():
+                problems.append(f"{item} is not a regular file")
+            elif f != "THIRD_PARTY_NOTICES":
+                content = sdist.extractfile(member)
+                if content is None or content.read() != (_ROOT / f).read_bytes():
+                    problems.append(f"{item} differs from the repository's {f}")
         for name, member in sorted(members.items()):
             if _LOCK_FILE.search(name):
                 problems.append(f"ships {name}, a lock file")
@@ -320,11 +335,8 @@ def check_sdist(path: Path) -> list[str]:
     return [f"{path.name}: {problem}" for problem in problems]
 
 
-def main() -> int:
-    files = [Path(arg) for arg in sys.argv[1:]]
-    if not files:
-        print(__doc__, file=sys.stderr)
-        return 2
+def check(files: list[Path]) -> list[str]:
+    """Every problem of the wheels and sdists in ``files``."""
     problems = []
     for path in files:
         if path.suffix == ".whl":
@@ -333,7 +345,15 @@ def main() -> int:
             problems += check_sdist(path)
         else:
             problems.append(f"{path}: not a wheel or sdist")
-    problems += check_pairs([path for path in files if path.suffix == ".whl"])
+    return problems + check_pairs([path for path in files if path.suffix == ".whl"])
+
+
+def main() -> int:
+    files = [Path(arg) for arg in sys.argv[1:]]
+    if not files:
+        print(__doc__, file=sys.stderr)
+        return 2
+    problems = check(files)
     for problem in problems:
         print(problem)
     if not problems:

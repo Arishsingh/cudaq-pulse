@@ -10,12 +10,12 @@
 // RUN: cudaq-pulse-opt --pulse-schedule-rcp %s | FileCheck %s --check-prefixes=CHECK,ASAP
 // RUN: cudaq-pulse-opt --pulse-schedule-alap --pulse-classical-check --pulse-verify %s > /dev/null
 
-module attributes {pulse.clock_ghz = 1.0 : f64} {
+module attributes {pulse.control_system = #pulse.control_system<clock_period_fs = 1000000>} {
 
-classical.callable @tau {function_id = 1 : i64, device = 0 : i64,
+classical.callable @tau {dispatch_key = 1 : i64, device = 0 : i64,
     args = [], results = ["i64"], latency_min_ns = 0.0,
     latency_nominal_ns = 50.0, latency_max_ns = 100.0, mode = "bounded",
-    submit = "eager", function_id_override}
+    submit = "eager", dispatch_key_override}
 
 // The answer is due at 101. Line e runs 0..300 and syncs with d after the
 // wait, so the barrier waits for it and the wait starts at 300 (length 16),
@@ -25,13 +25,13 @@ classical.callable @tau {function_id = 1 : i64, device = 0 : i64,
 // CHECK-NOT: classical.timeline
 // ASAP: pulse.drive {{.*}}start_cycles = 0 : i64
 // ALAP: pulse.drive {{.*}}start_cycles = 260 : i64
-// CHECK: pulse.wait {{.*}}classical.variable{{.*}}duration_cycles = 16 : i64, {{.*}}start_cycles = 300 : i64}
+// CHECK: pulse.wait {{.*}}duration_cycles = 16 : i64, {{.*}}start_cycles = 300 : i64}> {{.*}}classical.variable
 // CHECK: pulse.drive {{.*}}start_cycles = 316 : i64
 func.func @barrier() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %p = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %p = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %c300 = arith.constant 300 : i64
   %a = arith.constant 0.05 : f64
@@ -60,13 +60,13 @@ func.func @barrier() {
 // CHECK: pulse.drive {{.*}}start_cycles = 0 : i64
 // ASAP: pulse.drive {{.*}}start_cycles = 0 : i64
 // ALAP: pulse.drive {{.*}}start_cycles = 61 : i64
-// CHECK: pulse.wait {{.*}}classical.variable{{.*}}duration_cycles = 16 : i64, {{.*}}start_cycles = 101 : i64}
+// CHECK: pulse.wait {{.*}}duration_cycles = 16 : i64, {{.*}}start_cycles = 101 : i64}> {{.*}}classical.variable
 // CHECK: pulse.drive {{.*}}start_cycles = 117 : i64
 func.func @independent() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %p = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %p = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %e0, %u0 = pulse.get_drive_line %p : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %c300 = arith.constant 300 : i64
   %a = arith.constant 0.05 : f64
@@ -92,13 +92,13 @@ func.func @independent() {
 // is peeled off the loop.
 // CHECK-LABEL: func.func @rounds
 // ASAP: classical.submit {{.*}}period_cycles = array<i64: 106>, start_cycles = 0 : i64}
-// ASAP: pulse.wait {{.*}}classical.variable{{.*}}period_cycles = array<i64: 106>, {{.*}}start_cycles = 101 : i64}
+// ASAP: pulse.wait {{.*}}period_cycles = array<i64: 106>, {{.*}}start_cycles = 101 : i64}> {{.*}}classical.variable
 // ASAP: pulse.drive {{.*}}period_cycles = array<i64: 106>, start_cycles = 106 : i64}
 // ALAP: pulse.drive {{.*}}period_cycles = array<i64: 106>, start_cycles = 167 : i64}
 // ALAP: pulse.drive {{.*}}start_cycles = 424 : i64}
 func.func @rounds() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %a = arith.constant 0.05 : f64
   %z = arith.constant 0.0 : f64
@@ -129,21 +129,21 @@ func.func @rounds() {
 // CHECK: pulse.get_readout_line {{.*}}classical.timeline = 1 : i64
 
 func.func @carried_unread() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %p = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %v0 = pulse.get_readout_line %q : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
-  %s0, %w0 = pulse.get_readout_line %p : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %p = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %v0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
+  %s0, %w0 = pulse.get_readout_line %p : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %a = arith.constant 0.05 : f64
   %z = arith.constant 0.0 : f64
   %x = pulse.square %c40, %a, %z : i64, f64, f64 -> !pulse.waveform
-  %s1, %w1, %m0 = pulse.readout %s0, %x, %w0, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+  %s1, %w1, %m0 = pulse.readout %s0, %x, %w0, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   %lb = arith.constant 0 : index
   %ub = arith.constant 1 : index
   %step = arith.constant 1 : index
   %r2, %v2, %m = scf.for %i = %lb to %ub step %step iter_args(%r = %r0, %v = %v0, %mi = %m0) -> (!pulse.readout_line, !pulse.tone, !pulse.measurement) {
-    %r1, %v1, %m1 = pulse.readout %r, %x, %v, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+    %r1, %v1, %m1 = pulse.readout %r, %x, %v, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
     scf.yield %r1, %v1, %m1 : !pulse.readout_line, !pulse.tone, !pulse.measurement
   }
   %b = pulse.is_set %m : !pulse.measurement -> i1
@@ -168,21 +168,21 @@ func.func @carried_unread() {
 // CHECK: return
 
 func.func @carried_no_trips() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %p = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %v0 = pulse.get_readout_line %q : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
-  %s0, %w0 = pulse.get_readout_line %p : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %p = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %v0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
+  %s0, %w0 = pulse.get_readout_line %p : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c40 = arith.constant 40 : i64
   %a = arith.constant 0.05 : f64
   %z = arith.constant 0.0 : f64
   %x = pulse.square %c40, %a, %z : i64, f64, f64 -> !pulse.waveform
-  %s1, %w1, %m0 = pulse.readout %s0, %x, %w0, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+  %s1, %w1, %m0 = pulse.readout %s0, %x, %w0, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
   %lb = arith.constant 0 : index
   %ub = arith.constant 0 : index
   %step = arith.constant 1 : index
   %r2, %v2, %m = scf.for %i = %lb to %ub step %step iter_args(%r = %r0, %v = %v0, %mi = %m0) -> (!pulse.readout_line, !pulse.tone, !pulse.measurement) {
-    %r1, %v1, %m1 = pulse.readout %r, %x, %v, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+    %r1, %v1, %m1 = pulse.readout %r, %x, %v, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
     scf.yield %r1, %v1, %m1 : !pulse.readout_line, !pulse.tone, !pulse.measurement
   }
   %b = pulse.is_set %m : !pulse.measurement -> i1

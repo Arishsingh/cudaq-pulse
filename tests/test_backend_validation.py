@@ -50,12 +50,12 @@ class ToyBackend:
     def events(self, artifact: list[list[dict[str, Any]]]) -> list[list[dict[str, Any]]]:
         return artifact
 
-    def emulate(self, artifact: Any, *, shots: int) -> list[list[int]]:
+    def emulate(self, artifact: Any, *, shots_count: int) -> list[list[int]]:
         readouts = sum(1 for e in artifact[0] if e["kind"] == "readout")
-        return [[0] * readouts for _ in range(shots)]
+        return [[0] * readouts for _ in range(shots_count)]
 
-    def run(self, artifact: Any, *, shots: int = 1) -> Any:
-        return self.emulate(artifact, shots=shots)
+    def run(self, artifact: Any, *, shots_count: int = 1) -> Any:
+        return self.emulate(artifact, shots_count=shots_count)
 
 
 @pytest.fixture
@@ -66,7 +66,9 @@ def ideal(monkeypatch):
 
 def _readouts(lowered):
     return sum(
-        1 for e in unroll(lowered.export_controller(version=2))["events"] if e["kind"] == "readout"
+        1
+        for e in unroll(lowered.export_to_controller(version=2))["events"]
+        if e["kind"] == "readout"
     )
 
 
@@ -85,9 +87,9 @@ def test_a_conforming_backend_passes_in_every_format_it_reads(ideal):
 
 def test_the_corpus_tells_where_a_run_time_frequency_change_is_made():
     dev = _validation._device(ControlSystem())
-    compiled = pulse.compile(_validation._corpus()["runtime_frequency"], device=dev)
-    lowered = compiled.lower(*dev.qudit_handles[:2])
-    events = lowered.export_controller()["events"]
+    compiled = pulse.compile(_validation._corpus()["runtime_frequency"], quantum_system=dev)
+    lowered = compiled.lower(*dev.qudits[:2])
+    events = lowered.export_to_controller()["events"]
     first, second = (e for e in events if e["kind"] == "drive")
     [change] = second["frame_updates"]
     # An emulator that took the change at the second pulse would miss the
@@ -144,7 +146,7 @@ def test_emitted_pulses_must_respect_the_declared_limits():
     assert _validation._limits(limits, close) == (
         "line 0: two pulses start 2 cycles apart; the controller issues one per 4"
     )
-    many = {0: [("play", 0, 4), ("play", 8, 4)], 1: [("acquire", 0, 4)]}
+    many = {0: [("play", 0, 4), ("play", 8, 4)], 1: [("readout", 0, 4)]}
     assert _validation._limits(limits, many) is None
     no_loop = [c for c in pulse.Capability if c is not pulse.Capability.LOOP]
     unrolled = Controller(instruction_cycles=4, max_pulses=2, supports=no_loop)
@@ -154,14 +156,15 @@ def test_emitted_pulses_must_respect_the_declared_limits():
 
 def test_an_emulator_that_disagrees_with_the_simulator_fails(monkeypatch):
     monkeypatch.setattr(_validation, "_simulated", lambda lowered: [0.5] * _readouts(lowered))
-    report = backends.validate(ToyBackend(), shots=200)
-    assert "FAIL acquire (/1): measurement 0: the emulator gives 1 in 0.000 of shots" in str(report)
+    report = backends.validate(ToyBackend(), shots_count=200)
+    assert "FAIL readout (/1): measurement 0: the emulator gives 1 in 0.000 of shots" in str(report)
 
 
 def test_the_emulator_is_compared_with_the_simulator():
     lowered = pulse.compile(
-        _validation._corpus()[pulse.Event.ACQUIRE], device=_validation._device(ControlSystem())
-    ).lower(*_validation._device(ControlSystem()).qudit_handles[:2])
+        _validation._corpus()[pulse.Event.READOUT],
+        quantum_system=_validation._device(ControlSystem()),
+    ).lower(*_validation._device(ControlSystem()).qudits[:2])
     (p,) = _validation._simulated(lowered)
     assert 0.0 < p < 1.0
 
@@ -179,8 +182,8 @@ def test_a_backend_that_refuses_everything_fails(ideal, monkeypatch):
 
 
 def test_validate_checks_its_arguments():
-    with pytest.raises(ValueError, match="shots must be positive"):
-        backends.validate(ToyBackend(), shots=0)
+    with pytest.raises(ValueError, match="shots_count must be positive"):
+        backends.validate(ToyBackend(), shots_count=0)
     with pytest.raises(backends.IncompatibleBackendError, match="is not a"):
         backends.validate(object())  # type: ignore[arg-type]
     with pytest.raises(backends.BackendNotFoundError):

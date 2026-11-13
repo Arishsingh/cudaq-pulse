@@ -14,15 +14,13 @@ import numpy as np
 import pytest
 from cudaq_pulse.classical import emulation
 from cudaq_pulse.kernel.ir_builder import CompilationError
-from cudaq_pulse.targets import Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import PhysicalQudit
 
 PI_AMP = math.pi / 20  # square(40, PI_AMP) is a pi pulse
 
-_DEVICE = pulse.device(
-    TargetDescription(
-        name="three",
-        qubits={i: Qubit(i, 5e9 + 1e8 * i, -2e8, 0.0, 0.0) for i in range(3)},
-    )
+_DEVICE = pulse.quantum_system(
+    name="three",
+    qudits={i: PhysicalQudit(i, 5e9 + 1e8 * i, 0.0, 0.0, anharmonicity_hz=-2e8) for i in range(3)},
 )
 
 
@@ -48,8 +46,8 @@ def _kernel(body: str) -> pulse.Kernel:
     return pulse.kernel(scope["k"])
 
 
-def _lower(body: str) -> pulse.Lowered:
-    return pulse.compile(_kernel(body), device=_DEVICE).lower(*_DEVICE.qudit_handles[:3])
+def _lower(body: str) -> pulse.ScheduledKernel:
+    return pulse.compile(_kernel(body), quantum_system=_DEVICE).lower(*_DEVICE.qudits[:3])
 
 
 _FLAG = "        drive(f, square(40, PI_AMP))\n"
@@ -66,7 +64,7 @@ _FORMS = [
 ]
 
 
-def _mlir(low: pulse.Lowered) -> str:
+def _mlir(low: pulse.ScheduledKernel) -> str:
     text = low.mlir()
     return re.sub(r"loc\([^)]*\)", "", text[text.index("func.func") :])
 
@@ -77,8 +75,10 @@ def test_a_kept_condition_compiles_as_the_condition_in_the_if(condition, _):
     inline = _lower(f"    if {condition}:\n{_FLAG}")
     assert _mlir(kept) == _mlir(inline)
     assert "arith.select" not in kept.mlir() and "pulse.selected_values" not in kept.mlir()
-    assert kept.export_controller() == inline.export_controller()
-    runs = [emulation.emulate(low, shots=8, seed=4, service_time="none") for low in (kept, inline)]
+    assert kept.export_to_controller() == inline.export_to_controller()
+    runs = [
+        emulation.emulate(low, shots_count=8, seed=4, service_time="none") for low in (kept, inline)
+    ]
     assert runs[0].outcomes == runs[1].outcomes and runs[0].ends_ns == runs[1].ends_ns
 
 
@@ -119,7 +119,7 @@ def test_simulation_drives_where_python_s_condition_holds(body, expected):
     result = pulse.simulate(low, initial_state=state, levels=2)
     # A branch's levels are in the order the readouts are scheduled.
     readouts = [e for e in low.schedule if e.kind == "readout"]
-    order = [e.qubit for _, _, e in sorted((e.start_cycles, k, e) for k, e in enumerate(readouts))]
+    order = [e.qudit for _, _, e in sorted((e.start_cycles, k, e) for k, e in enumerate(readouts))]
     seen = set()
     for branch in result.branches:
         s0, s1, flag = (dict(zip(order, branch.levels, strict=True))[q] for q in (0, 1, 2))

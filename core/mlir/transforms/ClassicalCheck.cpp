@@ -10,7 +10,7 @@
 //   waited on in the loop iteration that submitted it;
 // - a call with a reaction time reacts in it: its answer is due within
 //   `reaction_deadline_ns` of the end of the readouts its request carries;
-// - at no time does a link hold more requests than `max_in_flight` (S8);
+// - at no time does a link hold more requests than `slots` (S8);
 // - the submissions on one link go out one after another, in program order
 //   (S9), also inside branches (S11);
 // - a call starts after the readouts and answers it sends end (S10), and no
@@ -32,6 +32,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include "cudaq-pulse/Dialect/Pulse/PulseDialect.h.inc"
+#include "cudaq-pulse/Dialect/Pulse/PulseEnums.h.inc"
 #define GET_TYPEDEF_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseTypes.h.inc"
 #define GET_OP_CLASSES
@@ -258,9 +259,7 @@ private:
                                         llvm::ArrayRef<int64_t> iteration) {
     if (!iteration.empty())
       return pulse::scheduledStart(op, iteration);
-    if (auto start = op->getAttrOfType<mlir::IntegerAttr>("start_cycles"))
-      return start.getInt();
-    return std::nullopt;
+    return pulse::startCycles(op);
   }
 
   /// When `op`, a readout or an answer the op walked depends on, ends in the
@@ -697,7 +696,7 @@ static bool checkReaction(classical::SubmitOp submit,
                           classical::CallableOp callable,
                           mlir::func::FuncOp function, double clock,
                           Stretches &stretches) {
-  if (!submit->hasAttr("start_cycles"))
+  if (!pulse::hasStart(submit))
     return true;
   double reactionNs = callable.getReactionDeadlineNs()->convertToDouble();
   int64_t limit = static_cast<int64_t>(std::floor(reactionNs * clock + 1e-9));
@@ -732,7 +731,7 @@ static bool checkReaction(classical::SubmitOp submit,
   llvm::SmallVector<int64_t, 2> iteration(depth, 0);
   for (mlir::Operation *reference : references) {
     size_t own = pulse::enclosingLoops(reference, function).size();
-    if (!reference->hasAttr("start_cycles") || own > depth)
+    if (!pulse::hasStart(reference) || own > depth)
       continue;
     int64_t stretch = reference == submit.getOperation()
                           ? 0
@@ -898,7 +897,7 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
         }
         return;
       }
-      if (!submit->hasAttr("start_cycles") || !wait->hasAttr("start_cycles"))
+      if (!pulse::hasStart(submit) || !pulse::hasStart(wait))
         return;
       auto loops = pulse::enclosingLoops(wait, function);
       if (loops != pulse::enclosingLoops(submit, function)) {
@@ -948,7 +947,7 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
       if (runs.empty())
         continue;
       int64_t capacity =
-          classical::intAttr(runs.front().op, "classical.max_in_flight", 64);
+          classical::intAttr(runs.front().op, "classical.slots", 64);
       auto summarized = summarizedInFlight(runs);
       auto [worst, when] = summarized ? *summarized : sweepInFlight(runs);
       if (worst > capacity) {

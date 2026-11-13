@@ -10,7 +10,7 @@ import math
 import cudaq_pulse as pulse
 import pytest
 
-from tests._handles import Q
+from tests._handles import Q, rebuilt
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,7 +37,7 @@ _FREQ_2Q = {0: 5.0e9, 1: 5.1e9}
 def test_compile_returns_compiled_kernel():
     ck = pulse.compile(_bell)
     assert isinstance(ck, pulse.CompiledKernel)
-    assert isinstance(ck.lower(Q[0], Q[1]), pulse.Lowered)
+    assert isinstance(ck.lower(Q[0], Q[1]), pulse.ScheduledKernel)
 
 
 def test_compile_produces_mlir():
@@ -77,7 +77,7 @@ def test_compile_no_passes():
     assert "pulse.drive" in ck.mlir()
 
 
-def test_compile_single_qubit():
+def test_compile_single_qudit():
 
     @pulse.kernel
     def k(q):
@@ -90,10 +90,12 @@ def test_compile_single_qubit():
 
 
 def _sparse_device():
-    from cudaq_pulse.targets import Qubit, TargetDescription
+    from cudaq_pulse.quantum_systems import PhysicalQudit
 
-    qubits = {i: Qubit(i, 5.0e9 + 1e8 * i, -300e6, 50.0, 30.0) for i in (0, 2)}
-    return pulse.device(TargetDescription(name="sparse", qubits=qubits))
+    qudits = {
+        i: PhysicalQudit(i, 5.0e9 + 1e8 * i, 50.0, 30.0, anharmonicity_hz=-300e6) for i in (0, 2)
+    }
+    return pulse.quantum_system(name="sparse", qudits=qudits)
 
 
 @pulse.kernel
@@ -104,21 +106,24 @@ def _drive_one(q):
 def test_a_module_records_0_hz_for_a_qudit_its_target_lacks():
     dev = _sparse_device()
     for _ in range(2):
-        mlir = _drive_one.lower(dev.qudit_handles[1]).mlir()
-        assert "pulse.qubit_freq_hz = array<f64: 5.000000e+09, 0.000000e+00, 5.200000e+09>" in mlir
+        mlir = _drive_one.lower(dev.qudits[1]).mlir()
+        assert (
+            "pulse.quantum_system = #pulse.quantum_system<"
+            "qudit_frequency_hz = [5.000000e+09, 0.000000e+00, 5.200000e+09]>"
+        ) in mlir
 
 
 def test_a_qudit_the_target_lacks_is_refused_however_its_tables_were_made():
-    # Handles of another device reach build() as the qudits it lacks: one
+    # Handles of another quantum system reach build() as the qudits it lacks: one
     # in its gap, one past its last, before and after programs on the
     # qudits it defines made its tables.
     from cudaq_pulse.compiler import CompileOptions, build
 
     options = CompileOptions.make()
-    dense = pulse.device(pulse.device("transmon_17q").target)
+    dense = rebuilt(pulse.quantum_system("transmon_surface17"))
     for dev, lacking in ((_sparse_device(), (1, 5)), (dense, (17, 30))):
         kernel = pulse.kernel(_drive_one.__wrapped__)
-        handles = dev.qudit_handles
+        handles = dev.qudits
         for handle in (None, handles[0], handles[len(handles) - 1]):
             if handle is not None:
                 kernel.lower(handle)
@@ -285,7 +290,6 @@ def test_bind_names_the_parameters_when_the_count_does_not_fit(values, message):
         ),
         ([0.2, 1j], pulse.InvalidTypeError, r"'detuning' must be a real number, got complex"),
         ([0.2, None], pulse.InvalidTypeError, r"'detuning' must be a real number, got NoneType"),
-        ([math.nan, 1e6], pulse.InvalidValueError, r"argument 'amplitude' is nan; a float"),
         ([0.2, -math.inf], pulse.InvalidValueError, r"argument 'detuning' is -inf; a float"),
     ],
 )
@@ -294,6 +298,14 @@ def test_a_bound_value_that_does_not_fit_fails_where_the_module_is_used(values, 
     for use in (bound.mlir, lambda: pulse.simulate(bound)):
         with pytest.raises(error, match=message):
             use()
+
+
+def test_a_nan_value_fails_where_it_is_bound():
+    generic = _two_amplitudes.lower(Q[0], 0.1, 1e6).generic
+    with pytest.raises(pulse.InvalidValueError, match=r"bind\(\): the value of 'detuning' is nan"):
+        generic.bind([0.2, math.nan])
+    with pytest.raises(pulse.InvalidValueError, match=r"argument 'amplitude' is nan"):
+        _two_amplitudes.lower(Q[0], math.nan, 1e6)
 
 
 def test_generic_is_the_module_every_call_rebinds_from():
@@ -331,7 +343,7 @@ def test_packed_ir_builder_basic():
     """PackedIRBuilder produces valid int64 buffer."""
     from cudaq_pulse.kernel.packed_ir_builder import PackedIRBuilder
 
-    b = PackedIRBuilder(clock_ghz=2.0, qubit_freq_hz={0: 5e9})
+    b = PackedIRBuilder(clock_ghz=2.0, qudit_freq_hz={0: 5e9})
     (q,) = b.emit("pulse.qudit_alloc", (), ("qref",))
     (dl, t) = b.emit("pulse.get_drive_line", (q,), ("drive_line", "tone"))
     (wf,) = b.emit(
@@ -343,14 +355,14 @@ def test_packed_ir_builder_basic():
     assert isinstance(buf, array.array)
     assert buf.typecode == "q" and buf.itemsize == 8
     assert len(buf) > 0
-    assert b.n_qubits == 1
+    assert b.qudit_count == 1
 
 
 def test_packed_ir_builder_readout():
     """PackedIRBuilder encodes readout ops."""
     from cudaq_pulse.kernel.packed_ir_builder import PackedIRBuilder
 
-    b = PackedIRBuilder(clock_ghz=2.0, qubit_freq_hz={0: 5e9})
+    b = PackedIRBuilder(clock_ghz=2.0, qudit_freq_hz={0: 5e9})
     (q,) = b.emit("pulse.qudit_alloc", (), ("qref",))
     (rl, t) = b.emit("pulse.get_readout_line", (q,), ("readout_line", "tone"))
     (wf,) = b.emit("pulse.square", (), ("waveform",), {"duration": 400, "amplitude": 0.1})
@@ -365,7 +377,7 @@ def test_packed_ir_builder_sync():
     """PackedIRBuilder encodes variable-length sync ops."""
     from cudaq_pulse.kernel.packed_ir_builder import PackedIRBuilder
 
-    b = PackedIRBuilder(clock_ghz=2.0, qubit_freq_hz={0: 5e9, 1: 5.1e9})
+    b = PackedIRBuilder(clock_ghz=2.0, qudit_freq_hz={0: 5e9, 1: 5.1e9})
     (q0,) = b.emit("pulse.qudit_alloc", (), ("qref",))
     (q1,) = b.emit("pulse.qudit_alloc", (), ("qref",))
     (d0, t0) = b.emit("pulse.get_drive_line", (q0,), ("drive_line", "tone"))

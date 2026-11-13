@@ -87,10 +87,10 @@ class Transport:
     bytes_per_ns: float = 0.0
     jitter_ns: float = 0.0
 
-    def delay_ns(self, n_bytes: int, rng: np.random.Generator) -> float:
+    def delay_ns(self, byte_count: int, rng: np.random.Generator) -> float:
         delay = self.fixed_ns
         if self.bytes_per_ns > 0:
-            delay += n_bytes / self.bytes_per_ns
+            delay += byte_count / self.bytes_per_ns
         if self.jitter_ns > 0:
             delay += float(rng.exponential(self.jitter_ns))
         return delay
@@ -279,11 +279,11 @@ class RealtimeChannel:
 def device_call_text(lowered: Any) -> str:
     """CUDA-Q kernel text that makes a compiled program's calls as
     ``cc.device_call`` operations. Not available yet: export the program
-    with ``export`` (or ``Lowered.export_emulation()``), whose manifest holds
+    with ``export`` (or ``ScheduledKernel.export_to_emulator()``), whose manifest holds
     each function's dispatch key, payload types and link."""
     raise UnsupportedError(
         "exporting calls as CUDA-Q cc.device_call operations is not available yet; "
-        "use Lowered.export_emulation(), whose manifest lists every call"
+        "use ScheduledKernel.export_to_emulator(), whose manifest lists every call"
     )
 
 
@@ -429,7 +429,7 @@ def _check_transport(transport: Any, machine: Any) -> None:
 def emulate(
     lowered: Any,
     *,
-    shots: int = 1,
+    shots_count: int = 1,
     channel: Any = None,
     handlers: Mapping[str, Callable[..., Any]] | None = None,
     transport: Transport | Mapping[int | str, Transport] | None = None,
@@ -437,20 +437,20 @@ def emulate(
     service_time: str = "measured",
     seed: int | None = None,
 ) -> EmulationResult:
-    """Run *lowered* for *shots* in virtual time against classical services.
+    """Run *lowered* for *shots_count* in virtual time against classical services.
 
     *channel* reaches the services (``InProcess`` of *handlers* by default,
     the functions' bodies unless given). *transport* models each link's
     delay in each direction, per link (name or id) or for all. *outcomes* gives the
     level a readout reports, from its qudit and the shot's generator
     (uniform 0/1 by default); a call that takes IQ points gets them drawn
-    at those levels from the target's dispersive readout model
+    at those levels from the quantum system's dispersive readout model
     (``IQModel``). The answer's latency is the request's
     transport delay, plus the service's time (``"measured"`` wall-clock, or
-    ``"none"``), plus the answer's transport delay. *shots* is a positive int.
+    ``"none"``), plus the answer's transport delay. *shots_count* is a positive int.
     """
-    if shots.__class__ is not int or shots < 1:
-        shots = _positive_int("shots", shots)
+    if shots_count.__class__ is not int or shots_count < 1:
+        shots_count = _positive_int("shots_count", shots_count)
     functions = tuple(lowered.classical)
     by_name = {fn.name: fn for fn in functions}
     chosen = _handlers_for(functions, handlers)
@@ -471,9 +471,9 @@ def emulate(
     schedule_args = lowered.options.schedule_args()
     base = lowered._concrete().simulation_module(*schedule_args)
     due_ns = base.call_due_ns()
-    clock = lowered.target.clock_ghz
+    clock = lowered.quantum_system.clock_ghz
     iq_model = (
-        IQModel(lowered.target.target, lowered.qudits, decay=False)
+        IQModel(lowered.quantum_system._description, lowered.qudits, decay=False)
         if any(takes_iq(fn) for fn in functions)
         else None
     )
@@ -499,7 +499,7 @@ def emulate(
     # Unique over the run, so that an answer to an earlier shot's request
     # is not taken for one to this shot's.
     request_id = 0
-    for _ in range(shots):
+    for _ in range(shots_count):
         module = base
         path: list[tuple[tuple[int, tuple[int, ...]], int]] = []
         shot_outcomes: list[int] = []

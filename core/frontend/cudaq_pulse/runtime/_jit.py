@@ -55,14 +55,16 @@ class JITCompiler:
         module: JITModule,
         entry: str = "main",
         args: Sequence[Any] | None = None,
-        n_qubits: int = 1,
+        qudit_count: int = 1,
         state_dim: int | None = None,
+        count: int = 1,
     ) -> list[JITResult]:
-        """Invoke a JIT-compiled entry point and collect its result state.
+        """Invoke a JIT-compiled entry point and collect its result states:
+        *count* of them for a batched run (``cudm_set_initial_state``).
 
-        ``state_dim`` is the Hilbert-space dimension (``2**n_qubits`` by
-        default); a result that is neither a state vector nor a density
-        matrix of that dimension is rejected.
+        ``state_dim`` is the Hilbert-space dimension (``2**qudit_count`` by
+        default); a result that is not *count* state vectors or density
+        matrices of that dimension is rejected.
         """
         runtime = self._runtime.library
         c_args, keep_alive = _marshal_args(args or [])
@@ -71,7 +73,7 @@ class JITCompiler:
         func(*c_args)
         del keep_alive
 
-        hilbert_dim = state_dim if state_dim is not None else 2**n_qubits
+        hilbert_dim = state_dim if state_dim is not None else 2**qudit_count
         itemsize = np.dtype(np.complex128).itemsize
         byte_count = runtime.cudm_last_result_size()
         if byte_count <= 0:
@@ -86,18 +88,25 @@ class JITCompiler:
             itemsize * hilbert_dim: (hilbert_dim,),
             itemsize * hilbert_dim * hilbert_dim: (hilbert_dim, hilbert_dim),
         }
-        shape = shapes.get(byte_count)
+        shape = shapes.get(byte_count // count) if byte_count % count == 0 else None
         if shape is None:
+            what = "a complex128 state vector or density matrix"
+            if count > 1:
+                what = f"{count} complex128 state vectors or density matrices"
             raise ExecutionError(
-                f"cuDensityMat returned {byte_count} bytes, which is not a complex128 state "
-                f"vector or density matrix of dimension {hilbert_dim}"
+                f"cuDensityMat returned {byte_count} bytes, which is not {what} "
+                f"of dimension {hilbert_dim}"
             )
         buffer = (ctypes.c_byte * byte_count)()
         status = runtime.cudm_last_result_copy(buffer, byte_count)
         if status != 0:
             raise ExecutionError("could not copy the cuDensityMat result buffer")
         array = np.frombuffer(buffer, dtype=np.complex128).copy()
-        return [JITResult(shape=shape, dtype=np.dtype(np.complex128), _array=array)]
+        size = array.size // count
+        return [
+            JITResult(shape=shape, dtype=array.dtype, _array=array[i * size : (i + 1) * size])
+            for i in range(count)
+        ]
 
 
 _ARRAY_DTYPES = (np.dtype(np.float64), np.dtype(np.complex128), np.dtype(np.int64))

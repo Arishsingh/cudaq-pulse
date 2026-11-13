@@ -5,23 +5,23 @@
     python -m cudaq_pulse.doctor                     # exit 0 only if GPU execution works
     python -m cudaq_pulse.doctor --allow-no-gpu      # exit 0 if the compiler works
     python -m cudaq_pulse.doctor --expect-no-device  # exit 0 if GPU libraries load
-                                                     # but no device exists
+                                                     # but no quantum system exists
     python -m cudaq_pulse.doctor --setup-editor      # configure mypy and ruff for
                                                      # the kernel language
-    python -m cudaq_pulse.doctor --system lab.json   # check a device file
+    python -m cudaq_pulse.doctor --system lab.json   # check a quantum system file
     python -m cudaq_pulse.doctor --system lab.json --json
 
 The compiler check always runs; any failure there exits non-zero. So does
 one of the cudaq-pulse-opt MLIR driver, from the cudaq-pulse-tools
 distribution, which an installed cudaq-pulse requires at its own version,
 and whose ``--version`` must print it.
-``--system FILE`` instead runs the checks of ``pulse.Device.load(FILE)`` and
+``--system FILE`` instead runs the checks of ``pulse.QuantumSystem.load(FILE)`` and
 prints each problem as ``FILE:LINE:COLUMN: error: PATH: MESSAGE``, or with
 ``--json`` as one JSON object; it exits 1 if the file has a problem.
 ``--setup-editor`` instead shows the change to the mypy and ruff
 configuration of the project in the current directory (or ``--project``)
 and writes it only when confirmed, or with ``--yes``. ``--system`` loads a
-system file (``Device.as_dict()``), lists every problem of its definition
+system file (``QuantumSystem.as_dict()``), lists every problem of its definition
 with its line, and shows its controllers, links and whether each
 controller's backend is installed; it exits non-zero if the file has a
 problem or names a backend that is not installed.
@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from . import _build_config
-from ._errors import UNSET, DeviceDefinitionError, Problem
+from ._errors import UNSET, Problem, QuantumSystemDefinitionError
 from .runtime import gpu
 
 __all__ = ["main"]
@@ -182,23 +182,33 @@ def _context_budget(write: Callable[[str], None]) -> bool:
 
 
 def _kernel_settings(write: Callable[[str], None]) -> bool:
-    """Print the process target and cache size; return False if either is invalid."""
+    """Print the process quantum system and cache size; return False if either is invalid."""
     from .kernel._kernel import CACHE_SIZE_ENV, _cache_size
-    from .targets._registry import ENV_VAR, available_targets, current_target
+    from .quantum_systems._registry import (
+        ENV_VAR,
+        available_quantum_systems,
+        current_quantum_system,
+    )
 
     ok = True
-    write(f"Targets available: {', '.join(available_targets())}")
+    write(f"Quantum systems available: {', '.join(available_quantum_systems())}")
     if not os.environ.get(ENV_VAR):
-        write(f"Process target: none ({ENV_VAR} is not set; kernels run on their qudits' device)")
+        write(
+            f"Process quantum system: none ({ENV_VAR} is not set; "
+            "kernels run on their qudits' quantum system)"
+        )
     else:
         try:
-            device = current_target()
+            quantum_system = current_quantum_system()
         except Exception as error:
-            write("Process target: INVALID")
+            write("Process quantum system: INVALID")
             write(f"  {error}")
             ok = False
         else:
-            write(f"Process target: {device.name} ({device.source}, {len(device.layout)} qudits)")
+            write(
+                f"Process quantum system: {quantum_system.name} "
+                f"({quantum_system.source}, {len(quantum_system.layout)} qudits)"
+            )
     try:
         size = _cache_size(None)
     except ValueError as error:
@@ -345,15 +355,15 @@ def _problem_json(problem: Problem) -> dict[str, Any]:
 
 
 def _check_system(file: Path, as_json: bool, write: Callable[[str], None]) -> int:
-    """Check the device or system file *file*, and that the backends of its
+    """Check the quantum system or system file *file*, and that the backends of its
     controllers are installed; return the exit code."""
-    from ._device import Device
+    from ._device import QuantumSystem
 
     problems: tuple[Problem, ...] = ()
     summary: dict[str, Any] | None = None
     try:
-        dev = Device.load(file)
-    except DeviceDefinitionError as error:
+        dev = QuantumSystem.load(file)
+    except QuantumSystemDefinitionError as error:
         problems = error.problems
     except OSError as error:
         problems = (Problem(f"cannot read the file: {error.strerror or error}", file=str(file)),)
@@ -367,14 +377,14 @@ def _check_system(file: Path, as_json: bool, write: Callable[[str], None]) -> in
         report = {
             "file": str(file),
             "ok": not problems,
-            "device": summary,
+            "quantum_system": summary,
             "problems": [_problem_json(p) for p in problems],
         }
         write(json.dumps(report, indent=2))
         return 1 if problems else 0
     if summary is not None:
         state = "ok" if not problems else "loads"
-        write(f"{file}: {state}, device {summary['name']} with {summary['qudits']} qudits")
+        write(f"{file}: {state}, quantum system {summary['name']} with {summary['qudits']} qudits")
         for line in _control_lines(summary.get("control_system")):
             write(f"  {line}")
     for problem in problems:
@@ -396,8 +406,12 @@ def _control_summary(system: Any, file: Path) -> tuple[dict[str, Any], tuple[Pro
         entry: dict[str, Any] = {
             "model": controller.model,
             "version": controller.version,
-            "drive_lines": [line.qudit for line in controller.drive_lines],
-            "readout_lines": [line.qudit for line in controller.readout_lines],
+            "drive_lines": [q for line in controller.drive_lines for q in line.qudits]
+            if system._shares
+            else [line[0] for line in controller.drive_lines],
+            "readout_lines": [q for line in controller.readout_lines for q in line.qudits]
+            if system._shares
+            else [line[0] for line in controller.readout_lines],
             "backend": controller.backend,
         }
         if controller.backend is not None:
@@ -474,7 +488,7 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
         "--system",
         type=Path,
         metavar="FILE",
-        help="check the system file FILE as pulse.Device.load(FILE) does: every "
+        help="check the system file FILE as pulse.QuantumSystem.load(FILE) does: every "
         "problem, its controllers and links, and whether their backends are installed",
     )
     parser.add_argument(

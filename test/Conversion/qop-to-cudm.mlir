@@ -3,7 +3,7 @@
 
 // RUN: cudaq-pulse-opt --qop-to-cudm %s | FileCheck %s
 
-module @qop_to_cudm_test attributes {qop.n_qubits = 1 : i64, qop.t_start = 0.0 : f64, qop.t_end = 100.0 : f64, qop.num_steps = 100 : i64} {
+module @qop_to_cudm_test attributes {qop.qudit_count = 1 : i64, qop.t_start = 0.0 : f64, qop.t_end = 100.0 : f64, qop.step_count = 100 : i64} {
 
 // CHECK-LABEL: func @main
 func.func @main() {
@@ -27,6 +27,7 @@ func.func @main() {
 
   %H = qop.make_sum(%term_z, %term_x) : !qop.op
   %L = qop.lindblad(%H, %collapse) : !qop.super_op
+  qop.evolve %L : !qop.super_op
 
   // CHECK: cudm.init_handle
   // CHECK: cudm.create_state {{.*}}purity = #cudm<purity mixed>

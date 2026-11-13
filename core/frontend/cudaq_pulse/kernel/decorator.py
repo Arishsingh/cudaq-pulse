@@ -41,7 +41,7 @@ def kernel[**P](
 ) -> Kernel[P] | KernelDecorator:
     """Decorator that makes a Python function a pulse kernel.
 
-    Calling the kernel compiles it on first use and runs it on the device of
+    Calling the kernel compiles it on first use and runs it on the quantum system of
     its qudit handles, returning what the kernel returns. Parameters annotated
     ``float`` stay symbolic in the compiled module; the kernel is
     specialized on every other parameter, and up to *cache_size*
@@ -59,8 +59,8 @@ def kernel[**P](
             d = get_drive_line(q)
             drive(d, gaussian(40, amp, 10.0))
 
-        dev = cudaq_pulse.device("transmon_17q")
-        rabi(dev.qudit_handles[0], 0.3)
+        qs = cudaq_pulse.quantum_system("transmon_surface17")
+        rabi(qs.qudits[0], 0.3)
 
     A kernel called from another kernel is scheduled with it, unless it
     sets its own policy: with ``schedule="asap"`` or ``schedule="alap"`` it

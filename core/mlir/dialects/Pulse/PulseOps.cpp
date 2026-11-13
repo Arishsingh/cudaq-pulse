@@ -15,6 +15,7 @@
 #include "cudaq-pulse/Dialect/Pulse/PulseDialect.h.inc"
 #include "cudaq-pulse/Dialect/Pulse/PulseEnums.h.inc"
 #include "cudaq-pulse/Dialect/Pulse/PulseResources.h"
+#include "cudaq-pulse/Dialect/Pulse/PulseTimingFormat.h"
 
 #define GET_TYPEDEF_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseTypes.h.inc"
@@ -34,13 +35,6 @@ namespace pulse {
 // causality): folding may turn such a value into a constant, and must not
 // turn an op that verified into one that does not.
 // ===----------------------------------------------------------------------===//
-
-LogicalResult QvecAllocOp::verify() {
-  if (getSize() != static_cast<int64_t>(getQrefs().size()))
-    return emitOpError("allocates ") << getSize() << " qudits, but returns "
-                                     << getQrefs().size() << " references";
-  return success();
-}
 
 LogicalResult CustomSamplesOp::verify() {
   if (getSamples().empty())
@@ -149,13 +143,6 @@ void IsSetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 static bool isTimedValueType(Type type) {
   return isa<DriveLineType, ReadoutLineType, ToneType, MeasurementType>(type) ||
          type.getDialect().getNamespace() == "classical";
-}
-
-LogicalResult ScheduleBlockOp::verify() {
-  if (getPolicy() != "asap" && getPolicy() != "alap")
-    return emitOpError("policy must be \"asap\" or \"alap\", got \"")
-           << getPolicy() << "\"";
-  return success();
 }
 
 LogicalResult ScheduleBlockOp::verifyRegions() {

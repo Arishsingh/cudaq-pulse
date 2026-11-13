@@ -16,13 +16,13 @@ TOP_LEVEL = {
     "Kernel",
     "compile",
     "CompiledKernel",
-    "Lowered",
+    "ScheduledKernel",
     "Pass",
     "simulate",
     "SimulationResult",
     "BranchCoverage",
-    "device",
-    "Device",
+    "quantum_system",
+    "QuantumSystem",
     "Qudit",
     "Register",
     "Controller",
@@ -32,7 +32,7 @@ TOP_LEVEL = {
     "Link",
     "PulseError",
     "Problem",
-    "DeviceDefinitionError",
+    "QuantumSystemDefinitionError",
     "InvalidValueError",
     "InvalidTypeError",
     "NotFoundError",
@@ -44,9 +44,9 @@ TOP_LEVEL = {
     "InternalError",
     "PulseWarning",
     "UpgradeNotice",
-    "NoTargetError",
-    "NoDeviceError",
-    "DeviceMismatchError",
+    "NoProcessQuantumSystemError",
+    "NoQuantumSystemError",
+    "QuantumSystemMismatchError",
     "GpuRuntimeError",
     "round_duration",
     "RoundDirection",
@@ -190,18 +190,18 @@ def test_compiler_types_are_in_the_compiler_module():
 
 
 def test_device_is_the_one_device_getter():
-    import cudaq_pulse.targets as targets
+    import cudaq_pulse.quantum_systems as quantum_systems
 
     for removed in ("get_device", "Target"):
         assert not hasattr(pulse, removed)
-        assert not hasattr(targets, removed)
+        assert not hasattr(quantum_systems, removed)
 
 
 def test_the_release_ships_no_neutral_atom_target():
-    import cudaq_pulse.targets as targets
+    import cudaq_pulse.quantum_systems as quantum_systems
 
-    assert not [n for n in targets.available_targets() if n.startswith("rydberg")]
-    assert not [n for n in targets.__all__ if n.lower().startswith("rydberg")]
+    assert not [n for n in quantum_systems.available_quantum_systems() if n.startswith("rydberg")]
+    assert not [n for n in quantum_systems.__all__ if n.lower().startswith("rydberg")]
 
 
 # Neutral-atom work is kept out of the release; a line that must name one of
@@ -268,8 +268,8 @@ def test_every_public_error_is_a_pulse_error_and_keeps_its_builtin_base():
     import cudaq_pulse.backends
     import cudaq_pulse.compiler
     import cudaq_pulse.controller
+    import cudaq_pulse.quantum_systems
     import cudaq_pulse.runtime
-    import cudaq_pulse.targets
 
     builtin = {
         "InvalidValueError": ValueError,
@@ -282,11 +282,11 @@ def test_every_public_error_is_a_pulse_error_and_keeps_its_builtin_base():
         "ExecutionError": RuntimeError,
         "InternalError": RuntimeError,
         "UnsupportedInterpreterError": NotImplementedError,
-        "NoTargetError": RuntimeError,
-        "NoDeviceError": RuntimeError,
-        "DeviceMismatchError": RuntimeError,
-        "DeviceDefinitionError": ValueError,
-        "UnknownTargetError": KeyError,
+        "NoProcessQuantumSystemError": RuntimeError,
+        "NoQuantumSystemError": RuntimeError,
+        "QuantumSystemMismatchError": RuntimeError,
+        "QuantumSystemDefinitionError": ValueError,
+        "UnknownQuantumSystemError": KeyError,
         "GpuRuntimeError": RuntimeError,
         "GpuSupportNotBuiltError": RuntimeError,
         "GpuRuntimeLoadError": RuntimeError,
@@ -304,7 +304,7 @@ def test_every_public_error_is_a_pulse_error_and_keeps_its_builtin_base():
             cudaq_pulse.compiler,
             cudaq_pulse.controller,
             cudaq_pulse.runtime,
-            cudaq_pulse.targets,
+            cudaq_pulse.quantum_systems,
         )
         for name in module.__all__
         if isinstance(getattr(module, name), type)

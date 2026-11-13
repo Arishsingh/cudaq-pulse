@@ -14,7 +14,7 @@ import warnings
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
-from cudaq_pulse.targets import Coupling, MicrowaveDrive, Qubit, TargetDescription
+from cudaq_pulse.quantum_systems import Coupling, MicrowaveDrive, PhysicalQudit
 
 from tests._handles import Q
 from tests.runtime._lowering import on
@@ -26,10 +26,10 @@ _HALF_PI = math.pi / 40.0
 
 
 def _target(n=1, t1_us=0.0):
-    return TargetDescription(
+    return pulse.quantum_system(
         name="simulate-test",
-        qubits={
-            q: Qubit(
+        qudits={
+            q: PhysicalQudit(
                 index=q,
                 frequency_hz=5.0e9 + 0.1e9 * q,
                 anharmonicity_hz=-200.0e6,
@@ -102,13 +102,13 @@ def test_simulate_takes_the_kernel_and_its_arguments():
         d0 = get_drive_line(q0)
         drive(d0, square(40, amplitude))
 
-    dev = pulse.device(_target())
-    q = dev.qudit_handles[0]
+    dev = _target()
+    q = dev.qudits[0]
     expected = pulse.simulate(rabi.lower(q, _PI), levels=2).density_matrix
     np.testing.assert_array_equal(pulse.simulate(rabi, q, _PI, levels=2).density_matrix, expected)
     compiled = pulse.compile(rabi)
     np.testing.assert_array_equal(
-        pulse.simulate(compiled, q, _PI, shots=2, seed=1, levels=2).density_matrix, expected
+        pulse.simulate(compiled, q, _PI, shots_count=2, seed=1, levels=2).density_matrix, expected
     )
     with pytest.raises(pulse.InvalidTypeError, match="module of a call, which has its arguments"):
         pulse.simulate(rabi.lower(q, _PI), q, levels=2)
@@ -126,8 +126,8 @@ def _rabi_with_amplitude(q0, amplitude: float):
 
 @pytest.mark.parametrize("kind", ["kernel", "compiled", "with_parameters", "bound", "call"])
 def test_simulate_takes_a_kernel_or_a_program_compiled_already(kind):
-    dev = pulse.device(_target())
-    q = dev.qudit_handles[0]
+    dev = _target()
+    q = dev.qudits[0]
     compiled = pulse.compile(_rabi_with_amplitude)
     generic = compiled.lower(q, _PI).generic
     assert generic is not None and generic.parameters == ("amplitude",)
@@ -149,8 +149,8 @@ def test_simulate_binds_a_program_s_parameters_as_bind_does():
         wait(d0, gap, bounds=(0, 100))
         drive(d0, square(40, _PI))
 
-    dev = pulse.device(_target())
-    q = dev.qudit_handles[0]
+    dev = _target()
+    q = dev.qudits[0]
     generic = pulse.compile(wait_for).lower(q, 10.0).generic
     assert generic is not None
     with pytest.raises(pulse.InvalidValueError, match=r"float parameters \(gap\); pass their"):
@@ -164,13 +164,13 @@ def test_simulate_binds_a_program_s_parameters_as_bind_does():
 
 
 def test_active_reset_returns_the_excited_state_to_ground():
-    result = _run(_active_reset(_PI), shots=200, seed=1)
+    result = _run(_active_reset(_PI), shots_count=200, seed=1)
     np.testing.assert_allclose(result.density_matrix, np.diag([1.0, 0.0]), atol=1e-7)
     assert result.records is not None and (result.records[:, 0] == 1).all()
 
 
 def test_active_reset_of_a_superposition():
-    result = _run(_active_reset(_HALF_PI), shots=4000, seed=2)
+    result = _run(_active_reset(_HALF_PI), shots_count=4000, seed=2)
     # Either outcome ends in |0>: the ensemble is pure.
     np.testing.assert_allclose(result.density_matrix, np.diag([1.0, 0.0]), atol=1e-7)
     probabilities = {b.levels: b.probability for b in result.branches}
@@ -180,8 +180,8 @@ def test_active_reset_of_a_superposition():
     assert abs(ones - 0.5) < 4 * math.sqrt(0.25 / 4000)
 
 
-def test_conditional_flip_correlates_the_qubits():
-    result = _run(conditional_flip, 2, shots=1000, seed=3)
+def test_conditional_flip_correlates_the_qudits():
+    result = _run(conditional_flip, 2, shots_count=1000, seed=3)
     expected = np.zeros((4, 4))
     expected[0, 0] = expected[3, 3] = 0.5  # |00> and |11>, qubit 0 least significant
     np.testing.assert_allclose(result.density_matrix, expected, atol=1e-7)
@@ -202,7 +202,7 @@ def test_decay_during_the_readout_sets_the_outcome_probability():
 
 def test_measuring_a_qutrit_dephases_all_three_levels():
     psi = np.ones(3) / math.sqrt(3)
-    result = _run(measure, levels=3, initial_state=psi, shots=3000, seed=4)
+    result = _run(measure, levels=3, initial_state=psi, shots_count=3000, seed=4)
     np.testing.assert_allclose(result.density_matrix, np.eye(3) / 3, atol=1e-8)
     assert {b.levels[0]: b.probability for b in result.branches} == pytest.approx(
         {0: 1 / 3, 1: 1 / 3, 2: 1 / 3}
@@ -225,7 +225,7 @@ def repeated_reset(q0):
 
 def test_resets_in_a_retained_loop():
     assert "scf.for" in repeated_reset.lower(Q[0]).mlir()
-    result = _run(repeated_reset, shots=500, seed=5)
+    result = _run(repeated_reset, shots_count=500, seed=5)
     np.testing.assert_allclose(result.density_matrix, np.diag([1.0, 0.0]), atol=1e-7)
     # Three measurements, one per iteration; after the first reset every
     # later one reads 0.
@@ -268,12 +268,12 @@ def test_gpu_backend_matches_the_reference(kernel, n):
 
 
 def test_each_qudit_has_its_model_s_levels_unless_simulate_sets_them():
-    from cudaq_pulse.targets import TransmonModel
+    from cudaq_pulse.quantum_systems import TransmonModel
 
     lowered = on(_target(1), measure, Q[0])
     assert pulse.simulate(lowered).dims == (TransmonModel.levels,) == (3,)
-    target = TargetDescription(
-        name="simulate-test", qubits=_target(2).qubits, model=TransmonModel(levels={1: 4})
+    target = pulse.quantum_system(
+        name="simulate-test", qudits=_target(2).physical_qudits, model=TransmonModel(levels={1: 4})
     )
     lowered = on(target, conditional_flip, Q[0], Q[1])
     assert pulse.simulate(lowered).dims == (3, 4)
@@ -358,9 +358,9 @@ def test_a_step_that_resolves_the_simulation_does_not_warn(options, recwarn):
 
 def test_the_check_follows_the_model_s_levels_not_a_transmon_s():
     # Evenly spaced levels (no anharmonicity) all turn with the frame.
-    harmonic = TargetDescription(
+    harmonic = pulse.quantum_system(
         name="harmonic",
-        qubits={0: Qubit(0, 5.0e9, 0.0, 0.0, 0.0)},
+        qudits={0: PhysicalQudit(0, 5.0e9, 0.0, 0.0, anharmonicity_hz=0.0)},
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error", pulse.PulseWarning)
@@ -381,8 +381,8 @@ def test_the_default_step_takes_20_steps_per_period_of_the_levels_spread(levels,
 
     target = _target()
     lowered = on(target, _shaped, Q[0])
-    assert _default_step(lowered, target, levels) == step
-    assert _default_step(lowered, target, {0: levels}) == step
+    assert _default_step(lowered, target._description, levels) == step
+    assert _default_step(lowered, target._description, {0: levels}) == step
 
 
 @pytest.mark.parametrize("levels", [3, {0: 3}])
@@ -474,15 +474,20 @@ def test_a_gpu_result_that_is_not_finite_raises(monkeypatch):
         self.dissipative = True
 
     monkeypatch.setattr(backend, "__init__", init)
-    monkeypatch.setattr(backend, "_execute", lambda self, text, state, mixed: state * np.nan)
+    monkeypatch.setattr(
+        backend, "_execute", lambda self, text, states, mixed: [s * np.nan for s in states]
+    )
     with pytest.raises(pulse.ExecutionError, match=r"^simulate\(\): the integrator diverged"):
         _run(_shaped, levels=3, backend="gpu")
 
 
 def test_a_step_too_coarse_for_coupled_qudits_names_their_detuning():
-    pair = TargetDescription(
+    pair = pulse.quantum_system(
         name="pair",
-        qubits={q: Qubit(q, 5.0e9 + 2.0e9 * q, -200.0e6, 0.0, 0.0) for q in range(2)},
+        qudits={
+            q: PhysicalQudit(q, 5.0e9 + 2.0e9 * q, 0.0, 0.0, anharmonicity_hz=-200.0e6)
+            for q in range(2)
+        },
         couplings=[Coupling((0, 1), 5.0e6)],
     )
     with pytest.warns(

@@ -13,14 +13,14 @@
 // UNROLL: classical.callable @decode_wide
 // UNROLL-NOT: scf.for
 
-module attributes {pulse.clock_ghz = 1.0 : f64,
-                   classical.links = {"0" = {max_in_flight = 2 : i64}}} {
+module attributes {pulse.control_system = #pulse.control_system<clock_period_fs = 1000000>,
+                   classical.links = {"0" = {slots = 2 : i64}}} {
 
-classical.callable @decode_wide {function_id = 1, device = 1 : i64,
+classical.callable @decode_wide {dispatch_key = 1, device = 1 : i64,
     args = ["bits:1"], results = ["bits:1"], latency_min_ns = 100.0,
     latency_nominal_ns = 500.0, latency_max_ns = 1000.0, mode = "bounded",
-    submit = "eager", function_id_override}
-classical.callable @decode {function_id = 3007678287 : i64, device = 0 : i64,
+    submit = "eager", dispatch_key_override}
+classical.callable @decode {dispatch_key = 3007678287 : i64, device = 0 : i64,
     args = ["bits:1"], results = ["bits:1"], latency_min_ns = 100.0,
     latency_nominal_ns = 500.0, latency_max_ns = 1000.0, mode = "bounded",
     submit = "eager"}
@@ -36,9 +36,9 @@ classical.callable @decode {function_id = 3007678287 : i64, device = 0 : i64,
 // CHECK: classical.submit {{.*}}start_cycles = 1301 : i64}
 // CHECK: classical.submit {{.*}}start_cycles = 1601 : i64}
 func.func @rounds() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c300 = arith.constant 300 : i64
   %c40 = arith.constant 40 : i64
   %a = arith.constant 0.05 : f64
@@ -52,7 +52,7 @@ func.func @rounds() {
   %dn, %tn, %rn, %rtn, %ln = scf.for %i = %lb to %ub step %step
       iter_args(%d = %d0, %t = %t0, %r = %r0, %rt = %rt0, %l = %l0)
       -> (!pulse.drive_line, !pulse.tone, !pulse.readout_line, !pulse.tone, !classical.link) {
-    %r1, %rt1, %m = pulse.readout %r, %ro, %rt, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+    %r1, %rt1, %m = pulse.readout %r, %ro, %rt, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
     %l1, %f = classical.submit %l, @decode(%m) : (!pulse.measurement) -> (!classical.link, !classical.future)
     %fix = classical.wait %f, @decode : i1
     %d1, %t1 = scf.if %fix -> (!pulse.drive_line, !pulse.tone) {
@@ -78,9 +78,9 @@ func.func @rounds() {
 // ALAP: classical.wait {{.*}}period_cycles = array<i64: 40>, start_cycles = 2081 : i64}
 // RCP: classical.wait {{.*}}period_cycles = array<i64: 300>, start_cycles = 1301 : i64}
 func.func @pipelined() {
-  %q = pulse.qudit_alloc : !pulse.qref
-  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qref) -> (!pulse.drive_line, !pulse.tone)
-  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qref) -> (!pulse.readout_line, !pulse.tone)
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %r0, %rt0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
   %c300 = arith.constant 300 : i64
   %c40 = arith.constant 40 : i64
   %a = arith.constant 0.05 : f64
@@ -94,7 +94,7 @@ func.func @pipelined() {
   %dn, %tn, %rn, %rtn, %ln = scf.for %i = %lb to %ub step %step
       iter_args(%d = %d0, %t = %t0, %r = %r0, %rt = %rt0, %l = %l0)
       -> (!pulse.drive_line, !pulse.tone, !pulse.readout_line, !pulse.tone, !classical.link) {
-    %r1, %rt1, %m = pulse.readout %r, %ro, %rt, "iq" : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+    %r1, %rt1, %m = pulse.readout %r, %ro, %rt, iq : !pulse.readout_line, !pulse.waveform, !pulse.tone -> !pulse.readout_line, !pulse.tone, !pulse.measurement
     %l1, %f = classical.submit %l, @decode_wide(%m) : (!pulse.measurement) -> (!classical.link, !classical.future)
     %fix = classical.wait %f, @decode_wide : i1
     %d1, %t1 = scf.if %fix -> (!pulse.drive_line, !pulse.tone) {
