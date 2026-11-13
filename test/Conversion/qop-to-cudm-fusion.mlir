@@ -8,7 +8,7 @@
 // RUN: cudaq-pulse-opt --split-input-file --qop-to-cudm=max-fused-dimension=0 %s | FileCheck %s --check-prefix=NONE
 // RUN: not cudaq-pulse-opt --qop-to-cudm=operators=sparse %s 2>&1 | FileCheck %s --check-prefix=BAD
 
-// BAD: qop-to-cudm operators must be 'fused' or 'dense' (CUDAQ_PULSE_GPU_OPERATORS), not 'sparse'
+// BAD: qop-to-cudm operators must be 'fused', 'banded' or 'dense' (CUDAQ_PULSE_GPU_OPERATORS), not 'sparse'
 
 // A driven qubit that decays. Its static Z term and its dissipator become
 // one superoperator: a 4 x 4 operator on the qubit's ket and bra sides. The

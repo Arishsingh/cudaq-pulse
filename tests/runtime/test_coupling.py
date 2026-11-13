@@ -231,7 +231,7 @@ def _cudm_hamiltonian(text, dims):
     matrices, elementary, products = {}, {}, {}
     for line in text.splitlines():
         if found := _CONSTANT.search(line):
-            d, data = int(found.group(3)), found.group(2)
+            data = found.group(2)
             if data.startswith('"0x'):
                 # A large constant prints as the hex of its little-endian doubles.
                 values = np.frombuffer(bytes.fromhex(data[3:-1]), dtype="<f8")
@@ -239,11 +239,22 @@ def _cudm_hamiltonian(text, dims):
                 values = np.array(
                     [float(v) for v in re.findall(r"-?[\d.]+(?:[eE][-+]?\d+)?", data)]
                 )
-            # Column-major: element [column][row].
-            matrices[found.group(1)] = (values[0::2] + 1j * values[1::2]).reshape((d, d)).T
+            matrices[found.group(1)] = values[0::2] + 1j * values[1::2]
         elif found := _ELEMENTARY.search(line):
             extents = _integers(found.group(3), "mode_extents")
-            elementary[found.group(1)] = (matrices[found.group(2)], len(extents))
+            values = matrices[found.group(2)]
+            if "multidiagonal" in found.group(3):
+                # One vector per diagonal, element (r, r + offset) at min(r, r + offset).
+                (d,) = extents
+                matrix = np.zeros((d, d), dtype=complex)
+                for k, offset in enumerate(_integers(found.group(3), "diagonal_offsets")):
+                    for row in range(max(0, -offset), min(d, d - offset)):
+                        matrix[row, row + offset] = values[k * d + min(row, row + offset)]
+            else:
+                # Column-major: element [column][row].
+                d = int(np.prod(extents))
+                matrix = values.reshape((d, d)).T
+            elementary[found.group(1)] = (matrix, len(extents))
         elif found := _PRODUCT.search(line):
             attributes = found.group(3)
             modes = _integers(attributes, "modes_acted_on")
@@ -316,8 +327,8 @@ def _at(terms, times):
     return total
 
 
-@pytest.mark.parametrize("operators", ["fused", "dense"])
-@pytest.mark.parametrize("levels", [2, 3])
+@pytest.mark.parametrize("operators", ["fused", "banded", "dense"])
+@pytest.mark.parametrize("levels", [2, 3, 5])
 def test_gpu_lowering_builds_the_cpu_operator(levels, operators, monkeypatch):
     monkeypatch.setenv("CUDAQ_PULSE_GPU_OPERATORS", operators)
     target = _pair(3.9e9, 5.9e9, g_hz=7.0e6, zz_hz=2.0e4)
@@ -339,9 +350,11 @@ def test_gpu_lowering_builds_the_cpu_operator(levels, operators, monkeypatch):
     pipeline = MLIRPipeline()
     text = pipeline.run_qop_to_cudm(pipeline.run_pulse_to_qop(module.print()))
     gpu_terms = list(_cudm_hamiltonian(text, dims))
-    # Fused, the static terms of both qudits are one operator on both modes.
+    # Fused, the static terms of both qudits are one operator on both modes
+    # while they fit; on five levels the number terms are stored banded.
     on_both = re.search(r"create_elementary_op .*mode_extents = array<i64: \d+, \d+>", text)
-    assert bool(on_both) == (operators == "fused")
+    assert bool(on_both) == (operators == "fused" and levels < 5)
+    assert ("multidiagonal" in text) == (operators != "dense" and levels == 5)
     cpu = _at(cpu_terms, times)
     assert np.abs(cpu).max() > 0.04
     np.testing.assert_allclose(_at(gpu_terms, times), cpu, atol=1e-12)

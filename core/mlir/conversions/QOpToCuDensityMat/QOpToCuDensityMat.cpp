@@ -47,6 +47,11 @@ using Complex = std::complex<double>;
 /// larger ones cost cuDensityMat seconds of one-time setup per operator shape
 /// on some GPUs.
 constexpr int64_t kDefaultMaxFusedDimension = 16;
+/// A single-mode operator of at least this many levels with at most
+/// kMaxDiagonals nonzero diagonals is stored by its diagonals, as CUDA-Q
+/// does: the ladder and number operators and their sums.
+constexpr int64_t kMinMultidiagonalExtent = 4;
+constexpr size_t kMaxDiagonals = 1;
 
 /// A square matrix on an ordered list of modes: column-major, the first
 /// mode's index varying fastest, as cuDensityMat stores a dense elementary
@@ -119,6 +124,69 @@ struct Matrix {
   }
   bool operator==(const Matrix &other) const {
     return dimension == other.dimension && values == other.values;
+  }
+};
+
+/// A single-mode matrix by its nonzero diagonals, as cuDensityMat stores a
+/// multi-diagonal operator: offsets ascending (positive above the main
+/// diagonal), one vector of the dimension per offset, element
+/// (r, r + offset) at index min(r, r + offset).
+struct Banded {
+  int64_t dimension = 0;
+  SmallVector<int32_t> offsets;
+  SmallVector<Complex> values;
+
+  /// `matrix` by its diagonals, if it has one to `maxDiagonals` nonzero ones.
+  static std::optional<Banded> of(const Matrix &matrix, size_t maxDiagonals) {
+    const int64_t d = matrix.dimension;
+    SmallVector<bool> nonzero(2 * d - 1, false);
+    for (int64_t column = 0; column < d; ++column)
+      for (int64_t row = 0; row < d; ++row)
+        if (matrix.at(row, column) != 0.0)
+          nonzero[column - row + d - 1] = true;
+    Banded result{d, {}, {}};
+    for (int64_t offset = 1 - d; offset < d; ++offset)
+      if (nonzero[offset + d - 1])
+        result.offsets.push_back(static_cast<int32_t>(offset));
+    if (result.offsets.empty() || result.offsets.size() > maxDiagonals)
+      return std::nullopt;
+    result.values.assign(result.offsets.size() * d, 0.0);
+    for (auto [i, offset] : llvm::enumerate(result.offsets))
+      for (int64_t row = std::max<int64_t>(0, -offset);
+           row < std::min<int64_t>(d, d - offset); ++row)
+        result.values[i * d + std::min<int64_t>(row, row + offset)] =
+            matrix.at(row, row + offset);
+    return result;
+  }
+
+  /// Row `row`'s element of a single-diagonal matrix (0 off the matrix).
+  Complex onRow(int64_t row) const {
+    const int64_t column = row + offsets[0];
+    if (row < 0 || row >= dimension || column < 0 || column >= dimension)
+      return 0.0;
+    return values[std::min(row, column)];
+  }
+  /// The product of single-diagonal matrices, if it is not zero.
+  std::optional<Banded> times(const Banded &right) const {
+    const int64_t offset = offsets[0] + right.offsets[0];
+    if (offset <= -dimension || offset >= dimension)
+      return std::nullopt;
+    Banded result{dimension,
+                  {static_cast<int32_t>(offset)},
+                  SmallVector<Complex>(dimension, 0.0)};
+    for (int64_t row = std::max<int64_t>(0, -offset);
+         row < std::min<int64_t>(dimension, dimension - offset); ++row)
+      result.values[std::min(row, row + offset)] =
+          onRow(row) * right.onRow(row + offsets[0]);
+    return result;
+  }
+  /// The adjoint of a single-diagonal matrix: the same storage index holds
+  /// the transposed element.
+  Banded adjoint() const {
+    Banded result{dimension, {static_cast<int32_t>(-offsets[0])}, values};
+    for (Complex &value : result.values)
+      value = std::conj(value);
+    return result;
   }
 };
 
@@ -246,8 +314,10 @@ struct QOpToCuDensityMatPass
       llvm::cl::desc(
           "How the Lindbladian becomes cuDensityMat terms: 'fused' sums the "
           "constant Hamiltonian terms and dissipators on small groups of "
-          "modes into dense blocks; 'dense' makes every product its own "
-          "term (CUDAQ_PULSE_GPU_OPERATORS sets the default)"),
+          "modes into dense blocks and stores the operators of one diagonal "
+          "on modes of four or more levels by their diagonal; 'banded' only "
+          "does the latter; 'dense' makes every product its own term of "
+          "dense operators (CUDAQ_PULSE_GPU_OPERATORS sets the default)"),
       llvm::cl::init("fused")};
   Option<int64_t> maxFusedDimension{
       *this, "max-fused-dimension",
@@ -260,13 +330,14 @@ struct QOpToCuDensityMatPass
     auto module = getOperation();
     OpBuilder b(module.getContext());
 
-    if (operators != "fused" && operators != "dense") {
-      module.emitError("qop-to-cudm operators must be 'fused' or 'dense' "
-                       "(CUDAQ_PULSE_GPU_OPERATORS), not '")
+    if (operators != "fused" && operators != "banded" && operators != "dense") {
+      module.emitError("qop-to-cudm operators must be 'fused', 'banded' or "
+                       "'dense' (CUDAQ_PULSE_GPU_OPERATORS), not '")
           << operators << "'";
       return signalPassFailure();
     }
     const bool fuse = operators == "fused" && maxFusedDimension > 0;
+    const bool band = operators != "dense";
 
     // Find @main
     func::FuncOp mainFunc;
@@ -451,9 +522,32 @@ struct QOpToCuDensityMatPass
     });
 
     SmallVector<Value> allElementaryOps;
+    auto createBanded = [&](const Banded &banded) -> Value {
+      SmallVector<double> data;
+      for (Complex value : banded.values) {
+        data.push_back(value.real());
+        data.push_back(value.imag());
+      }
+      auto type = RankedTensorType::get(
+          {static_cast<int64_t>(banded.offsets.size()), banded.dimension, 2},
+          b.getF64Type());
+      auto value = arith::ConstantOp::create(
+          b, loc, DenseFPElementsAttr::get(type, ArrayRef<double>(data)));
+      Value elementary = cudm::CreateElementaryOpOp::create(
+          b, loc, elemOpTy, handle, value,
+          cudm::SparsityAttr::get(b.getContext(),
+                                  cudm::Sparsity::Multidiagonal),
+          dtypeAttr, b.getDenseI64ArrayAttr({banded.dimension}),
+          FlatSymbolRefAttr(), b.getDenseI32ArrayAttr(banded.offsets));
+      allElementaryOps.push_back(elementary);
+      return elementary;
+    };
     auto createElementary = [&](const Matrix &matrix,
                                 ArrayRef<int64_t> extents) -> Value {
       const int64_t d = matrix.dimension;
+      if (band && extents.size() == 1 && d >= kMinMultidiagonalExtent)
+        if (auto banded = Banded::of(matrix, kMaxDiagonals))
+          return createBanded(*banded);
       auto type = RankedTensorType::get({d, d, 2}, b.getF64Type());
       SmallVector<double> data = matrix.data();
       auto value = arith::ConstantOp::create(
@@ -461,7 +555,8 @@ struct QOpToCuDensityMatPass
       Value elementary = cudm::CreateElementaryOpOp::create(
           b, loc, elemOpTy, handle, value,
           cudm::SparsityAttr::get(b.getContext(), cudm::Sparsity::None),
-          dtypeAttr, b.getDenseI64ArrayAttr(extents), FlatSymbolRefAttr());
+          dtypeAttr, b.getDenseI64ArrayAttr(extents), FlatSymbolRefAttr(),
+          DenseI32ArrayAttr());
       allElementaryOps.push_back(elementary);
       return elementary;
     };
@@ -658,6 +753,27 @@ struct QOpToCuDensityMatPass
                  coefficientNorm);
       if (!withNorm)
         return;
+      // On one mode of enough levels, C^dagger C of single-diagonal factors
+      // is diagonal: one multi-diagonal operator.
+      std::optional<Banded> norm;
+      const int32_t mode = product.modes[0];
+      if (band && modeExtents[mode] >= kMinMultidiagonalExtent &&
+          llvm::all_equal(product.modes)) {
+        for (Operation *leaf : product.leaves) {
+          auto factor = Banded::of(leaves.find(leaf)->second.matrix, 1);
+          norm = factor && norm ? factor->times(*norm) : factor;
+          if (!norm)
+            break;
+        }
+        if (norm)
+          norm = norm->adjoint().times(*norm);
+      }
+      if (norm) {
+        auto normTerm = createTerm({createBanded(*norm)}, {mode}, {0}, 1.0);
+        for (int32_t duality : {0, 1})
+          appendTerm(normTerm, duality, -0.5 * coefficientNorm);
+        return;
+      }
       // cuDensityMat composes an elementary product in application order.
       // Its documented C * C.dag() construction is therefore represented by
       // the same factor sequence as the two-sided term, with every factor

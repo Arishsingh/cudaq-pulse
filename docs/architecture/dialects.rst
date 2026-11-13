@@ -183,9 +183,13 @@ terms and the dissipators that act on few levels become a few dense operators,
 as CUDA-Q builds them: where a group of modes is small enough, one
 superoperator on its ket and bra sides; otherwise one operator per group of
 modes on each side, which also takes the dissipators' anticommutators. Each
-time-dependent term stays a term of its own. The pass option
-``max-fused-dimension`` (16) bounds the size of a group, and
-``operators=dense`` makes every product its own term instead. ``cudm-to-llvm`` lowers each
+time-dependent term stays a term of its own. On a mode of four or more
+levels, an operator with a single nonzero diagonal (a lowering, raising or
+number operator, or a sum of diagonal terms) is stored multi-diagonal, by that
+diagonal. The pass option ``max-fused-dimension`` (16) bounds the size of a
+group; ``operators=banded`` stores operators by their diagonals without
+fusing them, and ``operators=dense`` makes every product its own term of dense
+operators. ``cudm-to-llvm`` lowers each
 op to a call into the CUDA-Q Pulse cuDensityMat runtime (``cudm_init``,
 ``cudm_evolve`` and so on), which the JIT links when a program is simulated
 on the GPU.

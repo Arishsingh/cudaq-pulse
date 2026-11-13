@@ -4,6 +4,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -45,6 +46,30 @@ LogicalResult CreateElementaryOpOp::verify() {
     if (e < 2)
       return emitOpError("each mode extent must be >= 2, got ") << e;
   }
+  auto offsets = getDiagonalOffsets();
+  if (getSparsity() != Sparsity::Multidiagonal) {
+    if (offsets)
+      return emitOpError("diagonal_offsets are for a multi-diagonal operator");
+    return success();
+  }
+  if (extents.size() != 1)
+    return emitOpError("a multi-diagonal operator acts on one mode");
+  if (!offsets || offsets->empty())
+    return emitOpError("a multi-diagonal operator needs diagonal_offsets");
+  for (auto [i, offset] : llvm::enumerate(*offsets)) {
+    if (offset <= -extents[0] || offset >= extents[0])
+      return emitOpError("diagonal offset ")
+             << offset << " is outside a mode of " << extents[0] << " levels";
+    if (i > 0 && offset <= (*offsets)[i - 1])
+      return emitOpError("diagonal_offsets must ascend");
+  }
+  DenseElementsAttr values;
+  if (matchPattern(getTensorData(), m_Constant(&values)) &&
+      values.getNumElements() !=
+          2 * static_cast<int64_t>(offsets->size()) * extents[0])
+    return emitOpError("multi-diagonal data must hold ")
+           << offsets->size() << " complex vectors of " << extents[0]
+           << " elements";
   return success();
 }
 

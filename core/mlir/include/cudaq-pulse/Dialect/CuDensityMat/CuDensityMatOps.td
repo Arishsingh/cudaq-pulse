@@ -98,9 +98,12 @@ def CUDM_CreateElementaryOpOp
     : CuDensityMatOp<"create_elementary_op", [MemoryEffects<[MemWrite]>]> {
   let summary = "Create an elementary tensor operator";
   let description = [{
-    A dense elementary operator on modes of `mode_extents` levels, from
-    `tensor_data` (column-major, interleaved real and imaginary parts, as
-    `qop.matrix_leaf` holds it), copied to the device.
+    An elementary operator on modes of `mode_extents` levels, copied to the
+    device. Dense, `tensor_data` is its matrix (column-major, interleaved
+    real and imaginary parts, as `qop.matrix_leaf` holds it). Multi-diagonal,
+    it acts on one mode and `tensor_data` holds one vector of the mode's
+    extent per entry of `diagonal_offsets` (ascending; positive above the
+    main diagonal), element (r, r + offset) at index min(r, r + offset).
   }];
   let arguments = (ins
     CUDM_HandleType:$handle,
@@ -108,7 +111,8 @@ def CUDM_CreateElementaryOpOp
     CUDM_SparsityAttr:$sparsity,
     CUDM_ComputeTypeAttr:$data_type,
     DenseI64ArrayAttr:$mode_extents,
-    OptionalAttr<FlatSymbolRefAttr>:$callback
+    OptionalAttr<FlatSymbolRefAttr>:$callback,
+    OptionalAttr<DenseI32ArrayAttr>:$diagonal_offsets
   );
   let results = (outs CUDM_ElementaryOpType:$elem_op);
   let assemblyFormat = "$handle `,` $tensor_data attr-dict `:` type($handle) `,` type($tensor_data) `->` type($elem_op)";

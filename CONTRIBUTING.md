@@ -116,8 +116,10 @@ interface.
 
 `CUDAQ_PULSE_GPU_OPERATORS` chooses how `qop-to-cudm` builds the GPU
 backend's operator, as its `operators` option: `fused`, the default, sums
-the static terms and dissipators into a few dense operators; `dense` lowers
-every product to its own term, as before fusion. Use it to tell whether a
+the static terms and dissipators into a few dense operators and stores the
+single-diagonal operators of modes of four or more levels by their diagonal;
+`banded` only does the latter; `dense` lowers every product to its own term
+of dense operators, as before either. Use it to tell whether a
 difference in a GPU simulation comes from the lowering; any other value fails
 the lowering. Like `CUDAQ_PULSE_VERIFY` it is a development aid, not part of
 the stable interface.

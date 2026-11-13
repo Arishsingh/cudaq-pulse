@@ -343,13 +343,46 @@ struct CreateElementaryOpLowering
         rewriter, loc, i32(ctx),
         rewriter.getI32IntegerAttr(static_cast<int32_t>(op.getDataType())));
 
-    auto fn = getOrInsertRuntimeFn(
-        module, rewriter, "cudm_elementary_op_create", i32(ctx),
-        {ptr(ctx), ptr(ctx), ptr(ctx), i64(ctx), ptr(ctx), i32(ctx), i32(ctx)});
-    LLVM::CallOp::create(rewriter, loc, fn,
-                         ValueRange{adaptor.getHandle(), elemSlot, tensorData,
-                                    numValuesConstant, extents, numModes,
-                                    dataType});
+    if (op.getSparsity() == cudm::Sparsity::Multidiagonal) {
+      auto offsetValues = *op.getDiagonalOffsets();
+      auto offsetCount = LLVM::ConstantOp::create(
+          rewriter, loc, i64(ctx),
+          rewriter.getI64IntegerAttr(
+              static_cast<int64_t>(offsetValues.size())));
+      auto offsets = LLVM::AllocaOp::create(rewriter, loc, ptr(ctx), i32(ctx),
+                                            offsetCount);
+      for (auto [i, offset] : llvm::enumerate(offsetValues)) {
+        auto indexValue = LLVM::ConstantOp::create(
+            rewriter, loc, i64(ctx), rewriter.getI64IntegerAttr(i));
+        auto element =
+            LLVM::GEPOp::create(rewriter, loc, ptr(ctx), i32(ctx), offsets,
+                                ValueRange{indexValue.getResult()});
+        auto offsetValue = LLVM::ConstantOp::create(
+            rewriter, loc, i32(ctx), rewriter.getI32IntegerAttr(offset));
+        LLVM::StoreOp::create(rewriter, loc, offsetValue, element);
+      }
+      auto diagonalCount = LLVM::ConstantOp::create(
+          rewriter, loc, i32(ctx),
+          rewriter.getI32IntegerAttr(
+              static_cast<int32_t>(offsetValues.size())));
+      auto fn = getOrInsertRuntimeFn(
+          module, rewriter, "cudm_elementary_op_create_multidiagonal", i32(ctx),
+          {ptr(ctx), ptr(ctx), ptr(ctx), i64(ctx), ptr(ctx), i32(ctx), i32(ctx),
+           i32(ctx), ptr(ctx)});
+      LLVM::CallOp::create(rewriter, loc, fn,
+                           ValueRange{adaptor.getHandle(), elemSlot, tensorData,
+                                      numValuesConstant, extents, numModes,
+                                      dataType, diagonalCount, offsets});
+    } else {
+      auto fn = getOrInsertRuntimeFn(module, rewriter,
+                                     "cudm_elementary_op_create", i32(ctx),
+                                     {ptr(ctx), ptr(ctx), ptr(ctx), i64(ctx),
+                                      ptr(ctx), i32(ctx), i32(ctx)});
+      LLVM::CallOp::create(rewriter, loc, fn,
+                           ValueRange{adaptor.getHandle(), elemSlot, tensorData,
+                                      numValuesConstant, extents, numModes,
+                                      dataType});
+    }
     auto elem = LLVM::LoadOp::create(rewriter, loc, ptr(ctx), elemSlot);
     rewriter.replaceOp(op, elem.getResult());
     return success();

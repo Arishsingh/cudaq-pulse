@@ -37,6 +37,55 @@ func.func @elementary_op_of_an_empty_mode(%h: !cudm.handle, %t: tensor<1xf64>) {
 
 // -----
 
+func.func @dense_with_offsets(%h: !cudm.handle, %t: tensor<2x2x2xf64>) {
+  // expected-error @+1 {{'cudm.create_elementary_op' op diagonal_offsets are for a multi-diagonal operator}}
+  %e = cudm.create_elementary_op %h, %t {diagonal_offsets = array<i32: 0>, sparsity = #cudm<sparsity none>, data_type = #cudm<compute_type f64>, mode_extents = array<i64: 2>} : !cudm.handle, tensor<2x2x2xf64> -> !cudm.elementary_op
+  return
+}
+
+// -----
+
+func.func @multidiagonal_on_two_modes(%h: !cudm.handle, %t: tensor<1x4x2xf64>) {
+  // expected-error @+1 {{'cudm.create_elementary_op' op a multi-diagonal operator acts on one mode}}
+  %e = cudm.create_elementary_op %h, %t {diagonal_offsets = array<i32: 0>, sparsity = #cudm<sparsity multidiagonal>, data_type = #cudm<compute_type f64>, mode_extents = array<i64: 4, 4>} : !cudm.handle, tensor<1x4x2xf64> -> !cudm.elementary_op
+  return
+}
+
+// -----
+
+func.func @multidiagonal_without_offsets(%h: !cudm.handle, %t: tensor<1x4x2xf64>) {
+  // expected-error @+1 {{'cudm.create_elementary_op' op a multi-diagonal operator needs diagonal_offsets}}
+  %e = cudm.create_elementary_op %h, %t {sparsity = #cudm<sparsity multidiagonal>, data_type = #cudm<compute_type f64>, mode_extents = array<i64: 4>} : !cudm.handle, tensor<1x4x2xf64> -> !cudm.elementary_op
+  return
+}
+
+// -----
+
+func.func @multidiagonal_offset_outside(%h: !cudm.handle, %t: tensor<1x4x2xf64>) {
+  // expected-error @+1 {{'cudm.create_elementary_op' op diagonal offset 4 is outside a mode of 4 levels}}
+  %e = cudm.create_elementary_op %h, %t {diagonal_offsets = array<i32: 4>, sparsity = #cudm<sparsity multidiagonal>, data_type = #cudm<compute_type f64>, mode_extents = array<i64: 4>} : !cudm.handle, tensor<1x4x2xf64> -> !cudm.elementary_op
+  return
+}
+
+// -----
+
+func.func @multidiagonal_offsets_descending(%h: !cudm.handle, %t: tensor<2x4x2xf64>) {
+  // expected-error @+1 {{'cudm.create_elementary_op' op diagonal_offsets must ascend}}
+  %e = cudm.create_elementary_op %h, %t {diagonal_offsets = array<i32: 1, -1>, sparsity = #cudm<sparsity multidiagonal>, data_type = #cudm<compute_type f64>, mode_extents = array<i64: 4>} : !cudm.handle, tensor<2x4x2xf64> -> !cudm.elementary_op
+  return
+}
+
+// -----
+
+func.func @multidiagonal_data_of_the_wrong_size(%h: !cudm.handle) {
+  %t = arith.constant dense<0.0> : tensor<4x4x2xf64>
+  // expected-error @+1 {{'cudm.create_elementary_op' op multi-diagonal data must hold 1 complex vectors of 4 elements}}
+  %e = cudm.create_elementary_op %h, %t {diagonal_offsets = array<i32: 0>, sparsity = #cudm<sparsity multidiagonal>, data_type = #cudm<compute_type f64>, mode_extents = array<i64: 4>} : !cudm.handle, tensor<4x4x2xf64> -> !cudm.elementary_op
+  return
+}
+
+// -----
+
 func.func @product_of_no_operators(%h: !cudm.handle, %term: !cudm.op_term) {
   // expected-error @+1 {{'cudm.append_elementary_product' op at least one elementary operator must be provided}}
   "cudm.append_elementary_product"(%h, %term) {modes_acted_on = array<i32>, duality = array<i32>, coeff_real = 1.0 : f64, coeff_imag = 0.0 : f64} : (!cudm.handle, !cudm.op_term) -> ()
