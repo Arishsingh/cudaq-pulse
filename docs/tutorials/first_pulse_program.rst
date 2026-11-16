@@ -24,11 +24,11 @@ virtual environment:
    pip install cudaq-pulse
    python -m cudaq_pulse.doctor
 
-The doctor lists what was installed and checks that it works. On a machine
-without an NVIDIA GPU, its last lines report that GPU execution is
-unavailable. That only matters for simulating with ``backend="gpu"``; every
-step of this tutorial runs on the CPU. :doc:`../getting_started` lists the
-supported platforms and the GPU extras.
+The doctor lists what was installed and checks that it works. Without a CUDA
+extra it ends with ``Result: OK, compilation and CPU simulation work; GPU
+simulation is not set up.``, which is all this tutorial needs: every step
+runs on the CPU. :doc:`../getting_started` lists the supported platforms and
+the GPU extras.
 
 Pick a quantum system
 ---------------------
@@ -170,6 +170,7 @@ Times in a schedule count cycles of the quantum system's 2 GHz clock. The
 which the ``[viz]`` extra installs (``pip install "cudaq-pulse[viz]"``):
 
 .. code-block:: python
+   :class: viz
 
    figure = scheduled.timeline()
    figure.savefig("rabi_schedule.svg")
@@ -210,7 +211,9 @@ script you can run from a clone of the repository with
   quantum system with its calibrated π pulse and follows the program down to
   the operator form the simulator evolves.
 
-:doc:`../examples` lists every example. For the details behind this page,
+The next tutorial, :doc:`coherence`, uses the quantum system's calibrated
+pulses to measure T1 and dephasing. :doc:`../examples` lists every example.
+For the details behind this page,
 :doc:`../user_guide/kernels` covers what a kernel can contain,
 :doc:`../user_guide/quantum_systems` how quantum systems are described and
 calibrated, and :doc:`../user_guide/compilation` how calls compile and what
