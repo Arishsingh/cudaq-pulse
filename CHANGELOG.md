@@ -25,6 +25,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   misspelling, the misspelled name as `value`. Messages read as before; a
   few that gave no fix now give one (`drive(q, ...)` says to pass
   `get_drive_line(q)`, `shift_phase(line, ...)` to pass `line.tone`).
+- **Unit warnings.** `pulse.compile(k, unit_warnings=True)` issues a
+  `pulse.UnitWarning` at each kernel line that gives a duration, wait,
+  `sigma`, DRAG `beta` or flat-top `width` as a bare number (clock cycles:
+  `square(20, a)` is 10 ns at 2 GHz), or a frequency far below the quantum
+  system's carriers (`shift_frequency(tone, 5)` is 5 Hz). Times with
+  units, `0`, `round_duration` counts and calibrated pulses are not
+  warned. It is off by default, does not change the program, and a
+  compilation without it checks nothing.
 
 ### Fixed
 

@@ -45,6 +45,7 @@ TOP_LEVEL = {
     "InternalError",
     "PulseWarning",
     "UpgradeNotice",
+    "UnitWarning",
     "NoProcessQuantumSystemError",
     "NoQuantumSystemError",
     "QuantumSystemMismatchError",
@@ -321,4 +322,5 @@ def test_every_public_error_is_a_pulse_error_and_keeps_its_builtin_base():
 def test_every_public_warning_is_a_pulse_warning():
     assert issubclass(pulse.PulseWarning, UserWarning)
     assert issubclass(pulse.UpgradeNotice, pulse.PulseWarning)
+    assert issubclass(pulse.UnitWarning, pulse.PulseWarning)
     assert not issubclass(pulse.PulseWarning, pulse.PulseError)
