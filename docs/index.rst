@@ -59,6 +59,7 @@ Project status
 
    user_guide/kernels
    user_guide/operations
+   user_guide/conventions
    user_guide/compilation
    user_guide/quantum_systems
    user_guide/custom_passes

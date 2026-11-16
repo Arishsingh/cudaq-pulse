@@ -40,6 +40,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   change one and keep the rest: `q.replace(calibrations={**q.calibrations,
   pulse.gates.X: tuned})`. `get_calibration` still derives what is not
   published.
+- **Conventions page.** The user guide's Conventions page states the
+  units, time bases and signs a program depends on: bare numbers are clock
+  cycles and frequencies Hz, the drive axis of a complex amplitude,
+  `shift_phase(+phi)` as a virtual `Rz(+phi)` that turns later pulses by
+  `-phi`, the frame of a simulated state, which way a virtual detuning
+  moves Ramsey fringes (`|D - v|`), and that an exported `phase_rad`
+  multiplies the samples by `exp(-i phase_rad)`. Each rule has a snippet
+  that shows it; `tests/test_conventions.py` runs the snippets, checks what
+  they print, and checks each rule.
 
 ### Fixed
 
