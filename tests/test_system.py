@@ -621,8 +621,9 @@ def test_rounds_on_two_controllers_that_branch_on_an_answer_schedule_in_linear_t
             ).lower(qpu.qudits[0], qpu.qudits[2]),
             repeats=3,
         )
-    # 16x the shots: 16x the time when linear, 256x when quadratic.
-    assert timings[1600] < 64 * timings[100], timings
+    # 16x the shots: 16x the time when linear, 256x when quadratic. 1600
+    # shots outgrow a shared runner's caches, which can take it past 64x.
+    assert timings[1600] < 128 * timings[100], timings
 
 
 @pulse.kernel
