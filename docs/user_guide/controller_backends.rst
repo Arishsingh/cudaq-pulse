@@ -526,7 +526,8 @@ its own calls, with the call's ``"controller"`` in its submit, answer and
 ``calls`` entries. A call never crosses between controllers, so its
 answer is due without the start uncertainty of a second controller. The
 call's measurements and the pulses that use its answer must be on one
-controller, or the program fails to compile, naming both controllers.
+controller, or the program fails to compile with a ``CompilationError``
+naming the function and both controllers.
 When the scheduler cannot tell a call's controller (it reads no
 measurement and its answer is unused, or leaves the kernel), the link's
 calls share one set of slots, as on a shared link. Each controller may

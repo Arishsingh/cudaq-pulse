@@ -1277,6 +1277,17 @@ def build(
         at = text.find("the program lasts more than 2**60 cycles with its lines delayed")
         if at >= 0:
             raise CompilationError(text[at:].partition("\n")[0]) from None
+        # A call over a per-controller link that uses several controllers
+        # fails with any values too. The error names the function as the
+        # kernel calls it, not the version of it the module holds.
+        for line in text.splitlines():
+            at = line.find("the call of '")
+            if at >= 0 and ", which has one instance per controller, uses " in line:
+                line = line[at:]
+                symbol = line.split("'", 2)[1]
+                called = next((f.base_name for f in builder.classical if f.name == symbol), symbol)
+                line = line.replace(f"'{symbol}'", f"'{called}'", 1)
+                raise CompilationError(f"{name}(): {line}") from None
         # A timing budget counts every wait at its highest length, so it
         # fails the same way with any values.
         if not parameters or any(name in text for name in _BUDGETS):

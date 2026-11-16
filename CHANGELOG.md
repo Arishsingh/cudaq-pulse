@@ -30,6 +30,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   check (on the reading controller or, across controllers, on the one that
   plays the pulse). The wait now starts where the readout ends on its line.
   Programs without a readout delay schedule as before.
+- A call over a per-controller link (`Link(per_controller=True)`) whose
+  measurements and answer are on two controllers failed with a bare
+  `RuntimeError` holding the compiler's IR and the module's name for the
+  function (`decode__1`). It is now a `CompilationError` naming the kernel,
+  the function as written, the link and both controllers, and saying how to
+  fix it, whether or not the kernel has arguments bound at the call.
 
 ## [0.1.0] - 2026-11-13
 

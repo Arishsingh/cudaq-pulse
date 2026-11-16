@@ -150,12 +150,41 @@ def test_a_shared_link_exports_without_an_instance():
 
 
 def test_a_call_over_a_per_controller_link_runs_on_one_controller():
-    with pytest.raises(RuntimeError, match=r"over link 'decoder', which has one instance per "):
+    with pytest.raises(pulse.CompilationError) as caught:
         _lower(crossing, _device(True))
-    with pytest.raises(RuntimeError, match=r"controllers\[0\] and controllers\[1\].*drop "):
-        _lower(crossing, _device(True))
+    assert str(caught.value) == (
+        "crossing(): the call of '_decode' over link 'decoder', which has one instance per "
+        "controller, uses controllers[0] and controllers[1]; a call over it runs on one "
+        "controller: play its measurements and the pulses that use its answer on one "
+        "controller, or make the link shared (drop per_controller)"
+    )
     # Shared, the same call crosses the link between them.
     assert _lower(crossing, _device(False)).classical_report()[0].controller is None
+
+
+@pulse.classical(max_latency_ns=200, link="decoder")
+def decode_any(m: pulse.Bits) -> float:
+    return 0.1 if m[0] else 0.0
+
+
+@pulse.kernel
+def crossing_with(a, b, amplitude: float):
+    ra = get_readout_line(a)
+    db = get_drive_line(b)
+    m = readout(ra, square(40, amplitude))
+    drive(db, square(8, decode_any.submit([m]).result()))
+
+
+def test_a_call_across_controllers_names_the_function_as_written_whatever_the_values():
+    # A function of any length of measurements, compiled for one, and a
+    # kernel whose float argument is bound only when it is called.
+    qpu = _device(True)
+    compiled = pulse.compile(crossing_with, quantum_system=qpu)
+    with pytest.raises(pulse.CompilationError) as caught:
+        compiled.lower(qpu.qudits[0], qpu.qudits[2], 0.1)
+    message = str(caught.value)
+    assert message.startswith("crossing_with(): the call of 'decode_any' over link 'decoder'")
+    assert "note:" not in message and "classical.submit" not in message
 
 
 def test_a_call_whose_controller_is_not_known_keeps_the_link_shared():
