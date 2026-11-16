@@ -5,36 +5,44 @@
 
 # CUDA-Q Pulse
 
-CUDA-Q Pulse (`cudaq-pulse`) puts the pulses, the measurements and the
-classical calls between them in one Python program, compiled to open MLIR,
-then simulated, emulated, or exported to your controller. One compiled
-program, three destinations:
+## Highlights and Key Features
 
-- **Simulate** it with `pulse.simulate`: a NumPy reference on any machine, or
-  NVIDIA cuDensityMat on a GPU (a preview), over the measurement outcomes,
-  with the classical functions' Python bodies standing in for their services.
-- **Emulate** it with `classical.emulation.emulate`: the program runs in
-  virtual time against those services, with the request and answer bytes a
-  controller would send, and reports the answers that come late.
-- **Export** it with `export_to_controller()` to a controller backend, for a
-  control system described as data and checked when the program compiles.
+`cudaq-pulse` lets developers write pulses, measurements and the real-time
+classical logic between them as one Python program. That program compiles to
+an open MLIR pulse dialect that any controller can target.
 
-Underneath are a Python kernel DSL, the Pulse, Classical, QOp and
-CuDensityMat MLIR dialects, and their compiler passes. `cudaq-pulse` does not
-depend on CUDA-Q. The wheel contains its own statically linked MLIR, so `pip`
-is the only installer you need.
+- **Real-time control:** measure-and-react, feedback and calls to classical
+  services (such as decoders) are part of the program. The compiler checks
+  each answer arrives before the pulse that depends on it, given the
+  controller's latency.
+- **QEC at scale:** syndrome-extraction cycles compile in milliseconds; a
+  distance-31 surface code cycle compiles in 263 ms.
+- **Composable QPUs:** a QPU is described as data: its qudits, lines,
+  controllers and the links between them. One program can span several
+  controllers, and it is checked against that description when it compiles.
+- **Hardware portability:** the same compiled program exports to controller
+  backends, so Python front ends are decoupled from each underlying control
+  interface.
+
+Underneath are a Python kernel DSL, the Pulse and Classical MLIR dialects, and
+their compiler passes. `cudaq-pulse` does not depend on CUDA-Q. The wheel
+contains its own statically linked MLIR, so `pip` is the only installer you
+need.
+
+`cudaq-pulse` is an experimental, community-driven research project under
+active development. We're releasing it now because our partners want a
+stable, universal pulse dialect that separates Python DSLs from quantum
+control interfaces.
 
 Documentation: <https://nvidia.github.io/cudaq-pulse/>
 
 ## Project Status
 
 > [!NOTE]
-> CUDA-Q Pulse is an early-stage research project. We are releasing it now
-> because the pulse layer is where much of the open work in quantum control
-> happens, and we want to build it in the open with the people who use it.
-> It is under active development: expect bugs, incomplete features, and
-> incompatible changes to the Python APIs, MLIR dialects and file formats
-> between releases. It is not a supported CUDA-Q product feature. We invite
+> The pulse layer is where much of the open work in quantum control happens,
+> and we want to build it in the open with the people who use it. Expect
+> bugs, incomplete features, and incompatible changes to the Python APIs,
+> MLIR dialects and file formats between releases. It is not a supported CUDA-Q product feature. We invite
 > you to try it with your own quantum systems and help shape its direction.
 
 ## Install
