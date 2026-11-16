@@ -5,7 +5,7 @@ name: docs
 
 # Builds the Sphinx site with warnings as errors on every pull request, and
 # deploys it to GitHub Pages from main, on a push or a manual run, once the
-# repository is public.
+# repository is public and Pages deploys from GitHub Actions.
 
 on:
   push:
@@ -60,5 +60,26 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # deploy-pages fails unless Pages is enabled with "GitHub Actions" as
+      # its source (Settings, Pages); until then, warn and skip.
+      - name: Check that Pages deploys from GitHub Actions
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! build_type="$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq .build_type 2>"$RUNNER_TEMP/pages.err")"; then
+            if ! grep -q "HTTP 404" "$RUNNER_TEMP/pages.err"; then
+              cat "$RUNNER_TEMP/pages.err" >&2
+              exit 1
+            fi
+            build_type="not enabled"
+          fi
+          if [[ "$build_type" == "workflow" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::GitHub Pages does not deploy from GitHub Actions ($build_type), so the docs were built but not deployed. Set Settings > Pages > Source to GitHub Actions."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
       - id: deployment
+        if: steps.pages.outputs.enabled == 'true'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
