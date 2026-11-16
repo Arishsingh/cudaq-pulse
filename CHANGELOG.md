@@ -76,6 +76,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- `backends.validate` checks the order of a backend's classical calls and
+  answers on their link, apart from the pulses of the line with the same
+  number. A backend that gives its events back in time order, as a
+  sequencer plays them, no longer fails the `call` program because a drive
+  on line 0 starts before a call over link 0 that the program makes first.
 - `python -m cudaq_pulse.doctor` passes on a machine without GPU support:
   it now simulates a short pulse with the NumPy reference, reports
   `CPU simulation (NumPy reference): ok`, and says how to enable GPU
