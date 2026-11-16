@@ -5,6 +5,11 @@
 cudaq-pulse
 ===========
 
+.. image:: _static/cudaq-pulse-banner.svg
+   :alt: CUDA-Q Pulse: a Python pulse kernel beside a timeline of drive, readout and GPU lanes. A readout result goes to a GPU decoder over NVQLink within a latency budget, and the answer conditions the next drive pulse.
+   :width: 100%
+   :class: mb-4
+
 **cudaq-pulse** puts the pulses, the measurements and the classical calls
 between them in one Python program, compiled to open MLIR, then simulated,
 emulated, or exported to your controller:

@@ -26,6 +26,8 @@ myst_enable_extensions = [
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "nvidia_sphinx_theme"
+html_static_path = ["_static"]
+html_favicon = "_static/favicon.svg"
 
 html_theme_options = {
     "show_nav_level": 1,
