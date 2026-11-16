@@ -117,7 +117,8 @@ Gate calibrations
 -----------------
 
 The pulses a quantum system is tuned for are its gate calibrations, named by
-``pulse.gates`` (``X``, ``X90``, ``Y``, ``Y90``, ``READOUT``, ``CZ``). In a
+``pulse.gates`` (``X``, ``X90``, ``Y``, ``Y90``, ``Z``, ``S``, ``T``,
+``READOUT``, ``CZ``). In a
 kernel a line gives its qudit's, ready to play; outside one, a qudit handle
 and a coupling give the same values:
 
@@ -142,9 +143,12 @@ and a coupling give the same values:
 What a quantum system does not publish is derived: an ``X`` without an amplitude
 gets the one that makes its area a pi rotation at the qudit's drive scale,
 ``X90`` is ``X`` at half the amplitude, and ``Y`` and ``Y90`` are ``X`` and
-``X90`` at +90 degrees. A ``CZ`` or ``READOUT`` the quantum system does not publish
+``X90`` at +90 degrees. ``Z``, ``S`` and ``T`` are virtual Z rotations by
+pi, pi / 2 and pi / 4, each a ``VirtualZ`` that ``drive`` plays as a phase
+shift of the line's tone, with no pulse (see :ref:`virtual-z`). A ``CZ`` or
+``READOUT`` the quantum system does not publish
 is a ``NotFoundError`` naming the coupling or qudit, and so is another
-transition's (``transition=(1, 2)``) calibration. A ``FluxCZ`` does not play:
+transition's (``transition=(1, 2)``) pulse calibration. A ``FluxCZ`` does not play:
 flux lines are not modeled yet, so a kernel leaves the qudits idle for its
 ``duration_ns``.
 

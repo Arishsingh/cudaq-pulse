@@ -49,6 +49,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   multiplies the samples by `exp(-i phase_rad)`. Each rule has a snippet
   that shows it; `tests/test_conventions.py` runs the snippets, checks what
   they print, and checks each rule.
+- **Phase gates.** `pulse.gates.Z`, `S` and `T` are virtual Z rotations by
+  pi, pi / 2 and pi / 4. `get_calibration` gives each as a `VirtualZ`
+  (`cudaq_pulse.quantum_systems.VirtualZ(phase_rad=...)`), derived on every
+  transition where a quantum system publishes none, and `drive(line, it)`
+  plays it as `shift_phase(line.tone, phase_rad)`: no pulse and no time.
+  The operations guide's new "Phase frames and virtual Z gates" section
+  gives the sign convention and why a simulated state is in the frame.
 
 ### Fixed
 

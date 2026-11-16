@@ -35,6 +35,7 @@ from cudaq_pulse.quantum_systems import (
     Readout,
     ReadoutPulse,
     ResidualZZ,
+    VirtualZ,
 )
 from cudaq_pulse.quantum_systems.transmon import CZ_LAYERS
 
@@ -262,9 +263,21 @@ assert_type(qudit.metadata, Mapping[str, Any])
 assert_type(qudit.get_calibration(pulse.gates.X), DragPulse)
 assert_type(qudit.get_calibration(pulse.gates.Y90, transition=(1, 2)), DragPulse)
 assert_type(qudit.get_calibration(pulse.gates.READOUT), ReadoutPulse)
+assert_type(qudit.get_calibration(pulse.gates.T), VirtualZ)
+assert_type(qudit.get_calibration(pulse.gates.S, transition=(1, 2)), VirtualZ)
+t = qpu.qudits[0].get_calibration(pulse.gates.T)
+assert_type(t, VirtualZ)
+assert_type(t.phase_rad, float)
+assert_type(t.replace(phase_rad=-t.phase_rad), VirtualZ)
+VirtualZ()  # type: ignore[call-arg]
 assert_type(qudit.replace(label="Q0"), PhysicalQudit)
 assert_type(qpu.qudits[0].get_calibration(pulse.gates.X90), DragPulse)
 gate: pulse.gates.Gate = pulse.gates.CZ
+
+
+def any_gate(which: pulse.gates.Gate) -> None:
+    assert_type(qudit.get_calibration(which), DragPulse | VirtualZ | ReadoutPulse)
+
 
 # A coupling gives its qudits and strength (None: not measured yet), and its
 # CZ calibration is one object of typed fields; leaving a required field out,

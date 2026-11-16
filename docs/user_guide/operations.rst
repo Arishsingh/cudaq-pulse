@@ -82,7 +82,7 @@ These operations modify the rotating frame of a tone channel.
    pulse played after it turns about an axis rotated by ``-phase``, so
    ``shift_phase(t, pi / 2)`` followed by an X90 pulse is an X90 about the
    -Y axis. It takes no time, and ``Pass.FOLD_PHASES`` folds it into the next
-   drive.
+   drive. See :ref:`virtual-z`.
 
 .. function:: set_phase(tone, phase)
 
@@ -104,6 +104,52 @@ In the qudit's frame, which rotates at its 0-1 frequency, a tone at
 ``theta(t) = theta_0 + (w_tone - w_q) t``: a tone above the qudit runs ahead of
 its frame. The 1-2 transition of a transmon is driven resonantly by a tone at
 ``w_q + alpha``.
+
+.. _virtual-z:
+
+Phase frames and virtual Z gates
+--------------------------------
+
+A Z rotation needs no pulse: advancing a tone's frame phase by ``phi``
+turns every later pulse at that tone about an axis rotated by ``-phi``,
+which is the same as applying ``Rz(phi) = exp(-i phi Z / 2)`` to the qudit
+before those pulses. The phase gates ``pulse.gates.Z``, ``S`` and ``T`` are
+these virtual Z rotations, by pi, pi / 2 and pi / 4 (each equal to its gate
+up to a global phase). ``get_calibration`` gives each as a ``VirtualZ``, and
+``drive(line, it)`` plays it as ``shift_phase(line.tone, phase_rad)``: it
+takes no time and adds no error.
+
+.. code-block:: python
+
+   import cudaq_pulse as pulse
+
+   @pulse.kernel
+   def t_state(q):
+       d = get_drive_line(q)
+       drive(d, d.get_calibration(pulse.gates.Y90))   # |0> to |+>
+       drive(d, d.get_calibration(pulse.gates.T))     # |+> to |T>, a frame change
+
+The sign convention is that of McKay et al., PRA 96, 022330 (2017): a
+positive phase is a positive rotation about +Z, so ``T`` takes ``|+>`` to
+``(|0> + e^{i pi/4} |1>) / sqrt(2)``. There are no inverse gates; a
+calibration's ``replace`` gives one, ``t.replace(phase_rad=-t.phase_rad)``.
+
+The frame is bookkeeping on the control side, so it changes what later pulses
+do, never the state itself. ``simulate`` returns the state in the frame: a
+virtual Z after the last pulse leaves ``density_matrix`` as it was, and the
+state in the logical basis is ``Rz(phi)`` applied to it, for ``phi`` the
+phase the qudit's tone has accumulated. Two consequences:
+
+- A readout cannot see a virtual Z played just before it: a Z rotation
+  leaves the populations a readout measures as they were.
+- A pulse played after it, such as a tomography rotation before a readout,
+  sees the frame and measures the logical state.
+
+A virtual Z shifts the frame of one tone. A pulse played on another line at
+that tone, such as a cross-resonance drive at the target's tone, sees the
+shift; a pulse at another tone, such as the 1-2 tone, does not. A phase gate
+of another transition, ``get_calibration(pulse.gates.S, transition=(1, 2))``,
+is played at that tone: ``drive(d, s12, tone=d.tones[(1, 2)])``.
 
 Waveform Constructors
 ---------------------

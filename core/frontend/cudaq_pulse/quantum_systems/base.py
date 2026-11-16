@@ -18,7 +18,7 @@ from dataclasses import FrozenInstanceError
 from itertools import chain
 from operator import attrgetter, eq, is_, methodcaller
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, overload
+from typing import TYPE_CHECKING, Any
 
 from .._errors import (
     InvalidTypeError,
@@ -27,17 +27,17 @@ from .._errors import (
     Problem,
     QuantumSystemDefinitionError,
     UnsupportedError,
-    _closest,
     _count,
-    _ranges,
 )
 from .models import SimulationModel, TransmonModel
 
 if TYPE_CHECKING:
     from dataclasses import dataclass as _dataclass_when_used
-    from typing import ClassVar, Self
+    from typing import ClassVar, Literal, NoReturn, Self, overload
 
     from ..gates import Gate
+
+    _NONE: type[None]
 else:
     from .._errors import _dataclass_when_used
 
@@ -330,6 +330,37 @@ class DragPulse(_Component):
         duration_ns, sigma_ns, amplitude, beta_ns, phase_rad = map(_Field, range(5))
 
 
+class VirtualZ(_Component):
+    """The calibration of a phase gate (``Z``, ``S``, ``T``): a virtual Z
+    rotation by ``phase_rad``, which takes no time and plays no pulse.
+
+    In a kernel, ``drive(line, z)`` plays it as ``shift_phase(line.tone,
+    z.phase_rad)`` (at ``tone=`` if given): the frame of the tone advances,
+    and every later pulse at that tone turns about an axis rotated by
+    ``-phase_rad``, so that the qudit's state, read in the frame, is
+    ``Rz(phase_rad)`` applied to the state the pulses alone make. The state
+    a simulation returns is in the frame: a virtual Z after the last pulse
+    does not change it (see Phase frames and virtual Z gates in the
+    operations guide).
+    """
+
+    __slots__ = ()
+    _fields = ("phase_rad",)
+
+    def __init__(self, *, phase_rad: float) -> None:
+        object.__setattr__(self, "_values", (phase_rad,))
+
+    if TYPE_CHECKING:
+
+        @property
+        def phase_rad(self) -> float:
+            """The rotation, the phase the tone's frame advances by."""
+            ...
+
+    else:
+        phase_rad = _Field(0)
+
+
 class ReadoutPulse(_Component):
     """The calibrated readout pulse of a qudit (``READOUT``): of peak
     ``amplitude`` it holds ``photon_number`` photons in the resonator (with
@@ -433,19 +464,28 @@ class FluxCZ(_Component):
 # The values of pulse.gates.Gate (the enum loads with pulse.gates, which
 # building a target does not need): the gates of a qudit's drive line, of
 # its readout line and of a coupling.
-_DRIVE_GATES = ("x", "x90", "y", "y90")
-_QUDIT_GATES = (*_DRIVE_GATES, "readout")
+_DRIVE_GATES = ("x", "x90", "y", "y90", "z", "s", "t")
+_QUDIT_GATES = ("x", "x90", "y", "y90", "z", "s", "t", "readout")
 _COUPLING_GATES = ("cz",)
-_GATES = (*_QUDIT_GATES, "cz")
-_CALIBRATION_TYPES: Mapping[str, Any] = MappingProxyType(
+_GATES = ("x", "x90", "y", "y90", "z", "s", "t", "readout", "cz")
+if TYPE_CHECKING:
+    _CALIBRATION_TYPES: Mapping[str, Any]
+_CALIBRATION_TYPES = MappingProxyType(
     {
-        **dict.fromkeys(_DRIVE_GATES, DragPulse),
+        "x": DragPulse,
+        "x90": DragPulse,
+        "y": DragPulse,
+        "y90": DragPulse,
+        "z": VirtualZ,
+        "s": VirtualZ,
+        "t": VirtualZ,
         "readout": ReadoutPulse,
         "cz": FluxCZ,
     }
 )
-# The rotation of each drive-line gate, which an unpublished amplitude makes.
-_ROTATIONS = MappingProxyType({"x": math.pi, "x90": math.pi / 2, "y": math.pi, "y90": math.pi / 2})
+# The rotation of each drive-line gate, pi over this: an unpublished X's
+# amplitude makes it, and an unpublished Z, S or T is a virtual Z by it.
+_PI_DIVISORS = MappingProxyType({"x": 1, "x90": 2, "y": 1, "y90": 2, "z": 1, "s": 2, "t": 4})
 _DEFAULT_TRANSITION = (0, 1)
 
 
@@ -459,6 +499,8 @@ def _gate_name(gate: Any, near: Sequence[str] = _GATES) -> str:
     if isinstance(gate, str):
         if gate in _GATES:
             return gate if gate.__class__ is str else str.__str__(gate)
+        from .._errors import _closest
+
         close = _closest(str.__str__(gate), near)
         hint = f"did you mean {_gate_label(close)}? " if close else ""
         raise InvalidValueError(
@@ -627,12 +669,15 @@ def _qudit_calibration(qudit: PhysicalQudit, gate: Any, transition: Any) -> Any:
         )
     found: Any = qudit._calibrations.get(_calibration_key(name, at))
     if found is not None:
-        if name != "readout" and found._values[2] is None:
+        if found.__class__ is DragPulse and found._values[2] is None:
             return found.replace(
-                amplitude=_ROTATIONS[name]
+                amplitude=math.pi
+                / _PI_DIVISORS[name]
                 / (_drive_scale(qudit) * _area_ns(found, _qudit_name(qudit)))
             )
         return found
+    if _CALIBRATION_TYPES[name] is VirtualZ:
+        return VirtualZ(phase_rad=math.pi / _PI_DIVISORS[name])
     if name == "x90":
         x = _qudit_calibration(qudit, "x", at)
         return x.replace(amplitude=x._values[2] / 2)
@@ -688,7 +733,7 @@ class _QuditFields:
     t2_echo_us: float | None
     thermal_population: float
     # What calibrations= gives, which get_calibration reads.
-    _calibrations: Mapping[Any, DragPulse | ReadoutPulse]
+    _calibrations: Mapping[Any, DragPulse | VirtualZ | ReadoutPulse]
     metadata: Mapping[str, Any]
 
 
@@ -731,7 +776,7 @@ class PhysicalQudit(_QuditFields):
         readout: Readout | None = None,
         t2_echo_us: float | None = None,
         thermal_population: float = 0.0,
-        calibrations: Mapping[Any, DragPulse | ReadoutPulse] = _NO_CALIBRATIONS,
+        calibrations: Mapping[Any, DragPulse | VirtualZ | ReadoutPulse] = _NO_CALIBRATIONS,
         metadata: Mapping[str, Any] = _EMPTY,
     ) -> None:
         if calibrations.__class__ is not _Calibrations:
@@ -842,20 +887,28 @@ class PhysicalQudit(_QuditFields):
         ) -> DragPulse: ...
         @overload
         def get_calibration(
+            self,
+            gate: Literal[Gate.Z, Gate.S, Gate.T],
+            transition: tuple[int, int] = (0, 1),
+        ) -> VirtualZ: ...
+        @overload
+        def get_calibration(
             self, gate: Literal[Gate.READOUT], transition: tuple[int, int] = (0, 1)
         ) -> ReadoutPulse: ...
         @overload
         def get_calibration(
             self, gate: Gate, transition: tuple[int, int] = (0, 1)
-        ) -> DragPulse | ReadoutPulse: ...
+        ) -> DragPulse | VirtualZ | ReadoutPulse: ...
 
     def get_calibration(self, gate: Any, transition: tuple[int, int] = (0, 1)) -> Any:
         """The calibrated pulse of *gate* on the qubit's *transition*, by the
         rules of ``pulse.gates``: ``X``, ``X90``, ``Y`` and ``Y90`` a
         ``DragPulse`` (``X90`` half of ``X``, ``Y`` and ``Y90`` at +90
         degrees, where not published; an unpublished amplitude makes the
-        rotation), ``READOUT`` a ``ReadoutPulse``. A calibration it neither
-        publishes nor derives is a ``NotFoundError`` naming the qubit."""
+        rotation), ``Z``, ``S`` and ``T`` a ``VirtualZ`` (by pi, pi / 2
+        and pi / 4, where not published), ``READOUT`` a ``ReadoutPulse``. A
+        calibration it neither publishes nor derives is a ``NotFoundError``
+        naming the qubit."""
         return _qudit_calibration(self, gate, transition)
 
 
@@ -1282,7 +1335,7 @@ _CALIBRATIONS = attrgetter("_calibrations")
 _VALUES = methodcaller("values")
 _RATE = attrgetter("rate_hz")
 
-_NONE: type[None] = type(None)
+_NONE = type(None)
 
 
 def _finite_floats(values: Sequence[Any], optional: bool = False) -> bool:
@@ -1431,6 +1484,8 @@ def _qudit_problems(
                 )
             )
         elif q not in known:
+            from .._errors import _ranges
+
             problems.append(
                 Problem(
                     f"{q} is not a qudit of the quantum system",
