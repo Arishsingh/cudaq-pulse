@@ -69,14 +69,6 @@ the estimator's answer. ``bounds`` tells the scheduler the range it can
 take, so it can still check the timing of everything around it. The π pulse
 at the end of each shot is the active reset from :doc:`measure_and_react`.
 
-.. figure:: figures/adaptive_t1.svg
-   :alt: The adaptive loop of pi pulse, wait, readout and Bayesian update, with a schematic of wait lengths changing from shot to shot.
-   :width: 95%
-
-   Fifty adaptive shots in one kernel. The estimator updates its
-   distribution after each readout and picks the next wait. The shot
-   lengths on the right are schematic, not data.
-
 Compile the full run
 --------------------
 
@@ -98,6 +90,16 @@ The program holds 50 calls to the estimator, one per shot, each with its
 own place in the schedule. ``shots_count`` is an ``int``, so the loop's
 length is fixed when it compiles; the prior and the first wait are
 ``float`` arguments, so a run from another prior compiles nothing new.
+
+.. themed-figure:: figures/adaptive_shots.svg
+   :alt: Timeline of the first 3 shots of track_t1 on D1's drive and readout lines and the controller link, with the long first wait cut short. Each shot plays a pi pulse, waits, and reads out; the outcome goes to update_t1, which answers within 500 ns plus the link's 4 and 8 ns, and a reset pulse plays only if the qubit read 1. The first wait is the 50 microseconds the call passes; each later wait is set by the answer, between 100 ns and 200 microseconds.
+   :width: 100%
+
+   The first three shots of ``compiled.lower(q, 3, 3.0, 450_000.0, 50_000.0)``,
+   with the 50 µs first wait cut short. Each readout goes to ``update_t1``,
+   whose answer sets the next wait, dashed because the schedule shows it at
+   its 100 ns lower bound; the dashed reset pulses play only when the qubit
+   read 1.
 
 Simulate a few shots
 --------------------
@@ -128,12 +130,13 @@ qubit with a T1 of 160 µs and the paper's readout errors, 400 simulated runs
 of 50 shots give a median estimate of 155 µs, where Berritta et al. report
 159 µs on their processor:
 
-.. figure:: figures/adaptive_t1_estimates.svg
-   :alt: Simulated T1 estimate over 50 adaptive shots. A shaded band, the uncertainty of a single run's estimate, narrows from about 97 to 328 microseconds around the starting guess of 150 microseconds to about 122 to 212 microseconds around the true T1 of 160 microseconds in the model. On the right, a histogram of the final estimates of 400 runs beside Berritta et al.'s 159 microseconds and 68 percent interval of 131 to 202 microseconds.
-   :width: 95%
+.. themed-figure:: figures/adaptive_t1_estimates.svg
+   :alt: Histogram of the final T1 estimates of 400 simulated runs of 50 adaptive shots each, on a model qubit with a T1 of 160 microseconds. Their median is 155 microseconds and the middle 68% lie between 123 and 195. Above them, the published estimate of 159 microseconds with its 68% interval of 131 to 202.
+   :width: 100%
 
-   The T1 estimate after each of 50 adaptive shots, in simulation, and the
-   final estimates of 400 runs beside the published result.
+   The final estimates of 400 simulated runs, from
+   ``benchmarks/classical/adaptive_t1_estimates.json``, beside the model's T1
+   and the published estimate with its 68% interval.
 
 Where to go next
 ----------------

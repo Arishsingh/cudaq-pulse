@@ -35,6 +35,10 @@ out:
        sync(d, r)
        return readout(r, r.get_calibration(pulse.gates.READOUT))
 
+The calibrated π/2 pulse and readout come from the quantum system, so the
+kernel holds no pulse parameters. Ask for 1000 shots:
+
+.. code-block:: python
 
    result = pulse.simulate(measure_superposition, q, shots_count=1000, seed=7)
    records = np.asarray(result.records)   # one row per shot, one column per readout
@@ -68,6 +72,10 @@ check:
        sync(d, r)
        return readout(r, r.get_calibration(pulse.gates.READOUT))
 
+The ``if`` tests the first readout's outcome, so the π pulse inside it plays
+only on the shots that read 1. Run it, and look at both readouts:
+
+.. code-block:: python
 
    result = pulse.simulate(active_reset, q, shots_count=1000, seed=7)
    records = np.asarray(result.records)
@@ -99,6 +107,14 @@ hold the rare paths: a qubit that decayed or leaked to level 2 during a
 readout. Because every branch is followed, the final state is the exact
 average over shots, not an estimate from a sample.
 
+.. themed-figure:: figures/reset_branches.svg
+   :alt: The branches of the active reset's simulation, by the outcome of each readout: first read 0 with probability 0.505; first read 1 with probability 0.494; first read 2 with probability 7e-4. Every likely branch reads 0 the second time; 0 then 0: 0.505, 0 then 1: 1e-4, 0 then 2: 3e-8, 1 then 0: 0.494, 1 then 1: 4e-4, 1 then 2: 7e-5, 2 then 0: 1e-6, 2 then 1: 1e-5, 2 then 2: 7e-4.
+   :width: 100%
+
+   Every branch of the active reset, from ``result.branches``. Line widths
+   follow the probabilities: the two thick paths are the ones the loop
+   prints, and the faint ones are the decays and leaks it skips.
+
 See the branch in the schedule
 ------------------------------
 
@@ -120,12 +136,13 @@ qubit excited. On the other shots its line idles for the same 80 cycles, so
 the second readout starts at cycle 760 either way and the program's timing
 doesn't depend on the outcome.
 
-.. figure:: figures/reset_schedule.svg
-   :alt: Schedule timeline with two rows. The drive line has a pi/2 pulse from cycle 0 to 80 and the conditional pi pulse from 680 to 760. The readout line has readouts from 80 to 680 and from 760 to 1360.
-   :width: 90%
+.. themed-figure:: figures/reset_timeline.svg
+   :alt: Timeline of the active reset on D1's drive and readout lines. A pi/2 pulse, a 300 ns readout, then a pi pulse from 340 to 380 ns that plays only if the readout read 1, and a second readout from 380 ns that starts at the same time either way.
+   :width: 100%
 
-   The schedule of the active reset. The second drive pulse plays only when
-   the first readout reads 1.
+   The schedule of the active reset, in nanoseconds of the 2 GHz clock. The
+   dashed π pulse plays only when the first readout reads 1; the second
+   readout starts at the same time on every shot.
 
 Where to go next
 ----------------

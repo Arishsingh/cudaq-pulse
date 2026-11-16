@@ -102,14 +102,6 @@ Compiling checks the timing before anything runs:
 With an 80 µs deadline, the answer is due after the 400 ns readouts, the
 80 µs wait and the link's 50 ns, and the corrections are scheduled after it.
 
-.. figure:: figures/qec_deadline.svg
-   :alt: One QEC round: syndrome readout, a request to the GPU decoder, a deadline on the controller, and two arms that apply either the decoder's correction or the fallback table's.
-   :width: 95%
-
-   One round of ``qec_round``. The correction plays from the decoder's
-   answer if it arrives by the deadline, or from the controller's lookup
-   table if it doesn't.
-
 Simulate both arms
 ------------------
 
@@ -138,7 +130,17 @@ back in 000:
 
 With a 1 µs deadline, the decoder's 62 µs answer is always late, so the
 table makes every correction, and 88.3% of the population is back in 000.
-The rest decays during the round. Now give the decoder a budget that fits:
+The rest decays during the round.
+
+.. themed-figure:: figures/qec_round_timeline.svg
+   :alt: Timeline of one round of the distance-3 repetition code, with a lane for each data qubit's drive line, each ancilla's readout line and the GPU link. Both ancillas are read out for 400 ns, and their outcomes go to the decoder over the link. The kernel waits for the answer with a 1 microsecond timeout, plus 50 ns of feedback, so the answer is due at 1450.5 ns. A correction pulse on each data qubit, which plays only if the decoder's answer or the fallback table says so, starts at that moment.
+   :width: 100%
+
+   The round with the 1 µs deadline. Every correction waits for the
+   deadline, whichever arm decides it; below, the last 110 ns of the wait
+   and the dashed corrections, which play only on the shots that need them.
+
+Now give the decoder a budget that fits:
 
 .. code-block:: python
 
@@ -153,6 +155,19 @@ equally often: the table and the decoder agree on every single-qubit error.
 That agreement is what makes the fallback safe, and checking it in
 simulation, before a program runs on hardware, is the point of the exercise.
 
+Between the two budgets lies the real trade-off. With the decoder declared
+as it was at first, each deadline is a choice between waiting for its
+answer and the decay that the wait costs:
+
+.. themed-figure:: figures/qec_deadlines.svg
+   :alt: Two curves against the decoding deadline, from 1 to 80 microseconds, simulated with the decoder's 62 microsecond nominal and 75 microsecond maximum latency. The share of shots that use the decoder's answer rises from 0 at 1 microsecond through 0.54 at 50 to 1 at the maximum. The share whose data qubits end back in 000 falls from 0.883 at 1 microsecond to 0.285 at 80, because the qubits decay while they wait.
+   :width: 100%
+
+   ``run`` of the first ``compiled`` over deadlines from 1 to 80 µs. Waiting
+   lets more shots use the decoder, and the same wait lets the data qubits
+   decay; this round's fallback table is as good as the decoder, so here the
+   shortest deadline wins.
+
 With a CUDA-Q QEC decoder
 -------------------------
 
@@ -162,50 +177,44 @@ they are, with a link and a latency budget, and the kernel calls them as it
 called ``decode``. This needs Linux, an NVIDIA GPU, Python 3.12 or 3.13, and
 ``pip install cudaq-qec``; the test suite runs it only there.
 
+Configure decoder 0, BP+OSD for the distance-3 repetition code, as
+:example:`27_realtime_decoding.py` does:
+
 .. code-block:: python
    :class: cudaq-qec
 
    import cudaq_qec
 
-   # Decoder 0: BP+OSD on the GPU for the distance-3 repetition code.
-   cudaq_qec.configure_decoders_from_str("""
-   decoders:
-     - id: 0
-       type: nv-qldpc-decoder
-       block_size: 3
-       syndrome_size: 2
-       H_sparse: [0, 1, -1, 1, 2, -1]
-       O_sparse: [0, -1, 1, -1, 2, -1]
-       D_sparse: [0, -1, 1, -1]
-       decoder_custom_args:
-         error_rate_vec: [0.1, 0.1, 0.1]
-         use_sparsity: true
-         max_iterations: 50
-         use_osd: true
-         osd_method: 3
-         osd_order: 7
-   """)
+.. literalinclude:: ../../examples/27_realtime_decoding.py
+   :language: python
+   :class: cudaq-qec
+   :start-after: # [start decoder]
+   :end-before: # [end decoder]
 
-   enqueue_syndromes = pulse.classical(cudaq_qec.qec.enqueue_syndromes, link="gpu")
-   get_corrections = pulse.classical(
-       cudaq_qec.qec.get_corrections, link="gpu", nominal_latency_ns=62_000, max_latency_ns=75_000
-   )
+Its real-time functions are declared like ``decode``, with the same link and
+budget:
 
+.. literalinclude:: ../../examples/27_realtime_decoding.py
+   :language: python
+   :class: cudaq-qec
+   :start-after: # [start calls]
+   :end-before: # [end calls]
 
-   @pulse.kernel
-   def qec_round_with_cudaq_qec(data, ancillas, deadline_ns: int):
-       s0 = readout(get_readout_line(ancillas[0]), square(400 * pulse.ns, 0.05))
-       s1 = readout(get_readout_line(ancillas[1]), square(400 * pulse.ns, 0.05))
-       enqueue_syndromes.submit(0, [s0, s1], 0)   # decoder 0, round 0
-       in_time, fix = get_corrections.submit(0, 3, False).result(timeout=deadline_ns * pulse.ns)
-       table = [s0 and not s1, s0 and s1, s1 and not s0]
-       for i in range(3):
-           flip = fix[i] if in_time else table[i]
-           if flip:
-               drive(get_drive_line(data[i]), square(20 * pulse.ns, np.pi / 20))
+The round sends the syndrome with one call and takes the corrections with
+another, under the same deadline and fallback:
 
+.. literalinclude:: ../../examples/27_realtime_decoding.py
+   :language: python
+   :class: cudaq-qec
+   :start-after: # [start round]
+   :end-before: # [end round]
 
-   decoded = pulse.compile(qec_round_with_cudaq_qec, quantum_system=qs, control_system=control_system)
+Compile it for the same five transmons and simulate it as before:
+
+.. code-block:: python
+   :class: cudaq-qec
+
+   decoded = pulse.compile(qec_round, quantum_system=qs, control_system=control_system)
    print(run(decoded.lower(data, ancillas, 1_000)))
    cudaq_qec.finalize_decoders()
 

@@ -106,16 +106,18 @@ and measures one axis:
 
 .. code-block:: python
 
+   X_AXIS, Y_AXIS, Z_AXIS = 0, 1, 2
+
    @pulse.kernel
    def t_tomography(qudit, axis: int):
        d = get_drive_line(qudit)
        r = get_readout_line(qudit)
        drive(d, d.get_calibration(pulse.gates.Y90))
        drive(d, d.get_calibration(pulse.gates.T))
-       if axis == 0:     # a -90 degree Y rotation turns +X onto +Z
+       if axis == X_AXIS:     # a -90 degree Y rotation turns +X onto +Z
            y90 = d.get_calibration(pulse.gates.Y90)
            drive(d, y90.replace(amplitude=-y90.amplitude))
-       elif axis == 1:   # a +90 degree X rotation turns +Y onto +Z
+       elif axis == Y_AXIS:   # a +90 degree X rotation turns +Y onto +Z
            drive(d, d.get_calibration(pulse.gates.X90))
        sync(d, r)
        readout(r, r.get_calibration(pulse.gates.READOUT))
@@ -136,6 +138,11 @@ fidelity with ``|T>`` follows from the three axes, the Bloch vector:
        """<T|rho|T> for the Bloch vector, shortened to length 1 if it is longer."""
        bloch = bloch / max(1.0, float(np.linalg.norm(bloch)))
        return (1 + float(bloch @ T_BLOCH)) / 2
+
+``expectation`` reads one axis from a simulation and ``fidelity`` combines the
+three. Measure all three axes from ``|0>``:
+
+.. code-block:: python
 
    bloch = np.array([
        expectation(pulse.simulate(t_tomography, q, axis, initial_state=ground))
@@ -163,8 +170,8 @@ starts there:
    print(f"{fidelity(bloch):.2f}")   # 0.97, simulated
 
 The excited part of the start ends up near the opposite state, so the
-infidelity is about the thermal population: 2.7e-2 (simulated), dozens of
-times the error of the pulses. That is the error to remove.
+infidelity is about the thermal population: 2.6e-2 (simulated), about a
+thousand times the error of the pulses. That is the error to remove.
 
 A herald on the controller
 --------------------------
@@ -183,41 +190,36 @@ controller's own logic, with a few nanoseconds of fixed and feedback cost:
        links={"controller": Link(fixed_ns=4, feedback_ns=8, slots=2)}
    )
 
-   @pulse.classical(min_latency_ns=20, nominal_latency_ns=30, max_latency_ns=40,
-                    link="controller")
-   def herald(outcome: pulse.Bits) -> bool:
-       """Accept the shot if the qubit read 0."""
-       return outcome[0] == 0
+The herald itself is one comparison, with a latency budget of tens of
+nanoseconds, as :example:`28_t_state_injection.py` declares it:
+
+.. literalinclude:: ../../examples/28_t_state_injection.py
+   :language: python
+   :start-after: # [start herald]
+   :end-before: # [end herald]
 
 The kernel measures, submits the outcome, and plays a π pulse when the answer
 says the qubit read 1, which returns it to ``|0>`` for the next attempt. The
 number of attempts is fixed when the kernel compiles, so every attempt is
 scheduled, and each answer gates only its own pulse:
 
-.. code-block:: python
+.. literalinclude:: ../../examples/28_t_state_injection.py
+   :language: python
+   :class: continues
+   :start-after: # [start heralded attempts]
+   :end-before: # [end heralded attempts]
 
-   @pulse.kernel
-   def heralded_t(qudit, attempts: int, axis: int):
-       d = get_drive_line(qudit)
-       r = get_readout_line(qudit)
-       x = d.get_calibration(pulse.gates.X)
-       ro = r.get_calibration(pulse.gates.READOUT)
-       for _ in range(attempts):
-           m = readout(r, ro)
-           ok = herald.submit([m]).result()
-           sync(d, r)
-           if not ok:
-               drive(d, x)   # read 1: flip back to |0> and look again
-           sync(d, r)
-       drive(d, d.get_calibration(pulse.gates.Y90))
-       drive(d, d.get_calibration(pulse.gates.T))
-       if axis == 0:
-           y90 = d.get_calibration(pulse.gates.Y90)
-           drive(d, y90.replace(amplitude=-y90.amplitude))
-       elif axis == 1:
-           drive(d, d.get_calibration(pulse.gates.X90))
-       sync(d, r)
-       readout(r, ro)
+After the attempts, the kernel prepares ``|T>`` and measures one axis, as
+``t_tomography`` does:
+
+.. literalinclude:: ../../examples/28_t_state_injection.py
+   :language: python
+   :start-after: # [start heralded state]
+   :end-before: # [end heralded state]
+
+Compile it against the control system that has the controller link:
+
+.. code-block:: python
 
    compiled = pulse.compile(heralded_t, quantum_system=qs, control_system=control_system)
 
@@ -246,7 +248,7 @@ of shots they are:
    print(1 - f < 1e-3)          # True
 
 One herald keeps 97.2% of the shots (simulated), the ones that did not start
-excited, and the infidelity of the kept shots falls from 2.7e-2 to below
+excited, and the infidelity of the kept shots falls from 2.6e-2 to below
 1e-3 (simulated), close to the result from ``|0>``.
 
 Repeat until success
@@ -264,6 +266,14 @@ as 0 and keeps them:
    # 1 0.972 True
    # 2 0.999 True
    # 3 0.999 True
+
+.. themed-figure:: figures/t_error_budget.svg
+   :alt: Infidelity of the prepared state with the T state, and the share of shots kept: start in |0⟩, 2.4e-05 and 100.0%; thermal start, 2.6e-02 and 100.0%; 1 attempt, 2.4e-05 and 97.2%; 2 attempts, 2.4e-05 and 99.9%; 3 attempts, 2.4e-05 and 99.9%.
+   :width: 100%
+
+   The infidelity and the shots kept for each start, from the page's own
+   tomography: the thermal start costs 2.6e-2, and one herald brings the
+   kept shots back to the ``|0>`` result.
 
 Two attempts keep 99.9% of the shots (simulated) at the same fidelity. A third
 gains almost nothing: about 1e-3 of the shots are never accepted, and most of
@@ -292,6 +302,15 @@ schedule. The outcome is submitted when the 300 ns readout ends, and the
 answer is due 52 ns later: the link's 4 ns, the function's 40 ns worst case
 and the 8 ns feedback. ``slack_cycles`` is 0 because the π pulse that depends
 on the answer is scheduled at the moment it is due.
+
+.. themed-figure:: figures/herald_timeline.svg
+   :alt: Timeline of the heralded T-state kernel with two attempts, on D5's drive and readout lines and the controller link, with a closer look at the first answer below. Each attempt reads D5 out for 300 ns and sends the outcome to the herald function, whose answer is due 52 ns later: 4 ns on the link, at most 40 ns in the function and 8 ns of feedback. A pi pulse that plays only if the qubit read 1 starts the moment the answer is due. After the second attempt, a Y90 pulse and a pi/4 frame shift prepare the T state, and a last readout measures it.
+   :width: 100%
+
+   Two attempts of ``heralded_t``, from ``compiled.lower(q, 2, 2)``. Dashed
+   pulses play only on shots whose herald said no; the blue dashes are each
+   pulse's Q quadrature. Below, the first answer's 52 ns, split into the
+   link, the function's budget and the feedback.
 
 Waiting is where the time goes: on D5 each microsecond the state spends
 waiting costs about 1e-2 of fidelity (simulated, from its 46 us T2*), far more

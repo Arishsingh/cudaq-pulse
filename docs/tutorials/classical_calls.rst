@@ -63,14 +63,6 @@ If the answer is late, the kernel uses the readout itself instead of
 stalling. Either way, a π pulse plays only when the decision says the qubit
 needs flipping.
 
-.. figure:: figures/realtime_timeline.svg
-   :alt: Timeline of one shot with drive, readout and classical-function lanes. A readout's result goes to the decode function, whose answer, taken with a 4 microsecond timeout, conditions a pi pulse on the drive line. A second function, update_t1, sets a wait whose length is known only at runtime.
-   :width: 95%
-
-   One shot with real-time calls. The decoder's answer gates a conditional
-   pulse, as in ``correct_if_needed``. The estimator lane is the subject of
-   :doc:`adaptive_calibration`.
-
 Check the timing before anything runs
 -------------------------------------
 
@@ -96,6 +88,15 @@ The request leaves when the 300 ns readout ends. The scheduler budgets the
 4350.5 ns, and the conditional π pulse is placed right after it. A slack of
 zero means the program uses the answer the moment it is due.
 
+.. themed-figure:: figures/call_timeline.svg
+   :alt: Timeline of one shot of correct_if_needed on D1's readout and drive lines and the GPU link. The 300 ns readout's outcome goes to decode; the kernel waits for the answer with a 4 microsecond timeout and the link adds 50 ns of feedback, so the answer is due at 4350.5 ns, where a pi pulse that plays only if the decision says so starts.
+   :width: 100%
+
+   One shot of ``correct_if_needed``, drawn from ``scheduled``. The readout's
+   outcome goes down to the link, the kernel waits out the timeout and the
+   link's feedback, and the answer goes up to the π pulse, which is dashed
+   because it plays only when the decision says so.
+
 Simulate the loop
 -----------------
 
@@ -115,6 +116,14 @@ With latencies from 2.9 to 4.5 µs, 77.7% of the answers arrive within the
 4 µs timeout, and the other shots take the fallback. Here the fallback makes
 the same decision as the decoder; with a real decoder, the fallback is where
 a late answer costs fidelity.
+
+.. themed-figure:: figures/call_latency.svg
+   :alt: The distribution of decode's latency, triangular from 2.9 to 4.5 microseconds with its peak at the nominal 3.8, and the 4 microsecond timeout. The answers to its left, 77.7% of them in the simulation, arrive in time; the rest take the fallback.
+   :width: 100%
+
+   The latency ``decode`` declares, triangular between its minimum and maximum
+   with its peak at the nominal value, against the 4 µs timeout. The shaded
+   share to the left is the 77.7% of shots that get the answer in time.
 
 Either way, the qubit ends in its ground state with 93% probability. The
 rest is decay during the 4 µs it waited for its answer, a reminder of why

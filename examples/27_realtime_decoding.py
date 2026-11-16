@@ -44,6 +44,7 @@ import cudaq_pulse as pulse
 import cudaq_qec
 import numpy as np
 
+# [start decoder]
 # Decoder 0: BP+OSD on the GPU for a distance-3 repetition code (two syndrome
 # bits in, one correction bit per data qubit out).
 cudaq_qec.configure_decoders_from_str("""
@@ -63,15 +64,19 @@ decoders:
       osd_method: 3
       osd_order: 7
 """)
+# [end decoder]
 
+# [start calls]
 # Its real-time calls, sent to the decoding server over the GPU link.
 enqueue_syndromes = pulse.classical(cudaq_qec.qec.enqueue_syndromes, link="gpu")
 get_corrections = pulse.classical(
     cudaq_qec.qec.get_corrections, link="gpu", nominal_latency_ns=62_000, max_latency_ns=75_000
 )
 reset_decoder = pulse.classical(cudaq_qec.qec.reset_decoder, link="gpu")
+# [end calls]
 
 
+# [start round]
 @pulse.kernel
 def qec_round(data, ancillas, deadline_ns: int):
     # ... syndrome-extraction pulses on data and ancillas go here ...
@@ -85,6 +90,9 @@ def qec_round(data, ancillas, deadline_ns: int):
     for i in range(3):
         if fix[i] if in_time else lookup[i]:  # decoder's answer, or the table if late
             drive(get_drive_line(data[i]), square(20 * pulse.ns, np.pi / 20))
+
+
+# [end round]
 
 
 @pulse.kernel

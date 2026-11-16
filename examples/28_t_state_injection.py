@@ -147,12 +147,17 @@ for start, initial in (("|0>", ground()), ("thermal", None)):
 control_system = pulse.ControlSystem(links={"controller": Link(fixed_ns=4, feedback_ns=8, slots=2)})
 
 
+# [start herald]
 @pulse.classical(min_latency_ns=20, nominal_latency_ns=30, max_latency_ns=40, link="controller")
 def herald(outcome: pulse.Bits) -> bool:
     """Accept the shot when the qubit read 0."""
     return outcome[0] == 0
 
 
+# [end herald]
+
+
+# [start heralded attempts]
 @pulse.kernel
 def heralded_t(q, attempts: int, axis: int):
     d = get_drive_line(q)
@@ -168,6 +173,8 @@ def heralded_t(q, attempts: int, axis: int):
         if not ok:
             drive(d, x)
         sync(d, r)
+    # [end heralded attempts]
+    # [start heralded state]
     drive(d, d.get_calibration(pulse.gates.Y90))
     drive(d, d.get_calibration(pulse.gates.T))
     if axis == X_AXIS:
@@ -177,6 +184,7 @@ def heralded_t(q, attempts: int, axis: int):
         drive(d, d.get_calibration(pulse.gates.X90))
     sync(d, r)
     readout(r, ro)
+    # [end heralded state]
 
 
 compiled_herald = pulse.compile(heralded_t, quantum_system=qs, control_system=control_system)
