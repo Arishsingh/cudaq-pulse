@@ -874,7 +874,15 @@ Validating a backend
 which ships with cudaq-pulse, through a backend: a program for each kind of
 event (``cudaq_pulse.Event``), one with a branch and one with values known
 only at run time, compiled for the controller (by default the backend's
-control system's) and exported in each format the backend reads. Each must be emitted or refused with
+control system's) and exported in each format the backend reads. Two more
+are wired from that controller: ``shared_line`` reads out both qudits at
+once on one readout line reaching both (``ReadoutLine([0, 1],
+max_concurrent_tones=2)`` in place of its readout lines), and
+``several_controllers`` runs on two controllers made from it, one driving
+qudit 0 and reading out both qudits on such a line, the other driving qudit
+1, with a shared reference clock; each controller's part is emitted on its
+own in format ``/1`` (``several_controllers[0]``, ``several_controllers[1]``),
+and is not compared with ``emulate``. Each must be emitted or refused with
 ``IncompatibleBackendError``, and a program with an event kind no format
 has, or in a newer format, must be refused. A program that exceeds the
 controller's limits is skipped.
@@ -891,7 +899,7 @@ controller's limits is skipped.
    # ...
    # PASS unsupported_event
    # PASS newer_format
-   # backend 'text': 7 passed, 5 refused
+   # backend 'text': 10 passed, 6 refused
    print(report.ok)  # True
 
 A backend that accepted the unknown event would instead report ``FAIL
