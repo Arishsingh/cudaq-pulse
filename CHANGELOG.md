@@ -33,6 +33,22 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   units, `0`, `round_duration` counts and calibrated pulses are not
   warned. It is off by default, does not change the program, and a
   compilation without it checks nothing.
+- **Reading calibrations.** `PhysicalQudit.calibrations` and
+  `Coupling.calibrations` give the calibrations a qudit or coupling
+  publishes, read-only and keyed as `calibrations=` takes them (by
+  `pulse.gates.Gate`, or `(gate, transition)`), so a calibration step can
+  change one and keep the rest: `q.replace(calibrations={**q.calibrations,
+  pulse.gates.X: tuned})`. `get_calibration` still derives what is not
+  published.
+- **Conventions page.** The user guide's Conventions page states the
+  units, time bases and signs a program depends on: bare numbers are clock
+  cycles and frequencies Hz, the drive axis of a complex amplitude,
+  `shift_phase(+phi)` as a virtual `Rz(+phi)` that turns later pulses by
+  `-phi`, the frame of a simulated state, which way a virtual detuning
+  moves Ramsey fringes (`|D - v|`), and that an exported `phase_rad`
+  multiplies the samples by `exp(-i phase_rad)`. Each rule has a snippet
+  that shows it; `tests/test_conventions.py` runs the snippets, checks what
+  they print, and checks each rule.
 
 ### Fixed
 
