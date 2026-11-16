@@ -30,6 +30,32 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   check (on the reading controller or, across controllers, on the one that
   plays the pulse). The wait now starts where the readout ends on its line.
   Programs without a readout delay schedule as before.
+- A call over a per-controller link (`Link(per_controller=True)`) whose
+  measurements and answer are on two controllers failed with a bare
+  `RuntimeError` holding the compiler's IR and the module's name for the
+  function (`decode__1`). It is now a `CompilationError` naming the kernel,
+  the function as written, the link and both controllers, and saying how to
+  fix it, whether or not the kernel has arguments bound at the call.
+- `QuantumSystemMismatchError` for qudits of two quantum systems that
+  differ only in their control system read "one with layout 0..16, the
+  other with layout 0..16". It now names what differs: the control
+  systems (one has none, or the first setting that differs, such as
+  `control_system.controllers[1].peer_latency_cycles is 30 in one and 20
+  in the other`), the layouts, or, with the same layout, the qudits,
+  couplings or calibration.
+- A program that plays a shared line (a multiplexed readout feedline,
+  `ReadoutLine([9, 10, 11, 12], max_concurrent_tones=4)`) exports in format
+  `/1`, so it exports on a control system of several controllers, on a
+  controller with its own clock, and with line delays, where 0.1.0 refused it
+  in both formats. Format `/1` keeps a line for each qudit; a line on a shared
+  line also has the line's `qudits` and `max_concurrent_tones`, and each
+  event on it a `tone_slot`, the slot format `/2` gives it. Programs on
+  dedicated lines export as before. `backends.validate` runs two more
+  programs: `shared_line`, and `several_controllers`, each controller's part
+  in `/1`.
+- `controller.unroll()` of a format `/2` program on a shared line gives each
+  event its own qudit, on a line of its own, where it gave the line's first
+  qudit.
 
 ## [0.1.0] - 2026-11-13
 

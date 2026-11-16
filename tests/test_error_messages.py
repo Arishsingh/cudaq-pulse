@@ -123,6 +123,50 @@ def test_qudits_of_two_devices_of_one_target_name_their_layouts():
     )
 
 
+def _played(peer_latency_cycles=0):
+    return pulse.ControlSystem(
+        controllers=[
+            pulse.Controller(drive_lines=[0, 1], readout_lines=[0, 1]),
+            pulse.Controller(
+                drive_lines=[2, 3], readout_lines=[2, 3], peer_latency_cycles=peer_latency_cycles
+            ),
+        ]
+    )
+
+
+def test_qudits_of_two_devices_that_differ_in_their_control_system_name_the_difference():
+    @pulse.kernel
+    def k(q0, q1):
+        d = get_drive_line(q0)
+        drive(d, square(8, 0.1))
+
+    def message(a, b):
+        with pytest.raises(pulse.QuantumSystemMismatchError) as info:
+            k.lower(a.qudits[0], b.qudits[1])
+        return str(info.value)
+
+    bare = pulse.quantum_system("transmon_lattice:4")
+    played = pulse.quantum_system("transmon_lattice:4", control_system=_played())
+    head = "k() got qudits of two different quantum systems, both named 'transmon_lattice:4': "
+    tail = "; pass handles of one quantum system"
+    assert message(played, bare) == (
+        head + "their control systems differ (one has 2 controllers, the other none)" + tail
+    )
+    assert message(bare, played) == (
+        head + "their control systems differ (one has none, the other 2 controllers)" + tail
+    )
+    slower = pulse.quantum_system("transmon_lattice:4", control_system=_played(12))
+    assert message(played, slower) == (
+        head + "their control systems differ (control_system.controllers[1]."
+        "peer_latency_cycles is 0 in one and 12 in the other)" + tail
+    )
+    q0 = bare.physical_qudits[0]
+    detuned = bare.replace(qudits={**bare.physical_qudits, 0: q0.replace(frequency_hz=5.1e9)})
+    assert message(bare, detuned) == (
+        head + "the same layout, but different qudits, couplings or calibration" + tail
+    )
+
+
 def test_a_failed_call_names_the_function_and_request():
     error = wire.call_failed("decode", 17, 3)
     assert isinstance(error, pulse.ExecutionError)
