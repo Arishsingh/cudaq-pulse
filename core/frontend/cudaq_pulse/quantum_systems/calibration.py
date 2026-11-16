@@ -11,7 +11,10 @@ reads one, a shipped name (``"transmon_surface17"``) or a path, for one measurem
 A calibration gives each flux-tunable qubit its circuit (E_C, E_J,max and
 SQUID asymmetry d, so flux in flux quanta converts to frequency and back)
 and each coupled pair its charge coupling g_c, from which the exchange
-J(w_a, w_d) and the idle ZZ follow at any operating point.
+J(w_a, w_d) and the idle ZZ follow at any operating point. It may also give
+each qubit's single-qubit pulses (the DRAG coefficient of its ``X`` and an
+``X`` of the 1-2 transition, ``single_qubit_gates``) and its readout
+assignment errors (``readout.assignment``).
 """
 
 from __future__ import annotations
@@ -24,7 +27,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 from .._errors import InvalidValueError, NotFoundError
-from .base import Coupling
 
 if TYPE_CHECKING:
     from .transmon_model import ChargeCoupledPair, TransmonCircuit
@@ -270,38 +272,100 @@ class Calibration:
 
     def _apply(self, target: Any) -> Any:
         """*target* with each calibrated pair's coupling set to its exchange
-        at the qubits' frequencies in the target. A coupling matches the
-        pair of its qudits' labels in either order.
-
-        A pair whose qubits sit at the idle frequencies its entry records
-        takes the exchange stored with it, computed when the file was built.
+        at the qubits' frequencies in the target (``_exchange``), and each
+        calibrated qudit's pulses (``_calibrated_pulses``) and readout errors
+        set. A qudit matches its label.
         """
+        from .base import Coupling, DispersiveReadout
+        from .transmon import _calibrated_pulses
+
         qudits = target.qudits
         idle_exchange = self._idle_exchange
         couplings = []
         for c in target.couplings:
-            a, b = c.qudits
-            name = f"{qudits[a].label}-{qudits[b].label}"
-            found = idle_exchange.get(name)
-            if found is None:
-                name = f"{qudits[b].label}-{qudits[a].label}"
-                found = idle_exchange.get(name)
-                a, b = b, a
-            if found is not None:
-                at = (qudits[a].frequency_hz, qudits[b].frequency_hz)
-                value, stored = found
-                if stored is not None and all(
-                    abs(f - g) < 1e3 for f, g in zip(at, stored, strict=False)
-                ):
-                    strength = value
-                else:
-                    strength = self.exchange_hz(name, *at)
+            a, b = qudits[c.qudits[0]], qudits[c.qudits[1]]
+            strength = self._exchange(
+                idle_exchange, f"{a.label}-{b.label}", a.frequency_hz, b.frequency_hz
+            )
+            if strength is None:
+                strength = self._exchange(
+                    idle_exchange, f"{b.label}-{a.label}", b.frequency_hz, a.frequency_hz
+                )
+            if strength is not None:
                 if c.__class__ is Coupling:
                     c = Coupling(c.qudits, strength, c._calibrations)
                 else:
                     c = c.replace(strength_hz=strength)
             couplings.append(c)
-        return target.replace(couplings=couplings)
+        pulses = self._qudit_pulses()
+        if not pulses:
+            return target.replace(couplings=couplings)
+        made: dict[Any, Any] = {}
+        calibrated = {}
+        for i, q in qudits.items():
+            values = pulses.get(q.label)
+            if values is not None:
+                beta, pulse, errors = values
+                changes: dict[str, Any] = {}
+                if beta is not None or pulse is not None:
+                    changes["calibrations"] = _calibrated_pulses(q._calibrations, beta, pulse, made)
+                readout = q.readout
+                if errors is not None and readout.__class__ is DispersiveReadout:
+                    changes["readout"] = readout.replace(error_0to1=errors[0], error_1to0=errors[1])
+                if changes:
+                    q = q.replace(**changes)
+            calibrated[i] = q
+        return target.replace(qudits=calibrated, couplings=couplings)
+
+    def _exchange(
+        self, idle_exchange: Mapping[str, tuple[float, Any]], pair: str, at_a: float, at_b: float
+    ) -> float | None:
+        """The exchange of *pair* (``"X2-D4"``) at its qubits' frequencies
+        *at_a* and *at_b*, or None if the calibration does not calibrate it.
+        A pair whose qubits sit at the idle frequencies its entry records
+        takes the exchange stored with it, computed when the file was built."""
+        found = idle_exchange.get(pair)
+        if found is None:
+            return None
+        value, stored = found
+        if stored is not None and abs(at_a - stored[0]) < 1e3 and abs(at_b - stored[1]) < 1e3:
+            return value
+        return self.exchange_hz(pair, at_a, at_b)
+
+    def _qudit_pulses(self) -> Mapping[str, tuple[Any, Any, Any]]:
+        """Each calibrated qudit's values by label, in the file's SI units:
+        (the DRAG coefficient of its ``X``, its 1-2 ``X`` as (duration,
+        sigma, amplitude, beta), its (error_0to1, error_1to0)), each None
+        where the file gives none. Read once; preset for an indexed shipped
+        calibration."""
+        found: dict[str, tuple[Any, Any, Any]] | None = self.__dict__.get("_pulses")
+        if found is not None:
+            return found
+        data = self._data
+        gates = data.get("single_qubit_gates", {})
+        x, x12 = gates.get("x", {}), gates.get("x12", {})
+        assignment = data.get("readout", {}).get("assignment", {})
+        found = {}
+        for label in data.get("qudits", {}):
+            beta = x[label]["beta"]["value"] if label in x else None
+            pulse = None
+            if label in x12:
+                pulse = (
+                    x12["duration"]["value"],
+                    x12["sigma"]["value"],
+                    x12[label]["amplitude"]["value"],
+                    x12[label]["beta"]["value"],
+                )
+            errors = None
+            if label in assignment:
+                errors = (
+                    assignment[label]["error_0to1"]["value"],
+                    assignment[label]["error_1to0"]["value"],
+                )
+            if (beta, pulse, errors) != (None, None, None):
+                found[label] = (beta, pulse, errors)
+        self._pulses = found
+        return found
 
     @cached_property
     def _idle_exchange(self) -> Mapping[str, tuple[float, Any]]:
@@ -350,13 +414,14 @@ def _indexed(name: str, measurement_run: str | None) -> Calibration | None:
     entry = SHIPPED.get(name)
     if entry is None or CALIBRATIONS.get(name) != entry[0]:
         return None
-    digest, default, measurement_runs, idle_exchange = entry
+    digest, default, measurement_runs, idle_exchange, qudit_pulses = entry
     measurement_run = default if measurement_run is None else measurement_run
     if measurement_run not in measurement_runs:
         return None
     unread = Calibration.__new__(Calibration)
     unread.name, unread.measurement_run, unread._shipped = name, measurement_run, digest
     unread._idle_exchange = idle_exchange
+    unread._pulses = dict(qudit_pulses)
     return unread
 
 

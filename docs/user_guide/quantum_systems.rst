@@ -148,9 +148,20 @@ pi, pi / 2 and pi / 4, each a ``VirtualZ`` that ``drive`` plays as a phase
 shift of the line's tone, with no pulse (see :ref:`virtual-z`). A ``CZ`` or
 ``READOUT`` the quantum system does not publish
 is a ``NotFoundError`` naming the coupling or qudit, and so is another
-transition's (``transition=(1, 2)``) pulse calibration. A ``FluxCZ`` does not play:
+transition's calibration (``transition=(1, 2)``) it does not give. A ``FluxCZ`` does not play:
 flux lines are not modeled yet, so a kernel leaves the qudits idle for its
 ``duration_ns``.
+
+The ``transmon_surface17`` calibration (below) gives each qubit an ``X`` of
+its 1-2 transition, which plays at that transition's tone, for example to
+return a qubit from ``|2>`` to ``|1>`` before a herald or a reset:
+
+.. code-block:: python
+
+   @pulse.kernel
+   def repair_leakage(q):
+       d = get_drive_line(q)
+       drive(d, d.get_calibration(pulse.gates.X, transition=(1, 2)), tone=d.tones[(1, 2)])
 
 ``calibrations`` of a ``PhysicalQudit`` or ``Coupling`` gives what it
 publishes and nothing derived, read-only and keyed as ``calibrations=``
@@ -219,7 +230,8 @@ A calibration holds the values that are fitted rather than published, apart
 from the quantum system: for the ``transmon_surface17`` quantum system, the shipped
 ``transmon_surface17`` calibration holds each qubit's circuit (E_C, E_J,max and the SQUID asymmetry d, fitted to Tab. I and the
 other sweet spot of Fig. 1c), each pair's charge coupling, the flux-line
-model of Hellings et al., the in-model CZ knobs of all 24 pairs, crosstalk,
+model of Hellings et al., the in-model CZ knobs of all 24 pairs, each
+qubit's single-qubit pulses and readout assignment errors, crosstalk,
 defect bands and feedline groups. Every value records its
 ``kind`` (``published``, ``digitized`` or ``fitted``), ``source``,
 ``uncertainty`` and ``measurement_run``, one of the file's measurement runs.
@@ -237,7 +249,7 @@ defect bands and feedline groups. Every value records its
 
 ``calibration=`` is a shipped name, the path of a calibration file or a
 ``cudaq_pulse.quantum_systems.Calibration``; the ``transmon_surface17`` quantum system uses the
-``transmon_surface17`` calibration by default. Its couplings replace the system's, so quantum systems with different
+``transmon_surface17`` calibration by default. Its couplings, pulses and readout errors replace the system's, so quantum systems with different
 calibrations compile separately. Detunings are in Hz; for qubits whose
 circuit, including d, is calibrated (``Calibration.flux_qudits``, all 17
 here) ``flux_for_detuning`` and ``detuning_for_flux`` convert to and from
@@ -265,3 +277,32 @@ the system-wide g_c. Each record keeps its predicted phase and leakage and its `
 nine pairs leak at least 1e-4, a floor set by the 0.417 ns time grid, and
 Z2-D7 defaults to an unphysical B = 1.934 (its data qubit moves only 261
 MHz), with the in-range alternatives in ``alternatives``.
+
+The papers publish the single-qubit pulse shape (40 ns DRAG pulses, a
+Gaussian of sigma = 10 ns truncated at +-2 sigma) but no DRAG coefficients
+and no 1-2 pulse; the calibration fits them (``single_qubit_gates``) in a
+closed Duffing model of each qubit with its published anharmonicity. Each
+qubit's ``X`` (and the ``X90``, ``Y`` and ``Y90`` derived from it) takes
+``beta_ns`` 0.51-0.58, which minimizes the leakage and phase error of ``X``
+and ``X90`` together: in simulation with each qubit's T1 and T2*, ``X``
+then errs by 9.6e-4 and ``X90`` by 8.6e-4 on average, against the
+published single-qubit randomized-benchmarking error of 9e-4 (2.7e-3 for
+``X`` with beta 0). The ``X`` of the 1-2 transition is 20 ns long
+(sigma = 5 ns), with a fitted amplitude and beta; the duration minimizes the
+device-mean error of the pulse, decoherence included, and it returns ``|2>``
+to ``|1>`` with probability 0.997-0.999. ``beta_ns`` is fitted for these
+durations: a pulse replaced with another duration needs its own.
+
+Tab. I gives each qubit's two-state readout error, the mean of P(1|0) and
+P(0|1) after a preselection readout, but not the two errors apart.
+``readout.assignment`` keeps the published value and the assignment errors
+of each qubit's ``DispersiveReadout``: one error for both states, fitted so
+that ``simulate(..., readout="model")`` of the paper's characterization
+(``|0>``, and ``|1>`` from ``X``, then the qubit's ``READOUT``) reproduces
+it. The simulation relaxes the qubit during the readout pulse and takes the
+outcome at its end, so the fitted error is the rest; for D2, D9 and X4 the
+relaxation alone already exceeds the published error (0.51, 0.64 and 0.86 %
+against 0.5, 0.5 and 0.8 %), and their assignment error is 0. Use
+``readout="model"`` here: ``"model_with_decay"`` adds relaxation over the
+readout again. ``transmon_surface17(calibration=None)``, the published
+values alone, keeps beta 0, no 1-2 pulse and ideal assignment.

@@ -29,7 +29,7 @@ with the pulses its gates are calibrated for:
    d1 = qs.physical_qudits[0]
 
    print(d1.label, d1.t1_us, d1.t2_star_us, d1.t2_echo_us)   # D1 29.1 35.0 46.2
-   print(q.get_calibration(pulse.gates.X))   # DragPulse(duration_ns=40.0, sigma_ns=10.0, amplitude=0.1313058652516393)
+   print(q.get_calibration(pulse.gates.X))   # DragPulse(duration_ns=40.0, sigma_ns=10.0, amplitude=0.1313058652516393, beta_ns=0.5138649945351855)
 
 The first qubit, labelled D1, has a T1 of 29.1 µs, a Ramsey dephasing time
 T2* of 35.0 µs and an echo time of 46.2 µs. Its π pulse is a 40 ns DRAG pulse,
@@ -64,7 +64,7 @@ it compiles once.
 
    waits = np.linspace(0, 60_000, 7)   # nanoseconds
    populations = [pulse.simulate(t1, q, w).level_population(1) for w in waits]
-   print([round(p, 3) for p in populations])   # [0.965, 0.684, 0.49, 0.354, 0.259, 0.191, 0.143]
+   print([round(p, 3) for p in populations])   # [0.968, 0.686, 0.491, 0.355, 0.259, 0.191, 0.143]
    print(t1.cache_info().compiled)   # 1
 
 The excited-state population falls toward the qubit's thermal population
@@ -144,7 +144,7 @@ the same during the sequence cancels:
        return readout(r, r.get_calibration(pulse.gates.READOUT))
 
    echoes = [pulse.simulate(echo, q, tau).level_population(1) for tau in taus[::5]]
-   print([round(p, 3) for p in echoes])   # [0.022, 0.029, 0.035, 0.042, 0.049, 0.054, 0.06, 0.068, 0.073]
+   print([round(p, 3) for p in echoes])   # [0.022, 0.031, 0.035, 0.047, 0.048, 0.055, 0.061, 0.074, 0.073]
 
 The three pulses add up to a full turn, so the qubit ends close to its
 ground state for every wait, with no fringes. What's left is a slow rise

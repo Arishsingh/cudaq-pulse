@@ -109,7 +109,7 @@ the probability the latency spread gives:
    result = pulse.simulate(scheduled, initial_state=[2**-0.5, 2**-0.5, 0.0], latency_branching=True)
    in_time = sum(b.probability for b in result.branches if b.calls[0].in_time)
    print(round(in_time, 3))   # 0.777
-   print(round(result.level_population(0), 3))   # 0.932
+   print(round(result.level_population(0), 3))   # 0.933
 
 With latencies from 2.9 to 4.5 µs, 77.7% of the answers arrive within the
 4 µs timeout, and the other shots take the fallback. Here the fallback makes

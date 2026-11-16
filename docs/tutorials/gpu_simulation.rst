@@ -71,7 +71,7 @@ for the slot their CZ gate would take:
 
    cpu = pulse.simulate(evolve_pair, x1, d2, dt_ns=0.02)
    print(cpu.dims)   # (3, 3)
-   print([round(cpu.level_populations(q)[1], 4) for q in (x1, d2)])   # [0.494, 0.9869]
+   print([round(cpu.level_populations(q)[1], 4) for q in (x1, d2)])   # [0.4945, 0.989]
 
 The simulation holds only X1 and D2, each with three levels, so the state is
 a 9 × 9 density matrix. X1 ends half excited and D2 nearly fully, less what

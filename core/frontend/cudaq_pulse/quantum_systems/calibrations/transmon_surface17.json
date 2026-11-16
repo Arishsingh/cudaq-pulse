@@ -1,7 +1,7 @@
 {
  "_schema": {
   "title": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708: device calibration",
-  "readme": "Every leaf quantity is an object {value, units, kind, source, uncertainty, measurement_run[, method]}. kind: 'published' (printed number in a paper), 'digitized' (read from a figure: the source names figure/panel/page), 'fitted' (computed by our numpy models: 'method' says how). uncertainty: {sigma, units[, basis/note]} as 1 sigma, or null when no estimate exists. measurement_run: a key of 'measurement_runs'. Units are SI (Hz, s); flux in flux quanta. Coupling convention: g_11_20 = sqrt(2) J_qq. Top-level sections: measurement_runs, coupling, qubits (per-qubit circuit values, flux_quanta_capable flag), flux_line (Hellings 2025 distortion model), cz (per-pair published values + knobs), crosstalk, defects, readout. Published values here duplicate the quantum system only where a calibration consumer needs them alongside fitted values; the quantum system remains the source of truth for published numbers.",
+  "readme": "Every leaf quantity is an object {value, units, kind, source, uncertainty, measurement_run[, method]}. kind: 'published' (printed number in a paper), 'digitized' (read from a figure: the source names figure/panel/page), 'fitted' (computed by our numpy models: 'method' says how). uncertainty: {sigma, units[, basis/note]} as 1 sigma, or null when no estimate exists. measurement_run: a key of 'measurement_runs'. Units are SI (Hz, s); flux in flux quanta. Coupling convention: g_11_20 = sqrt(2) J_qq. Top-level sections: measurement_runs, coupling, qubits (per-qubit circuit values, flux_quanta_capable flag), flux_line (Hellings 2025 distortion model), cz (per-pair published values + knobs), single_qubit_gates (DRAG beta of X, X12 pulses), crosstalk, defects, readout (feedlines, assignment errors). Published values here duplicate the quantum system only where a calibration consumer needs them alongside fitted values; the quantum system remains the source of truth for published numbers.",
   "quantum_system": "transmon_surface17",
   "default_measurement_run": "2022-main"
  },
@@ -7320,6 +7320,770 @@
    }
   }
  },
+ "single_qubit_gates": {
+  "note": "Calibrated drive pulses on the published pulse shape (App. B: 40 ns DRAG pulses, Gaussian of sigma = 10 ns truncated at +-2 sigma; DRAG suppresses leakage and phase errors, N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Sec. 3.2). The papers publish no DRAG coefficients and no |1>-|2> pulse; these are fitted. x: beta (the DRAG coefficient) of each qubit's X (and of X90, Y, Y90, derived from it). x12: the X pulse of the 1-2 transition (leakage repair), played at f01 + alpha.",
+  "x": {
+   "D1": {
+    "beta": {
+     "value": 5.138649945351855e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.3881118157648143e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.7e-03 at beta = 0, 1.2e-04 at this beta (X90 1.9e-04, 4.0e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "D2": {
+    "beta": {
+     "value": 5.138649945351855e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.3881118157648143e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.7e-03 at beta = 0, 1.2e-04 at this beta (X90 1.9e-04, 4.0e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "D3": {
+    "beta": {
+     "value": 5.166653303559112e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.4122240049610491e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.7e-03 at beta = 0, 1.2e-04 at this beta (X90 1.9e-04, 3.6e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "D4": {
+    "beta": {
+     "value": 5.138649945351855e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.3881118157648143e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.7e-03 at beta = 0, 1.2e-04 at this beta (X90 1.9e-04, 4.0e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "D5": {
+    "beta": {
+     "value": 5.084295902971135e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.3370413795043558e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.7e-03 at beta = 0, 1.1e-04 at this beta (X90 2.0e-04, 4.6e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "D6": {
+    "beta": {
+     "value": 5.138649945351855e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.3881118157648143e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.7e-03 at beta = 0, 1.2e-04 at this beta (X90 1.9e-04, 4.0e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "D7": {
+    "beta": {
+     "value": 5.224312694007427e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.4707455174547414e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.8e-03 at beta = 0, 1.2e-04 at this beta (X90 1.8e-04, 2.6e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "D8": {
+    "beta": {
+     "value": 5.166653303559112e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.4122240049610491e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.7e-03 at beta = 0, 1.2e-04 at this beta (X90 1.9e-04, 3.6e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "D9": {
+    "beta": {
+     "value": 5.224312694007427e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.4707455174547414e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.8e-03 at beta = 0, 1.2e-04 at this beta (X90 1.8e-04, 2.6e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "X1": {
+    "beta": {
+     "value": 5.568467341138849e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.6165057500032165e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 2.0e-03 at beta = 0, 1.4e-04 at this beta (X90 2.2e-04, 3.0e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "X2": {
+    "beta": {
+     "value": 5.439927167971842e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.5969985791720043e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 1.9e-03 at beta = 0, 1.3e-04 at this beta (X90 1.9e-04, 1.1e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "X3": {
+    "beta": {
+     "value": 5.568467341138849e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.6165057500032165e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 2.0e-03 at beta = 0, 1.4e-04 at this beta (X90 2.2e-04, 3.0e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "X4": {
+    "beta": {
+     "value": 5.568467341138849e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.6165057500032165e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 2.0e-03 at beta = 0, 1.4e-04 at this beta (X90 2.2e-04, 3.0e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "Z1": {
+    "beta": {
+     "value": 5.800757576965902e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.7307027171223344e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 2.2e-03 at beta = 0, 1.5e-04 at this beta (X90 2.6e-04, 6.3e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "Z2": {
+    "beta": {
+     "value": 5.633517714555603e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.6360129208344843e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 2.0e-03 at beta = 0, 1.4e-04 at this beta (X90 2.4e-04, 4.3e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "Z3": {
+    "beta": {
+     "value": 5.536137226138785e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.616505750003161e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 2.0e-03 at beta = 0, 1.4e-04 at this beta (X90 2.1e-04, 2.4e-05); the remainder is leakage from the truncation edges"
+    }
+   },
+   "Z4": {
+    "beta": {
+     "value": 5.568467341138849e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity and App. B (p. 9): 40 ns DRAG pulses, sigma = 10 ns, truncated at +-2 sigma",
+     "uncertainty": {
+      "sigma": 1.6165057500032165e-12,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit; model systematics (no spectators, no drive crosstalk) not included"
+     },
+     "measurement_run": "2022-main",
+     "method": "beta minimizing the mean of the X (pi) and X90 average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), with the amplitudes the quantum system derives (pi / area and half); closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy). Closed-model X infidelity 2.0e-03 at beta = 0, 1.4e-04 at this beta (X90 2.2e-04, 3.0e-05); the remainder is leakage from the truncation edges"
+    }
+   }
+  },
+  "x12": {
+   "duration": {
+    "value": 2e-08,
+    "units": "s",
+    "kind": "fitted",
+    "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (anharmonicity, T1, T2*, thermal population) and App. B (p. 9) pulse shape",
+    "uncertainty": {
+     "sigma": 4e-09,
+     "units": "s",
+     "basis": "grid step of the duration scan; the device-mean error varies by < 10 % over 16-24 ns"
+    },
+    "measurement_run": "2022-main",
+    "method": "one duration for every qubit, from 16, 20, 24, 28, 32 and 40 ns, minimizing the device-mean X12 error: the closed-model infidelity (amplitude and beta fitted at each duration, as below) plus the decoherence of the |1>, |2> subspace over the pulse in the shipped simulation model (T1, Ramsey T2* and thermal population of Tab. I). Mean error 1.55e-3 at 20 ns (1.69e-3 at 16 ns, 2.26e-3 at 40 ns)"
+   },
+   "sigma": {
+    "value": 5e-09,
+    "units": "s",
+    "kind": "fitted",
+    "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, App. B (p. 9): Gaussian truncated at +-2 sigma",
+    "uncertainty": {
+     "sigma": 1e-09,
+     "units": "s",
+     "basis": "inherits duration"
+    },
+    "measurement_run": "2022-main",
+    "method": "duration / 4, the published truncation of the single-qubit pulses"
+   },
+   "D1": {
+    "amplitude": {
+     "value": 186978357.16516453,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8029.560474354103,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.5e-04 (2.1e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.526983293208297e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 6.707144891973937e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "D2": {
+    "amplitude": {
+     "value": 186978357.16516453,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8029.560474354103,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.5e-04 (2.1e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.526983293208297e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 6.707144891973937e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "D3": {
+    "amplitude": {
+     "value": 186994468.54680967,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8124.285019103783,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.6e-04 (2.1e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.540176542110731e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 6.596624451217226e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "D4": {
+    "amplitude": {
+     "value": 186978357.16516453,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8029.560474354103,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.5e-04 (2.1e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.526983293208297e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 6.707144891973937e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "D5": {
+    "amplitude": {
+     "value": 186946609.46048576,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 7834.31096015863,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.5e-04 (2.0e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.500733406181108e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 6.417798621620453e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "D6": {
+    "amplitude": {
+     "value": 186978357.16516453,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8029.560474354103,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.5e-04 (2.1e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.526983293208297e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 6.707144891973937e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "D7": {
+    "amplitude": {
+     "value": 187027238.5912173,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8260.921241592945,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.6e-04 (2.2e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.567362773337821e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 6.885970721570712e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "D8": {
+    "amplitude": {
+     "value": 186994468.54680967,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8124.285019103783,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.6e-04 (2.1e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.540176542110731e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 6.596624451217226e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "D9": {
+    "amplitude": {
+     "value": 187027238.5912173,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8260.921241592945,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.6e-04 (2.2e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.567362773337821e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 6.885970721570712e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "X1": {
+    "amplitude": {
+     "value": 187215411.2116181,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8908.911385371865,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 5.0e-04 (2.4e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.731995197440963e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 7.932835362227387e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "X2": {
+    "amplitude": {
+     "value": 187145443.93387508,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8608.937532877948,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 4.9e-04 (2.3e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.6693322479653644e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 7.75400953263089e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "X3": {
+    "amplitude": {
+     "value": 187215411.2116181,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8908.911385371865,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 5.0e-04 (2.4e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.731995197440963e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 7.932835362227387e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "X4": {
+    "amplitude": {
+     "value": 187215411.2116181,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8908.911385371865,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 5.0e-04 (2.4e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.731995197440963e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 7.932835362227387e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "Z1": {
+    "amplitude": {
+     "value": 187346113.22729713,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 9888.971322633,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 5.5e-04 (2.7e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.8480942651708403e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 8.401007462177923e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "Z2": {
+    "amplitude": {
+     "value": 187251385.09549144,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 9104.160892198232,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 5.2e-04 (2.5e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.7646628830897724e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 8.222181632581149e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "Z3": {
+    "amplitude": {
+     "value": 187197697.91023993,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8814.370897530787,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 5.0e-04 (2.4e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.7161295267165076e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 7.822314921470675e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   },
+   "Z4": {
+    "amplitude": {
+     "value": 187215411.2116181,
+     "units": "rad/s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity: the pulse plays at the 1-2 transition, f01 + alpha",
+     "uncertainty": {
+      "sigma": 8908.911385371865,
+      "units": "rad/s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "amplitude and beta minimizing the X12 (pi rotation of |1>, |2>) average gate infidelity on the gate's two-level subspace, leakage counted as error (Pedersen et al., PLA 367, 47 (2007)), at duration and sigma; closed Duffing transmon (4 levels, Tab. I anharmonicity), rotating frame of the drive tone, rotating-wave approximation, the DRAG envelope A G(t) + i beta A G'(t) with G the Gaussian truncated at +-2 sigma (App. B), piecewise constant at 0.05 ns (numpy); amplitude as a 0-1 Rabi rate, so near pi / (sqrt(2) area) = 1.8569e+08 rad/s. Closed-model infidelity 5.0e-04 (2.4e-03 at beta = 0 and pi / (sqrt(2) area))"
+    },
+    "beta": {
+     "value": 2.731995197440963e-10,
+     "units": "s",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I anharmonicity",
+     "uncertainty": {
+      "sigma": 7.932835362227387e-13,
+      "units": "s",
+      "basis": "printed rounding of the anharmonicity (+-0.5 MHz) propagated through the fit"
+     },
+     "measurement_run": "2022-main",
+     "method": "fitted with amplitude (see amplitude)"
+    }
+   }
+  }
+ },
  "crosstalk": {
   "drive_fig10": {
    "kind": "digitized",
@@ -7959,6 +8723,689 @@
     "X2 and D5 share a feedline: Remm 2023 (TWPA, arXiv:2210.04799) App. F - satisfied",
     "D9 is on the 'bottom-left' feedline: Swiadek 2024 (arXiv:2307.07765) Fig. 7 - satisfied (orientation as in Fig. 1b)"
    ]
+  },
+  "assignment": {
+   "note": "Two-state readout assignment errors. Tab. I publishes, per qubit, the two-state readout error eps(2)_RO = 1 - [P(0|0) + P(1|1)] / 2 (App. F, Eq. F5, p. 17), measured after a preselection readout that rejects runs not in |0> (so thermal excitation, which the quantum system models separately, is excluded). The per-state errors P(1|0) and P(0|1) are not published for any qubit (Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1, prints the same eps(2)_RO). two_state_error is the published value; error_0to1 and error_1to0 are the assignment errors of the qubit's DispersiveReadout, fitted so that the simulation reproduces it.",
+   "D1": {
+    "two_state_error": {
+     "value": 0.007,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0012818428054480258,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0057 (P(0|1) = 0.0107) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0012818428054480258,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0057 (P(0|1) = 0.0107) (error_1to0: |1> reported 0)"
+    }
+   },
+   "D2": {
+    "two_state_error": {
+     "value": 0.005,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D2; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D2; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0051 (P(0|1) = 0.0099); that already exceeds the published 0.005 (the simulated relaxation over the whole pulse is more than the measurement's), so e = 0 (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D2; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0051 (P(0|1) = 0.0099); that already exceeds the published 0.005 (the simulated relaxation over the whole pulse is more than the measurement's), so e = 0 (error_1to0: |1> reported 0)"
+    }
+   },
+   "D3": {
+    "two_state_error": {
+     "value": 0.005,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D3; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0023940927094592127,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D3; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0026 (P(0|1) = 0.0049) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0023940927094592127,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D3; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0026 (P(0|1) = 0.0049) (error_1to0: |1> reported 0)"
+    }
+   },
+   "D4": {
+    "two_state_error": {
+     "value": 0.006,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D4; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0030768234261824624,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D4; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0029 (P(0|1) = 0.0052) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0030768234261824624,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D4; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0029 (P(0|1) = 0.0052) (error_1to0: |1> reported 0)"
+    }
+   },
+   "D5": {
+    "two_state_error": {
+     "value": 0.008,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D5; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.002795882033685292,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D5; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0052 (P(0|1) = 0.0096) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.002795882033685292,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D5; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0052 (P(0|1) = 0.0096) (error_1to0: |1> reported 0)"
+    }
+   },
+   "D6": {
+    "two_state_error": {
+     "value": 0.005,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D6; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0022002014897466466,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D6; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0028 (P(0|1) = 0.0052) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0022002014897466466,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D6; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0028 (P(0|1) = 0.0052) (error_1to0: |1> reported 0)"
+    }
+   },
+   "D7": {
+    "two_state_error": {
+     "value": 0.023,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D7; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.01872818917398144,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D7; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0044 (P(0|1) = 0.0088) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.01872818917398144,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D7; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0044 (P(0|1) = 0.0088) (error_1to0: |1> reported 0)"
+    }
+   },
+   "D8": {
+    "two_state_error": {
+     "value": 0.013,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D8; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.008154758497375928,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D8; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0049 (P(0|1) = 0.0095) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.008154758497375928,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D8; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0049 (P(0|1) = 0.0095) (error_1to0: |1> reported 0)"
+    }
+   },
+   "D9": {
+    "two_state_error": {
+     "value": 0.005,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D9; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D9; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0064 (P(0|1) = 0.0120); that already exceeds the published 0.005 (the simulated relaxation over the whole pulse is more than the measurement's), so e = 0 (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column D9; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0064 (P(0|1) = 0.0120); that already exceeds the published 0.005 (the simulated relaxation over the whole pulse is more than the measurement's), so e = 0 (error_1to0: |1> reported 0)"
+    }
+   },
+   "X1": {
+    "two_state_error": {
+     "value": 0.027,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.01809550053346883,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0092 (P(0|1) = 0.0182) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.01809550053346883,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0092 (P(0|1) = 0.0182) (error_1to0: |1> reported 0)"
+    }
+   },
+   "X2": {
+    "two_state_error": {
+     "value": 0.007,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X2; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0005899865748928325,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X2; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0064 (P(0|1) = 0.0126) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0005899865748928325,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X2; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0064 (P(0|1) = 0.0126) (error_1to0: |1> reported 0)"
+    }
+   },
+   "X3": {
+    "two_state_error": {
+     "value": 0.008,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X3; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.002003635986116038,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X3; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0060 (P(0|1) = 0.0117) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.002003635986116038,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X3; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0060 (P(0|1) = 0.0117) (error_1to0: |1> reported 0)"
+    }
+   },
+   "X4": {
+    "two_state_error": {
+     "value": 0.008,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X4; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X4; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0086 (P(0|1) = 0.0170); that already exceeds the published 0.008 (the simulated relaxation over the whole pulse is more than the measurement's), so e = 0 (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column X4; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0086 (P(0|1) = 0.0170); that already exceeds the published 0.008 (the simulated relaxation over the whole pulse is more than the measurement's), so e = 0 (error_1to0: |1> reported 0)"
+    }
+   },
+   "Z1": {
+    "two_state_error": {
+     "value": 0.013,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.006589521903855614,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0065 (P(0|1) = 0.0126) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.006589521903855614,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z1; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0065 (P(0|1) = 0.0126) (error_1to0: |1> reported 0)"
+    }
+   },
+   "Z2": {
+    "two_state_error": {
+     "value": 0.004,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z2; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0013154350448678202,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z2; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0027 (P(0|1) = 0.0052) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0013154350448678202,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z2; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0027 (P(0|1) = 0.0052) (error_1to0: |1> reported 0)"
+    }
+   },
+   "Z3": {
+    "two_state_error": {
+     "value": 0.004,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z3; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0002719061122237565,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z3; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0037 (P(0|1) = 0.0073) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0002719061122237565,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z3; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0037 (P(0|1) = 0.0073) (error_1to0: |1> reported 0)"
+    }
+   },
+   "Z4": {
+    "two_state_error": {
+     "value": 0.005,
+     "units": "1",
+     "kind": "published",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z4; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "half the printed digit (0.1 %)"
+     },
+     "measurement_run": "2022-main"
+    },
+    "error_0to1": {
+     "value": 0.0008872189760605481,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z4; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0041 (P(0|1) = 0.0079) (error_0to1: |0> reported 1)"
+    },
+    "error_1to0": {
+     "value": 0.0008872189760605481,
+     "units": "1",
+     "kind": "fitted",
+     "source": "Krinner et al., Nature 605, 669 (2022), arXiv:2112.03708v1, Tab. I (p. 10), two-state readout error, column Z4; N. Lacroix, PhD thesis, ETH Zurich (2025), Diss. ETH No. 31121, doi:10.3929/ethz-b-000740393, Tab. 3.1; T1, thermal population (Tab. I) and the readout pulse (App. F1)",
+     "uncertainty": {
+      "sigma": 0.0005,
+      "units": "1",
+      "basis": "the published value's rounding (0.05 %) propagated; the simulated relaxation during the readout is a model systematic of the same order"
+     },
+     "measurement_run": "2022-main",
+     "method": "the residual assignment error e, the same for P(1|0) and P(0|1), with which the shipped simulation of the App. F characterization reproduces eps(2)_RO: |0> (preselected) and |1> prepared by the calibrated X, read out with the qudit's READOUT pulse; the simulation already relaxes the qubit during the pulse and takes the outcome at its end, so e is the part of eps(2)_RO the simulation does not model (state discrimination), taken symmetric as for two equal-width Gaussian outcome distributions. Simulated with ideal assignment: eps(2) = 0.0041 (P(0|1) = 0.0079) (error_1to0: |1> reported 0)"
+    }
+   }
   }
  }
 }

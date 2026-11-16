@@ -32,6 +32,7 @@ from .._errors import (
 from .models import SimulationModel, TransmonModel
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from dataclasses import dataclass as _dataclass_when_used
     from typing import ClassVar, Literal, NoReturn, Self, overload
 
@@ -97,7 +98,9 @@ class _Component:
     def __reduce__(self) -> tuple[Any, ...]:
         from .._pickling import rebuilt
 
-        values = map(_plain_value, self._values)
+        values: Iterable[Any] = self._values
+        if not {MappingProxyType, _Calibrations}.isdisjoint(map(type, values)):
+            values = map(_plain_value, values)
         return (rebuilt, (type(self), dict(zip(self._fields, values, strict=True))))
 
     def replace(self, **changes: Any) -> Self:

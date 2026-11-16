@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from .._errors import InvalidValueError
 from . import _transmon_surface17 as _k
 from .base import (
+    _DRIVE_GATES,
     Coupling,
     DispersiveReadout,
     DragPulse,
@@ -28,7 +29,10 @@ from .base import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from .._device import QuantumSystem
+    from .calibration import Calibration
 
 #: The CZs of one error correction cycle of ``transmon_surface17``, layer by layer
 #: (Fig. 3a and the edge labels of Fig. 6c): each layer is three CZs on
@@ -77,7 +81,12 @@ def transmon_surface17(calibration: Any = "transmon_surface17") -> QuantumSystem
     Each qudit's ``X`` is the published 40 ns DRAG pulse with sigma = 10 ns;
     its amplitude is not published, so amplitudes are angular rates in
     rad/ns and ``get_calibration`` gives the pi pulse's. Readout physics is
-    that of Tab. I, and the ``READOUT`` pulse that of App. F1.
+    that of Tab. I, and the ``READOUT`` pulse that of App. F1. The shipped
+    ``transmon_surface17`` calibration fits what the paper does not publish:
+    each ``X``'s DRAG coefficient (0.51-0.58 ns), an ``X`` of each qudit's
+    1-2 transition (``transition=(1, 2)``, 20 ns) and readout assignment
+    errors with which ``readout="model"`` reproduces Tab. I's two-state
+    readout errors. ``calibration=None`` leaves them out.
 
     No residual ZZ is listed: the paper gives no per-pair values, only
     that the calculated idle ZZ is below about 8 kHz. Simulated with three
@@ -106,8 +115,7 @@ def _described_surface17(calibration: Any = "transmon_surface17") -> _Descriptio
 
 
 _BUILT: dict[str | None, _Description] = {}
-# Reentrant: building a calibrated system builds the published one.
-_BUILT_LOCK = threading.RLock()
+_BUILT_LOCK = threading.Lock()
 
 
 def _calibrated_surface17(name: str) -> _Description:
@@ -118,7 +126,7 @@ def _calibrated_surface17(name: str) -> _Description:
         with _BUILT_LOCK:
             built = _BUILT.get(name)
             if built is None:
-                built = _BUILT[name] = shipped_calibration(name)._apply(_published_surface17())
+                built = _BUILT[name] = _build_surface17(shipped_calibration(name))
     return built
 
 
@@ -128,11 +136,14 @@ def _published_surface17() -> _Description:
         with _BUILT_LOCK:
             built = _BUILT.get(None)
             if built is None:
-                built = _BUILT[None] = _build_published_surface17()
+                built = _BUILT[None] = _build_surface17(None)
     return built
 
 
-def _build_published_surface17() -> _Description:
+def _build_surface17(calibration: Calibration | None) -> _Description:
+    """The published values with *calibration* applied, built once: what
+    ``calibration._apply`` of the published description gives, without
+    building the published qudits and couplings first."""
     qudits = {}
     drive = MicrowaveDrive()
     x = DragPulse(duration_ns=_k.DRIVE_DURATION_NS, sigma_ns=_k.DRIVE_SIGMA_NS)
@@ -151,7 +162,20 @@ def _build_published_surface17() -> _Description:
         )
         for kind, duration_ns in _k.READOUT_DURATION_NS.items()
     }
+    pulses: Mapping[str, Any] = {}
+    made: dict[Any, Any] = {}
+    if calibration is not None:
+        pulses, idle_exchange = calibration._qudit_pulses(), calibration._idle_exchange
     for index, q in enumerate(_k.QUDITS):
+        given = calibrations[q.label[0]]
+        error_0to1 = error_1to0 = 0.0
+        values = pulses.get(q.label)
+        if values is not None:
+            beta, pulse, errors = values
+            if beta is not None or pulse is not None:
+                given = _calibrated_pulses(given, beta, pulse, made)
+            if errors is not None:
+                error_0to1, error_1to0 = errors
         qudits[index] = PhysicalQudit(
             index=index,
             frequency_hz=q.idle_frequency_hz,
@@ -166,31 +190,79 @@ def _build_published_surface17() -> _Description:
                 frequency_hz=q.readout_frequency_hz,
                 dispersive_shift_hz=q.dispersive_shift_hz,
                 linewidth_hz=q.kappa_eff_hz,
+                error_1to0=error_1to0,
+                error_0to1=error_0to1,
             ),
-            calibrations=calibrations[q.label[0]],
+            calibrations=given,
         )
-    couplings = [
-        Coupling(
-            (_k.INDEX[e.auxiliary], _k.INDEX[e.data]),
-            strength_hz=_k.coupling_11_20_hz(e.auxiliary, e.data) / math.sqrt(2.0),
-            calibrations=_Calibrations(
-                {
-                    "cz": FluxCZ(
-                        duration_ns=_k.CZ_DURATION_NS,
-                        buffer_ns=_k.CZ_BUFFER_NS,
-                        interaction_frequency_hz=e.interaction_frequency_hz,
-                    )
-                }
-            ),
+    couplings = []
+    for e in _k.EDGES:
+        a, d = _k.INDEX[e.auxiliary], _k.INDEX[e.data]
+        strength = None
+        if calibration is not None:
+            at_a, at_d = qudits[a].frequency_hz, qudits[d].frequency_hz
+            strength = calibration._exchange(idle_exchange, f"{e.auxiliary}-{e.data}", at_a, at_d)
+            if strength is None:
+                strength = calibration._exchange(
+                    idle_exchange, f"{e.data}-{e.auxiliary}", at_d, at_a
+                )
+        if strength is None:
+            strength = _k.coupling_11_20_hz(e.auxiliary, e.data) / math.sqrt(2.0)
+        couplings.append(
+            Coupling(
+                (a, d),
+                strength_hz=strength,
+                calibrations=_Calibrations(
+                    {
+                        "cz": FluxCZ(
+                            duration_ns=_k.CZ_DURATION_NS,
+                            buffer_ns=_k.CZ_BUFFER_NS,
+                            interaction_frequency_hz=e.interaction_frequency_hz,
+                        )
+                    }
+                ),
+            )
         )
-        for e in _k.EDGES
-    ]
     return _Description(
         name="transmon_surface17",
         qudits=qudits,
         couplings=couplings,
         attribution=_k.CITATION,
     )
+
+
+def _calibrated_pulses(given: Any, beta: Any, pulse: Any, made: dict[Any, Any]) -> Any:
+    """A qudit's calibrations *given* with the values of
+    ``Calibration._qudit_pulses``: its drive-line pulses take the DRAG
+    coefficient *beta* and the 1-2 ``X`` *pulse* is added. Qudits given
+    equal pulses share them through *made*, as a pickle then stores them once."""
+    key = (id(given), beta, pulse)
+    calibrated = made.get(key)
+    if calibrated is None:
+        values = dict(given)
+        if beta is not None:
+            for gate, found in given.items():
+                if found.__class__ is DragPulse and gate in _DRIVE_GATES:
+                    duration, sigma, amplitude, _, phase = found._values
+                    found = DragPulse(
+                        duration_ns=duration,
+                        sigma_ns=sigma,
+                        amplitude=amplitude,
+                        beta_ns=beta * 1e9,
+                        phase_rad=phase,
+                    )
+                    values[gate] = made.setdefault(found._values, found)
+        if pulse is not None:
+            duration, sigma, amplitude, beta_12 = pulse
+            found = DragPulse(
+                duration_ns=duration * 1e9,
+                sigma_ns=sigma * 1e9,
+                amplitude=amplitude * 1e-9,
+                beta_ns=beta_12 * 1e9,
+            )
+            values["x", (1, 2)] = made.setdefault(found._values, found)
+        calibrated = made[key] = _Calibrations(values)
+    return calibrated
 
 
 def transmon_surface17_idle_zz_hz(

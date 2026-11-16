@@ -108,6 +108,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 - `controller.unroll()` of a format `/2` program on a shared line gives each
   event its own qudit, on a line of its own, where it gave the line's first
   qudit.
+- `transmon_surface17` played its `X` pulses with a DRAG coefficient of 0,
+  had no pulse for the 1-2 transition, and read out without assignment
+  errors, so `readout="model"` erred only by relaxing during the readout
+  pulse. Its shipped calibration now gives
+  each qubit a fitted DRAG `beta_ns` (0.51-0.58 ns; `X` errs by 9.6e-4 in
+  simulation, against the published 9e-4, where it erred by 2.7e-3), an `X`
+  of its 1-2 transition (`get_calibration(pulse.gates.X, transition=(1, 2))`,
+  20 ns, returning `|2>` to `|1>` with probability 0.997-0.999), and readout
+  assignment errors with which `readout="model"` reproduces the published
+  two-state readout errors (mean assignment fidelity 99.1%, was 99.4%). Each
+  value records its kind, source, uncertainty, measurement run and method:
+  the file holds 599 values (89 published, 89 digitized, 421 fitted), where
+  it held 495. Simulated populations on `transmon_surface17` change in the
+  third decimal; `transmon_surface17(calibration=None)` keeps the published
+  values alone.
 
 ## [0.1.0] - 2026-11-13
 
