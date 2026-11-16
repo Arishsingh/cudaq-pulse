@@ -257,7 +257,7 @@
   const SVG_NS = "http://www.w3.org/2000/svg";
   const W = 640;
   const H = 260;
-  const PAD = { left: 44, right: 12, top: 10, bottom: 34 };
+  const PAD = { left: 62, right: 12, top: 10, bottom: 34 };
   const LABELS = {
     duration: "duration",
     amplitude: "amplitude",
@@ -266,7 +266,7 @@
     beta: "beta",
     width: "width",
     factor: "factor",
-    detuning_mhz: "tone minus qudit",
+    detuning_mhz: "detuning (tone \u2212 qudit)",
     phase: "phase",
     anharmonicity_mhz: "anharmonicity",
   };
@@ -290,9 +290,14 @@
     return fmt(v);
   }
 
+  // The y range: the curve's peak with 10% headroom, rounded up to a 1-1.2-
+  // 1.5-2-2.5-3-4-5-6-8 step, and at least 0.01 so a flat zero still has an
+  // axis. I and Q share it, so a small Q stays small beside I.
   function niceMax(peak) {
-    for (const m of [0.05, 0.1, 0.2, 0.25, 0.5, 1, 1.5, 2, 3, 4]) if (peak <= m * 0.98) return m;
-    return Math.ceil(peak);
+    const target = Math.max(peak * 1.1, 0.01);
+    const decade = 10 ** Math.floor(Math.log10(target));
+    for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (target <= m * decade * (1 + 1e-9)) return +(m * decade).toPrecision(3);
+    return 10 * decade;
   }
 
   function niceStep(span) {
@@ -306,6 +311,11 @@
     const id = `pwe${count++}`;
     const state = defaultState();
     if (SHAPES[root.dataset.shape]) state.a.shape = root.dataset.shape;
+
+    // One control per grid cell: its label, the control, and its value.
+    function field(label, control, value) {
+      return el("div", { class: "pwe-field" }, label, control, value || el("span", {}));
+    }
 
     function slider(name, get, set, after, prefix = "") {
       const [min, max, step] = RANGES[name];
@@ -323,7 +333,7 @@
       });
       sync();
       const label = el("label", { for: inputId }, prefix + LABELS[name]);
-      return { node: el("div", { class: "pwe-slider" }, label, input, out), input };
+      return { node: field(label, input, out), input };
     }
 
     function select(label, options, get, set) {
@@ -334,16 +344,18 @@
         set(s.value);
         layout();
       });
-      return el("div", { class: "pwe-slider" }, el("label", { for: selectId }, label), s);
+      return field(el("label", { for: selectId }, label), s);
     }
 
     // Selects and the toggle stay in place, so they keep the keyboard focus;
-    // only the sliders of the chosen shapes are rebuilt.
-    const paramsA = el("div", { class: "pwe-grid" });
-    const paramsB = el("div", { class: "pwe-grid" });
-    const betaHelp = el("div", { class: "pwe-grid" });
-    const factor = el("div", { class: "pwe-grid" });
-    const modSliders = el("div", { class: "pwe-grid" });
+    // only the sliders of the chosen shapes are rebuilt. Groups lay their
+    // controls out in the one grid of the explorer.
+    const group = () => el("div", { class: "pwe-group" });
+    const paramsA = group();
+    const paramsB = group();
+    const betaHelp = group();
+    const factor = group();
+    const modSliders = group();
 
     function shapeSliders(which, box) {
       const w = state[which];
@@ -359,8 +371,16 @@
       );
     }
 
-    const suggestion = el("span", { class: "pwe-note" });
-    const useBeta = el("button", { type: "button", class: "pwe-button" }, "Use suggested beta");
+    const suggestion = el("span", { class: "pwe-value" });
+    const hint =
+      "beta = -1 / alpha, for the anharmonicity alpha in radians per clock cycle, " +
+      "minimizes leakage to the second excited level; it matters most for short pulses.";
+    const hintId = `${id}-beta-hint`;
+    const useBeta = el(
+      "button",
+      { type: "button", class: "pwe-button", title: hint, "aria-describedby": hintId },
+      "Use suggested beta"
+    );
     useBeta.addEventListener("click", () => {
       const beta = +suggestedBeta(state.anharmonicity_mhz).toFixed(2);
       state.a.params.drag.beta = Math.max(RANGES.beta[0], Math.min(RANGES.beta[1], beta));
@@ -368,11 +388,12 @@
     });
     const updateSuggestion = () => {
       const beta = suggestedBeta(state.anharmonicity_mhz);
-      suggestion.textContent = `suggested beta = -1 / alpha = ${beta.toFixed(2)} cycles (${ns(beta).toFixed(2)} ns)`;
+      suggestion.textContent = `${beta.toFixed(2)} cycles (${ns(beta).toFixed(2)} ns)`;
     };
     betaHelp.append(
       slider("anharmonicity_mhz", () => state.anharmonicity_mhz, (v) => (state.anharmonicity_mhz = v), updateSuggestion).node,
-      el("div", { class: "pwe-slider" }, suggestion, useBeta)
+      field(el("span", { class: "pwe-label" }, "suggested beta"), useBeta, suggestion),
+      el("span", { id: hintId, class: "pwe-hidden" }, hint)
     );
     factor.append(slider("factor", () => state.factor, (v) => (state.factor = v)).node);
     modSliders.append(
@@ -456,9 +477,13 @@
         el("line", { x1: PAD.left, x2: PAD.left, y1: y(yMax), y2: y(-yMax) }),
         el("line", { x1: PAD.left, x2: W - PAD.right, y1: y(-yMax), y2: y(-yMax) }),
       ];
-      for (const v of [-yMax, 0, yMax]) {
-        parts.push(el("text", { x: PAD.left - 6, y: y(v) + 4, "text-anchor": "end" }, fmt(v)));
+      for (const v of [-yMax, -yMax / 2, 0, yMax / 2, yMax]) {
+        if (v !== 0) parts.push(el("line", { x1: PAD.left, x2: W - PAD.right, y1: y(v), y2: y(v), class: "pwe-gridline" }));
+        parts.push(el("line", { x1: PAD.left - 4, x2: PAD.left, y1: y(v), y2: y(v) }));
+        parts.push(el("text", { x: PAD.left - 7, y: y(v) + 4, "text-anchor": "end" }, String(+v.toPrecision(3))));
       }
+      const mid = (y(yMax) + y(-yMax)) / 2;
+      parts.push(el("text", { x: 12, y: mid, "text-anchor": "middle", transform: `rotate(-90 12 ${mid})` }, "amplitude"));
       const step = niceStep(state.duration);
       for (let t = 0; t <= state.duration; t += step) {
         parts.push(el("line", { x1: x(t), x2: x(t), y1: y(-yMax), y2: y(-yMax) + 4 }));
@@ -473,21 +498,18 @@
     root.replaceChildren(
       el(
         "div",
-        { class: "pwe-grid" },
+        { class: "pwe-controls" },
         select("waveform", Object.keys(SHAPES), () => state.a.shape, (v) => (state.a.shape = v)),
-        slider("duration", () => state.duration, (v) => (state.duration = v), layout).node
+        slider("duration", () => state.duration, (v) => (state.duration = v), layout).node,
+        paramsA,
+        betaHelp,
+        select("combine", COMBINE, () => state.combine, (v) => (state.combine = v)),
+        second,
+        factor,
+        paramsB,
+        field(el("label", { for: toggleId }, "modulate"), toggle, el("span", { class: "pwe-value" }, "the drive in the qudit's frame")),
+        modSliders
       ),
-      paramsA,
-      betaHelp,
-      el("div", { class: "pwe-grid" }, select("combine", COMBINE, () => state.combine, (v) => (state.combine = v)), second),
-      factor,
-      paramsB,
-      el(
-        "div",
-        { class: "pwe-grid" },
-        el("div", { class: "pwe-check" }, toggle, el("label", { for: toggleId }, "modulate: the drive in the qudit's frame"))
-      ),
-      modSliders,
       svg,
       el("div", { class: "pwe-legend" }, keyI, keyQ, keyEnv),
       el("div", { class: "pwe-code" }, el("pre", { "aria-live": "polite" }, code), el("div", {}, copy, status)),

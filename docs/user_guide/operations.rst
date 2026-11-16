@@ -196,19 +196,10 @@ two edges have the same integer duration.
 
 .. rubric:: Waveform explorer
 
-Pick a waveform and move its sliders: the plot shows its I and Q, one
-sample per clock cycle at ``t = 0, 1, 2, ...`` as
-``cudaq_pulse.controller.sample_waveform`` gives them, and the line under
-it is the call that makes it, in clock cycles of the 2 GHz program clock
-(the ns are shown beside it). *combine* applies the waveform arithmetic
-below to a second waveform of the same duration. For ``drag``, the
-suggested ``beta`` is ``-1 / alpha`` for the anharmonicity you set, which
-matters most for short pulses. *modulate* shows the drive the qudit sees in
-its frame when ``shift_frequency`` moves the tone off it and
-``shift_phase`` turns the frame: ``E(t) = envelope(t) exp(-i theta(t))``
-(see :ref:`conventions-frames`). ``tests/test_waveform_explorer.py``
-compiles every line the explorer prints and checks its samples against the
-library.
+Pick a waveform and move its sliders; the line under the plot is the call
+that makes it. *combine* applies the waveform arithmetic below to a second
+waveform, and *modulate* shows the drive in the qudit's frame (see
+:ref:`conventions-frames`).
 
 .. only:: html
 
