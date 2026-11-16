@@ -25,6 +25,9 @@ emulated, or exported to your controller:
    (``classical.emulation.emulate``), or export it to a controller backend
    (``export_to_controller()``).
 
+New to CUDA-Q Pulse? Start with :doc:`tutorials/first_pulse_program`, which
+goes from installing it to a simulated Rabi oscillation.
+
 Project status
 --------------
 
@@ -43,6 +46,12 @@ Project status
    :caption: Getting Started
 
    getting_started
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Tutorials
+
+   tutorials/index
 
 .. toctree::
    :maxdepth: 2
