@@ -74,6 +74,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `29_waveform_envelopes.py` prints and plots the samples of every
   built-in envelope.
 
+### Changed
+
+- **Schedule plots look different.** `viz.plot_schedule`, `viz.save_schedule`
+  and `timeline()` draw in the style of the documentation's figures: drives
+  green, readouts rose, waits hatched grey and classical calls teal (colors
+  that stay apart under the common color-vision deficiencies), no box or
+  bar outlines, light gridlines, line 0 at the top, and the legend in one
+  row above the plot. The rows, bars, labels and axis limits, and the
+  functions' arguments, are as before, and matplotlib is still imported only
+  when a plot is drawn.
+
 ### Fixed
 
 - `pulse.controller.sample_waveform` is annotated as returning

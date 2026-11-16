@@ -16,7 +16,7 @@ from tests._tools import import_module
 matplotlib = import_module("matplotlib")
 matplotlib.use("Agg")
 plt = import_module("matplotlib.pyplot", "matplotlib")
-_COLORS = {"drive": "#4c72b0", "readout": "#dd8452", "wait": "#cccccc"}
+_COLORS = {"drive": "#5b8c00", "readout": "#c2185b", "wait": "#b8bdc2"}
 
 
 @pulse.kernel

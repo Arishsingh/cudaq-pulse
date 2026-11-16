@@ -8,6 +8,11 @@ must print that comment's first words (``# 3.885, its 0-1 transition``
 checks ``3.885``); a block that prints from a loop instead lists what it
 prints as comment lines after its last line of code.
 
+A ``literalinclude`` of Python, cut by ``:start-after:`` and
+``:end-before:``, runs like a code block, so code a page shows from an
+example file runs as the page shows it. A block with ``:class: continues``
+runs joined to the next one, as a class shown a method at a time.
+
 Blocks with ``:class: fragment`` are not run. Blocks with ``:class: gpu``
 run only where the GPU runtime loads, ``:class: viz`` only with matplotlib,
 and ``:class: cudaq-qec`` only with CUDA-Q QEC; what they print is not
@@ -30,25 +35,54 @@ _PAGES = sorted(p for p in _TUTORIALS.glob("*.rst") if p.name != "index.rst")
 _PRINT_WITH_VALUE = re.compile(r"^\s*print\(.*\)\s*#\s*(?P<value>.+)$")
 
 
+def included(page: Path, target: str, options: dict[str, str]) -> str:
+    """The code a ``literalinclude`` of *target* with *options* shows, as Sphinx cuts it."""
+    lines = (page.parent / target).read_text().splitlines()
+    if "start-after" in options:
+        lines = lines[next(i for i, ln in enumerate(lines) if options["start-after"] in ln) + 1 :]
+    if "end-before" in options:
+        lines = lines[: next(i for i, ln in enumerate(lines) if options["end-before"] in ln)]
+    return "\n".join(lines)
+
+
 def code_blocks(page: Path) -> list[tuple[frozenset[str], str]]:
-    """Each ``.. code-block:: python`` of *page*: its classes and its code."""
+    """Each ``.. code-block:: python`` and Python ``literalinclude`` of *page*,
+    in order: its classes and its code."""
     lines = page.read_text().splitlines()
     blocks, i = [], 0
     while i < len(lines):
-        if re.match(r"\s*\.\. code-block:: python\s*$", lines[i]):
+        block = re.match(r"\s*\.\. code-block:: python\s*$", lines[i])
+        include = re.match(r"\s*\.\. literalinclude:: (\S+)\s*$", lines[i])
+        if block or include:
             i += 1
-            body, classes = [], frozenset()
+            body, classes, options = [], frozenset(), {}
             while i < len(lines) and (not lines[i].strip() or lines[i][:1] in " \t"):
-                option = lines[i].split()
+                option = lines[i].split(maxsplit=1)
                 if option[:1] == [":class:"]:
-                    classes = frozenset(option[1:])
-                elif not (option and option[0].startswith(":") and option[0].endswith(":")):
+                    classes = frozenset(option[1].split())
+                elif option and option[0].startswith(":") and option[0].endswith(":"):
+                    options[option[0].strip(":")] = option[1].strip() if len(option) > 1 else ""
+                else:
                     body.append(lines[i])
                 i += 1
-            blocks.append((classes, textwrap.dedent("\n".join(body)).strip()))
+            if include:
+                if options.get("language") != "python":
+                    continue
+                body = [included(page, include[1], options)]
+            blocks.append((classes, "\n".join(body)))
         else:
             i += 1
-    return blocks
+    # A piece with the class "continues" shows the start of code the next block
+    # finishes, such as a class shown a method at a time: they run as one.
+    joined: list[tuple[frozenset[str], str]] = []
+    pending = ""
+    for classes, code in blocks:
+        if "continues" in classes:
+            pending += code + "\n"
+            continue
+        joined.append((classes, textwrap.dedent(pending + code).strip()))
+        pending = ""
+    return joined
 
 
 def expected_output(code: str) -> list[str]:
