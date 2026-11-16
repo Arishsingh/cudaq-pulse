@@ -113,6 +113,7 @@ if TYPE_CHECKING:
     from ._units import us as us
     from .classical import Link as Link
     from .controller import Event as Event
+    from .kernel._unit_warnings import UnitWarning as UnitWarning
     from .runtime.gpu import GpuRuntimeError as GpuRuntimeError
     from .runtime.simulate import BranchCoverage as BranchCoverage
     from .runtime.simulate import SimulationResult as SimulationResult
@@ -134,6 +135,7 @@ _LAZY_EXPORTS = {
     "Capability": "._capability",
     # Making an enum costs more than importing what compiling needs.
     "ErrorCode": "._error_codes",
+    "UnitWarning": ".kernel._unit_warnings",
     "Controller": "._system",
     "ControlSystem": "._system",
     "Processor": "._system",
@@ -180,6 +182,7 @@ __all__ = [
     "InternalError",
     "PulseWarning",
     "UpgradeNotice",
+    "UnitWarning",
     "NoProcessQuantumSystemError",
     "NoQuantumSystemError",
     "QuantumSystemMismatchError",

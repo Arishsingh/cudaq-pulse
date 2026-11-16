@@ -163,3 +163,7 @@ Warnings
 .. autoexception:: cudaq_pulse.PulseWarning
 
 .. autoexception:: cudaq_pulse.UpgradeNotice
+
+.. autoexception:: cudaq_pulse.UnitWarning
+
+See :ref:`unit warnings <unit-warnings>` for what ``unit_warnings=True`` checks.

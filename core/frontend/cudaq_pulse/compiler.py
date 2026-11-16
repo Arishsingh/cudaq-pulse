@@ -501,15 +501,19 @@ class CompileMetrics:
 
 @dataclass(frozen=True)
 class CompileOptions:
-    """Passes, schedule policy, control system and unroll threshold of a
-    compilation. ``unroll_threshold`` is a non-negative ``int``, 8 by
-    default; 0 never unrolls (see ``cudaq_pulse.compile``)."""
+    """Passes, schedule policy, control system, unroll threshold and unit
+    warnings of a compilation. ``unroll_threshold`` is a non-negative
+    ``int``, 8 by default; 0 never unrolls (see ``cudaq_pulse.compile``)."""
 
     schedule: str = "alap"
     passes: tuple[Pass, ...] = DEFAULT_PASSES
     machine: _MachineModel = _DEFAULT_MACHINE
     flatten_schedules: bool = False
     unroll_threshold: int = DEFAULT_UNROLL_THRESHOLD
+    # Not a field, so making and comparing options costs no more: a
+    # compilation with unit warnings has options of a subclass
+    # (kernel/_unit_warnings.py).
+    unit_warnings = False
 
     @staticmethod
     def make(
@@ -518,6 +522,7 @@ class CompileOptions:
         control_system: ControlSystem | Controller | None = None,
         flatten_schedules: bool = False,
         unroll_threshold: int | None = None,
+        unit_warnings: bool = False,
     ) -> CompileOptions:
         if schedule not in _VALID_SCHEDULES:
             close = _closest(str(schedule).lower(), _VALID_SCHEDULES)
@@ -537,21 +542,26 @@ class CompileOptions:
                     "compile(control_system=) takes a pulse.ControlSystem or a "
                     f"pulse.Controller, got {control_system!r}"
                 ) from None
-        if machine.max_concurrent_drives <= 0:
-            raise ValueError("ControlSystem.max_concurrent_drives must be positive")
-        if machine.max_concurrent_readouts <= 0:
-            raise ValueError("ControlSystem.max_concurrent_readouts must be positive")
-        if machine.readout_latency_cycles < 0:
-            raise ValueError("the readout latency cannot be negative")
-        if machine.line_switch_penalty_cycles < 0:
-            raise ValueError("ControlSystem.line_switch_penalty_cycles cannot be negative")
-        return CompileOptions(
+            if machine.max_concurrent_drives <= 0:
+                raise ValueError("ControlSystem.max_concurrent_drives must be positive")
+            if machine.max_concurrent_readouts <= 0:
+                raise ValueError("ControlSystem.max_concurrent_readouts must be positive")
+            if machine.readout_latency_cycles < 0:
+                raise ValueError("the readout latency cannot be negative")
+            if machine.line_switch_penalty_cycles < 0:
+                raise ValueError("ControlSystem.line_switch_penalty_cycles cannot be negative")
+        options = CompileOptions(
             schedule,
             passes,
             machine,
             bool(flatten_schedules),
             resolve_unroll_threshold(unroll_threshold),
         )
+        if unit_warnings:
+            from .kernel._unit_warnings import with_unit_warnings
+
+            return with_unit_warnings(options)
+        return options
 
     def schedule_args(self) -> tuple[str, int, int, int, int]:
         m = self.machine
@@ -1158,7 +1168,13 @@ def build(
     builder.locate_structural = frozenset(parameters)
     plain = machine._plain
     clocks = None if plain else _clocked_builder(builder, machine, target)
-    builder.returned = _trace_kernel_with_builder(fn, builder, trace_args)
+    if options.unit_warnings:
+        from .kernel._unit_warnings import unit_checked
+
+        checked = unit_checked(builder, target)
+        builder.returned = _trace_kernel_with_builder(fn, builder, trace_args, checked)
+    else:
+        builder.returned = _trace_kernel_with_builder(fn, builder, trace_args)
     needed = tuple(sorted(builder.structural & set(parameters)))
     if needed:
         error = SymbolicValueError(
@@ -1663,6 +1679,7 @@ def compile[**P](
     quantum_system: QuantumSystem | None = None,
     flatten_schedules: bool = False,
     unroll_threshold: int | None = None,
+    unit_warnings: bool = False,
 ) -> CompiledKernel[P]:
     """Compile a ``@cudaq_pulse.kernel`` without its arguments.
 
@@ -1704,6 +1721,13 @@ def compile[**P](
         non-negative ``int``; 0 never unrolls, so every such loop stays
         rolled, even one of no or one iteration. Either way the
         program, its schedule and its simulation are the same.
+    unit_warnings:
+        Issue a ``UnitWarning`` at each kernel line that gives a time
+        without units (a bare number as a duration, a wait, or a pulse's
+        ``sigma``, ``beta`` or ``width``, which counts clock cycles) or a
+        frequency far below the quantum system's carriers (one probably in
+        MHz or kHz rather than Hz). Off by default. The warnings are
+        issued when the kernel traces; they do not change the program.
     quantum system:
         Pin the compiled kernel to one quantum system: a call with handles of
         another raises ``QuantumSystemMismatchError``, and a call without handles
@@ -1721,5 +1745,6 @@ def compile[**P](
         control_system,
         flatten_schedules,
         kernel.unroll_threshold if unroll_threshold is None else unroll_threshold,
+        unit_warnings,
     )
     return CompiledKernel(kernel, options, quantum_system)
