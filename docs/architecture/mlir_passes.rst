@@ -5,7 +5,7 @@
 MLIR Passes
 ===========
 
-cudaq-pulse implements its optimizations, checks and schedules as C++ MLIR
+CUDA-Q Pulse implements its optimizations, checks and schedules as C++ MLIR
 passes on the in-memory ``mlir::ModuleOp``. Each is registered under the
 name below, so ``cudaq-pulse-opt`` runs it on its own:
 

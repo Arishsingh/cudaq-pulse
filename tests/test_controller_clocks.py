@@ -710,7 +710,7 @@ def branch_across(a, b):
         drive(db, square(8, 0.1))
 
 
-def _forwarding(reference=None, skew=0, tolerance=0):
+def _forwarding(reference=None, skew=0, tolerance=0, delays=None):
     controllers = [
         pulse.Controller(
             drive_lines=[0, 1],
@@ -728,6 +728,8 @@ def _forwarding(reference=None, skew=0, tolerance=0):
             alignment_tolerance_cycles=tolerance,
         ),
     ]
+    if delays:
+        controllers = with_line_delays(controllers, delays)
     system = pulse.ControlSystem(controllers=controllers, reference_clock_ghz=reference)
     return _device(system=system, clock_ghz=2.0)
 
@@ -760,6 +762,24 @@ def test_an_outcome_sent_to_another_controller_is_budgeted_with_both_start_uncer
     assert _gap(_forwarding(reference=0.5)) == 12
     assert _gap(_forwarding(reference=0.5, skew=1)) == 16
     assert _gap(_forwarding(skew=1)) == 20
+
+
+@pytest.mark.parametrize("schedule", ["rcp", "alap_rcp"])
+def test_rcp_waits_for_an_outcome_from_where_its_delayed_readout_ends(schedule):
+    # Gaps from the readout's end as played, line delays included: 16 as in
+    # test_an_outcome_sent_to_another_controller_is_budgeted_with_both_start_uncertainties.
+    assert _gap(_forwarding(), schedule) == 16
+    # 2 ns on the reader's readout line end it 4 program cycles later; the
+    # drive on the other controller waits for it.
+    assert _gap(_forwarding(delays={("readout", 0): 2.0}), schedule) == 16
+    # 4 ns on the user's drive line only move the drive 8 cycles later.
+    assert _gap(_forwarding(delays={("drive", 2): 4.0}), schedule) == 24
+    # On the reader's own controller the drive waits its feedback latency
+    # after the delayed readout.
+    qpu = _forwarding(delays={("readout", 0): 2.0})
+    lowered = pulse.compile(feedback, schedule=schedule, quantum_system=qpu).lower(qpu.qudits[0])
+    readout, drive = (e for e in lowered.schedule if e.kind in ("readout", "drive"))
+    assert drive.start - readout.end == 6
 
 
 def test_an_outcome_used_on_its_own_controller_needs_only_its_feedback_latency():

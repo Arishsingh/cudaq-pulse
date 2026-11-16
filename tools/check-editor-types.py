@@ -54,7 +54,8 @@ def docs_modules(docs: Path) -> dict[str, str]:
     """Each docs page's Python code blocks, in order, as one module.
 
     A block with the option ``:class: fragment`` continues an example whose
-    other parts the page shows in prose, so it is left out.
+    other parts the page shows in prose, so it is left out, as is one with
+    ``:class: cudaq-qec``, which calls CUDA-Q QEC (see _UNTYPED_DEPENDENCIES).
     """
     modules = {}
     for page in sorted(docs.rglob("*.rst")):
@@ -66,7 +67,10 @@ def docs_modules(docs: Path) -> dict[str, str]:
                 block, fragment = [], False
                 while i < len(lines) and (not lines[i].strip() or lines[i][:1] in " \t"):
                     if lines[i].lstrip().startswith(":"):
-                        fragment |= lines[i].split() == [":class:", "fragment"]
+                        option = lines[i].split()
+                        fragment |= option[0] == ":class:" and bool(
+                            {"fragment", "cudaq-qec"} & set(option[1:])
+                        )
                     else:
                         block.append(lines[i])
                     i += 1

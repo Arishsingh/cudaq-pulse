@@ -50,6 +50,38 @@ development build of 0.1.0, compiler and CPU simulation). In six runs of the
 command above the median compile time was 256 to 265 ms, and the fastest
 single compile 256 ms. The table gives the middle run.
 
+``--code gross`` builds the same kind of cycle for the [[144,12,12]]
+bivariate bicycle ("gross") code instead: 144 data and 144 check qudits,
+each check interacting with its six data qudits in turn, with any two
+qudits allowed to couple. It is measured the same way:
+
+.. code-block:: bash
+
+   python benchmarks/simulation/qec_scaling.py --code gross --repeats 5
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 16 16 26 26
+
+   * - Code
+     - Qudits
+     - Operations
+     - Compile time, median of 5
+     - Peak memory of the process
+   * - [[144,12,12]]
+     - 288
+     - 4,320
+     - 54 ms
+     - about 41 MB
+
+Of the 54 ms, tracing the kernel takes 45 ms, building the module 3.6 ms,
+verifying it 0.9 ms and scheduling 4.2 ms. These come from the host and
+image above, lightly loaded, with the cudaq-pulse 0.1.0 wheels and this
+script. In five runs of the command
+the median compile time was 53 to 54 ms and the peak memory 40 to 41 MB;
+the table gives the middle run. In the same session, the distance-31
+command gave 265 ms (264 to 269 ms in five runs) and 53 MB.
+
 Adaptive T1 Estimation
 ----------------------
 

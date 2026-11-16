@@ -2,10 +2,15 @@
    SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
    SPDX-License-Identifier: Apache-2.0
 
-cudaq-pulse
-===========
+CUDA-Q Pulse
+============
 
-**cudaq-pulse** puts the pulses, the measurements and the classical calls
+.. image:: _static/cudaq-pulse-banner.svg
+   :alt: CUDA-Q Pulse: a Python pulse kernel beside a timeline of drive, readout and GPU lanes. A readout result goes to a GPU decoder over NVQLink within a latency budget, and the answer conditions the next drive pulse.
+   :width: 100%
+   :class: mb-4
+
+**CUDA-Q Pulse** puts the pulses, the measurements and the classical calls
 between them in one Python program, compiled to open MLIR, then simulated,
 emulated, or exported to your controller:
 
@@ -20,12 +25,15 @@ emulated, or exported to your controller:
    (``classical.emulation.emulate``), or export it to a controller backend
    (``export_to_controller()``).
 
+New to CUDA-Q Pulse? Start with :doc:`tutorials/first_pulse_program`, which
+goes from installing it to a simulated Rabi oscillation.
+
 Project status
 --------------
 
 .. note::
 
-   CUDA-Q pulse is an early-stage research project. We are releasing it now
+   CUDA-Q Pulse is an early-stage research project. We are releasing it now
    because the pulse layer is where much of the open work in quantum control
    happens, and we want to build it in the open with the people who use it.
    It is under active development: expect bugs, incomplete features, and
@@ -38,6 +46,12 @@ Project status
    :caption: Getting Started
 
    getting_started
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Tutorials
+
+   tutorials/index
 
 .. toctree::
    :maxdepth: 2

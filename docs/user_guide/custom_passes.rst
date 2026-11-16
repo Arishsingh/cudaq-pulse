@@ -40,8 +40,8 @@ from a plugin library with ``--load-pass-plugin``:
 
 ``examples/custom_passes/cpp/DriveCount.cpp`` is a complete plugin: a pass
 class plus the ``mlirGetPassPluginInfo`` entry point that registers it. Its
-``CMakeLists.txt`` builds it against the same MLIR toolchain as cudaq-pulse,
-either as part of the cudaq-pulse build or on its own. Built on its own, it
+``CMakeLists.txt`` builds it against the same MLIR toolchain as CUDA-Q Pulse,
+either as part of the CUDA-Q Pulse build or on its own. Built on its own, it
 loads into the ``cudaq-pulse-opt`` a wheel installs, as
 ``tools/ci/opt-plugin-test.sh`` checks; the wheels carry no MLIR headers, so
 build plugins against the toolchain ``tools/fetch-mlir-toolchain.py``

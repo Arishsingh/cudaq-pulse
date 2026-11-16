@@ -6,7 +6,7 @@
 Errors
 ======
 
-Every error cudaq-pulse raises on purpose derives from ``PulseError``, so
+Every error CUDA-Q Pulse raises on purpose derives from ``PulseError``, so
 ``except cudaq_pulse.PulseError`` catches them all. Each also has the
 built-in base of its kind of error, so ``except ValueError`` or ``except
 RuntimeError`` catches it as it would the built-in one: ``InvalidValueError``

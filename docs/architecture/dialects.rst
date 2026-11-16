@@ -5,7 +5,7 @@
 MLIR Dialects
 =============
 
-cudaq-pulse defines four MLIR dialects. Three form a layered IR stack. A kernel
+CUDA-Q Pulse defines four MLIR dialects. Three form a layered IR stack. A kernel
 compiles to the ``pulse`` dialect; simulation lowers it through ``qop`` to
 ``cudm`` and then to LLVM calls into the cuDensityMat runtime. The fourth, ``classical``, is a
 classical real-time dialect for co-processing at QPU runtime, used beside
@@ -179,6 +179,6 @@ CuDensityMat
 The cuDensityMat API as IR. ``qop-to-cudm`` turns the Lindbladian into a
 handle, states, elementary operators, operator terms and a composite operator,
 then a ``cudm.evolve`` with the chosen integrator. ``cudm-to-llvm`` lowers each
-op to a call into the cudaq-pulse cuDensityMat runtime (``cudm_init``,
+op to a call into the CUDA-Q Pulse cuDensityMat runtime (``cudm_init``,
 ``cudm_evolve`` and so on), which the JIT links when a program is simulated
 on the GPU.
