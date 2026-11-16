@@ -24,6 +24,8 @@ CuDensityMat MLIR dialects, and their compiler passes. `cudaq-pulse` does not
 depend on CUDA-Q. The wheel contains its own statically linked MLIR, so `pip`
 is the only installer you need.
 
+Documentation: <https://nvidia.github.io/cudaq-pulse/>
+
 ## Project Status
 
 > [!NOTE]
