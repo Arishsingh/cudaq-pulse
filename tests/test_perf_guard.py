@@ -87,13 +87,19 @@ def _best(
     return best
 
 
-def _assert_flat(what: str, runs: dict[int, Callable[[], object]]) -> None:
+def _assert_flat(
+    what: str,
+    runs: dict[int, Callable[[], object]],
+    clock: Callable[[], float] = time.process_time,
+) -> None:
     """The run of each size in *runs* does the same Python work, and the
-    largest takes less than FLAT_LOOP_LIMIT times the smallest's CPU time."""
+    largest takes less than FLAT_LOOP_LIMIT times the smallest's time on
+    *clock*, CPU time unless a run is shorter than a tick of it."""
     small, large = min(runs), max(runs)
     work = {n: python_work(runs[n]) for n in (small, large)}
-    seconds = {n: _best(runs[n], 20, clock=time.process_time) for n in (small, large)}
+    seconds = {n: _best(runs[n], 20, clock=clock) for n in (small, large)}
     assert work[large] == work[small], (what, work)
+    assert seconds[small] > 0, (what, "shorter than a tick of", clock.__name__, seconds)
     assert seconds[large] < seconds[small] * FLAT_LOOP_LIMIT, (what, seconds)
 
 
@@ -314,7 +320,8 @@ def test_compiling_a_kernel_that_reads_a_dict_is_flat_in_its_size():
     # Copying a million entries, or hashing them, takes some 10 ms.
     programs = {n: program(n) for n in (16, 10**6)}
     _assert_flat("compile", {n: runs[0] for n, runs in programs.items()})
-    _assert_flat("call", {n: runs[1] for n, runs in programs.items()})
+    # A cached call takes under a microsecond, a tick of the CPU clock on macOS.
+    _assert_flat("call", {n: runs[1] for n, runs in programs.items()}, time.perf_counter)
 
 
 @pytest.mark.scaling
