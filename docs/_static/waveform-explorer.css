@@ -1,0 +1,167 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The waveform explorer of the operations guide (waveform-explorer.js). Colors
+ * follow the theme's light and dark modes; Q is dashed as well as colored.
+ */
+
+.pulse-waveform-explorer {
+  --pwe-i: #5b8c00;
+  --pwe-q: #3d6fa3;
+  --pwe-muted: var(--pst-color-text-muted, #646464);
+  border: 1px solid var(--pst-color-border, #c8c8c8);
+  border-radius: 0.25rem;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.pulse-waveform-explorer:empty {
+  display: none;
+}
+
+html[data-theme="dark"] .pulse-waveform-explorer {
+  --pwe-i: #76b900;
+  --pwe-q: #8fb8e8;
+}
+
+.pulse-waveform-explorer [hidden] {
+  display: none !important;
+}
+
+.pulse-waveform-explorer .pwe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: 0.25rem 1.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.pulse-waveform-explorer .pwe-slider,
+.pulse-waveform-explorer .pwe-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+}
+
+.pulse-waveform-explorer label {
+  margin: 0;
+  min-width: 6.5rem;
+}
+
+.pulse-waveform-explorer .pwe-check label {
+  min-width: 0;
+}
+
+.pulse-waveform-explorer input[type="range"] {
+  flex: 1 1 8rem;
+  min-width: 8rem;
+  accent-color: var(--pwe-i);
+}
+
+.pulse-waveform-explorer output {
+  min-width: 7.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pulse-waveform-explorer select,
+.pulse-waveform-explorer .pwe-button {
+  color: var(--pst-color-text-base, inherit);
+  background: var(--pst-color-surface, transparent);
+  border: 1px solid var(--pst-color-border, #c8c8c8);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.4rem;
+}
+
+.pulse-waveform-explorer input:focus-visible,
+.pulse-waveform-explorer select:focus-visible,
+.pulse-waveform-explorer .pwe-button:focus-visible {
+  outline: 2px solid var(--pst-color-primary, var(--pwe-i));
+  outline-offset: 2px;
+}
+
+.pulse-waveform-explorer svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 0.5rem;
+  color: var(--pst-color-text-base, currentColor);
+}
+
+.pulse-waveform-explorer svg text {
+  fill: currentColor;
+  font-size: 12px;
+}
+
+.pulse-waveform-explorer .pwe-axes line {
+  stroke: currentColor;
+  stroke-opacity: 0.6;
+}
+
+.pulse-waveform-explorer .pwe-axes .pwe-zero {
+  stroke-opacity: 0.25;
+}
+
+.pulse-waveform-explorer polyline {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.pulse-waveform-explorer polyline.pwe-i {
+  stroke: var(--pwe-i);
+}
+
+.pulse-waveform-explorer polyline.pwe-q {
+  stroke: var(--pwe-q);
+  stroke-dasharray: 6 4;
+}
+
+.pulse-waveform-explorer polyline.pwe-env {
+  stroke: var(--pwe-muted);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.pulse-waveform-explorer .pwe-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+}
+
+.pulse-waveform-explorer .pwe-key::before {
+  content: "";
+  display: inline-block;
+  width: 1.75rem;
+  margin-right: 0.4rem;
+  vertical-align: middle;
+  border-top: 2px solid var(--pwe-i);
+}
+
+.pulse-waveform-explorer .pwe-key-q::before {
+  border-top: 2px dashed var(--pwe-q);
+}
+
+.pulse-waveform-explorer .pwe-key-env::before {
+  border-top: 1px dotted var(--pwe-muted);
+}
+
+.pulse-waveform-explorer .pwe-code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.pulse-waveform-explorer .pwe-code pre {
+  flex: 1 1 20rem;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.pulse-waveform-explorer .pwe-note {
+  color: var(--pwe-muted);
+  font-size: 0.9em;
+  margin: 0.25rem 0 0;
+}

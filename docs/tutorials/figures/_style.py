@@ -59,10 +59,10 @@ def axes(figsize=(6.4, 3.4)):
     return fig, ax
 
 
-def save(fig, name: str) -> None:
+def save(fig, name: str, directory: Path = HERE) -> None:
     svg = io.StringIO()
     fig.savefig(svg, format="svg", metadata={"Date": None, "Creator": None}, bbox_inches="tight")
     plt.close(fig)
     # The repository's pre-commit hooks reject trailing whitespace.
     text = "\n".join(line.rstrip() for line in svg.getvalue().splitlines()) + "\n"
-    (HERE / name).write_text(text)
+    (directory / name).write_text(text)

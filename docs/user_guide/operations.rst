@@ -194,6 +194,37 @@ For ``gaussian_square``, ``width`` is the flat-top width;
 ``duration - width`` must be a positive even number of clock cycles so the
 two edges have the same integer duration.
 
+.. rubric:: Waveform explorer
+
+Pick a waveform and move its sliders: the plot shows its I and Q, one
+sample per clock cycle at ``t = 0, 1, 2, ...`` as
+``cudaq_pulse.controller.sample_waveform`` gives them, and the line under
+it is the call that makes it, in clock cycles of the 2 GHz program clock
+(the ns are shown beside it). *combine* applies the waveform arithmetic
+below to a second waveform of the same duration. For ``drag``, the
+suggested ``beta`` is ``-1 / alpha`` for the anharmonicity you set, which
+matters most for short pulses. *modulate* shows the drive the qudit sees in
+its frame when ``shift_frequency`` moves the tone off it and
+``shift_phase`` turns the frame: ``E(t) = envelope(t) exp(-i theta(t))``
+(see :ref:`conventions-frames`). ``tests/test_waveform_explorer.py``
+compiles every line the explorer prints and checks its samples against the
+library.
+
+.. only:: html
+
+   .. raw:: html
+
+      <div class="pulse-waveform-explorer" data-shape="drag"></div>
+
+.. figure:: figures/waveform_envelopes.svg
+   :figclass: pwe-fallback
+   :alt: The I and Q envelopes of gaussian, drag, cosine, tanh_ramp,
+         gaussian_square and square, each 40 clock cycles long.
+
+   I (solid) and Q (dashed) of each parametric waveform, 40 clock cycles
+   (20 ns) long, as ``sample_waveform`` samples them. With JavaScript on,
+   the explorer replaces this figure.
+
 ``custom(duration, f)`` calls ``f`` once per sample of the lines it plays on
 while the kernel is traced, at the middle of each sample, and holds each
 value until the next: the IR records the ``custom_samples`` of those values,
