@@ -367,6 +367,19 @@ of the outcomes from the same branch probabilities.
    result.branches         # [Branch(levels=(0,), probability=0.5, calls=()), ...]
    result.records          # one row of outcomes per shot
 
+``result.postselect(keep)`` is the result over the branches the test
+``keep`` accepts, a function of a ``Branch``: its state is their state,
+normalized, ``acceptance`` is the probability of the kept branches, and
+``records`` holds the shots that took them. A herald or a check is
+post-selected on its outcome or on a classical call's answer:
+
+.. code-block:: python
+
+   kept = result.postselect(lambda b: b.levels[0] == 0)   # the shots that read 0
+   kept.acceptance            # their probability, 0 to 1
+   kept.density_matrix        # their state, of trace 1
+   kept.level_populations()
+
 ``backend="cpu"`` integrates the same lowered operator with a NumPy RK4
 reference; ``backend="gpu"`` evolves each interval with cuDensityMat, starting
 from the projected state. By default each qudit has the levels its quantum system's

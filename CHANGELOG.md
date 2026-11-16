@@ -56,6 +56,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   plays it as `shift_phase(line.tone, phase_rad)`: no pulse and no time.
   The operations guide's new "Phase frames and virtual Z gates" section
   gives the sign convention and why a simulated state is in the frame.
+- **Post-selection.** `SimulationResult.postselect(keep)` is the result
+  over the branches the test `keep` accepts (a function of a `Branch`, as
+  `lambda b: b.answers("herald")[-1]`): their state, normalized, their
+  probabilities divided by the kept total, which is the new result's
+  `acceptance`, and the shots that took them in `records`. Every other
+  result has an `acceptance` of 1.0.
 
 ### Fixed
 
