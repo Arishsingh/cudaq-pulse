@@ -219,20 +219,20 @@ Without Valgrind (macOS, or Linux on another architecture), the tool
 compares and updates only the program sizes. The instruction counts depend
 on the toolchain, so they are taken in CI's environment, where the image,
 its packages, uv and Python are pinned. Once a change that moves them on
-purpose is on `staging`, a manual run of CI there with `perf_baseline` runs
-only the perf gate, with five identical runs, and its `perf-gate-baseline`
-artifact is the new baseline:
+purpose is on its pull request's branch in this repository, a manual run of
+CI on that branch with `perf_baseline` runs only the perf gate, with five
+identical runs, and its `perf-gate-baseline` artifact is the new baseline:
 
 ```bash
-gh workflow run ci.yml --ref staging -f perf_baseline=true
-gh run list -w ci.yml -b staging -e workflow_dispatch -L 1    # its <run-id>
+gh workflow run ci.yml --ref <branch> -f perf_baseline=true
+gh run list -w ci.yml -b <branch> -e workflow_dispatch -L 1    # its <run-id>
 gh run download <run-id> -R <owner>/<repo> -n perf-gate-baseline -D benchmarks/baselines
 ```
 
 Check the run's summary first (no banner saying the counts aren't valid or
 that identical runs differed). Then commit `perf_gate.json` alone on top of
-`staging`, which must still be the commit the run measured (the file's
-`source.commit`), and check that staging's run of it passes.
+the branch, which must still be the commit the run measured (the file's
+`source.commit`), and check that the pull request's run passes.
 `python tools/perf-gate.py --help` lists the same steps.
 
 **Bootstrap mode.** A baseline that says `"bootstrap": true` and holds no
@@ -249,7 +249,7 @@ refuses a release tag while it is there. Without the field, a case with no
 count fails. If the two runs of a bootstrap differ at all for some case, the
 summary flags it: give that case its own `tolerance` in
 `benchmarks/perf_gate/cases.py` before taking the baseline. A new case
-added later needs its count taken the same way, once it is on `staging`.
+added later needs its count taken the same way, on its pull request's branch.
 
 **Counts that can't be right fail in every mode**, bootstrap included: a
 case without a count, a count of zero, a compile under 100,000 instructions
@@ -268,8 +268,8 @@ the baseline records it, and fails if it doesn't match. The baseline also
 records the environment its counts were measured in and the run they came
 from. Changing a pin in the job (image digest, `UBUNTU_SNAPSHOT`, uv or
 Python version, MLIR toolchain) changes the counts, and counts from another
-environment fail the gate, so take a new baseline as above once the change
-is on `staging`.
+environment fail the gate, so take a new baseline as above on the change's
+pull request branch.
 
 **Regressions, gains and layout only.** The job also counts each case's
 Python-level work per repetition (bytecodes executed, Python calls and C
@@ -424,9 +424,13 @@ Configuring needs the pinned MLIR 22.1.8 toolchain:
 distribution that cudaq-pulse links against. The `mlir-toolchain` workflow
 runs it for every platform. Pushing a tag named after `release_tag` in
 `tools/mlir-toolchain.lock.json` (for example `mlir-toolchain-22.1.8`) builds
-the archives, uploads them to that release, and commits their checksums to
-the lock file on `staging`. A manual run with `publish` enabled uploads too,
-but leaves committing the printed lock file to you.
+the archives, uploads them to that release, and opens a pull request to
+`main` from a `toolchain-checksums/<tag>` branch that records their
+checksums in the lock file. A pull request the workflow opens starts no CI
+(GitHub runs no workflows for its token's pushes), so re-run the checks on
+it, or push a commit to its branch, before merging. A manual run with
+`publish` enabled uploads too, but leaves committing the printed lock file
+to you.
 
 ## Continuous integration
 
@@ -464,7 +468,8 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   `cudaq-pulse-<version>-dist` (see [Releases](#releases)); the per-platform
   `intermediate-*` artifacts only feed the run's own jobs.
 - `gpu-tests.yml`: the GPU tests, called by `ci.yml` and `wheels.yml`.
-- `docs.yml`: Sphinx with warnings as errors; deploys `main` to GitHub Pages.
+- `docs.yml`: Sphinx with warnings as errors; deploys `main` to GitHub Pages
+  once Pages takes its source from GitHub Actions, and warns until then.
 - `property-nightly.yml`: the property tests (every test file that imports
   hypothesis) with random examples, the slow physics checks (`nightly`),
   the perf guard and check-pulse on macOS with Python 3.15, every night and
@@ -483,7 +488,7 @@ following what the GPU code varies on:
 - `wheels.yml` (`gpu-install-test`) installs the run's wheels with one CUDA
   extra per row, in images that have no CUDA toolkit
   (`install-test.sh --driver-only` fails if one is present), and runs the
-  doctor and `pytest -m gpu`. On every push to `staging` it runs `[cu12]`
+  doctor and `pytest -m gpu`. On every push to `main` it runs `[cu12]`
   and `[cu13]` on x86_64 with the newest driver. Release tags and manual
   runs with `gpu` also run both extras on aarch64 and on x86_64 with the
   oldest driver, plus `[cu13]` on the newest Python (the abi3 wheel). On
@@ -493,7 +498,7 @@ following what the GPU code varies on:
   test. The free-threaded wheels have no row yet.
 - `ci.yml` (`gpu`) builds from source with `CUDAQ_PULSE_ENABLE_GPU=ON` in
   the CUDA 12.9 development image with the `[cu12]` libraries, and runs
-  `check-pulse-gpu`, on every push to `main` and `staging`, on vetted pull
+  `check-pulse-gpu`, on every push to `main`, on vetted pull
   requests (below) and on manual runs with `gpu`.
 
 The `GPU_RUNNERS` repository variable switches GPU CI on, and names a runner
@@ -528,7 +533,7 @@ its head commit.
 2. Set `GPU_RUNNERS` to their labels (Settings, *Secrets and variables*,
    *Actions*, *Variables*).
 3. Install the copy-pr-bot app on the repository, for pull requests.
-4. Run `ci` and `wheels` manually with `gpu` on `staging`, and check that
+4. Run `ci` and `wheels` manually with `gpu` on `main`, and check that
    every row ran on a GPU and passed.
 
 Deleting `GPU_RUNNERS` switches everything off again. Uninstalling the app
@@ -599,7 +604,9 @@ withdrawal follows the coordinated disclosure.
 
 ## Releases
 
-Work lands on `staging`, where every workflow runs but nothing is published.
+Changes reach `main` only through pull requests, and releases are tagged from
+`main`. CI runs on every pull request and every push to `main`, but only a
+`v*` tag publishes.
 A release has two distributions, each with a wheel per platform:
 `cudaq-pulse-tools`, with the MLIR driver, uploaded first, and `cudaq-pulse`,
 which requires it at the same version, with the sdist. An index needs both, in
@@ -655,12 +662,10 @@ Add `--repository testpypi` for TestPyPI.
 1. Tag a release candidate, for example `v0.1.0rc1`. `wheels.yml` builds and
    tests the wheels and the sdist, publishes them as a GitHub pre-release and,
    with index publishing enabled, uploads the wheels to TestPyPI.
-2. Squash `staging` into one commit on `main`, with the `staging` workflow
-   triggers removed and the toolchain checksums in the lock file.
-3. Date the version's section in `CHANGELOG.md` (`## [0.1.0] - YYYY-MM-DD`).
-   The next release's section, `## [X.Y.Z] - Unreleased`, starts with the
-   first change after the tag.
-4. Tag `v0.1.0` on `main`; with index publishing enabled, its wheels go to
+2. Date the version's section in `CHANGELOG.md` (`## [0.1.0] - YYYY-MM-DD`)
+   in a pull request to `main`. The next release's section,
+   `## [X.Y.Z] - Unreleased`, starts with the first change after the tag.
+3. Tag `v0.1.0` on `main`; with index publishing enabled, its wheels go to
    PyPI.
 
 Release notes come from `CHANGELOG.md`, not from the commit history:
@@ -692,7 +697,7 @@ the two jobs also need the repository variable `PYPI_PUBLISHING` set to
 `true`, which is set only after the trusted publishers and the protected
 environments exist; without it, a release is GitHub-only. The jobs run only
 for a `v*` tag of NVIDIA/cudaq-pulse, after `github-release` has published
-it: pushes to `staging` and manual runs on a branch never reach them. A
+it: pushes to `main` and manual runs on a branch never reach them. A
 re-run of a failed upload skips the files already on the index.
 
 ### GPU verification
