@@ -59,11 +59,16 @@ _QUDITS = 2
 def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
     """One program per kind of event, named for it, one with a branch, one
     that branches on whether an answer came in time and on the answer, one
-    whose amplitude and phase come from an answer and one whose frequency
-    does, changed ahead of the pulse that takes it."""
+    that does so for a function declared with a timeout, one whose
+    amplitude and phase come from an answer and one whose frequency does,
+    changed ahead of the pulse that takes it."""
 
     @pulse.classical(max_latency_ns=200, name="echo")
     def echo(bits: pulse.Bits) -> pulse.Bits:
+        return [bits[0]]
+
+    @pulse.classical(max_latency_ns=200, latency_mode="timeout", timeout_ns=300, name="timed_echo")
+    def timed_echo(bits: pulse.Bits) -> pulse.Bits:
         return [bits[0]]
 
     @pulse.classical(max_latency_ns=200, name="gain")
@@ -165,6 +170,23 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         readout(b, square(80, 0.05))
 
     @pulse.kernel
+    def timeout_function(q: Qudit, r: Qudit) -> None:
+        # As answer_timeout, with the timeout the function's own.
+        d = get_drive_line(q)
+        e = get_drive_line(r)
+        a = get_readout_line(q)
+        b = get_readout_line(r)
+        m = readout(a, square(80, 0.05))
+        in_time, bits = timed_echo.submit([m]).result()
+        if in_time:
+            drive(e, gaussian(32, 0.5, 8.0))
+        if bits[0]:
+            drive(d, gaussian(32, 0.5, 8.0))
+        sync(d, e, a, b)
+        readout(a, square(80, 0.05))
+        readout(b, square(80, 0.05))
+
+    @pulse.kernel
     def runtime(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         ro = get_readout_line(q)
@@ -227,6 +249,7 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         Event.FRAME_UPDATE: frame_updates,
         "branch": branches,
         "answer_timeout": answer_timeout,
+        "timeout_function": timeout_function,
         "runtime": runtime,
         "runtime_frequency": runtime_frequency,
         "shared_line": shared_line,

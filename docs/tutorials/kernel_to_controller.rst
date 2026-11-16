@@ -173,7 +173,7 @@ cleanly:
 
    report = backends.validate("text", controller=Controller(clock_ghz=1.0))
    print(report.ok)   # True
-   print(str(report).splitlines()[-1])   # backend 'text': 10 passed, 7 refused
+   print(str(report).splitlines()[-1])   # backend 'text': 10 passed, 8 refused
    backends.unregister("text")
 
 The text backend plays drives, readouts, waits, syncs and loops, and refuses
