@@ -9,3 +9,4 @@
 - [ ] New behavior has tests; GPU-only changes say how they were tested on a GPU.
 - [ ] User-visible changes have an entry in the top section of `CHANGELOG.md` (`## [X.Y.Z] - Unreleased`).
 - [ ] Breaking changes follow the versioning policy in `CONTRIBUTING.md`.
+- [ ] Every commit is signed off with a `Signed-off-by:` line (Developer Certificate of Origin, `CONTRIBUTING.md`).

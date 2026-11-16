@@ -4,7 +4,8 @@
 name: docs
 
 # Builds the Sphinx site with warnings as errors on every pull request, and
-# deploys it to GitHub Pages from main once the repository is public.
+# deploys it to GitHub Pages from main, on a push or a manual run, once the
+# repository is public.
 
 on:
   push:
@@ -46,7 +47,8 @@ jobs:
 
   deploy:
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main' &&
       github.event.repository.visibility == 'public'
     needs: build
     runs-on: ubuntu-24.04

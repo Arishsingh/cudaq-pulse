@@ -2,9 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Code owners: each line is a path pattern followed by the GitHub users or
-# teams whose review it requires, for example
-#
-#   *                   @NVIDIA/<team>
-#   /.github/           @NVIDIA/<team>
-#
-# The repository administrators fill this in before the repository is public.
+# teams whose review it requires.
+
+* @anthony-santana
