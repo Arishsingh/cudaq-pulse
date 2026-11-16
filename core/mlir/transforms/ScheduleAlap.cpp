@@ -313,6 +313,9 @@ struct Resources {
   int64_t maxReadouts = 0;
   int64_t readoutLatency = 0;
   int64_t switchPenalty = 0;
+  /// By qudit, the delay of its readout line (see LineDelays); empty
+  /// without one.
+  llvm::ArrayRef<int64_t> readoutDelays;
 };
 
 // ── Timelines ────────────────────────────────────────────────────────────
@@ -1360,6 +1363,21 @@ private:
   int64_t readerOf(mlir::Value measurement) {
     auto readout = measurement.getDefiningOp<pulse::ReadoutOp>();
     return readout ? controllerOf(readout) : -1;
+  }
+
+  /// How much later than scheduled the readout `op` ends once its line is
+  /// delayed, and so its outcome is usable.
+  int64_t readoutDelayOf(mlir::Operation *op) {
+    llvm::ArrayRef<int64_t> delays = resources.readoutDelays;
+    if (delays.empty())
+      return 0;
+    mlir::Operation *allocation = trace(op->getOperand(0));
+    if (!allocation)
+      return 0;
+    int64_t qudit = pulse::quditOf(allocation);
+    if (qudit < 0 || qudit >= static_cast<int64_t>(delays.size()))
+      return 0;
+    return delays[qudit];
   }
 
   /// In a branch on readouts, no op of `controller` (-1: any) starts before
@@ -2655,7 +2673,7 @@ private:
                                   : resources.readoutLatency;
       if (resources.enabled)
         lineEnd += latency;
-      readyAt[readout.getResult()] = end + latency;
+      readyAt[readout.getResult()] = end + latency + readoutDelayOf(op);
     }
     readyAt[op->getResult(0)] = lineEnd;
     if (mlir::Value tone = toneResult(op))
@@ -3369,7 +3387,7 @@ private:
           end -= latency;
         int64_t needed = late(mlir::cast<pulse::ReadoutOp>(op).getResult());
         if (needed != kNever)
-          end = std::min(end, needed - latency);
+          end = std::min(end, needed - latency - readoutDelayOf(op));
       }
       if (mlir::Value tone = toneResult(op))
         end = std::min(end, late(tone));
@@ -4933,6 +4951,9 @@ static mlir::LogicalResult schedule(mlir::func::FuncOp function,
   bool data = classical || function->hasAttr("pulse.selected_values");
   const pulse::ClockAttributes clocks(
       function->getParentOfType<mlir::ModuleOp>());
+  // Under rcp an outcome waits for its readout to end on the delayed line.
+  if (resources.enabled)
+    resources.readoutDelays = clocks.readoutDelay;
   if (mlir::failed(scheduleRegion(
           function.getBody(), function, resources, isAlap, data, timelines,
           pulse::LineGrid(clocks), pulse::Controllers(clocks))) ||
@@ -4981,7 +5002,8 @@ struct PulseScheduleRcpPass
   PulseScheduleRcpPass(int64_t maxDrives, int64_t maxReadouts,
                        int64_t readoutLatency, int64_t switchPenalty,
                        bool isAlap)
-      : resources{true, maxDrives, maxReadouts, readoutLatency, switchPenalty},
+      : resources{true,           maxDrives,     maxReadouts,
+                  readoutLatency, switchPenalty, {}},
         isAlap(isAlap) {}
 
   llvm::StringRef getArgument() const override { return "pulse-schedule-rcp"; }
@@ -5020,8 +5042,8 @@ struct PulseScheduleRcpOptionsPass
     registry.insert<mlir::arith::ArithDialect>();
   }
   void runOnOperation() override {
-    Resources resources{true, maxDrives, maxReadouts, readoutLatency,
-                        switchPenalty};
+    Resources resources{true,           maxDrives,     maxReadouts,
+                        readoutLatency, switchPenalty, {}};
     if (mlir::failed(schedule(getOperation(), resources, alap)))
       signalPassFailure();
   }

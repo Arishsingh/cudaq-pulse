@@ -179,10 +179,14 @@ def test_moved_lines_are_checked_like_any_others():
     assert pulse.compile(feedback, schedule="rcp", control_system=machine).lower(Q[0], Q[1])
     later = _delayed({("drive", 1): 5.0}, feedback_latency_cycles=20)
     assert pulse.compile(feedback, schedule="rcp", control_system=later).lower(Q[0], Q[1])
-    # The readout ends 10 cycles later, too close to the branch on it.
+    # The readout ends 10 cycles later: rcp waits for it, and a schedule that
+    # does not is too close to the branch on it.
     late_readout = _delayed({("readout", 0): 5.0}, feedback_latency_cycles=20)
-    with pytest.raises(ControllerLimitError, match="feedback"):
-        pulse.compile(feedback, schedule="rcp", control_system=late_readout).lower(Q[0], Q[1])
+    lowered = pulse.compile(feedback, schedule="rcp", control_system=late_readout).lower(Q[0], Q[1])
+    readout, drive = lowered.schedule
+    assert (readout.end, drive.start) == (110, 130)
+    with pytest.raises(ControllerLimitError, match="ending at 110; the controller needs 20"):
+        pulse.compile(feedback, schedule="asap", control_system=late_readout).lower(Q[0], Q[1])
 
 
 # ── Scheduling again ─────────────────────────────────────────────────────────
