@@ -153,7 +153,7 @@ def page_namespace(page: str, stop_before: str | None = None) -> dict:
     blocks = _page_blocks()(HERE.parent / page)
     # Pages write files where they run, as the tutorial test lets them.
     with tempfile.TemporaryDirectory() as folder, contextlib.chdir(folder):
-        for classes, code in blocks:
+        for classes, code, _ in blocks:
             if stop_before is not None and stop_before in code:
                 break
             if not {"fragment", "gpu", "viz", "cudaq-qec"} & classes:
