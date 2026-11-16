@@ -34,7 +34,9 @@ def compile_kernel_bytecode(
 
     def _emit(*args: Any, **kwargs: Any) -> PythonIRBuilder:
         if kwargs:
-            raise CompilationError("keyword arguments not supported in pulse kernels")
+            raise CompilationError(
+                "keyword arguments not supported in pulse kernels", code="wrong_argument"
+            )
         builder = PythonIRBuilder(name=fn.__name__)
         builder.unroll_threshold = unroll
         _trace(fn, builder, args, "pulse.qudit_arg", prog, params)
@@ -63,7 +65,10 @@ def _trace(
     params: tuple[str, ...],
 ) -> Any:
     if len(args) != len(params):
-        raise CompilationError(f"{fn.__name__}: expected {len(params)} args, got {len(args)}")
+        raise CompilationError(
+            f"{fn.__name__}: expected {len(params)} args, got {len(args)}",
+            code="wrong_argument",
+        )
 
     closures = _extract_closures(fn) if fn.__closure__ else {}
     if builder.sample_rate_of is None:

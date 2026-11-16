@@ -47,7 +47,7 @@ _DIRECT_F64 = frozenset({float, int, AnswerValue})
 
 def _builder_supports(builder: Any) -> None:
     if not hasattr(builder, "classical_submit"):
-        raise CompilationError("classical calls need the packed IR builder")
+        raise CompilationError("classical calls need the packed IR builder", code="other")
 
 
 def _wrong_count(
@@ -61,7 +61,8 @@ def _wrong_count(
     spelled, unit = _spelled(spec)
     return CompilationError(
         f"{function.name}.submit(): {parameter} takes {spec.count} {unit}"
-        f"{'s' if spec.count != 1 else ''} ({spelled}), got {got}"
+        f"{'s' if spec.count != 1 else ''} ({spelled}), got {got}",
+        code="wrong_argument",
     )
 
 
@@ -105,7 +106,8 @@ def _one_readout(
     called = function.base_name
     return CompilationError(
         f"{called}.submit(): {parameter} is {kind} ({holds}) but {shown or 'the argument'} is"
-        f" one readout. Write {called}.submit({', '.join(arguments)})."
+        f" one readout. Write {called}.submit({', '.join(arguments)}).",
+        code="wrong_argument",
     )
 
 
@@ -128,7 +130,8 @@ def _measurements(
         if not (isinstance(item, IRValue) and item.vtype == "measurement"):
             raise CompilationError(
                 f"{function.name}: argument {position} ({spec.descriptor}) takes measurement "
-                f"results from readout(), got {item!r}"
+                f"results from readout(), got {item!r}",
+                code="wrong_argument",
             )
         vids.append(item.vid)
     return vids
@@ -146,7 +149,9 @@ def _numbers(
         raise _one_readout(function, position, _spelled(spec)[0], "a list of numbers", value)
     else:
         raise CompilationError(
-            f"{name}: argument {position} is {spec.descriptor}; pass a list of {spec.count} numbers"
+            f"{name}: argument {position} is {spec.descriptor}",
+            code="wrong_argument",
+            fix=f"pass a list of {spec.count} numbers",
         )
     if len(items) != spec.count:
         raise _wrong_count(function, spec, position, len(items))
@@ -157,11 +162,13 @@ def _numbers(
         for item in items:
             if isinstance(item, bool) or not (isinstance(item, (int, float)) or is_symbolic(item)):
                 raise CompilationError(
-                    f"{name}: argument {position} ({spec.descriptor}) takes numbers, got {item!r}"
+                    f"{name}: argument {position} ({spec.descriptor}) takes numbers, got {item!r}",
+                    code="wrong_argument",
                 )
             if dtype == "i64" and isinstance(item, float) and not item.is_integer():
                 raise CompilationError(
-                    f"{name}: argument {position} ({spec.descriptor}) takes integers, got {item!r}"
+                    f"{name}: argument {position} ({spec.descriptor}) takes integers, got {item!r}",
+                    code="wrong_argument",
                 )
             vids.append(
                 builder._get_numeric_vid(
@@ -182,11 +189,14 @@ def submit(
     """Record ``function.submit(*args)``."""
     _builder_supports(builder)
     if kwargs:
-        raise CompilationError(f"{function.name}.submit() takes positional arguments only")
+        raise CompilationError(
+            f"{function.name}.submit() takes positional arguments only",
+            code="wrong_argument",
+        )
     try:
         arity = len(function.args)
     except TypeError as error:  # a mistake in its declaration
-        raise CompilationError(str(error)) from None
+        raise CompilationError(str(error), code="wrong_argument") from None
     if len(args) != arity:
         # A template has args == (): its calls give the list lengths.
         plan = function._plan
@@ -197,7 +207,8 @@ def submit(
         if plan is None or len(args) != len(plan):
             arity = arity if plan is None else len(plan)
             raise CompilationError(
-                f"{function.name}.submit() takes {arity} arguments, got {len(args)}"
+                f"{function.name}.submit() takes {arity} arguments, got {len(args)}",
+                code="wrong_argument",
             )
         return _submit_template(builder, function, args, plan)
     operands: list[int] = []
@@ -241,7 +252,8 @@ def _submit_template(
                 _not_a_list(template, position, value)
             if not value:
                 raise CompilationError(
-                    f"{name}.submit(): {_parameter(template, position)!r} is an empty list"
+                    f"{name}.submit(): {_parameter(template, position)!r} is an empty list",
+                    code="wrong_argument",
                 )
             if kind >= _KIND_FLOATS and (
                 kind == _KIND_FLOATS or not _measured(value, template, position)
@@ -254,7 +266,8 @@ def _submit_template(
                         raise CompilationError(
                             f"{name}.submit(): {_parameter(template, position)!r}"
                             f" ({_LIST_NAME[kind]}) takes measurement results from readout(),"
-                            f" got {item!r}"
+                            f" got {item!r}",
+                            code="wrong_argument",
                         )
                     operands.append(item.vid)
                 n = len(value)
@@ -284,7 +297,8 @@ def _measured(value: Sequence[Any], template: ClassicalFunction[..., Any], posit
     if any(measured) and not all(measured):
         raise CompilationError(
             f"{template.name}.submit(): {_parameter(template, position)!r} is list[int]: all"
-            " measurements (sent as levels) or all numbers, not both"
+            " measurements (sent as levels) or all numbers, not both",
+            code="wrong_argument",
         )
     return measured[0]
 
@@ -298,11 +312,15 @@ def _number_list(
     try:
         for item in items:
             if isinstance(item, bool) or not (isinstance(item, (int, float)) or is_symbolic(item)):
-                raise CompilationError(f"{name}: argument {position} takes numbers, got {item!r}")
+                raise CompilationError(
+                    f"{name}: argument {position} takes numbers, got {item!r}",
+                    code="wrong_argument",
+                )
             if dtype == "i64" and isinstance(item, float):
                 if not item.is_integer():
                     raise CompilationError(
-                        f"{name}: argument {position} takes integers, got {item!r}"
+                        f"{name}: argument {position} takes integers, got {item!r}",
+                        code="wrong_argument",
                     )
                 item = int(item)
             vids.append(builder._get_numeric_vid(item, dtype))
@@ -321,7 +339,8 @@ def _not_a_list(template: ClassicalFunction[..., Any], position: int, value: Any
         holds = _HOLDS.get(plan, "a list of outcomes or numbers")
         raise _one_readout(template, position, kind, holds, value)
     raise CompilationError(
-        f"{template.name}.submit(): {parameter!r} is {kind}; pass a list, got {value!r}"
+        f"{template.name}.submit(): {parameter!r} is {kind}; pass a list, got {value!r}",
+        code="wrong_argument",
     )
 
 
@@ -341,11 +360,15 @@ def take(builder: Any, future: Future, args: Sequence[Any], kwargs: dict[str, An
     timeout = None
     if args:
         if len(args) > 1:
-            raise CompilationError("result() takes at most one argument, timeout")
+            raise CompilationError(
+                "result() takes at most one argument, timeout", code="wrong_argument"
+            )
         timeout = args[0]
     for key, value in (kwargs or {}).items():
         if key != "timeout":
-            raise CompilationError(f"result() got an unexpected keyword {key!r}")
+            raise CompilationError(
+                f"result() got an unexpected keyword {key!r}", code="wrong_argument"
+            )
         timeout = value
     function = future.function
     timeout_ns = None
@@ -354,13 +377,22 @@ def take(builder: Any, future: Future, args: Sequence[Any], kwargs: dict[str, An
 
         timeout_ns = _timeout_ns(builder, timeout)
         if function.latency_mode == "blocking":
-            raise CompilationError(f"{function.name} blocks until it answers; it has no timeout")
+            raise CompilationError(
+                f"{function.name} blocks until it answers; it has no timeout",
+                code="wrong_argument",
+            )
     if future.answers is not None:
         if timeout_ns != future.timeout_ns:
-            raise CompilationError("an answer is taken once; call result() with the same timeout")
+            raise CompilationError(
+                "an answer is taken once; call result() with the same timeout",
+                code="wrong_argument",
+            )
         return future.answers
     if not function.results:
-        raise CompilationError(f"{function.name} returns nothing; there is no answer to take")
+        raise CompilationError(
+            f"{function.name} returns nothing; there is no answer to take",
+            code="wrong_argument",
+        )
     builder.check_wait(future.flow, function.name)
     timeout = timeout_ns is not None or function.latency_mode == "timeout"
     dtypes = (["i1"] if timeout else []) + [
@@ -409,14 +441,17 @@ def condition(builder: Any, value: Any) -> IRValue:
             # An answer is a number, never None.
             return IRValue(builder.bit_constant(op == "!="), "i1")
         if isinstance(lhs, IRValue) or isinstance(rhs, IRValue):
-            raise CompilationError(f"cannot compare {value!r}: a pulse value is not a number")
+            raise CompilationError(
+                f"cannot compare {value!r}: a pulse value is not a number",
+                code="wrong_argument",
+            )
         return IRValue(builder.classical_compare(op, lhs, rhs), "i1")
     from ._emitter import _NotMeasurement
 
     if value.__class__ is _NotMeasurement and value.value.vtype == "i1":
         bit = value.value.vid
         return IRValue(builder.compare_bits("==", bit, builder.bit_constant(False)), "i1")
-    raise CompilationError(f"cannot branch on {value!r}")
+    raise CompilationError(f"cannot branch on {value!r}", code="runtime_value")
 
 
 _NUMBERS = frozenset({int, float, bool})
@@ -432,7 +467,8 @@ def _compare_bits(builder: PackedIRBuilder, op: str, lhs: Any, rhs: Any) -> int:
         raise CompilationError(
             f"cannot order the conditions in ({lhs!r} {op} {rhs!r}), which are known only "
             "when the program runs; compare them with == or !=, or combine them with "
-            "and, or, not"
+            "and, or, not",
+            code="runtime_value",
         )
     for constant, bit in ((lhs, rhs), (rhs, lhs)):
         if is_condition(constant):
@@ -445,7 +481,8 @@ def _compare_bits(builder: PackedIRBuilder, op: str, lhs: Any, rhs: Any) -> int:
                 raise CompilationError(
                     f"cannot compare the condition {bit!r} with {given!r}; a condition "
                     "known only when the program runs compares with another such condition, "
-                    "True or False"
+                    "True or False",
+                    code="runtime_value",
                 )
         if constant != 0 and constant != 1:
             return builder.bit_constant(op == "!=")

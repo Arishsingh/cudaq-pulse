@@ -39,6 +39,7 @@ TOP_LEVEL = {
     "IndexOutOfRangeError",
     "UnsupportedError",
     "CompilationError",
+    "ErrorCode",
     "TimingError",
     "ExecutionError",
     "InternalError",

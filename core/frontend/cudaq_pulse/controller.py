@@ -61,7 +61,12 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
-from ._errors import ExecutionError, InvalidTypeError, InvalidValueError, UnsupportedError
+from ._errors import (
+    ExecutionError,
+    InvalidTypeError,
+    InvalidValueError,
+    UnsupportedError,
+)
 from .kernel.ir_builder import CompilationError
 
 try:
@@ -233,7 +238,7 @@ class ControllerLimitError(CompilationError):
             from ._controller_cost import _format_usage
 
             table = "\n" + _format_usage(usage, exceeds=False)
-        super().__init__(f"the program {what}:\n  {shown}{tail}{table}")
+        super().__init__(f"the program {what}:\n  {shown}{tail}{table}", code="controller_limit")
 
 
 def _listed(violations: Sequence[str]) -> bool:
