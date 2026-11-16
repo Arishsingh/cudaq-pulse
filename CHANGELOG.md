@@ -123,6 +123,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   it held 495. Simulated populations on `transmon_surface17` change in the
   third decimal; `transmon_surface17(calibration=None)` keeps the published
   values alone.
+- In the controller export, a branch on an answer (`test` `"answer"`) did
+  not say which result of the answer it reads, so for a call taken with
+  `result(timeout=...)`, `if ok:` and `if fix[0]:` exported the same
+  condition, as did `if fix[0]:` and `if fix[1]:` on any call. Such a
+  condition now also has `result`, numbered as in the expression
+  `{"answer": i, "result": k}`: for a call with a timeout
+  (`result(timeout=...)` or `latency_mode="timeout"`), result 0 is the
+  in-time flag and result `k + 1` the function's value `k`. This holds in
+  formats `/1` and `/2`, and `controller.unroll()` keeps it. Other
+  conditions export as before. `backends.validate` runs one more program,
+  `answer_timeout`, which branches on both.
 
 ## [0.1.0] - 2026-11-13
 

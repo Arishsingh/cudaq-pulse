@@ -92,7 +92,8 @@ def test_a_conforming_backend_passes_in_every_format_it_reads(ideal):
     assert "PASS shared_line (/1)" in lines and "PASS shared_line (/2)" in lines
     assert "PASS several_controllers[0] (/1)" in lines
     assert "PASS several_controllers[1] (/1)" in lines
-    assert lines[-1] == "backend 'toy': 28 passed"
+    assert "PASS answer_timeout (/1)" in lines and "PASS answer_timeout (/2)" in lines
+    assert lines[-1] == "backend 'toy': 30 passed"
 
 
 def test_programs_of_several_controllers_are_exported_in_format_1_only(ideal, monkeypatch):
@@ -142,6 +143,27 @@ def test_the_corpus_tells_where_a_run_time_frequency_change_is_made():
     assert change["start_cycles"] == first["end_cycles"] == second["start_cycles"] - 200
     (p,) = _validation._simulated(lowered)
     assert p < 0.1
+
+
+def test_the_corpus_branches_on_whether_an_answer_came_in_time_and_on_the_answer():
+    dev = _validation._device(ControlSystem())
+    lowered = pulse.compile(_validation._corpus()["answer_timeout"], quantum_system=dev).lower(
+        *dev.qudits[:2]
+    )
+    for version in (1, 2):
+        program = lowered.export_to_controller(version=version)
+        flat = unroll(program)
+        [answer] = [e for e in flat["events"] if e["kind"] == "answer"]
+        assert answer["wait"] == "timeout"
+        conditions = [c for e in flat["events"] for c in e["conditions"]]
+        assert [(c["answers"], c["test"], c["result"]) for c in conditions] == [
+            ([answer["index"]], "answer", 0),
+            ([answer["index"]], "answer", 1),
+        ]
+    # In time, with bit 0: qudit 1 is driven, qudit 0 is not, so an
+    # emulator that took one condition for the other disagrees.
+    first, again, other = _validation._simulated(lowered)
+    assert again < 0.05 < other
 
 
 def test_a_backend_that_accepts_what_it_cannot_read_fails(monkeypatch):

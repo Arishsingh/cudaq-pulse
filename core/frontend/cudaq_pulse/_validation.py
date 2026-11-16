@@ -58,6 +58,7 @@ _QUDITS = 2
 
 def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
     """One program per kind of event, named for it, one with a branch, one
+    that branches on whether an answer came in time and on the answer, one
     whose amplitude and phase come from an answer and one whose frequency
     does, changed ahead of the pulse that takes it."""
 
@@ -146,6 +147,24 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
             drive(d, gaussian(32, 0.5, 8.0))
 
     @pulse.kernel
+    def answer_timeout(q: Qudit, r: Qudit) -> None:
+        # The answer comes in time and its bit is 0: a backend that took
+        # one condition for the other would drive the wrong qudit.
+        d = get_drive_line(q)
+        e = get_drive_line(r)
+        a = get_readout_line(q)
+        b = get_readout_line(r)
+        m = readout(a, square(80, 0.05))
+        in_time, bits = echo.submit([m]).result(timeout=300)
+        if in_time:
+            drive(e, gaussian(32, 0.5, 8.0))
+        if bits[0]:
+            drive(d, gaussian(32, 0.5, 8.0))
+        sync(d, e, a, b)
+        readout(a, square(80, 0.05))
+        readout(b, square(80, 0.05))
+
+    @pulse.kernel
     def runtime(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         ro = get_readout_line(q)
@@ -207,6 +226,7 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         Event.ANSWER: answers,
         Event.FRAME_UPDATE: frame_updates,
         "branch": branches,
+        "answer_timeout": answer_timeout,
         "runtime": runtime,
         "runtime_frequency": runtime_frequency,
         "shared_line": shared_line,
