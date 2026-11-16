@@ -9,7 +9,7 @@ name: ci
 # job alone; the pull_request event runs every job but gpu.
 on:
   push:
-    branches: [main, staging, "pull-request/[0-9]+"]
+    branches: [main, "pull-request/[0-9]+"]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -453,7 +453,7 @@ jobs:
 
   # A source build with GPU support and the GPU tests (gpu-tests.yml), in the
   # CUDA 12.9 development image on a GPU runner, once the GPU_RUNNERS
-  # repository variable names the GPU runners: on pushes to main, staging and
+  # repository variable names the GPU runners: on pushes to main and
   # pull-request/<N>, and on manual runs with `gpu`. The CPU suites run in
   # the jobs above. Releases are gated by gpu-install-test in wheels.yml.
   gpu:

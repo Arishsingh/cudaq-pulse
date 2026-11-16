@@ -9,7 +9,7 @@ name: docs
 
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
