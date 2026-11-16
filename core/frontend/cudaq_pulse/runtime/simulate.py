@@ -22,7 +22,7 @@ from __future__ import annotations
 import math
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -132,7 +132,8 @@ class SimulationResult:
     ``records`` holds one row of levels per shot. With
     ``branches="sampled"``, ``branches`` holds the branches the shots took,
     each with the fraction of shots that took it, and the state is their
-    average.
+    average. ``postselect`` gives the result over the branches a test
+    keeps, and ``acceptance`` the fraction of the ensemble it kept.
     """
 
     density_matrix: npt.NDArray[np.complex128]
@@ -142,7 +143,70 @@ class SimulationResult:
     branches: list[Branch]
     records: npt.NDArray[np.int64] | None = None
     times_ns: tuple[float, float] = (0.0, 0.0)
+    #: The probability of the branches this result keeps: 1.0 unless
+    #: ``postselect`` made it.
+    acceptance: float = 1.0
     _states: list[Any] = field(default_factory=list, repr=False)
+
+    def postselect(self, keep: Callable[[Branch], bool], /) -> SimulationResult:
+        """The result over the branches *keep* accepts, a test of a
+        ``Branch``, as ``lambda b: b.levels[0] == 0`` or ``lambda b:
+        b.answers("herald")[-1]``: its state is theirs, normalized, each
+        kept branch's probability is divided by their total, which is the
+        result's ``acceptance`` (times this result's), and ``records``
+        holds the kept branches' shots. Where branches of the same levels
+        are both kept and not (calls that took IQ points, or timeouts with
+        ``latency_branching``), a shot's levels do not say which it took,
+        and ``records`` is ``None``.
+
+        A test that keeps no branch raises ``InvalidValueError``. A result
+        merged from the shot chunks of a quantum system with parameter drift
+        holds no state per branch, and raises ``UnsupportedError``."""
+        branches = self.branches
+        states = self._states
+        if len(states) != len(branches):
+            raise UnsupportedError(
+                "this result holds no state per branch to post-select (a simulation of a "
+                "quantum system with parameter drift merges its shot chunks); post-select its "
+                "records, or simulate a system without drift"
+            )
+        kept = [bool(keep(branch)) for branch in branches]
+        accepted = sum(b.probability for b, k in zip(branches, kept, strict=True) if k)
+        if not accepted > 0.0:
+            raise InvalidValueError(
+                f"the test keeps none of the {len(branches)} branches, or only branches of "
+                "probability 0; nothing is left to post-select"
+            )
+        dim = self.density_matrix.shape[0]
+        rho = np.zeros((dim, dim), dtype=np.complex128)
+        for branch, state, k in zip(branches, states, kept, strict=True):
+            if not k or branch.probability <= 0.0:
+                continue
+            density = _Backend.density(state)
+            rho += density * (branch.probability / float(np.real(np.trace(density))))
+        records = self.records
+        if records is not None:
+            taken = {b.levels for b, k in zip(branches, kept, strict=True) if k}
+            if taken.isdisjoint(b.levels for b, k in zip(branches, kept, strict=True) if not k):
+                rows = [tuple(row) in taken for row in records.tolist()]
+                records = records[np.array(rows, dtype=bool)] if rows else records
+            else:
+                records = None
+        return SimulationResult(
+            density_matrix=rho / accepted,
+            dims=self.dims,
+            qudits=self.qudits,
+            measurements=self.measurements,
+            branches=[
+                replace(b, probability=b.probability / accepted)
+                for b, k in zip(branches, kept, strict=True)
+                if k
+            ],
+            records=records,
+            times_ns=self.times_ns,
+            acceptance=self.acceptance * accepted,
+            _states=[s for s, k in zip(states, kept, strict=True) if k],
+        )
 
     def level_populations(self, qudit: int | Qudit | None = None) -> list[float]:
         """The probability of each level of *qudit*, from level 0 up: the

@@ -34,7 +34,9 @@ def compile_kernel_bytecode(
 
     def _emit(*args: Any, **kwargs: Any) -> PythonIRBuilder:
         if kwargs:
-            raise CompilationError("keyword arguments not supported in pulse kernels")
+            raise CompilationError(
+                "keyword arguments not supported in pulse kernels", code="wrong_argument"
+            )
         builder = PythonIRBuilder(name=fn.__name__)
         builder.unroll_threshold = unroll
         _trace(fn, builder, args, "pulse.qudit_arg", prog, params)
@@ -43,15 +45,21 @@ def compile_kernel_bytecode(
     return _emit
 
 
-def _trace_kernel_with_builder(fn: Callable[..., Any], builder: Any, args: Sequence[Any]) -> Any:
+def _trace_kernel_with_builder(
+    fn: Callable[..., Any],
+    builder: Any,
+    args: Sequence[Any],
+    emitter_type: type[PulseIREmitter] | None = None,
+) -> Any:
     """Re-trace *fn* using *builder* (any object with an ``emit()`` method).
 
     *args* gives every parameter, positional then keyword-only, in signature
-    order. Returns the kernel's traced return value.
+    order. Returns the kernel's traced return value. *emitter_type*, when
+    given, is the tracer, else the one *builder*'s sample rates take.
     """
     code = fn.__code__
     names = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
-    return _trace(fn, builder, args, "pulse.qudit_alloc", decode(code), names)
+    return _trace(fn, builder, args, "pulse.qudit_alloc", decode(code), names, emitter_type)
 
 
 def _trace(
@@ -61,12 +69,18 @@ def _trace(
     qudit_op: str,
     prog: DecodedCode,
     params: tuple[str, ...],
+    emitter_type: type[PulseIREmitter] | None = None,
 ) -> Any:
     if len(args) != len(params):
-        raise CompilationError(f"{fn.__name__}: expected {len(params)} args, got {len(args)}")
+        raise CompilationError(
+            f"{fn.__name__}: expected {len(params)} args, got {len(args)}",
+            code="wrong_argument",
+        )
 
     closures = _extract_closures(fn) if fn.__closure__ else {}
-    if builder.sample_rate_of is None:
+    if emitter_type is not None:
+        emitter = emitter_type(builder, fn.__globals__, closures)
+    elif builder.sample_rate_of is None:
         emitter = PulseIREmitter(builder, fn.__globals__, closures)
     else:
         from ._mixed_rates import MixedRates

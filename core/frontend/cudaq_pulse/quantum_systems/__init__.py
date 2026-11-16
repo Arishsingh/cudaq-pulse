@@ -14,6 +14,7 @@ from .base import (
     Readout,
     ReadoutPulse,
     ResidualZZ,
+    VirtualZ,
 )
 from .calibration import Calibration
 from .models import SimulationModel, TransmonModel
@@ -28,6 +29,7 @@ __all__ = [
     "Coupling",
     "ResidualZZ",
     "DragPulse",
+    "VirtualZ",
     "ReadoutPulse",
     "FluxCZ",
     "SimulationModel",

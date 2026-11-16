@@ -181,7 +181,7 @@ def _out_of_range(fname: str, what: str, value: Any, n: float) -> CompilationErr
         rule = "a wait cannot be negative"
     else:
         rule = "a duration cannot be negative"
-    return CompilationError(f"{fname}(): {given}; {rule}")
+    return CompilationError(f"{fname}(): {given}; {rule}", code="invalid_duration")
 
 
 def _whole(bounds: tuple[Any, ...] | list[Any]) -> bool:
@@ -202,7 +202,8 @@ def cycles(fname: str, what: str, value: Any, whole: bool, call: str, clock_ghz:
             raise CompilationError(
                 f"{fname}(): {what} {value} is {numerator / denominator:g} cycles of the "
                 f"{clock_ghz:g} GHz program clock, and durations are whole cycles; "
-                f"round it with pulse.round_duration(line, {_written(value)})"
+                f"round it with pulse.round_duration(line, {_written(value)})",
+                code="invalid_duration",
             )
         return numerator
     if whole and isinstance(value, float) and cls is not Cycles:
@@ -211,7 +212,8 @@ def cycles(fname: str, what: str, value: Any, whole: bool, call: str, clock_ghz:
         if unit(value, fname, what) != 1:
             raise CompilationError(
                 f"{fname}(): {what} {arithmetic_text(value)} is a number, not a time: "
-                "a duration is a number of cycles or a time"
+                "a duration is a number of cycles or a time",
+                code="invalid_duration",
             )
         return _replaced(value, clock_ghz)
     return value
@@ -229,7 +231,8 @@ def float_duration(
     if cycles_only:
         return CompilationError(
             f"{fname}(): {what} is a float ({value!r}); use an int number of cycles:\n"
-            f"    {in_cycles_call}    # {whole} cycle{plural}"
+            f"    {in_cycles_call}    # {whole} cycle{plural}",
+            code="invalid_duration",
         )
     in_ns_call = call.format(f"{shown} * pulse.ns")
     width = max(len(in_cycles_call), len(in_ns_call)) + 4
@@ -237,7 +240,8 @@ def float_duration(
         f"{fname}(): {what} is a float ({value!r}). Durations are an int number of "
         "cycles, or a time with units:\n"
         f"    {in_cycles_call.ljust(width)}# {whole} cycle{plural}\n"
-        f"    {in_ns_call.ljust(width)}# {shown} nanoseconds"
+        f"    {in_ns_call.ljust(width)}# {shown} nanoseconds",
+        code="invalid_duration",
     )
 
 
@@ -271,24 +275,29 @@ def unit(value: Any, fname: str, what: str) -> int:
         if left != right:
             raise CompilationError(
                 f"{fname}(): {what} {arithmetic_text(value)} mixes a time with a number "
-                "of cycles; give both with units (n * pulse.ns) or both in cycles"
+                "of cycles; give both with units (n * pulse.ns) or both in cycles",
+                code="invalid_duration",
             )
         return left
     if op == "mul":
         if left and right:
             raise CompilationError(
-                f"{fname}(): {what} {arithmetic_text(value)} is a time times a time"
+                f"{fname}(): {what} {arithmetic_text(value)} is a time times a time",
+                code="invalid_duration",
             )
         return left + right
     if op == "div":
         if right and not left:
             raise CompilationError(
-                f"{fname}(): {what} {arithmetic_text(value)} is a number over a time"
+                f"{fname}(): {what} {arithmetic_text(value)} is a number over a time",
+                code="invalid_duration",
             )
         return left - right
     if left or right:
         raise CompilationError(
-            f"{fname}(): {what} {arithmetic_text(value)} takes {op} of a time; use + - * / on times"
+            f"{fname}(): {what} {arithmetic_text(value)} takes {op} of a time",
+            code="invalid_duration",
+            fix="use + - * / on times",
         )
     return 0
 
@@ -318,11 +327,14 @@ def timeout_ns(builder: Any, timeout: Any) -> float:
     ):
         raise CompilationError(
             "result(timeout=...) takes a time known when compiling: "
-            "a number of nanoseconds, or a time with units (350 * pulse.ns)"
+            "a number of nanoseconds, or a time with units (350 * pulse.ns)",
+            code="invalid_duration",
         )
     time = timeout if timeout.__class__ is Time else Time(timeout)
     if not time._n > 0:
-        raise CompilationError(f"result(): timeout must be positive, got {timeout!r}")
+        raise CompilationError(
+            f"result(): timeout must be positive, got {timeout!r}", code="wrong_argument"
+        )
     clock_ghz = getattr(builder, "clock_ghz", 2.0)
     cycles("result", "timeout", time, True, "f(...).result(timeout={})", clock_ghz)
     # Whole cycles of it are exactly its nanoseconds, which its float rounds.
@@ -342,7 +354,8 @@ def traced_round_duration(builder: Any, args: list[Any], kwargs: dict[str, Any] 
     line, n, direction = _bound(_clocks.round_duration, args, kwargs or {}).args
     if not isinstance(line, IRValue) or line.vtype not in ("drive_line", "readout_line"):
         raise CompilationError(
-            f"round_duration() takes a line from get_drive_line or get_readout_line, got {line!r}"
+            f"round_duration() takes a line from get_drive_line or get_readout_line, got {line!r}",
+            code="wrong_argument",
         )
     if is_symbolic(n):
         names = tuple(dict.fromkeys(_parameter_names(n)))
@@ -365,7 +378,7 @@ def traced_round_duration(builder: Any, args: list[Any], kwargs: dict[str, Any] 
     try:
         return _clocks.round_on_grid(n, grid, direction)
     except ValueError as e:
-        raise CompilationError(str(e)) from None
+        raise CompilationError(str(e), code="invalid_duration") from None
 
 
 def at_rate(count: int, rate: tuple[int, int], envelope: Any) -> tuple[int, float, Any]:
@@ -386,7 +399,8 @@ def samples_at(cycles: int, rate: tuple[int, int]) -> int:
             f"custom(): a duration of {cycles} clock cycles is not a whole number of "
             f"samples on these lines, which play {n} every {d} cycles (their "
             f"controller's rate); give it a multiple of {step} cycles, as "
-            f"pulse.round_duration(line, {cycles}) does"
+            f"pulse.round_duration(line, {cycles}) does",
+            code="invalid_waveform",
         )
     count = cycles * n // d
     most = MAX_CUSTOM_SAMPLES - 2
@@ -394,7 +408,8 @@ def samples_at(cycles: int, rate: tuple[int, int]) -> int:
         raise CompilationError(
             f"custom(): a duration of {cycles} clock cycles is {count} samples at "
             f"these lines' rate ({n} every {d} cycles), over the limit of {most}; "
-            "split the envelope into consecutive drives"
+            "split the envelope into consecutive drives",
+            code="limit_exceeded",
         )
     return count
 
@@ -412,7 +427,7 @@ def samples_made_for(
 
             made = _clocks.made_for(sample_rate_ghz, program_ghz)
         except ValueError as e:
-            raise CompilationError(f"custom_samples(): {e}") from None
+            raise CompilationError(f"custom_samples(): {e}", code="invalid_waveform") from None
     plays = line_rate or (1, 1)
     if made != plays:
         made_ghz = program_ghz * made[0] / made[1]
@@ -424,7 +439,8 @@ def samples_made_for(
             f"({_rate_text(plays)}), which would change how long they last; "
             f"resample them to {plays_ghz:g} GHz and pass "
             f"sample_rate_ghz={plays_ghz:g}, or build the waveform with "
-            "custom(duration, f), which samples at the lines' rate"
+            "custom(duration, f), which samples at the lines' rate",
+            code="invalid_waveform",
         )
     if made == (1, 1):
         return None
@@ -436,7 +452,8 @@ def samples_made_for(
         raise CompilationError(
             f"custom_samples(): {count} samples at {_rate_text(made)} do not last a "
             f"whole number of clock cycles; give a multiple of "
-            f"{made[0] // math.gcd(*made)} samples"
+            f"{made[0] // math.gcd(*made)} samples",
+            code="invalid_waveform",
         )
     return made
 
@@ -464,7 +481,7 @@ def custom_samples_duration(builder: Any, attrs: dict[str, Any]) -> int | None:
         try:
             n, d = _clocks.made_for(made_for, getattr(builder, "clock_ghz", 2.0))
         except ValueError as e:
-            raise CompilationError(f"custom_samples(): {e}") from None
+            raise CompilationError(f"custom_samples(): {e}", code="invalid_waveform") from None
         line_rate = None if n == d else (n, d)
     rate = None
     if line_rate is not None or made_for is not None:
@@ -556,7 +573,8 @@ def for_line(em: Any, fname: str, operands: tuple[Any, ...]) -> tuple[Any, ...]:
             f"{fname}(): plays samples on a runtime qudit's line, and the control "
             "system's controllers play different sample rates, so the rate they "
             "need depends on the qudit a call binds; play them on a static qudit's "
-            "line, or give the controllers one sample rate"
+            "line, or give the controllers one sample rate",
+            code="control_system",
         )
     rate = b.sample_rate_of(fname, qudit)
     again = _resampled(em, wave, rate)
@@ -570,7 +588,8 @@ def for_line(em: Any, fname: str, operands: tuple[Any, ...]) -> tuple[Any, ...]:
             f"({_rate_text(rate or (1, 1))}), which would change how long they last; "
             f"make them for it with sample_rate_ghz={plays:g}, or build the waveform "
             "with custom(duration, f), which samples it at the rate of the line that "
-            "plays it"
+            "plays it",
+            code="invalid_waveform",
         )
     return operands if again is wave else (operands[0], again, *operands[2:])
 

@@ -177,6 +177,28 @@ them from a calibration the kernel closes over.
   declaration options such as ``max_latency_ns=350`` do, of whole cycles of
   the program clock.
 
+.. _unit-warnings:
+
+A bare ``int`` in a duration is a number of cycles, and a bare number in
+``shift_frequency`` or ``set_frequency`` is in Hz, so ``square(20, a)``
+lasts 10 ns at 2 GHz and ``shift_frequency(tone, 5)`` shifts by 5 Hz.
+Neither is an error. To catch them, compile with
+``pulse.compile(k, unit_warnings=True)``: each duration, wait, ``sigma``,
+DRAG ``beta`` or flat-top ``width`` given as a bare nonzero number, and
+each frequency below a millionth of the quantum system's lowest carrier
+(a shift) or a thousandth of it (``set_frequency``), is a
+``pulse.UnitWarning`` at its kernel line::
+
+   kernels.py:7: UnitWarning: square(): duration 20 has no units, so it is 20 clock
+   cycles (10 ns at the 2 GHz clock); write it with units, as 20 * pulse.ns
+
+A time with units, ``0``, a count from ``pulse.round_duration`` and a
+calibrated pulse are never warned. The warnings are issued while the kernel
+traces, on its first compilation for each set of arguments; they do not
+change the program, and without ``unit_warnings`` nothing is checked.
+``warnings.filterwarnings("error", category=pulse.UnitWarning)`` makes them
+errors.
+
 Control Flow
 ------------
 

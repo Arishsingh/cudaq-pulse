@@ -10,10 +10,10 @@ import math
 from typing import TYPE_CHECKING, Any
 
 from .._errors import CompilationError, InvalidTypeError, InvalidValueError, NotFoundError
+from .ir_builder import IRValue
 
 if TYPE_CHECKING:
     from ._emitter import PulseIREmitter, _Held
-    from .ir_builder import IRValue
 
 
 class LineCalibrations:
@@ -30,14 +30,16 @@ class LineCalibrations:
         if quantum_system is None or qudit is None:
             raise CompilationError(
                 "line.get_calibration needs the quantum system's calibrations; this trace has no "
-                "quantum system"
+                "quantum system",
+                code="calibration",
             )
         if qudit < 0:
             raise CompilationError(
                 "line.get_calibration needs the qudit's carrier, and this qudit is a runtime "
                 "parameter (annotated Qudit), whose carrier each call binds; read the "
                 "calibration outside the kernel, qs.qudits[i].get_calibration(gate), and pass "
-                "its values in, or leave the parameter unannotated"
+                "its values in, or leave the parameter unannotated",
+                code="calibration",
             )
         self._device = quantum_system
         self._qudit = qudit
@@ -47,12 +49,34 @@ class LineCalibrations:
         try:
             return self._device._line_calibration(self._qudit, self._readout, gate, transition)
         except (InvalidTypeError, InvalidValueError, NotFoundError) as error:
-            raise CompilationError(Exception.__str__(error)) from error
+            raise CompilationError(Exception.__str__(error), code="calibration") from error
 
 
 def play_calibrated(emitter: PulseIREmitter, fname: str, call_args: list[Any]) -> tuple[Any, ...]:
     """*fname*, whose operands are not all of its types: the op on the
-    waveform a calibrated pulse among them plays; else the operand error."""
+    waveform a calibrated pulse among them plays, or for a ``VirtualZ``
+    the phase shift of the tone it plays at; else the operand error."""
+    from ..quantum_systems.base import VirtualZ
+
+    gate = call_args[1]
+    if gate.__class__ is VirtualZ:
+        line, tone = call_args[0], call_args[2]
+        if fname != "drive":
+            raise CompilationError(
+                f"{gate!r} is a drive line's phase gate and does not {fname}: "
+                "drive(line, it) shifts the phase of the line's tone",
+                code="calibration",
+            )
+        if line.__class__ is not IRValue or line.vtype != "drive_line":
+            from ._emit_errors import operand_error
+
+            raise operand_error(fname, call_args)
+        if tone.__class__ is not IRValue or tone.vtype != "tone":
+            raise CompilationError(
+                f"drive(): {gate!r} shifts the phase of a tone, such as line.tone, got {tone!r}",
+                code="wrong_argument",
+            )
+        return emitter._emit_pulse_call("shift_phase", [tone, gate._values[0]])
     for index, value in enumerate(call_args):
         played = calibrated_waveform(emitter, value)
         if played is not None:
@@ -73,7 +97,8 @@ def calibrated_waveform(emitter: PulseIREmitter, pulse: Any) -> IRValue | None:
     if cls is FluxCZ:
         raise CompilationError(
             "a FluxCZ does not play: flux lines are not modeled yet; wait its duration_ns on "
-            "the coupled qudits' lines instead"
+            "the coupled qudits' lines instead",
+            code="calibration",
         )
     if cls is not DragPulse and cls is not ReadoutPulse:
         return None
@@ -86,7 +111,8 @@ def calibrated_waveform(emitter: PulseIREmitter, pulse: Any) -> IRValue | None:
         if amplitude is None:
             raise CompilationError(
                 f"{pulse!r} has no amplitude, so it does not play; line.get_calibration gives "
-                "a calibration's pulse the amplitude of its rotation"
+                "a calibration's pulse the amplitude of its rotation",
+                code="calibration",
             )
         (waveform,) = emit("drag", [duration * ns, amplitude, sigma * ns, beta * ns])
         if phase:
@@ -95,7 +121,9 @@ def calibrated_waveform(emitter: PulseIREmitter, pulse: Any) -> IRValue | None:
         return waveform
     duration, amplitude, sigma, _, _ = pulse._values
     if duration is None:
-        raise CompilationError(f"{pulse!r} has no duration_ns, so it does not play")
+        raise CompilationError(
+            f"{pulse!r} has no duration_ns, so it does not play", code="calibration"
+        )
     amplitude = 1.0 if amplitude is None else amplitude
     if sigma:
         width = max(duration - 4 * sigma, 0.0)

@@ -6,9 +6,11 @@ import hashlib
 import json
 import math
 import re
+from collections import Counter
 from pathlib import Path
 
 import cudaq_pulse as pulse
+import numpy as np
 import pytest
 from cudaq_pulse.quantum_systems import _transmon_surface17 as _k
 from cudaq_pulse.quantum_systems import transmon_surface17
@@ -46,6 +48,13 @@ def test_every_value_carries_its_kind_source_and_measurement_run():
         assert leaf["source"], name
         assert leaf["measurement_run"] in data["measurement_runs"], name
         assert "units" in leaf, name
+
+
+def test_the_shipped_file_counts_its_values_by_kind():
+    # The counts a release's review quotes: a changed file changes them here.
+    data = json.loads(_SHIPPED_SURFACE17.read_text())
+    kinds = Counter(leaf["kind"] for _, leaf in _leaves(data))
+    assert kinds == {"published": 89, "digitized": 89, "fitted": 421}
 
 
 def test_the_shipped_file_holds_no_local_paths_or_working_notes():
@@ -158,11 +167,29 @@ def _index_entry(name):
     raw = Path(_SHIPPED, f"{name}.json").read_bytes()
     data = json.loads(raw)
     exchange = data["coupling"]["charge_coupling_g_c"]["idle_exchange"]
+    gates, errors = data["single_qubit_gates"], data["readout"]["assignment"]
+    x12 = gates["x12"]
     return (
         hashlib.sha256(raw).hexdigest()[:16],
         data["_schema"]["default_measurement_run"],
         tuple(data["measurement_runs"]),
         {p: (e["value"], tuple(e["idle_frequencies_hz"])) for p, e in exchange.items()},
+        tuple(
+            (
+                q,
+                (
+                    gates["x"][q]["beta"]["value"],
+                    (
+                        x12["duration"]["value"],
+                        x12["sigma"]["value"],
+                        x12[q]["amplitude"]["value"],
+                        x12[q]["beta"]["value"],
+                    ),
+                    (errors[q]["error_0to1"]["value"], errors[q]["error_1to0"]["value"]),
+                ),
+            )
+            for q in data["qudits"]
+        ),
     )
 
 
@@ -240,6 +267,136 @@ def test_a_device_loads_a_calibration_from_its_config(tmp_path, cal):
         "transmon_surface17", calibration="transmon_surface17", measurement_run="2025-flux-tuning"
     )
     assert other.calibration.measurement_run == "2025-flux-tuning"
+
+
+def test_the_published_readout_errors_are_those_of_tab_i(cal):
+    for q in _k.QUDITS:
+        entry = cal.entry("readout", "assignment", q.label, "two_state_error")
+        assert entry["kind"] == "published" and "Tab. I" in entry["source"]
+        assert entry["value"] == pytest.approx(q.readout_error_2state, abs=1e-12), q.label
+
+
+def test_the_calibrated_pulses_and_readout_errors_reach_the_quantum_system(cal):
+    qs = pulse.quantum_system("transmon_surface17")
+    published = transmon_surface17(calibration=None)
+    for q in _k.QUDITS:
+        qudit = qs.qudit(q.label)
+        x = qudit.get_calibration(pulse.gates.X)
+        assert x.beta_ns == pytest.approx(
+            cal.value("single_qubit_gates", "x", q.label, "beta") * 1e9
+        )
+        # Between the phase-error (half) and leakage (full) DRAG conditions -1 / alpha.
+        motzoi_ns = -1.0 / (2.0 * math.pi * q.anharmonicity_hz * 1e-9)
+        assert 0.5 * motzoi_ns < x.beta_ns < motzoi_ns, q.label
+        assert qudit.get_calibration(pulse.gates.Y90).beta_ns == x.beta_ns
+        x12 = qudit.get_calibration(pulse.gates.X, transition=(1, 2))
+        assert (x12.duration_ns, x12.sigma_ns) == pytest.approx((20.0, 5.0))
+        # A pi rotation of the 1-2 transition, whose matrix element is sqrt(2) the 0-1 one.
+        area = 5.0 * math.sqrt(2.0 * math.pi) * math.erf(2.0 / math.sqrt(2.0))
+        assert x12.amplitude == pytest.approx(math.pi / (math.sqrt(2.0) * area), rel=0.01)
+        readout = qs.physical_qudits[qudit.index].readout
+        error = cal.value("readout", "assignment", q.label, "error_0to1")
+        assert (readout.error_0to1, readout.error_1to0) == (error, error)
+        bare = published.qudit(q.label)
+        assert bare.get_calibration(pulse.gates.X).beta_ns == 0.0
+        with pytest.raises(pulse.NotFoundError, match=r"X \(1, 2\)"):
+            bare.get_calibration(pulse.gates.X, transition=(1, 2))
+        assert published.physical_qudits[bare.index].readout.error_1to0 == 0.0
+
+
+def test_the_shipped_quantum_system_is_the_published_one_calibrated(cal):
+    """transmon_surface17 builds its qudits and couplings once, with the
+    shipped values in place: as the calibration applied to the published
+    quantum system gives them, equal pulses shared alike."""
+    import pickle
+
+    from cudaq_pulse.quantum_systems import transmon
+
+    applied = cal._apply(transmon._build_surface17(None))
+    built = transmon._build_surface17(cal)
+    assert built == applied
+    assert pickle.dumps(built) == pickle.dumps(applied)
+
+
+@pulse.kernel
+def _read_ground(q):
+    r = get_readout_line(q)
+    readout(r, r.get_calibration(pulse.gates.READOUT))
+
+
+@pulse.kernel
+def _read_excited(q):
+    d = get_drive_line(q)
+    r = get_readout_line(q)
+    drive(d, d.get_calibration(pulse.gates.X))
+    sync(d, r)
+    readout(r, r.get_calibration(pulse.gates.READOUT))
+
+
+def _reported(result, level):
+    return sum(b.probability for b in result.branches if b.levels == (level,))
+
+
+def test_model_readout_reproduces_the_published_two_state_errors(cal):
+    """Tab. I's eps(2) = 1 - [P(0|0) + P(1|1)] / 2 after preselecting |0>
+    (App. F); where relaxation during the readout alone exceeds it, the
+    assignment error is 0 and the simulation errs a little more."""
+    qs = pulse.quantum_system("transmon_surface17")
+    ground = np.array([1.0, 0.0, 0.0])
+    for q in _k.QUDITS:
+        qudit = qs.qudit(q.label)
+        runs = [
+            pulse.simulate(k, qudit, levels=3, initial_state=ground, readout="model")
+            for k in (_read_ground, _read_excited)
+        ]
+        eps = 1 - (_reported(runs[0], 0) + _reported(runs[1], 1)) / 2
+        if cal.value("readout", "assignment", q.label, "error_1to0") > 0:
+            assert eps == pytest.approx(q.readout_error_2state, abs=1e-6), q.label
+        else:
+            assert q.readout_error_2state < eps < q.readout_error_2state + 1.5e-3, q.label
+
+
+def _closed(qs, label):
+    """*qs* with qudit *label* free of decoherence and thermal excitation."""
+    i = qs.qudit(label).index
+    q = qs.physical_qudits[i]
+    free = q.replace(t1_us=0.0, t2_star_us=0.0, t2_echo_us=None, thermal_population=0.0)
+    return qs.replace(qudits={**qs.physical_qudits, i: free}).qudits[i]
+
+
+@pulse.kernel
+def _x(q):
+    d = get_drive_line(q)
+    drive(d, d.get_calibration(pulse.gates.X))
+
+
+def test_the_drag_coefficient_removes_most_of_the_x_error():
+    # The published values alone play X with beta 0.
+    systems = (transmon_surface17(calibration=None), pulse.quantum_system("transmon_surface17"))
+    for label in ("D5", "Z1"):
+        published, calibrated = (
+            1 - pulse.simulate(_x, _closed(qs, label), levels=3).density_matrix[1, 1].real
+            for qs in systems
+        )
+        assert published > 1.5e-3 and calibrated < 2e-4, (label, published, calibrated)
+
+
+@pulse.kernel
+def _repair(q):
+    d = get_drive_line(q)
+    drive(d, d.get_calibration(pulse.gates.X, transition=(1, 2)), tone=d.tones[(1, 2)])
+
+
+def test_the_1_2_pulse_returns_a_leaked_qubit():
+    qs = pulse.quantum_system("transmon_surface17")
+    leaked = np.array([0.0, 0.0, 1.0, 0.0])
+    for label in ("D5", "X1"):
+        rho = pulse.simulate(
+            _repair, qs.qudit(label), levels=4, initial_state=leaked
+        ).density_matrix
+        assert rho[1, 1].real > 0.996, label
+        closed = pulse.simulate(_repair, _closed(qs, label), levels=4, initial_state=leaked)
+        assert closed.density_matrix[1, 1].real > 0.999, label
 
 
 def test_a_published_only_target_uses_the_published_value_over_sqrt2():

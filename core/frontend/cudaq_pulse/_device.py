@@ -55,7 +55,14 @@ if TYPE_CHECKING:
     from ._system import ControlSystem
     from ._units import Time
     from .gates import Gate
-    from .quantum_systems.base import Coupling, DragPulse, PhysicalQudit, ReadoutPulse, ResidualZZ
+    from .quantum_systems.base import (
+        Coupling,
+        DragPulse,
+        PhysicalQudit,
+        ReadoutPulse,
+        ResidualZZ,
+        VirtualZ,
+    )
     from .quantum_systems.calibration import Calibration
     from .quantum_systems.drift import ParameterDriftModel
 
@@ -199,16 +206,22 @@ class Qudit:
         ) -> DragPulse: ...
         @overload
         def get_calibration(
+            self,
+            gate: Literal[Gate.Z, Gate.S, Gate.T],
+            transition: tuple[int, int] = (0, 1),
+        ) -> VirtualZ: ...
+        @overload
+        def get_calibration(
             self, gate: Literal[Gate.READOUT], transition: tuple[int, int] = (0, 1)
         ) -> ReadoutPulse: ...
         @overload
         def get_calibration(
             self, gate: Gate, transition: tuple[int, int] = (0, 1)
-        ) -> DragPulse | ReadoutPulse: ...
+        ) -> DragPulse | VirtualZ | ReadoutPulse: ...
 
     def get_calibration(self, gate: Any, transition: tuple[int, int] = (0, 1)) -> Any:
         """The calibrated pulse of *gate* on this qudit of its quantum system, as
-        ``get_drive_line(q).get_calibration(gate)`` (``X`` to ``Y90``) and
+        ``get_drive_line(q).get_calibration(gate)`` (``X`` to ``T``) and
         ``get_readout_line(q).get_calibration(pulse.gates.READOUT)`` give it
         in a kernel; see ``PhysicalQudit.get_calibration``."""
         return self.quantum_system._description.qudits[self.index].get_calibration(gate, transition)
@@ -559,7 +572,7 @@ class QuantumSystem:
 
     def _line_calibration(
         self, index: int, readout: bool, gate: Any, transition: Any
-    ) -> DragPulse | ReadoutPulse:
+    ) -> DragPulse | VirtualZ | ReadoutPulse:
         """``line.get_calibration(gate, transition)`` of the drive (or
         readout) line of carrier *index*, while a kernel is traced."""
         from .quantum_systems.base import _DRIVE_GATES, _gate_label, _gate_name, _qudit_calibration
@@ -578,7 +591,7 @@ class QuantumSystem:
             raise InvalidValueError(
                 f"a {line} line has the calibrations of {gates}, not {_gate_label(name)}; {fix}"
             )
-        pulse: DragPulse | ReadoutPulse = _qudit_calibration(
+        pulse: DragPulse | VirtualZ | ReadoutPulse = _qudit_calibration(
             self._description.qudits[index], name, transition
         )
         return pulse

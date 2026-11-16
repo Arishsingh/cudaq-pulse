@@ -129,6 +129,12 @@ Core Examples
      - Real-time QEC decoding with a deadline and a fallback table: a
        decoder configured in CUDA-Q QEC, called with CUDA-Q QEC's own
        functions; needs cudaq-qec (Linux) and an NVIDIA GPU *(simulates)*
+   * - 28
+     - ``28_t_state_injection.py``
+     - T-state injection with the virtual-Z ``pulse.gates.T``, three-axis
+       tomography, and a heralded repeat-until-success loop on the
+       controller, post-selected on the herald's answer with
+       ``result.postselect`` *(simulates)*
 
 Examples 24 to 26 send compiled programs between processes, which works
 because programs pickle; their worker processes use the ``spawn`` start

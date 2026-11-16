@@ -200,7 +200,10 @@ class Future:
 
     def result(self, timeout: float | Time | None = None) -> Any:
         """Take the answer; only meaningful while a kernel is traced."""
-        raise CompilationError("a future's result() is taken inside the kernel that submitted it")
+        raise CompilationError(
+            "a future's result() is taken inside the kernel that submitted it",
+            code="unsupported_construct",
+        )
 
     def __repr__(self) -> str:
         return f"<future of {self.function.name}>"
@@ -380,8 +383,9 @@ def _takes_ir(args: Sequence[Any], kwargs: dict[str, Any] | None) -> bool:
 def _truth(value: StackVal) -> bool:
     if isinstance(value, (IRValue, _NotMeasurement)):
         raise CompilationError(
-            "a measurement result is only known at runtime; use it directly as "
-            "an if condition (`if result:` or `if not result:`)"
+            "a measurement result is only known at runtime",
+            code="runtime_value",
+            fix="use it directly as an if condition (`if result:` or `if not result:`)",
         )
     return bool(value)
 
@@ -397,8 +401,9 @@ class _NotMeasurement(_UndecidableComparisons):
 
     def __bool__(self) -> bool:
         raise CompilationError(
-            f"cannot decide {self!r} at trace time: it is known only when the program runs; "
-            "use it directly as an if condition"
+            f"cannot decide {self!r} at trace time: it is known only when the program runs",
+            code="runtime_value",
+            fix="use it directly as an if condition",
         )
 
     def __eq__(self, other: object) -> UndecidableComparison:  # type: ignore[override]
@@ -500,7 +505,8 @@ class _Choice(Selection):
             raise CompilationError(
                 f"{self.origin} would have more than {_MAX_CHOICE_VALUES} values, one for "
                 "each combination of measurement outcomes it depends on; use it inside "
-                "the arms of the ifs instead"
+                "the arms of the ifs instead",
+                code="limit_exceeded",
             )
 
     @property
@@ -566,7 +572,7 @@ class _Choice(Selection):
 
     def cast(self, dtype: str) -> Any:
         if dtype not in ("i64", "f64"):
-            raise CompilationError(f"unsupported symbolic cast to {dtype}")
+            raise CompilationError(f"unsupported symbolic cast to {dtype}", code="runtime_value")
         if self.vtype == "condition":
             from ._conditions import not_a_number
 
@@ -578,7 +584,8 @@ class _Choice(Selection):
         raise CompilationError(
             f"{self.origin} is known only when the program runs, so it cannot be "
             f"used for {operation} while the kernel traces; use it in a pulse op or "
-            "as an if condition, or do this inside each arm of the if"
+            "as an if condition, or do this inside each arm of the if",
+            code="runtime_value",
         )
 
     def __repr__(self) -> str:
@@ -752,14 +759,18 @@ def _choice_condition(choice: _Choice) -> Any:
 
     def truth(value: Any) -> bool:
         if isinstance(value, IRValue):
-            raise CompilationError(f"{choice.origin} is a pulse {value.vtype}, not a condition")
+            raise CompilationError(
+                f"{choice.origin} is a pulse {value.vtype}, not a condition",
+                code="runtime_value",
+            )
         if contains_answer(value) or (
             value.__class__ is _NotMeasurement and value.value.vtype == "i1"
         ):
             raise CompilationError(
                 f"an if on {choice.origin} would test both a measurement result and "
                 f"{value!r}, an answer known only when the program runs; branch on them "
-                "in nested ifs, or with `and` and `or` in the if condition"
+                "in nested ifs, or with `and` and `or` in the if condition",
+                code="runtime_value",
             )
         return bool(value)
 
@@ -775,7 +786,8 @@ def _choice_condition(choice: _Choice) -> Any:
         return condition_bit(choice)
     raise CompilationError(
         f"an if on {choice.origin} would depend on more than one measurement; "
-        "branch on the measurements instead"
+        "branch on the measurements instead",
+        code="runtime_value",
     )
 
 
@@ -975,7 +987,9 @@ def instruction_limit_error(
     holds = f"more than the {limit:,} the controller holds (Controller.max_instructions)"
     loops = _unrolled_loops()
     if not loops:
-        return CompilationError(f"the program holds {op_count:,} operations, {holds}")
+        return CompilationError(
+            f"the program holds {op_count:,} operations, {holds}", code="limit_exceeded"
+        )
     loop, trips, started, frames = _widest(loops)
     seen = checks.get(id(loop))
     if seen is not None and started > seen[0]:
@@ -999,7 +1013,7 @@ def instruction_limit_error(
             f"unrolls to about {round(trips * per):,} operations "
             f"({trips:,} iterations of about {each})"
         )
-    error = CompilationError(f"{what} {size}, {holds}; {why}")
+    error = CompilationError(f"{what} {size}, {holds}; {why}", code="limit_exceeded")
     error.pulse_source = frames[0]  # type: ignore[attr-defined]
     error.pulse_callers = frames[1:]  # type: ignore[attr-defined]
     add_source_note(error)
@@ -1023,11 +1037,13 @@ def add_source_note(e: BaseException, heading: str | None = None) -> None:
     try:
         e.add_note("\n".join(lines))
         e.pulse_noted = True  # type: ignore[attr-defined]
+        # The line that raised, innermost, for PulseError.location.
+        e._traced_at = (filename, lineno, text, prog.code.co_name)  # type: ignore[attr-defined]
     except AttributeError:
         pass
 
 
-def _attribute_error(obj: Any, attr: str) -> str:
+def _attribute_error(obj: Any, attr: str) -> CompilationError:
     """The error for ``obj.attr`` when *obj* has no attribute *attr*."""
     from ._emit_errors import attribute_error
 
@@ -1072,21 +1088,23 @@ def _sync_lines(fname: str, call_args: list[Any]) -> list[IRValue]:
             message = f"{fname}(): {where} must be a line, got {_describe(value)}"
             if value.__class__ is IRValue and value.vtype == "tone":
                 message += f"; pass the lines, not their tones, as in {fname}(d, r)"
-            raise CompilationError(message)
+            raise CompilationError(message, code="wrong_argument")
 
     for i, value in enumerate(call_args):
         add(value, f"argument {i + 1}")
     if not lines:
         raise CompilationError(
-            f"{fname}() got no lines; it aligns two or more lines, as in {fname}(d, r)"
+            f"{fname}() got no lines; it aligns two or more lines, as in {fname}(d, r)",
+            code="wrong_argument",
         )
     if len(lines) == 1:
         raise CompilationError(
             f"{fname}() got one line, which has no other line to align with; pass two "
-            f"or more lines, as in {fname}(d, r), or remove the call"
+            f"or more lines, as in {fname}(d, r), or remove the call",
+            code="wrong_argument",
         )
     if len({id(v) for v in lines}) != len(lines):
-        raise CompilationError(f"{fname}(): a line is passed more than once")
+        raise CompilationError(f"{fname}(): a line is passed more than once", code="wrong_argument")
     return lines
 
 
@@ -1102,22 +1120,26 @@ def _sample_envelope(
     if isinstance(envelope, str):
         raise CompilationError(
             f"custom(): got the name {envelope!r}; pass a callable f(t) that returns "
-            "the envelope at t clock cycles, or the samples to custom_samples()"
+            "the envelope at t clock cycles, or the samples to custom_samples()",
+            code="wrong_argument",
         )
     if not callable(envelope):
         raise CompilationError(
-            f"custom(): argument 2 must be a callable f(t), got {_describe(envelope)}"
+            f"custom(): argument 2 must be a callable f(t), got {_describe(envelope)}",
+            code="wrong_argument",
         )
     if is_symbolic(duration):
         raise CompilationError(
             "custom(): the duration must be known while tracing, since the envelope "
-            "is sampled then; pass it as an int argument or a constant"
+            "is sampled then; pass it as an int argument or a constant",
+            code="invalid_duration",
         )
     try:
         count = operator.index(duration)
     except TypeError:
         raise CompilationError(
-            f"custom(): the duration must be an int number of clock cycles, got {duration!r}"
+            f"custom(): the duration must be an int number of clock cycles, got {duration!r}",
+            code="invalid_duration",
         ) from None
     if rate is not None:
         from ._durations import at_rate
@@ -1127,7 +1149,8 @@ def _sample_envelope(
         raise CompilationError(
             f"custom(): a duration of {count} clock cycles is over the limit of "
             f"{MAX_CUSTOM_SAMPLES}, one sample per cycle; split the envelope into "
-            "consecutive drives of at most that length"
+            "consecutive drives of at most that length",
+            code="limit_exceeded",
         )
     samples = []
     for k in range(count):
@@ -1137,7 +1160,8 @@ def _sample_envelope(
             raise CompilationError(
                 "custom(): the envelope returned a value that depends on a kernel "
                 "parameter; scale the waveform by it instead, as "
-                "wf_scale(custom(duration, f), amplitude)"
+                "wf_scale(custom(duration, f), amplitude)",
+                code="invalid_waveform",
             )
         try:
             number: complex = value.__float__()
@@ -1146,11 +1170,13 @@ def _sample_envelope(
         if number.imag != 0.0:
             raise CompilationError(
                 f"custom(): the envelope returned {number} at t={t * scale}; complex envelopes "
-                "are not supported yet, so return real values"
+                "are not supported yet, so return real values",
+                code="invalid_waveform",
             )
         if not math.isfinite(number.real):
             raise CompilationError(
-                f"custom(): the envelope returned {number.real} at t={t * scale}"
+                f"custom(): the envelope returned {number.real} at t={t * scale}",
+                code="invalid_waveform",
             )
         samples.append(number.real)
     return samples
@@ -1166,7 +1192,8 @@ def _envelope_number(value: Any, t: float) -> complex:
         except (TypeError, ValueError):
             pass
     raise CompilationError(
-        f"custom(): the envelope returned {_describe(value)} at t={t}, not a number"
+        f"custom(): the envelope returned {_describe(value)} at t={t}, not a number",
+        code="invalid_waveform",
     )
 
 
@@ -1427,10 +1454,10 @@ def _iterate(value: Any) -> Any:
         )
         if value.vtype in _LINE_TYPES:
             message += "; a line is one value, and its tone is line.tone"
-        raise CompilationError(message)
+        raise CompilationError(message, code="unsupported_construct")
     if is_symbolic(value):
         if value.__class__ is _Choice:
-            raise CompilationError(f"cannot iterate over {value.origin}")
+            raise CompilationError(f"cannot iterate over {value.origin}", code="runtime_value")
         names = _parameter_names(value)
         raise SymbolicValueError(
             f"cannot iterate over kernel parameter {', '.join(map(repr, names))}",
@@ -1441,7 +1468,8 @@ def _iterate(value: Any) -> Any:
         return iter(value)
     except TypeError:
         raise CompilationError(
-            f"cannot iterate over {type(value).__name__} in a pulse kernel"
+            f"cannot iterate over {type(value).__name__} in a pulse kernel",
+            code="wrong_argument",
         ) from None
 
 
@@ -1480,7 +1508,8 @@ def _star_args(value: Any) -> list[Any]:
         return list(value)
     if isinstance(value, IRValue):
         raise CompilationError(
-            f"cannot unpack a pulse {value.vtype} value with *; pass it as an argument"
+            f"cannot unpack a pulse {value.vtype} value with *; pass it as an argument",
+            code="wrong_argument",
         )
     return list(_iterate(value))
 
@@ -1491,11 +1520,14 @@ def _merge_kwargs(target: dict[Any, Any], other: Any, strict: bool) -> None:
         keys = other.keys()
     except AttributeError:
         raise CompilationError(
-            f"argument after ** must be a mapping, not {type(other).__name__}"
+            f"argument after ** must be a mapping, not {type(other).__name__}",
+            code="wrong_argument",
         ) from None
     for key in keys:
         if strict and key in target:
-            raise CompilationError(f"got multiple values for keyword argument {key!r}")
+            raise CompilationError(
+                f"got multiple values for keyword argument {key!r}", code="wrong_argument"
+            )
         target[key] = other[key]
 
 
@@ -1527,7 +1559,7 @@ class _UndefinedLocalError(CompilationError):
     """A name was read before the kernel bound it."""
 
     def __init__(self, name: str, message: str = "") -> None:
-        super().__init__(message or f"undefined local: {name}")
+        super().__init__(message or f"undefined local: {name}", code="unassigned_name")
         self.name = name
         self.message = message
 
@@ -1669,11 +1701,15 @@ class PulseIREmitter:
         try:
             return self._loop(prog, 0, -1, len(prog.instrs), -1)
         except _UndefinedLocalError as e:
-            error = CompilationError(
-                e.message
-                or f"{e.name!r} is used before it is assigned; assign it on every path that "
-                "reaches this line (an if on a value known while tracing takes only one arm)"
-            )
+            if e.message:
+                error = CompilationError(e.message, code="unassigned_name")
+            else:
+                error = CompilationError(
+                    f"{e.name!r} is used before it is assigned",
+                    code="unassigned_name",
+                    fix="assign it on every path that reaches this line (an if on a value "
+                    "known while tracing takes only one arm)",
+                )
             error.__dict__.update(e.__dict__)
             raise error from None
 
@@ -1786,7 +1822,8 @@ class PulseIREmitter:
                             value = self._resolve_global(arg)
                         elif value is _EMPTY_CELL:
                             raise CompilationError(
-                                f"closure variable {arg!r} is referenced before assignment"
+                                f"closure variable {arg!r} is referenced before assignment",
+                                code="unassigned_name",
                             )
                     push(value)
 
@@ -1804,7 +1841,8 @@ class PulseIREmitter:
                         raise
                     except (TypeError, IndexError, KeyError) as e:
                         raise CompilationError(
-                            f"subscript failed: {type(obj).__name__}[{index!r}]: {e}"
+                            f"subscript failed: {type(obj).__name__}[{index!r}]: {e}",
+                            code="python_error",
                         ) from e
                     push(value)
                     if (
@@ -1831,7 +1869,7 @@ class PulseIREmitter:
                         try:
                             push(getattr(obj, arg))
                         except (AttributeError, TypeError) as e:
-                            raise CompilationError(_attribute_error(obj, arg)) from e
+                            raise _attribute_error(obj, arg) from e
 
                 elif op is _call_kw:
                     names = pop()
@@ -1894,7 +1932,8 @@ class PulseIREmitter:
                             raise CompilationError(
                                 f"for loop did not finish after {MAX_UNROLLED_ITERATIONS} "
                                 "iterations; loops over Python iterables are unrolled, "
-                                "so they must be finite"
+                                "so they must be finite",
+                                code="limit_exceeded",
                             )
                         push(value)
                         continue
@@ -1942,11 +1981,12 @@ class PulseIREmitter:
                 elif op is _unpack:
                     val = pop()
                     if not isinstance(val, (tuple, list)):
-                        raise CompilationError(_unpack_error(val, arg))
+                        raise CompilationError(_unpack_error(val, arg), code="python_error")
                     if len(val) != arg:
                         raise CompilationError(
                             f"cannot unpack {len(val)} values into {arg} names; "
-                            f"the {type(val).__name__} has {len(val)}"
+                            f"the {type(val).__name__} has {len(val)}",
+                            code="python_error",
                         )
                     stack.extend(reversed(val))
 
@@ -1972,7 +2012,9 @@ class PulseIREmitter:
                     val = pop()
                     lst = stack[-arg]
                     if not isinstance(lst, list):
-                        raise CompilationError(f"list update on non-list: {type(lst)}")
+                        raise CompilationError(
+                            f"list update on non-list: {type(lst)}", code="python_error"
+                        )
                     if op is _list_append:
                         lst.append(val)
                         if val.__class__ is IRValue and val.vtype in LINEAR_TYPES:
@@ -2056,7 +2098,8 @@ class PulseIREmitter:
                         obj[index] = value
                     except (TypeError, IndexError, KeyError, ValueError) as e:
                         raise CompilationError(
-                            f"assignment failed: {type(obj).__name__}[{index!r}] = ...: {e}"
+                            f"assignment failed: {type(obj).__name__}[{index!r}] = ...: {e}",
+                            code="python_error",
                         ) from e
                     if index.__class__ is slice and obj.__class__ is list:
                         self._track_slots(obj, 0)
@@ -2101,12 +2144,15 @@ class PulseIREmitter:
                             "this assert or raise is in an arm of an if on a value known only "
                             "when the program runs, so whether it fails is decided as the "
                             "program runs, and a kernel cannot raise then; check the value in "
-                            "the classical function, or handle each outcome with if/else"
+                            "the classical function, or handle each outcome with if/else",
+                            code="runtime_value",
                         )
                     if exc is AssertionError or isinstance(exc, AssertionError):
                         detail = f": {exc}" if isinstance(exc, AssertionError) and exc.args else ""
-                        raise CompilationError(f"assertion failed in kernel{detail}")
-                    raise CompilationError(f"kernel raised {exc!r}")
+                        raise CompilationError(
+                            f"assertion failed in kernel{detail}", code="kernel_raised"
+                        )
+                    raise CompilationError(f"kernel raised {exc!r}", code="kernel_raised")
 
                 elif op is bc.CALL_EX:
                     star_kwargs = pop() if arg else None
@@ -2126,7 +2172,8 @@ class PulseIREmitter:
                         del obj[index]
                     except (TypeError, IndexError, KeyError) as e:
                         raise CompilationError(
-                            f"del failed: {type(obj).__name__}[{index!r}]: {e}"
+                            f"del failed: {type(obj).__name__}[{index!r}]: {e}",
+                            code="python_error",
                         ) from e
                     if obj.__class__ is list:
                         self._track_slots(obj, 0)
@@ -2164,15 +2211,21 @@ class PulseIREmitter:
                     before, after = arg
                     val = pop()
                     if val.__class__ is IRValue:
-                        raise CompilationError(f"cannot unpack a pulse {val.vtype} value")
+                        raise CompilationError(
+                            f"cannot unpack a pulse {val.vtype} value",
+                            code="wrong_argument",
+                        )
                     try:
                         items = list(val)
                     except TypeError:
-                        raise CompilationError(f"cannot unpack {type(val).__name__}") from None
+                        raise CompilationError(
+                            f"cannot unpack {type(val).__name__}", code="python_error"
+                        ) from None
                     if len(items) < before + after:
                         raise CompilationError(
                             f"not enough values to unpack: expected at least {before + after}, "
-                            f"got {len(items)}"
+                            f"got {len(items)}",
+                            code="python_error",
                         )
                     rest = items[before : len(items) - after]
                     self._track_slots(rest, 0)
@@ -2195,7 +2248,8 @@ class PulseIREmitter:
                     push(None)
 
                 elif op is bc.UNSUPPORTED:
-                    raise CompilationError(arg)
+                    what, _, fix = arg.partition("; ")
+                    raise CompilationError(what, code="unsupported_construct", fix=fix)
 
                 elif op is bc.REGION_END:
                     return _REGION_DONE
@@ -2235,7 +2289,7 @@ class PulseIREmitter:
         negated = isinstance(cond, _NotMeasurement)
         value = cond.value if negated else cond
         if value.vtype not in ("measurement", "i1"):
-            raise CompilationError(_BRANCH_TYPE_MESSAGE.format(value.vtype))
+            raise CompilationError(_BRANCH_TYPE_MESSAGE.format(value.vtype), code="runtime_value")
         if not self._can_roll:
             raise CompilationError(_PACKED_BRANCH_MESSAGE)
 
@@ -2523,7 +2577,8 @@ class PulseIREmitter:
             raise CompilationError(
                 f"{subject} would depend on both a measurement result and a condition on "
                 f"answers at line {line}, which one test cannot combine; branch on them in "
-                "nested ifs, or with `and` and `or` in the if condition"
+                "nested ifs, or with `and` and `or` in the if condition",
+                code="runtime_value",
             )
         kind = _choice_kind(a)
         if kind is not None and kind == _choice_kind(b):
@@ -2533,13 +2588,15 @@ class PulseIREmitter:
             raise CompilationError(
                 f"{subject} would depend on {on} through a value made inside an arm of "
                 f"{where}, which does not exist after it; {inside}, or make the value "
-                "before it"
+                "before it",
+                code="runtime_value",
             )
         raise CompilationError(
             f"{subject} would depend on {on}: the arms of {where} leave {_describe(a)} and "
             f"{_describe(b)} on it, and an if chooses only between two numbers or two "
             "waveforms, two lines or tones of one kind, or two conditions on answers; "
-            f"compute it before the if, or {outside}"
+            f"compute it before the if, or {outside}",
+            code="runtime_value",
         )
 
     def _undefined(self, name: str) -> _UndefinedLocalError:
@@ -2606,7 +2663,10 @@ class PulseIREmitter:
             outcome = _REGION_DONE
         if returns:
             if outcome is not None:
-                raise CompilationError("a measurement-conditioned branch cannot return a value")
+                raise CompilationError(
+                    "a measurement-conditioned branch cannot return a value",
+                    code="runtime_value",
+                )
         elif outcome is not _REGION_DONE:
             from ._conditions import rejoin_error
 
@@ -2650,11 +2710,13 @@ class PulseIREmitter:
                     "a comprehension or generator expression cannot filter on a condition "
                     "known only when the program runs: which items it has would be decided "
                     "as the program runs; loop with a for statement and branch with an if "
-                    "statement in its body instead"
+                    "statement in its body instead",
+                    code="runtime_value",
                 )
             raise CompilationError(
                 "a measurement-conditioned branch may only change list entries that "
-                "hold lines or tones"
+                "hold lines or tones",
+                code="runtime_value",
             )
         return dict(self.locals), slots, copies
 
@@ -2933,7 +2995,8 @@ class PulseIREmitter:
         except OverflowError:
             raise CompilationError(
                 f"for loop over {loop.rng!r} runs more than 2**63 - 1 times, "
-                "the most a loop can run"
+                "the most a loop can run",
+                code="limit_exceeded",
             ) from None
         if threshold == 0 or count > threshold:
             return False
@@ -3024,18 +3087,21 @@ class PulseIREmitter:
         if name in self._fn_closures:
             value = self._fn_closures[name]
             if value is _EMPTY_CELL:
-                raise CompilationError(f"closure variable {name!r} is referenced before assignment")
+                raise CompilationError(
+                    f"closure variable {name!r} is referenced before assignment",
+                    code="unassigned_name",
+                )
             return value
         if name in self._builtins:
             return self._builtins[name]
         return (_UNRESOLVED, name)
 
-    def _unknown_name(self, name: str) -> str:
+    def _unknown_name(self, name: str) -> CompilationError:
         """The error for calling *name*, which nothing in scope defines."""
         known = [*OP_TABLE, *self.locals, *self._fn_globals, *self._fn_closures, *self._builtins]
-        from ._emit_errors import did_you_mean
+        from ._emit_errors import unknown
 
-        return f"unknown pulse op: {name}" + did_you_mean(name, known, call=True)
+        return unknown(f"unknown pulse op: {name}", "unknown_name", name, known, call=True)
 
     # ── Call dispatch ────────────────────────────────────────────────
 
@@ -3066,7 +3132,7 @@ class PulseIREmitter:
 
                     op_fn = getattr(ops, name, None) if name in _PULSE_OP_NAMES else None
                     if op_fn is None:
-                        raise CompilationError(self._unknown_name(name))
+                        raise self._unknown_name(name)
                     call_args = _bind_positional(op_fn, call_args, kwargs)
                 elif name in _PLAYS and len(call_args) > 2:
                     from ._emit_errors import play_arity_error
@@ -3077,7 +3143,7 @@ class PulseIREmitter:
                 elif name == "range":
                     self._push_range(call_args)
                 else:
-                    raise CompilationError(self._unknown_name(name))
+                    raise self._unknown_name(name)
                 return
 
         # Resolved callable: a DSL op only if it is the DSL function itself,
@@ -3119,7 +3185,8 @@ class PulseIREmitter:
         elif callable_val.__class__ is ClassicalFunction:
             raise CompilationError(
                 f"in a kernel, call {callable_val.name}.submit(...) and take the answer "
-                f"with .result(); calling {callable_val.name}(...) runs it on the host"
+                f"with .result(); calling {callable_val.name}(...) runs it on the host",
+                code="unsupported_construct",
             )
 
         inner = getattr(callable_val, "__pulse_kernel_fn__", None)
@@ -3138,7 +3205,7 @@ class PulseIREmitter:
         fname = getattr(callable_val, "__name__", "")
         if callable_val is range:
             if kwargs:
-                raise CompilationError("range() takes no keyword arguments")
+                raise CompilationError("range() takes no keyword arguments", code="wrong_argument")
             self._push_range(call_args)
             return
 
@@ -3253,14 +3320,17 @@ class PulseIREmitter:
                     from ._conditions import measurement_operand_error
 
                     raise measurement_operand_error(f"{fname}()") from e
-                raise CompilationError(f"failed to evaluate {fname}({call_args!r}): {e}") from e
+                raise CompilationError(
+                    f"failed to evaluate {fname}({call_args!r}): {e}", code="python_error"
+                ) from e
             except NameError as e:
                 if e.name not in _PULSE_OP_NAMES:
                     raise
                 raise CompilationError(
                     f"{fname}() calls the pulse op {e.name}() but ran as plain Python: "
                     "only functions, methods and kernels are inlined into a kernel; "
-                    f"call {e.name}() from a module-level function instead"
+                    f"call {e.name}() from a module-level function instead",
+                    code="unsupported_construct",
                 ) from e
             except CompilationError as e:
                 # bool() of a condition known only at run time is that condition.
@@ -3287,7 +3357,8 @@ class PulseIREmitter:
         raise CompilationError(
             f"cannot call an object of type {type(callable_val).__name__!r} in a kernel; "
             "a kernel calls pulse ops, other kernels, Python functions and methods, "
-            "and classical functions' .submit()"
+            "and classical functions' .submit()",
+            code="unsupported_construct",
         )
 
     def _call_on_choice(
@@ -3327,7 +3398,9 @@ class PulseIREmitter:
         try:
             result = _choice_map(call, *call_args, *(kwargs or {}).values())
         except _EVALUATION_ERRORS as e:
-            raise CompilationError(f"failed to evaluate {fname}({call_args!r}): {e}") from e
+            raise CompilationError(
+                f"failed to evaluate {fname}({call_args!r}): {e}", code="python_error"
+            ) from e
         self.stack.append(result)
         return True
 
@@ -3340,7 +3413,8 @@ class PulseIREmitter:
         scope = choice.scope
         if scope and getattr(self.b, "scope", ())[: len(scope)] != scope:
             raise CompilationError(
-                f"{choice.origin} is used outside the loop or branch that if is in; use it there"
+                f"{choice.origin} is used outside the loop or branch that if is in; use it there",
+                code="runtime_value",
             )
 
     def _emit_chosen(
@@ -3500,7 +3574,10 @@ class PulseIREmitter:
 
     def _push_range(self, call_args: list[StackVal]) -> None:
         if not 1 <= len(call_args) <= 3:
-            raise CompilationError(f"range() takes 1 to 3 arguments, got {len(call_args)}")
+            raise CompilationError(
+                f"range() takes 1 to 3 arguments, got {len(call_args)}",
+                code="wrong_argument",
+            )
         if not all(isinstance(a, int) for a in call_args):
             from ._emit_errors import range_error
 
@@ -3508,7 +3585,7 @@ class PulseIREmitter:
         try:
             self.stack.append(range(*call_args))
         except ValueError as exc:
-            raise CompilationError(str(exc)) from exc
+            raise CompilationError(str(exc), code="wrong_argument") from exc
 
     def _inline_helper(
         self,
@@ -3521,7 +3598,8 @@ class PulseIREmitter:
         if self._depth >= MAX_INLINE_DEPTH:
             raise CompilationError(
                 f"{fn.__name__}: kernel calls nest more than {MAX_INLINE_DEPTH} deep; "
-                "a recursive kernel must stop at a condition known at compile time"
+                "a recursive kernel must stop at a condition known at compile time",
+                code="limit_exceeded",
             )
         general = code.co_kwonlyargcount or code.co_flags & _VARIADIC
         if general:
@@ -3533,7 +3611,8 @@ class PulseIREmitter:
                 call_args = _bind_positional(fn, call_args, kwargs or {})
             if len(call_args) != len(params):
                 raise CompilationError(
-                    f"{fn.__name__}: expected {len(params)} args, got {len(call_args)}"
+                    f"{fn.__name__}: expected {len(params)} args, got {len(call_args)}",
+                    code="wrong_argument",
                 )
 
         helper = self.__class__(
@@ -3614,8 +3693,17 @@ class PulseIREmitter:
         word = _TYPE_WORDS.get(value.vtype, value.vtype)
         article = "an" if word[0] in "aeiou" else "a"
         hint = "its attributes are" if value.vtype in _LINE_TYPES else "only a line has attributes,"
+        close = None
+        if value.vtype in _LINE_TYPES:
+            from .._errors import _closest
+
+            close = _closest(name, ("tone", "tones", "get_calibration"))
         raise CompilationError(
-            f"{article} {word} has no attribute {name!r}; {hint} tone, tones and get_calibration"
+            f"{article} {word} has no attribute {name!r}",
+            code="unknown_attribute",
+            fix=f"{hint} tone, tones and get_calibration",
+            did_you_mean=close,
+            misspelled=None if close is None else name,
         )
 
     # ── Pulse IR emission ────────────────────────────────────────────
@@ -3631,7 +3719,7 @@ class PulseIREmitter:
                 from ._durations import traced_round_duration
 
                 return (traced_round_duration(self.b, call_args, None),)
-            raise CompilationError(f"unknown pulse op: {fname}")
+            raise CompilationError(f"unknown pulse op: {fname}", code="unknown_name")
 
         value_count, attr_names, rtypes, operand_types = entry
         acquires = fname in _ACQUIRES
@@ -3674,7 +3762,8 @@ class PulseIREmitter:
                     if last is None or len(call_args) != value_count + len(attr_names) + 1:
                         raise CompilationError(
                             f"{fname}: expected {value_count + len(attr_names)} args, "
-                            f"got {len(call_args)}"
+                            f"got {len(call_args)}",
+                            code="wrong_argument",
                         )
                     optional = (last, call_args[-1])
                     call_args = call_args[:-1]
@@ -3806,7 +3895,8 @@ class PulseIREmitter:
                 if left is not None and right is not None and left != right:
                     raise CompilationError(
                         f"{fname}() operands have durations {left} and {right}; "
-                        "waveform arithmetic needs equal durations"
+                        "waveform arithmetic needs equal durations",
+                        code="invalid_waveform",
                     )
                 return left if left is not None else right
             return left
@@ -4130,12 +4220,14 @@ def _bound(fn: Any, args: list[StackVal], kwargs: dict[str, StackVal]) -> inspec
         try:
             hit = (fn, inspect.signature(fn, follow_wrapped=False))
         except (TypeError, ValueError) as e:
-            raise CompilationError(f"cannot bind keyword arguments for {fn!r}") from e
+            raise CompilationError(
+                f"cannot bind keyword arguments for {fn!r}", code="wrong_argument"
+            ) from e
         _SIGNATURES[id(fn)] = hit
     try:
         bound = hit[1].bind(*args, **kwargs)
     except TypeError as e:
-        raise CompilationError(f"{getattr(fn, '__name__', fn)}: {e}") from e
+        raise CompilationError(f"{getattr(fn, '__name__', fn)}: {e}", code="wrong_argument") from e
     bound.apply_defaults()
     return bound
 
@@ -4148,7 +4240,10 @@ def _bind_positional(fn: Any, args: list[StackVal], kwargs: dict[str, StackVal])
         keywords = dict(bound.kwargs)
         tone = keywords.pop("tone", None)
         if keywords:
-            raise CompilationError(f"{getattr(fn, '__name__', fn)}: keyword-only parameters")
+            raise CompilationError(
+                f"{getattr(fn, '__name__', fn)}: keyword-only parameters",
+                code="wrong_argument",
+            )
         return list(bound.args) if tone is None else [*bound.args, tone]
     return list(bound.args)
 

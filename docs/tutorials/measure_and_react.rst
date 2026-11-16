@@ -71,12 +71,12 @@ check:
 
    result = pulse.simulate(active_reset, q, shots_count=1000, seed=7)
    records = np.asarray(result.records)
-   print([round(float(m), 3) for m in records.mean(axis=0)])   # [0.496, 0.003]
-   print(round(result.level_population(0), 3))   # 0.998
+   print([round(float(m), 3) for m in records.mean(axis=0)])   # [0.496, 0.002]
+   print(round(result.level_population(0), 3))   # 0.999
 
 The first readout reads 1 in about half of the shots, and the second reads 1
 in fewer than one shot in 300: the reset works whichever outcome came first.
-At the end, 99.8% of the population is in the ground state.
+At the end, 99.9% of the population is in the ground state.
 
 How the simulator follows both outcomes
 ---------------------------------------
@@ -91,7 +91,7 @@ probability, and samples the shots from those branches afterwards:
        if branch.probability > 0.01:
            print(branch.levels, round(branch.probability, 3))
    # (0, 0) 0.505
-   # (1, 0) 0.492
+   # (1, 0) 0.494
 
 ``levels`` holds what each readout found along that branch. Both likely
 branches end with a second readout of 0. The small branches the loop skips

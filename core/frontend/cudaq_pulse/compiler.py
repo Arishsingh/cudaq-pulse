@@ -374,12 +374,14 @@ class _MachineModel:
                     raise CompilationError(
                         f"no link named {link!r}: compile() was given one Controller, which has"
                         " no links; give compile() a pulse.ControlSystem that describes the whole"
-                        f" control system, with its links (links={{{link!r}: pulse.Link(...)}})"
+                        f" control system, with its links (links={{{link!r}: pulse.Link(...)}})",
+                        code="control_system",
                     )
                 known = ", ".join(repr(n) for n in self.link_names) or "none"
                 raise CompilationError(
                     f"no link named {link!r} in the control system (its links: {known}); "
-                    "add it to ControlSystem(links={...})"
+                    "add it to ControlSystem(links={...})",
+                    code="control_system",
                 )
             return found
         return link
@@ -499,15 +501,19 @@ class CompileMetrics:
 
 @dataclass(frozen=True)
 class CompileOptions:
-    """Passes, schedule policy, control system and unroll threshold of a
-    compilation. ``unroll_threshold`` is a non-negative ``int``, 8 by
-    default; 0 never unrolls (see ``cudaq_pulse.compile``)."""
+    """Passes, schedule policy, control system, unroll threshold and unit
+    warnings of a compilation. ``unroll_threshold`` is a non-negative
+    ``int``, 8 by default; 0 never unrolls (see ``cudaq_pulse.compile``)."""
 
     schedule: str = "alap"
     passes: tuple[Pass, ...] = DEFAULT_PASSES
     machine: _MachineModel = _DEFAULT_MACHINE
     flatten_schedules: bool = False
     unroll_threshold: int = DEFAULT_UNROLL_THRESHOLD
+    # Not a field, so making and comparing options costs no more: a
+    # compilation with unit warnings has options of a subclass
+    # (kernel/_unit_warnings.py).
+    unit_warnings = False
 
     @staticmethod
     def make(
@@ -516,6 +522,7 @@ class CompileOptions:
         control_system: ControlSystem | Controller | None = None,
         flatten_schedules: bool = False,
         unroll_threshold: int | None = None,
+        unit_warnings: bool = False,
     ) -> CompileOptions:
         if schedule not in _VALID_SCHEDULES:
             close = _closest(str(schedule).lower(), _VALID_SCHEDULES)
@@ -535,21 +542,26 @@ class CompileOptions:
                     "compile(control_system=) takes a pulse.ControlSystem or a "
                     f"pulse.Controller, got {control_system!r}"
                 ) from None
-        if machine.max_concurrent_drives <= 0:
-            raise ValueError("ControlSystem.max_concurrent_drives must be positive")
-        if machine.max_concurrent_readouts <= 0:
-            raise ValueError("ControlSystem.max_concurrent_readouts must be positive")
-        if machine.readout_latency_cycles < 0:
-            raise ValueError("the readout latency cannot be negative")
-        if machine.line_switch_penalty_cycles < 0:
-            raise ValueError("ControlSystem.line_switch_penalty_cycles cannot be negative")
-        return CompileOptions(
+            if machine.max_concurrent_drives <= 0:
+                raise ValueError("ControlSystem.max_concurrent_drives must be positive")
+            if machine.max_concurrent_readouts <= 0:
+                raise ValueError("ControlSystem.max_concurrent_readouts must be positive")
+            if machine.readout_latency_cycles < 0:
+                raise ValueError("the readout latency cannot be negative")
+            if machine.line_switch_penalty_cycles < 0:
+                raise ValueError("ControlSystem.line_switch_penalty_cycles cannot be negative")
+        options = CompileOptions(
             schedule,
             passes,
             machine,
             bool(flatten_schedules),
             resolve_unroll_threshold(unroll_threshold),
         )
+        if unit_warnings:
+            from .kernel._unit_warnings import with_unit_warnings
+
+            return with_unit_warnings(options)
+        return options
 
     def schedule_args(self) -> tuple[str, int, int, int, int]:
         m = self.machine
@@ -1085,7 +1097,7 @@ def _rejected_literal(
     from .kernel._emitter import add_source_note
 
     message, word = error.args
-    located = CompilationError(message)
+    located = CompilationError(message, code="wrong_argument")
     finder = traced.finder(word)
     try:
         if not finder.locate(fn, trace_args):
@@ -1156,7 +1168,13 @@ def build(
     builder.locate_structural = frozenset(parameters)
     plain = machine._plain
     clocks = None if plain else _clocked_builder(builder, machine, target)
-    builder.returned = _trace_kernel_with_builder(fn, builder, trace_args)
+    if options.unit_warnings:
+        from .kernel._unit_warnings import unit_checked
+
+        checked = unit_checked(builder, target)
+        builder.returned = _trace_kernel_with_builder(fn, builder, trace_args, checked)
+    else:
+        builder.returned = _trace_kernel_with_builder(fn, builder, trace_args)
     needed = tuple(sorted(builder.structural & set(parameters)))
     if needed:
         error = SymbolicValueError(
@@ -1188,7 +1206,8 @@ def build(
                     span = f"{defined[0]}..{defined[-1]}" if defined else "none"
                     raise CompilationError(
                         f"{name}() uses qudit {', '.join(map(str, missing))}, which quantum system "
-                        f"{target.name!r} does not define (it defines qudits {span})"
+                        f"{target.name!r} does not define (it defines qudits {span})",
+                        code="control_system",
                     )
     buf: Any = builder.get_buffer()
     routes = builder.routes
@@ -1276,7 +1295,7 @@ def build(
         # every wait at its lowest length: with any values.
         at = text.find("the program lasts more than 2**60 cycles with its lines delayed")
         if at >= 0:
-            raise CompilationError(text[at:].partition("\n")[0]) from None
+            raise CompilationError(text[at:].partition("\n")[0], code="limit_exceeded") from None
         # A call over a per-controller link that uses several controllers
         # fails with any values too. The error names the function as the
         # kernel calls it, not the version of it the module holds.
@@ -1287,7 +1306,7 @@ def build(
                 symbol = line.split("'", 2)[1]
                 called = next((f.base_name for f in builder.classical if f.name == symbol), symbol)
                 line = line.replace(f"'{symbol}'", f"'{called}'", 1)
-                raise CompilationError(f"{name}(): {line}") from None
+                raise CompilationError(f"{name}(): {line}", code="control_system") from None
         # A timing budget counts every wait at its highest length, so it
         # fails the same way with any values.
         if not parameters or any(name in text for name in _BUDGETS):
@@ -1636,14 +1655,16 @@ def _fix_keys(
                 raise CompilationError(
                     f"{label}.dispatch_keys gives {name} {key}, but {known[1]} also serves"
                     f" link {link!r} and gives it {known[0]}; give {name} one key, or put"
-                    " the processors on different links"
+                    " the processors on different links",
+                    code="control_system",
                 )
             owner = taken.get(key, name)
             if owner != name:
                 raise CompilationError(
                     f"{label}.dispatch_keys gives {name} {key}, but {table[owner][1]} also"
                     f" serves link {link!r} and gives that key to {owner}; give each"
-                    " function its own key, or put the processors on different links"
+                    " function its own key, or put the processors on different links",
+                    code="control_system",
                 )
             table[name] = (key, label)
 
@@ -1658,6 +1679,7 @@ def compile[**P](
     quantum_system: QuantumSystem | None = None,
     flatten_schedules: bool = False,
     unroll_threshold: int | None = None,
+    unit_warnings: bool = False,
 ) -> CompiledKernel[P]:
     """Compile a ``@cudaq_pulse.kernel`` without its arguments.
 
@@ -1699,6 +1721,13 @@ def compile[**P](
         non-negative ``int``; 0 never unrolls, so every such loop stays
         rolled, even one of no or one iteration. Either way the
         program, its schedule and its simulation are the same.
+    unit_warnings:
+        Issue a ``UnitWarning`` at each kernel line that gives a time
+        without units (a bare number as a duration, a wait, or a pulse's
+        ``sigma``, ``beta`` or ``width``, which counts clock cycles) or a
+        frequency far below the quantum system's carriers (one probably in
+        MHz or kHz rather than Hz). Off by default. The warnings are
+        issued when the kernel traces; they do not change the program.
     quantum system:
         Pin the compiled kernel to one quantum system: a call with handles of
         another raises ``QuantumSystemMismatchError``, and a call without handles
@@ -1716,5 +1745,6 @@ def compile[**P](
         control_system,
         flatten_schedules,
         kernel.unroll_threshold if unroll_threshold is None else unroll_threshold,
+        unit_warnings,
     )
     return CompiledKernel(kernel, options, quantum_system)

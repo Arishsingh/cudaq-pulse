@@ -11,6 +11,58 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ## [0.1.1] - Unreleased
 
+### Added
+
+- **Error codes.** Every `CompilationError` has a `code`, a
+  `pulse.ErrorCode` (`unknown_name`, `wrong_argument`, `runtime_value`,
+  `invalid_duration` and the others listed under Errors), so a program or
+  tool can act on the kind of error without reading the message. `fix`
+  holds what the message says to write instead, `did_you_mean` the name to
+  write in place of a misspelled op or line method (`drve` names `drive`,
+  `get_calibraton` names `get_calibration`), and `location`, for an error
+  raised while a kernel is traced, the kernel line: a `Problem` with its
+  `file`, `line`, `source` (new: the line's text), function and, for a
+  misspelling, the misspelled name as `value`. Messages read as before; a
+  few that gave no fix now give one (`drive(q, ...)` says to pass
+  `get_drive_line(q)`, `shift_phase(line, ...)` to pass `line.tone`).
+- **Unit warnings.** `pulse.compile(k, unit_warnings=True)` issues a
+  `pulse.UnitWarning` at each kernel line that gives a duration, wait,
+  `sigma`, DRAG `beta` or flat-top `width` as a bare number (clock cycles:
+  `square(20, a)` is 10 ns at 2 GHz), or a frequency far below the quantum
+  system's carriers (`shift_frequency(tone, 5)` is 5 Hz). Times with
+  units, `0`, `round_duration` counts and calibrated pulses are not
+  warned. It is off by default, does not change the program, and a
+  compilation without it checks nothing.
+- **Reading calibrations.** `PhysicalQudit.calibrations` and
+  `Coupling.calibrations` give the calibrations a qudit or coupling
+  publishes, read-only and keyed as `calibrations=` takes them (by
+  `pulse.gates.Gate`, or `(gate, transition)`), so a calibration step can
+  change one and keep the rest: `q.replace(calibrations={**q.calibrations,
+  pulse.gates.X: tuned})`. `get_calibration` still derives what is not
+  published.
+- **Conventions page.** The user guide's Conventions page states the
+  units, time bases and signs a program depends on: bare numbers are clock
+  cycles and frequencies Hz, the drive axis of a complex amplitude,
+  `shift_phase(+phi)` as a virtual `Rz(+phi)` that turns later pulses by
+  `-phi`, the frame of a simulated state, which way a virtual detuning
+  moves Ramsey fringes (`|D - v|`), and that an exported `phase_rad`
+  multiplies the samples by `exp(-i phase_rad)`. Each rule has a snippet
+  that shows it; `tests/test_conventions.py` runs the snippets, checks what
+  they print, and checks each rule.
+- **Phase gates.** `pulse.gates.Z`, `S` and `T` are virtual Z rotations by
+  pi, pi / 2 and pi / 4. `get_calibration` gives each as a `VirtualZ`
+  (`cudaq_pulse.quantum_systems.VirtualZ(phase_rad=...)`), derived on every
+  transition where a quantum system publishes none, and `drive(line, it)`
+  plays it as `shift_phase(line.tone, phase_rad)`: no pulse and no time.
+  The operations guide's new "Phase frames and virtual Z gates" section
+  gives the sign convention and why a simulated state is in the frame.
+- **Post-selection.** `SimulationResult.postselect(keep)` is the result
+  over the branches the test `keep` accepts (a function of a `Branch`, as
+  `lambda b: b.answers("herald")[-1]`): their state, normalized, their
+  probabilities divided by the kept total, which is the new result's
+  `acceptance`, and the shots that took them in `records`. Every other
+  result has an `acceptance` of 1.0.
+
 ### Fixed
 
 - `python -m cudaq_pulse.doctor` passes on a machine without GPU support:
@@ -56,6 +108,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 - `controller.unroll()` of a format `/2` program on a shared line gives each
   event its own qudit, on a line of its own, where it gave the line's first
   qudit.
+- `transmon_surface17` played its `X` pulses with a DRAG coefficient of 0,
+  had no pulse for the 1-2 transition, and read out without assignment
+  errors, so `readout="model"` erred only by relaxing during the readout
+  pulse. Its shipped calibration now gives
+  each qubit a fitted DRAG `beta_ns` (0.51-0.58 ns; `X` errs by 9.6e-4 in
+  simulation, against the published 9e-4, where it erred by 2.7e-3), an `X`
+  of its 1-2 transition (`get_calibration(pulse.gates.X, transition=(1, 2))`,
+  20 ns, returning `|2>` to `|1>` with probability 0.997-0.999), and readout
+  assignment errors with which `readout="model"` reproduces the published
+  two-state readout errors (mean assignment fidelity 99.1%, was 99.4%). Each
+  value records its kind, source, uncertainty, measurement run and method:
+  the file holds 599 values (89 published, 89 digitized, 421 fitted), where
+  it held 495. Simulated populations on `transmon_surface17` change in the
+  third decimal; `transmon_surface17(calibration=None)` keeps the published
+  values alone.
 
 ## [0.1.0] - 2026-11-13
 

@@ -46,7 +46,7 @@ its own frequency and drive strength.
 .. code-block:: python
 
    result = pulse.simulate(flip_all, data)
-   print([round(result.level_populations(q)[1], 3) for q in data])   # [0.976, 0.99, 0.982]
+   print([round(result.level_populations(q)[1], 3) for q in data])   # [0.978, 0.992, 0.984]
 
 The simulation holds only the qubits the program uses, here a
 27-dimensional state space for three three-level transmons. The other 14 qubits of the quantum system
@@ -132,8 +132,8 @@ compare.
    for excite in (0, 1):
        result = pulse.simulate(ramsey_next_to, data[0], x2, excite, 10_000.0)
        print(excite, round(result.level_populations(data[0])[1], 3))
-   # 0 0.689
-   # 1 0.601
+   # 0 0.677
+   # 1 0.587
 
 After a 10 µs wait, D1's excited-state population differs by about 0.09
 depending on its neighbour, from a phase difference of about 0.37 radians:

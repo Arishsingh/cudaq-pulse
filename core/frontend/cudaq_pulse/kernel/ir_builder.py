@@ -28,7 +28,7 @@ class SymbolicValueError(CompilationError):
     """
 
     def __init__(self, message: str, names: tuple[str, ...] = (), operation: str = ""):
-        super().__init__(message)
+        super().__init__(message, code="symbolic_parameter")
         self.names = names
         self.operation = operation
 
@@ -116,13 +116,15 @@ class UndecidableComparison(_UndecidableComparisons):
             raise CompilationError(
                 f"cannot compare a runtime IR value at trace time ({self.lhs!r} {self.op} "
                 f"{self.rhs!r}); branch on a measurement result directly with "
-                "`if result:` or `if not result:`"
+                "`if result:` or `if not result:`",
+                code="runtime_value",
             )
         names = parameter_names(self)
         if not names or contains_answer(self):
             raise CompilationError(
                 f"cannot decide {self!r} at trace time: it is known only when the program "
-                "runs; use it as an if condition, alone or with and, or, not"
+                "runs; use it as an if condition, alone or with and, or, not",
+                code="runtime_value",
             )
         raise SymbolicValueError(
             f"cannot decide {self.lhs!r} {self.op} {self.rhs!r} at trace time: a float "
@@ -202,7 +204,8 @@ class _SymbolicNumber(_UndecidableComparisons):
             raise CompilationError(
                 f"{operation} needs the value of {arithmetic_text(self)}, the answer of a "
                 "classical call, which is known only when the program runs; use it as a "
-                "pulse op argument (amplitude, phase, frequency) or in an if condition"
+                "pulse op argument (amplitude, phase, frequency) or in an if condition",
+                code="runtime_value",
             )
         quoted = ", ".join(map(repr, dict.fromkeys(names)))
         arguments = "argument" if len(set(names)) == 1 else "arguments"
@@ -291,7 +294,8 @@ class AnswerValue(_SymbolicNumber):
     def __hash__(self) -> int:
         raise CompilationError(
             f"{self!r} is known only when the program runs, so it has no hash: it cannot be "
-            "a set member or a dict key; compare it with == or test it with `in` a tuple"
+            "a set member or a dict key; compare it with == or test it with `in` a tuple",
+            code="runtime_value",
         )
 
     def __repr__(self) -> str:
@@ -426,7 +430,8 @@ class IRValue(_UndecidableComparisons):
         what = "a measurement result" if self.vtype == "measurement" else repr(self)
         raise CompilationError(
             f"cannot decide {what} at trace time: it is known only when the program runs; "
-            "branch on it directly with `if result:` or `if not result:`"
+            "branch on it directly with `if result:` or `if not result:`",
+            code="runtime_value",
         )
 
     def __repr__(self) -> str:

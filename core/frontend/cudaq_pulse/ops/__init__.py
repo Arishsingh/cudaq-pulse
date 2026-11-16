@@ -88,11 +88,14 @@ class Line:
     def get_calibration(self, gate: Gate, transition: tuple[int, int] = (0, 1)) -> Any:
         """The calibrated pulse of *gate* (a ``pulse.gates.Gate``) on the
         line's qudit, from the quantum system the kernel compiles for: a
-        ``DragPulse`` for ``X``, ``X90``, ``Y`` and ``Y90`` on a drive line,
-        a ``ReadoutPulse`` for ``READOUT`` on a readout line, derived as
-        ``pulse.gates`` describes where not published. Both play:
-        ``drive(line, line.get_calibration(pulse.gates.X))``, and their
-        fields are numbers known while the kernel compiles. *transition*
+        ``DragPulse`` for ``X``, ``X90``, ``Y`` and ``Y90`` and a
+        ``VirtualZ`` for ``Z``, ``S`` and ``T`` on a drive line, a
+        ``ReadoutPulse`` for ``READOUT`` on a readout line, derived as
+        ``pulse.gates`` describes where not published. All play:
+        ``drive(line, line.get_calibration(pulse.gates.X))``, and
+        ``drive(line, line.get_calibration(pulse.gates.T))`` shifts the
+        phase of the line's tone by pi / 4, with no pulse; their fields are
+        numbers known while the kernel compiles. *transition*
         names another transition's calibration, which must be published;
         play it at that transition's tone, ``line.tones[transition]``."""
         return _require_context("Line.get_calibration")
@@ -135,7 +138,10 @@ def round_duration(
 
 
 def _require_context(op_name: str) -> NoReturn:
-    raise CompilationError(f"{op_name}() must be called inside a @cudaq_pulse.kernel function")
+    raise CompilationError(
+        f"{op_name}() must be called inside a @cudaq_pulse.kernel function",
+        code="unsupported_construct",
+    )
 
 
 # ── Channel access ───────────────────────────────────────────────────────
