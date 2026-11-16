@@ -428,7 +428,11 @@ Left out
 ``cudaq_pulse.controller.unroll(program)`` turns a ``/2`` program into the
 ``/1`` program of the same kernel, for a backend that needs every
 execution; phases agree up to rounding and branches are numbered in the
-order they first appear.
+order they first appear. A ``/2`` program lists a shared line once, so on
+one, ``unroll`` numbers the lines in the order of the ``/2`` lines, each
+shared line's qudits in its order (those the program plays at), where the
+``/1`` export may number them in the order the kernel takes them, and a
+sync names every ``/1`` line of a shared line it joins.
 
 Clocks
 ------

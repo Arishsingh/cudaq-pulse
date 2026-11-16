@@ -13,7 +13,7 @@ import sys
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
-from cudaq_pulse.controller import DriveLine, ReadoutLine
+from cudaq_pulse.controller import DriveLine, ReadoutLine, unroll
 
 
 def _system(readout_lines, drive_lines=(0, 1, 2, 3), **limits):
@@ -804,6 +804,67 @@ def test_format_1_of_several_controllers_exports_a_shared_line():
     assert all("tone_slot" not in e for e in right["events"])
     with pytest.raises(pulse.UnsupportedError, match="format /2 is written for one controller"):
         lowered.export_to_controller(controller=0, version=2)
+
+
+def test_unroll_gives_each_tone_of_a_shared_line_its_own_line():
+    lowered = _lowered(multiplexed, _feedline(4), 0, 1, 2, 3)
+    flat = lowered.export_to_controller()
+    unrolled = unroll(lowered.export_to_controller(version=2))
+    assert unrolled["lines"] == flat["lines"]
+    assert unrolled["events"] == flat["events"]
+
+
+def test_unroll_numbers_a_shared_line_s_tones_in_its_order():
+    @pulse.kernel
+    def taken_out_of_order(a, b, c):
+        rc = get_readout_line(c)
+        ra = get_readout_line(a)
+        sync(ra, rc)
+        readout(ra, square(100, 0.05))
+        sync(ra, rc)
+        readout(rc, square(100, 0.05))
+
+    lowered = _lowered(taken_out_of_order, _feedline(2, (0, 1, 2)), 0, 1, 2)
+    unrolled = unroll(lowered.export_to_controller(version=2))
+    assert [(line["line"], line["qudit"]) for line in unrolled["lines"]] == [(0, 0), (1, 2)]
+    readouts = [e for e in unrolled["events"] if e["kind"] == "readout"]
+    assert [(e["line"], e["qudit"]) for e in readouts] == [(0, 0), (1, 2)]
+    assert _slots(unrolled) == _slots(lowered.export_to_controller())
+
+
+@pulse.classical(max_latency_ns=200)
+def _delay(bits: pulse.Bits) -> int:
+    return 40 + 40 * bits[0]
+
+
+def test_unroll_puts_a_variable_wait_and_its_segment_on_its_tone():
+    @pulse.kernel
+    def waits_on_a_tone(a, b, c):
+        rc = get_readout_line(c)
+        rb = get_readout_line(b)
+        ra = get_readout_line(a)
+        n = _delay.submit([readout(rb, square(100, 0.05))]).result()
+        sync(rb, rc)
+        wait(rc, n)
+        readout(rc, square(100, 0.05))
+        readout(ra, square(100, 0.05))
+
+    lowered = _lowered(waits_on_a_tone, _feedline(2, (0, 1, 2)), 0, 1, 2)
+    flat = lowered.export_to_controller()
+    unrolled = unroll(lowered.export_to_controller(version=2))
+
+    def by_tone(program):
+        tone = {line["line"]: line["qudit"] for line in program["lines"]}
+        segments = [(s["opened_by"], tone.get(s["line"])) for s in program["segments"]]
+        events = [
+            (e["kind"], tone[e["line"]], e["tone_slot"], e["start_cycles"])
+            for e in program["events"]
+            if "tone_slot" in e
+        ]
+        return segments, events
+
+    assert by_tone(unrolled) == by_tone(flat)
+    assert by_tone(flat)[0] == [("start", None), ("wait", 2)]
 
 
 def test_a_shared_line_simulates_as_its_qudits_own_lines():

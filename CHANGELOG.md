@@ -51,6 +51,9 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   line also has the line's `qudits` and `max_concurrent_tones`, and each
   event on it a `tone_slot`, the slot format `/2` gives it. Programs on
   dedicated lines export as before.
+- `controller.unroll()` of a format `/2` program on a shared line gives each
+  event its own qudit, on a line of its own, where it gave the line's first
+  qudit.
 
 ## [0.1.0] - 2026-11-13
 

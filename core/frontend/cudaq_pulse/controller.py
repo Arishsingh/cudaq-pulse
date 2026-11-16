@@ -1232,6 +1232,7 @@ def unroll(program: Mapping[str, Any]) -> dict[str, Any]:
         return dict(program)
     if program["format"] != _STRUCTURED:
         raise InvalidValueError(f"cannot unroll format {program['format']!r}")
+    flat_lines, handle_of, handles = _handles(program)
     qudit_of = {line["line"]: line["qudits"][0] for line in program["lines"]}
     waveforms = [
         None if entry is None else {k: v for k, v in entry.items() if k not in _IDS}
@@ -1347,13 +1348,19 @@ def unroll(program: Mapping[str, Any]) -> dict[str, Any]:
                 line, qudit = None, None
             elif kind in ("submit", "answer"):
                 line, qudit = item["link"], -1
+            elif "qudits" in item:
+                qudit = item["qudits"][0]
+                line = handle_of[(item["line"], qudit)]
             else:
                 line, qudit = item["line"], qudit_of.get(item["line"], -1)
+                if handles is not None and line is not None:
+                    line = handle_of[(line, qudit)]
             event: dict[str, Any] = {
                 "index": len(events),
                 "kind": kind,
                 "line": line,
                 "qudit": qudit,
+                **({"tone_slot": item["tone_slot"]} if "tone_slot" in item else {}),
                 "start_cycles": start,
                 "duration_cycles": duration,
                 "end_cycles": None if start is None or duration is None else start + duration,
@@ -1396,7 +1403,11 @@ def unroll(program: Mapping[str, Any]) -> dict[str, Any]:
                         event["waveform"], run_time[item["waveform"]], resolve
                     )
             elif kind == "sync":
-                event["lines"] = list(item["lines"])
+                event["lines"] = (
+                    list(item["lines"])
+                    if handles is None
+                    else [h for line in item["lines"] for h in handles[line]]
+                )
             elif kind in ("submit", "answer"):
                 event["link"] = item["link"]
                 if "controller" in item:
@@ -1464,14 +1475,116 @@ def unroll(program: Mapping[str, Any]) -> dict[str, Any]:
     flat["links"] = {
         k: {names.get(f, f): v for f, v in link.items()} for k, link in flat["links"].items()
     }
-    flat["lines"] = [
-        {"line": line["line"], "role": line["role"], "qudit": line["qudits"][0]}
-        for line in program["lines"]
-    ]
+    flat["lines"] = flat_lines
     flat["events"] = events
     if "frame_state" in flat:
         flat["frame_state"] = frame_state
+    if handles is not None:
+        for key in ("frame_state", "runtime_tones"):
+            if key in flat:
+                flat[key] = _on_handles(flat[key], handle_of, handles)
+        flat["segments"] = _segments_on_handles(flat["segments"], events, handles)
     return flat
+
+
+def _handles(
+    program: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[tuple[int, int], int], list[list[int]] | None]:
+    """The format /1 lines of format /2 *program*, the /1 line of each
+    (/2 line, qudit), and the /1 lines of each /2 line (``None`` when no
+    line is shared, and the lines are the same). A shared line has one /1
+    line for each of its qudits the program plays at, in the line's order,
+    with the line's ``qudits`` and ``max_concurrent_tones``."""
+    if not any("max_concurrent_tones" in line for line in program["lines"]):
+        same = [
+            {"line": line["line"], "role": line["role"], "qudit": line["qudits"][0]}
+            for line in program["lines"]
+        ]
+        return same, {(line["line"], line["qudit"]): line["line"] for line in same}, None
+    played: set[tuple[int, int]] = set()
+    stack = [program["events"]]
+    while stack:
+        for event in stack.pop():
+            if event["kind"] == "loop":
+                stack.append(event["body"])
+            elif "qudits" in event:
+                played.add((event["line"], event["qudits"][0]))
+    for key in ("frame_state", "runtime_tones"):
+        found = program.get(key, ())
+        for item in found.values() if isinstance(found, Mapping) else found:
+            if "qudits" in item:
+                played.add((item["line"], item["qudits"][0]))
+    lines: list[dict[str, Any]] = []
+    handle_of: dict[tuple[int, int], int] = {}
+    handles: list[list[int]] = []
+    for line in program["lines"]:
+        shared = "max_concurrent_tones" in line
+        qudits = [q for q in line["qudits"] if not shared or (line["line"], q) in played]
+        mine = []
+        for qudit in qudits or line["qudits"][:1]:
+            entry: dict[str, Any] = {"line": len(lines), "role": line["role"], "qudit": qudit}
+            if shared:
+                entry["qudits"] = list(line["qudits"])
+                entry["max_concurrent_tones"] = line["max_concurrent_tones"]
+            handle_of[(line["line"], qudit)] = len(lines)
+            mine.append(len(lines))
+            lines.append(entry)
+        handles.append(mine)
+    return lines, handle_of, handles
+
+
+def _on_handles(
+    found: Any, handle_of: Mapping[tuple[int, int], int], handles: Sequence[Sequence[int]]
+) -> Any:
+    """``frame_state`` or ``runtime_tones`` of format /2 with each entry on
+    the format /1 line of its qudit (``_handles``)."""
+
+    def entry(item: Mapping[str, Any]) -> dict[str, Any]:
+        if "qudits" not in item:
+            line = item.get("line")
+            if line is None or not 0 <= line < len(handles):
+                return dict(item)
+            return {**item, "line": handles[line][0]}
+        qudit = item["qudits"][0]
+        return {
+            k: handle_of[(item["line"], qudit)] if k == "line" else v
+            for k, v in item.items()
+            if k != "qudits"
+        }
+
+    if isinstance(found, Mapping):
+        return {key: entry(item) for key, item in found.items()}
+    return [entry(item) for item in found]
+
+
+def _segments_on_handles(
+    segments: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    handles: Sequence[Sequence[int]],
+) -> list[dict[str, Any]]:
+    """*segments* of format /2 with the line of each opened by a variable
+    wait the format /1 line of that wait: segment k is opened by the k-th
+    barrier of the format /1 *events* (a variable wait, or a blocking wait
+    for an answer)."""
+    barriers = [
+        e
+        for e in events
+        if (e["kind"] == "wait" and "length" in e)
+        or (e["kind"] == "answer" and e["wait"] == "blocking")
+    ]
+    out = []
+    for s in segments:
+        if s.get("opened_by") == "wait" and 0 <= s["line"] < len(handles):
+            k = s["index"] - 1
+            barrier = barriers[k] if 0 <= k < len(barriers) else None
+            line = (
+                barrier["line"]
+                if barrier is not None and barrier["line"] in handles[s["line"]]
+                else handles[s["line"]][0]
+            )
+            s = {**s, "line": line}
+        out.append(dict(s))
+    return out
 
 
 def _add_samples(
