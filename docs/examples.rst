@@ -135,6 +135,12 @@ Core Examples
        tomography, and a heralded repeat-until-success loop on the
        controller, post-selected on the herald's answer with
        ``result.postselect`` *(simulates)*
+   * - 29
+     - ``29_waveform_envelopes.py``
+     - The samples each built-in envelope plays, from
+       ``cudaq_pulse.controller.sample_waveform`` of the controller export,
+       printed and plotted; the operations guide's waveform explorer is the
+       interactive version
 
 Examples 24 to 26 send compiled programs between processes, which works
 because programs pickle; their worker processes use the ``spawn`` start

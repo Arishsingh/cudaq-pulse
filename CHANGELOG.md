@@ -63,6 +63,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `acceptance`, and the shots that took them in `records`. Every other
   result has an `acceptance` of 1.0.
 
+- **Waveform explorer.** The operations guide has an interactive plot of
+  the built-in waveforms next to its waveform table: sliders for each
+  constructor's arguments, the `wf_*` combinations, an optional modulated
+  drive in the qudit's frame after `shift_frequency` and `shift_phase`, and
+  DRAG's suggested `beta = -1 / alpha`. It prints the call that makes the
+  plot, in clock cycles with the ns beside them; a test compiles every
+  call it prints and checks its samples against `sample_waveform`. Readers
+  without JavaScript see a static figure. The new example
+  `29_waveform_envelopes.py` prints and plots the samples of every
+  built-in envelope.
+
 ### Fixed
 
 - `python -m cudaq_pulse.doctor` passes on a machine without GPU support:

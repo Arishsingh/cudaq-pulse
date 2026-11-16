@@ -59,8 +59,16 @@ def _own_docstrings_only(app, what, name, obj, options, lines):
         lines.clear()
 
 
+def _waveform_explorer(app, pagename, templatename, context, doctree):
+    # Files added here load on this page only: Sphinx resets them per page.
+    if pagename == "user_guide/operations":
+        app.add_css_file("waveform-explorer.css")
+        app.add_js_file("waveform-explorer.js", defer="defer")
+
+
 def setup(app):
     # The generated dialect reference fences its examples as ```mlir, which
     # Pygments has no lexer for.
     app.add_lexer("mlir", TextLexer)
     app.connect("autodoc-process-docstring", _own_docstrings_only)
+    app.connect("html-page-context", _waveform_explorer)

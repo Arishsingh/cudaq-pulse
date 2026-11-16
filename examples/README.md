@@ -41,6 +41,7 @@ the `cudaq-pulse-tools` wheel, which `cudaq-pulse` requires).
 | [`26_drift_following.py`](26_drift_following.py) | A background process recompiles on drift, by quantum system fingerprint; programs are swapped in between batches | CPU, simulates |
 | [`27_realtime_decoding.py`](27_realtime_decoding.py) | Real-time QEC decoding with a deadline and a fallback table: a CUDA-Q QEC decoder called with CUDA-Q QEC's own functions | CUDA-Q QEC (Linux) and an NVIDIA GPU for its decoder, simulates |
 | [`28_t_state_injection.py`](28_t_state_injection.py) | T-state injection with the virtual-Z `pulse.gates.T`, tomography, and a heralded repeat-until-success loop post-selected on a classical call's answer | CPU, simulates |
+| [`29_waveform_envelopes.py`](29_waveform_envelopes.py) | The samples each built-in envelope plays, from `sample_waveform`, printed and plotted | CPU |
 | [`custom_passes/python_pass.py`](custom_passes/python_pass.py) | A schedule check written in Python | CPU |
 | [`custom_passes/cpp/`](custom_passes/cpp) | An MLIR pass plugin for `cudaq-pulse-opt --load-pass-plugin` | CPU (builds with CMake) |
 | [`controller_backend/toy_controller/__init__.py`](controller_backend/toy_controller/__init__.py) | A toy controller backend found by its entry point: limits, `emit` and `run` | CPU |
