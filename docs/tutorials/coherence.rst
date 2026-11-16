@@ -81,12 +81,12 @@ whose slope gives T1:
 The fit gives 29.3 µs against the model's 29.1 µs. The small difference
 comes from the readout pulse: the qubit keeps decaying while it is measured.
 
-.. figure:: figures/t1_decay.svg
-   :alt: Excited-state population against wait time from 0 to 60 microseconds, falling from 0.97 toward the thermal population of 0.02, with the exponential decay for a T1 of 29.1 microseconds drawn through the points.
-   :width: 90%
+.. themed-figure:: figures/t1_decay.svg
+   :alt: Excited-state population of D1 after waits from 0 to 60 microseconds, falling from 0.97 toward the thermal population of 0.021. A straight-line fit to the log of the excess gives T1 = 29.3 microseconds; the exponential the model's 29.1 microseconds predicts runs through the points.
+   :width: 100%
 
-   Excited-state population after each wait, with the exponential decay the
-   model's T1 predicts.
+   Excited-state population after each wait, from the ``t1`` kernel, with
+   the exponential the model's T1 predicts and the T1 the log fit gives.
 
 Ramsey fringes
 --------------
@@ -109,6 +109,11 @@ fringes. ``shift_frequency`` detunes the drive's tone by 1 MHz:
        drive(d, x90)
        sync(d, r)
        return readout(r, r.get_calibration(pulse.gates.READOUT))
+
+The detuning is a frame change on the drive's tone, so it costs no pulse.
+Sweep the wait and find the first revival:
+
+.. code-block:: python
 
    taus = np.linspace(0, 4_000, 41)
    fringes = [pulse.simulate(ramsey, q, tau).level_population(1) for tau in taus]
@@ -143,6 +148,11 @@ the same during the sequence cancels:
        sync(d, r)
        return readout(r, r.get_calibration(pulse.gates.READOUT))
 
+The only change from ``ramsey`` is the π pulse that splits the wait in two.
+Run it at every fifth wait:
+
+.. code-block:: python
+
    echoes = [pulse.simulate(echo, q, tau).level_population(1) for tau in taus[::5]]
    print([round(p, 3) for p in echoes])   # [0.022, 0.031, 0.035, 0.047, 0.048, 0.055, 0.061, 0.074, 0.073]
 
@@ -151,9 +161,9 @@ ground state for every wait, with no fringes. What's left is a slow rise
 from decay and dephasing during the wait, which an echo measurement of T2
 fits.
 
-.. figure:: figures/ramsey_echo.svg
-   :alt: Excited-state population against total wait from 0 to 4 microseconds. The Ramsey curve oscillates between about 0.05 and 0.95 with a period of 1 microsecond. The echo curve stays near zero and rises slowly.
-   :width: 90%
+.. themed-figure:: figures/ramsey_echo.svg
+   :alt: Excited-state population against the total wait from 0 to 4 microseconds. The Ramsey curve oscillates between 0.03 and 0.95 once per microsecond, from the 1 MHz detuning. The echo stays near the ground state, climbing slowly from 0.02 to 0.07.
+   :width: 100%
 
    With a 1 MHz detuning, the Ramsey sequence oscillates once per
    microsecond. The echo refocuses the detuning and stays near the ground

@@ -58,6 +58,10 @@ for the slot their CZ gate would take:
    x1, d2 = qs.qudit("X1"), qs.qudit("D2")
    cz_slot = qs.coupling(x1, d2).get_calibration(pulse.gates.CZ).duration_ns * pulse.ns
 
+The coupling between them carries its CZ calibration, whose duration sets the
+slot. The kernel plays both pulses and idles both lines for it:
+
+.. code-block:: python
 
    @pulse.kernel
    def evolve_pair(a, b):
@@ -68,6 +72,9 @@ for the slot their CZ gate would take:
        wait(da, cz_slot)   # the CZ's 98 ns slot; flux pulses aren't simulated yet
        wait(db, cz_slot)
 
+Simulate it on the CPU, with a step fine enough for the pair's detuning:
+
+.. code-block:: python
 
    cpu = pulse.simulate(evolve_pair, x1, d2, dt_ns=0.02)
    print(cpu.dims)   # (3, 3)
@@ -112,12 +119,13 @@ into the cuDensityMat runtime. You can see the last stage on any machine:
 The pulse program you simulate on the GPU is the same one you would export
 to a control system; only the last steps of compilation differ.
 
-.. figure:: figures/architecture.svg
-   :alt: CUDA-Q Pulse architecture: Python kernels go through Capture, Pulse MLIR, and Compile to three destinations: Simulate, Run on hardware, and Real-time classical.
-   :width: 95%
+.. themed-figure:: figures/lowering.svg
+   :alt: The page's evolve_pair kernel at each level of its lowering for GPU simulation: Pulse MLIR, 21 operations; QOp, 82 operations; cuDensityMat, 226 operations; LLVM IR, 1845 operations, of them 182 calls into the cuDensityMat runtime. From the Pulse MLIR the same program also exports for a controller as 5 events.
+   :width: 100%
 
-   One compiled program, three destinations. GPU simulation is one of the
-   simulation paths.
+   ``evolve_pair`` at each level of ``mlir()``, with the operations each one
+   holds, counted from its text. The same Pulse MLIR is what
+   ``export_to_controller()`` turns into a controller's events.
 
 Where to go next
 ----------------

@@ -98,7 +98,8 @@ evolves it on the CPU, with the qubit's relaxation and dephasing included:
    print([round(p, 3) for p in levels])   # [0.036, 0.963, 0.001]
 
 These are the populations of levels 0, 1 and 2 at the end of the program.
-At amplitude 0.16 the pulse is close to a π pulse, and 96% of the
+At amplitude 0.16 the pulse is close to a π pulse (the sweep below puts it
+at 0.165), and 96% of the
 population ends up in the excited state. The rest comes from the model's
 physics: the qubit starts in a thermal mixture with about 2% already
 excited, which the pulse flips the other way, and it relaxes a little during
@@ -125,13 +126,13 @@ Because ``amplitude`` is annotated ``float``, it stays a parameter of the
 compiled program instead of being fixed into it. The 41 simulations share
 one compilation, which ``cache_info`` confirms.
 
-.. figure:: figures/rabi_sweep.svg
-   :alt: Excited-state population against drive amplitude from 0 to 0.4. The population rises from 0.02 to 0.96 at amplitude 0.16, marked as the pi pulse, falls back to 0.02 near 0.33, and rises again.
-   :width: 90%
+.. themed-figure:: figures/rabi_sweep.svg
+   :alt: Simulated excited-state population after the 32 ns Gaussian pulse, for drive amplitudes from 0 to 0.4, with a cosine fit. The population rises from 0.02 to 0.96; the fit puts the pi pulse at amplitude 0.165, and the population falls back near 0.33, a full turn.
+   :width: 100%
 
-   The excited-state population after the pulse, for each amplitude. It
-   peaks at 0.16, the π pulse, and returns close to zero near 0.33, a full
-   rotation.
+   The excited-state population after the pulse, for each amplitude, with a
+   cosine fit. The fit puts the π pulse at 0.165, and the population returns
+   close to zero near 0.33, a full rotation.
 
 Take shots
 ----------
@@ -149,6 +150,14 @@ shot. Ask for shots and the simulator samples them from the same evolution:
 ``result.records`` holds one row per shot and one column per readout, here
 the kernel's single readout. The fraction of shots that read 1 matches the
 excited-state population above, within sampling error.
+
+.. themed-figure:: figures/rabi_shots.svg
+   :alt: The fraction of the first n of 1000 sampled shots that read 1, against n on a log scale. It wanders at first and settles at 0.956, inside a band of two standard errors around the excited-state population of 0.963, which narrows as the shots add up.
+   :width: 100%
+
+   The mean of the first *n* shots against *n*. It wanders while there are
+   few shots and settles into the shaded band, two standard errors around
+   the population, which narrows as 1/√n.
 
 See what was compiled
 ---------------------
@@ -175,12 +184,13 @@ which the ``[viz]`` extra installs (``pip install "cudaq-pulse[viz]"``):
    figure = scheduled.timeline()
    figure.savefig("rabi_schedule.svg")
 
-.. figure:: figures/rabi_schedule.svg
-   :alt: Schedule timeline with two rows. Line 0, the drive line, has a drive pulse from cycle 0 to 64. Line 1, the readout line, has a readout from cycle 64 to 664.
-   :width: 90%
+.. themed-figure:: figures/rabi_schedule.svg
+   :alt: Timeline of one call of the Rabi kernel on D1: a 32 ns Gaussian drive pulse, then, where sync puts it, a 300 ns square readout pulse on the readout line.
+   :width: 100%
 
-   The schedule of one call. Line 0 is the qubit's drive line and line 1 its
-   readout line.
+   The schedule of one call, drawn from ``scheduled``, in nanoseconds: each
+   pulse is its envelope as the controller plays it. ``timeline()`` draws
+   the same schedule as bars, in clock cycles.
 
 ``print(scheduled.mlir())`` shows the same program as MLIR in the Pulse
 dialect, the form that compiler passes, simulators and controller backends
