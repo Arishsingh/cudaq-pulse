@@ -23,6 +23,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   not work: a driver too old for the extra, both extras installed, a
   library that does not load. `GpuSupportNotBuiltError` no longer says the
   build cannot execute pulse programs: only GPU simulation needs GPU support.
+- Under `rcp` and `alap_rcp`, a pulse that branches on, or computes with, a
+  readout on a line with a calibrated delay (`ReadoutLine(q, delay_ns=)`)
+  waited its feedback latency from where the readout was scheduled to end,
+  not from where the delayed line ends it, so the program failed its own
+  check (on the reading controller or, across controllers, on the one that
+  plays the pulse). The wait now starts where the readout ends on its line.
+  Programs without a readout delay schedule as before.
 
 ## [0.1.0] - 2026-11-13
 

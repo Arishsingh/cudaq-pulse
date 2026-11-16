@@ -486,8 +486,9 @@ the lines of a runtime qudit, so that the kernel's one schedule fits
 whichever qudits a call binds. A line's delay is split by its own
 controller's fine delay, and ``rcp`` keeps a branch on a readout for the
 reading controller's ``feedback_latency_cycles`` converted to program
-cycles. ``custom(duration, f)`` samples ``f`` at the rate of the line that
-plays it, the waveforms made from it too; samples given to
+cycles, counted from where the readout ends on its delayed line.
+``custom(duration, f)`` samples ``f`` at the rate of the line that plays
+it, the waveforms made from it too; samples given to
 ``custom_samples`` play only on lines of the rate they were made for, and
 on a runtime qudit's line, whose rate depends on the call, ``custom()`` is
 a compile error when the controllers' rates differ.
