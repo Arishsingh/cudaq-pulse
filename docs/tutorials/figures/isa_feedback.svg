@@ -1,0 +1,70 @@
+<!--
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 260" width="880" height="260" font-family="Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">An outcome read on one controller and branched on by another</title>
+  <desc id="d">Controller 0 acquires qudit 0 from cycle 0 to 200 into bit m0. The bit is ready on controller 0 at cycle 280, after 80 cycles of feedback latency, and on controller 1 at cycle 320, after 40 more cycles of peer latency. Controller 1 waits 80 timesteps of 4 cycles, then branches on m0 and, only when it is 1, plays the flip of qudit 2 from cycle 320 to 360.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a4a4a"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="880" height="260" fill="#ffffff"/>
+
+  <!-- x = 170 + 1.6 * cycles: cycle 0 at 170, 400 at 810 -->
+
+  <!-- lane labels -->
+  <g font-size="14" fill="#1a1a1a">
+    <text x="20" y="62" font-weight="bold">controller 0</text>
+    <text x="20" y="80" font-size="12" fill="#6b6b6b" font-family="Menlo, Consolas, monospace">ch0.0 readout q0</text>
+    <text x="20" y="162" font-weight="bold">controller 1</text>
+    <text x="20" y="180" font-size="12" fill="#6b6b6b" font-family="Menlo, Consolas, monospace">ch0 drive q2</text>
+  </g>
+  <g stroke="#e3e3e3" stroke-width="1">
+    <line x1="170" y1="70" x2="850" y2="70"/>
+    <line x1="170" y1="170" x2="850" y2="170"/>
+  </g>
+
+  <!-- the sync at cycle 200 -->
+  <line x1="490" y1="36" x2="490" y2="200" stroke="#b0b0b0" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="490" y="30" font-size="11.5" text-anchor="middle" fill="#8a8a8a">sync, cycle 200</text>
+
+  <!-- controller 0: acquire 0..200 -->
+  <rect x="170" y="54" width="320" height="32" rx="4" fill="#dbe9f6" stroke="#4a7fb5"/>
+  <text x="330" y="75" font-size="13" text-anchor="middle" fill="#1a1a1a" font-family="Menlo, Consolas, monospace">acquire ch0.0 w0 0.05 m0</text>
+
+  <!-- controller 1: wait 80 (0..320) -->
+  <line x1="170" y1="170" x2="682" y2="170" stroke="#8a8a8a" stroke-width="2"/>
+  <text x="426" y="162" font-size="12" text-anchor="middle" fill="#6b6b6b" font-family="Menlo, Consolas, monospace">wait 80</text>
+
+  <!-- controller 1: branch !m0, conditional play 320..360 -->
+  <rect x="682" y="154" width="64" height="32" rx="4" fill="#ffffff" stroke="#76b900" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="714" y="175" font-size="13" text-anchor="middle" fill="#4f7a00">play</text>
+  <text x="714" y="206" font-size="12" text-anchor="middle" fill="#4f7a00">only if m0 is 1</text>
+
+  <!-- the outcome's latencies, 200..280..320 -->
+  <polyline points="490,86 490,118 682,118 682,151" fill="none" stroke="#4a4a4a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="618" y1="113" x2="618" y2="123" stroke="#4a4a4a" stroke-width="1"/>
+  <text x="497" y="108" font-size="12" fill="#4a4a4a" font-family="Menlo, Consolas, monospace">m0</text>
+  <text x="560" y="110" font-size="12" text-anchor="middle" fill="#1a1a1a">feedback 80</text>
+  <text x="650" y="110" font-size="12" text-anchor="middle" fill="#1a1a1a">peer 40</text>
+
+  <!-- axis -->
+  <g stroke="#d0d0d0" stroke-width="1">
+    <line x1="170" y1="224" x2="810" y2="224"/>
+    <line x1="170" y1="220" x2="170" y2="228"/>
+    <line x1="330" y1="220" x2="330" y2="228"/>
+    <line x1="490" y1="220" x2="490" y2="228"/>
+    <line x1="650" y1="220" x2="650" y2="228"/>
+    <line x1="810" y1="220" x2="810" y2="228"/>
+  </g>
+  <g font-size="11" fill="#8a8a8a" text-anchor="middle">
+    <text x="170" y="242">0</text>
+    <text x="330" y="242">100</text>
+    <text x="490" y="242">200</text>
+    <text x="650" y="242">300</text>
+    <text x="810" y="242">400 cycles (1 GHz)</text>
+  </g>
+</svg>

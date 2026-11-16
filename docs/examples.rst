@@ -183,6 +183,26 @@ Controller Backend
 
 See :doc:`user_guide/controller_backends`.
 
+ISA Lowering
+------------
+
+``examples/isa_lowering/``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - File
+     - Description
+   * - ``toy_isa.py``
+     - A lowering to a toy controller instruction set, its controllers
+       described as data: the timestep, a waveform table, oscillators, a
+       shared feedline, feedback branches within and across controllers, a
+       decoder call, and emulated toy controllers
+
+See :doc:`tutorials/isa_lowering` and :doc:`tutorials/isa_limits`
+(experimental).
+
 Transmon Quantum System Examples
 --------------------------------
 

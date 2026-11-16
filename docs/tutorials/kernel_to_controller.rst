@@ -193,6 +193,10 @@ Where to go next
   controllers joined by a feedback link.
 - :example:`transmon/transmon_surface17_multiplexed_readout.py` reads four
   qudits through one feedline and shows each readout's tone in the export.
+- :doc:`isa_lowering` (experimental) lowers the export to a controller's own
+  instructions, and :doc:`isa_limits` shows what the compiler does about
+  feedback latency, clocks across controllers, instruction and waveform
+  memory, and decoder calls.
 
 :doc:`../user_guide/controller_backends` documents every key of the export
 format, clocks, shared lines and waveform memory, and
