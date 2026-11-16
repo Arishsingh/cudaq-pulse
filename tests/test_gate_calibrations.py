@@ -12,7 +12,7 @@ import sys
 
 import cudaq_pulse as pulse
 import pytest
-from cudaq_pulse.gates import CZ, READOUT, X90, Y90, Gate, X, Y
+from cudaq_pulse.gates import CZ, READOUT, X90, Y90, Gate, S, T, X, Y, Z
 from cudaq_pulse.quantum_systems import (
     Coupling,
     DispersiveReadout,
@@ -21,6 +21,7 @@ from cudaq_pulse.quantum_systems import (
     MicrowaveDrive,
     PhysicalQudit,
     ReadoutPulse,
+    VirtualZ,
 )
 
 _X = DragPulse(duration_ns=40.0, sigma_ns=10.0)
@@ -49,10 +50,11 @@ def _mlir(lowered, name):
 
 
 def test_the_gates_are_one_name_each():
-    assert [g.name for g in Gate] == ["X", "X90", "Y", "Y90", "CZ", "READOUT"]
-    assert [str(g) for g in Gate] == ["x", "x90", "y", "y90", "cz", "readout"]
+    assert [g.name for g in Gate] == ["X", "X90", "Y", "Y90", "Z", "S", "T", "CZ", "READOUT"]
+    assert [str(g) for g in Gate] == ["x", "x90", "y", "y90", "z", "s", "t", "cz", "readout"]
     assert (pulse.gates.X, pulse.gates.READOUT) == (Gate.X, Gate.READOUT)
     assert not hasattr(pulse.gates, "SX") and not hasattr(pulse.gates, "MEASURE")
+    assert not hasattr(pulse.gates, "TDG") and not hasattr(pulse.gates, "SDG")
 
 
 def test_the_gate_values_are_the_ones_targets_check():
@@ -102,6 +104,30 @@ def test_a_published_calibration_is_used_as_published():
     qudit = _qudit(calibrations={X: _X, X90: x90})
     assert qudit.get_calibration(X90) == x90
     assert qudit.get_calibration(Y90) == x90.replace(phase_rad=math.pi / 2)
+
+
+def test_the_phase_gates_are_virtual_zs_on_every_transition():
+    for qudit in (_qudit(), _qudit(calibrations={})):
+        assert qudit.get_calibration(Z) == VirtualZ(phase_rad=math.pi)
+        assert qudit.get_calibration(S) == VirtualZ(phase_rad=math.pi / 2)
+        assert qudit.get_calibration(T) == VirtualZ(phase_rad=math.pi / 4)
+        assert qudit.get_calibration(T, transition=(1, 2)) == VirtualZ(phase_rad=math.pi / 4)
+    t = _qudit().get_calibration(T)
+    assert t.replace(phase_rad=-t.phase_rad) == VirtualZ(phase_rad=-math.pi / 4)
+    assert repr(t) == f"VirtualZ(phase_rad={math.pi / 4!r})"
+
+
+def test_a_published_phase_gate_is_used_as_published():
+    corrected = VirtualZ(phase_rad=math.pi / 4 + 0.01)
+    qudit = _qudit(calibrations={X: _X, T: corrected})
+    assert qudit.get_calibration(T) == corrected
+    assert qudit.get_calibration(S) == VirtualZ(phase_rad=math.pi / 2)
+    with pytest.raises(pulse.InvalidTypeError, match="T calibration of qudit 0 must be a VirtualZ"):
+        _qudit(calibrations={T: _X})
+    with pytest.raises(
+        pulse.InvalidTypeError, match="X calibration of qudit 0 must be a DragPulse"
+    ):
+        _qudit(calibrations={X: corrected})
 
 
 def test_what_is_neither_published_nor_derived_names_the_qudit():
@@ -279,6 +305,33 @@ def test_a_line_has_the_calibrations_of_its_kind():
     with pytest.raises(pulse.CompilationError, match=r"qs.coupling\(a, b\)"):
         cz_on_a_line.lower(dev.qudits[0])
 
+    @pulse.kernel
+    def t_on_a_readout_line(q):
+        r = get_readout_line(q)
+        r.get_calibration(pulse.gates.T)
+
+    with pytest.raises(pulse.CompilationError, match="it is the drive line's"):
+        t_on_a_readout_line.lower(dev.qudits[0])
+
+    @pulse.kernel
+    def t_read_out(q):
+        d = get_drive_line(q)
+        r = get_readout_line(q)
+        readout(r, d.get_calibration(pulse.gates.T))
+
+    with pytest.raises(pulse.CompilationError, match="phase gate and does not readout") as raised:
+        t_read_out.lower(dev.qudits[0])
+    assert raised.value.code is pulse.ErrorCode.CALIBRATION
+
+    @pulse.kernel
+    def t_on_a_line_as_tone(q):
+        d = get_drive_line(q)
+        drive(d, d.get_calibration(pulse.gates.T), tone=d)
+
+    with pytest.raises(pulse.CompilationError, match="shifts the phase of a tone") as raised:
+        t_on_a_line_as_tone.lower(dev.qudits[0])
+    assert raised.value.code is pulse.ErrorCode.WRONG_ARGUMENT
+
 
 def test_a_runtime_qudit_has_no_calibration_while_compiling():
     dev = _device()
@@ -339,8 +392,9 @@ def test_metadata_is_the_users_own_and_no_part_of_the_device():
 
 def test_calibrations_and_metadata_round_trip_through_a_system_file():
     x12 = DragPulse(duration_ns=40.0, sigma_ns=10.0, amplitude=0.2)
+    t = VirtualZ(phase_rad=0.8)
     dev = _device(
-        calibrations={X: _X, (X, (1, 2)): x12, READOUT: _READOUT},
+        calibrations={X: _X, (X, (1, 2)): x12, T: t, READOUT: _READOUT},
         metadata={"fridge": "B"},
         readout=DispersiveReadout(frequency_hz=7e9, dispersive_shift_hz=1e6, linewidth_hz=2e6),
     )
@@ -351,6 +405,7 @@ def test_calibrations_and_metadata_round_trip_through_a_system_file():
          "phase_rad": 0.0},
         {"gate": "x", "transition": [1, 2], "duration_ns": 40.0, "sigma_ns": 10.0,
          "amplitude": 0.2, "beta_ns": 0.0, "phase_rad": 0.0},
+        {"gate": "t", "phase_rad": 0.8},
         {"gate": "readout", "duration_ns": 300.0, "amplitude": None, "sigma_ns": 10.0,
          "integration_ns": 400.0, "photon_number": 4.0},
     ]  # fmt: skip
@@ -359,6 +414,7 @@ def test_calibrations_and_metadata_round_trip_through_a_system_file():
     back = pulse.QuantumSystem.from_dict(json.loads(json.dumps(data)))
     assert back == dev and back.physical_qudits[0].metadata == {"fridge": "B"}
     assert back.physical_qudits[0].get_calibration(X, (1, 2)) == x12
+    assert back.physical_qudits[0].get_calibration(T) == t
 
 
 def test_a_system_file_names_a_calibration_of_the_wrong_kind(tmp_path):

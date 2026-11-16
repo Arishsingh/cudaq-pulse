@@ -9,16 +9,11 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
-from .._errors import (
-    CompilationError,
-    InvalidTypeError,
-    InvalidValueError,
-    NotFoundError,
-)
+from .._errors import CompilationError, InvalidTypeError, InvalidValueError, NotFoundError
+from .ir_builder import IRValue
 
 if TYPE_CHECKING:
     from ._emitter import PulseIREmitter, _Held
-    from .ir_builder import IRValue
 
 
 class LineCalibrations:
@@ -59,7 +54,29 @@ class LineCalibrations:
 
 def play_calibrated(emitter: PulseIREmitter, fname: str, call_args: list[Any]) -> tuple[Any, ...]:
     """*fname*, whose operands are not all of its types: the op on the
-    waveform a calibrated pulse among them plays; else the operand error."""
+    waveform a calibrated pulse among them plays, or for a ``VirtualZ``
+    the phase shift of the tone it plays at; else the operand error."""
+    from ..quantum_systems.base import VirtualZ
+
+    gate = call_args[1]
+    if gate.__class__ is VirtualZ:
+        line, tone = call_args[0], call_args[2]
+        if fname != "drive":
+            raise CompilationError(
+                f"{gate!r} is a drive line's phase gate and does not {fname}: "
+                "drive(line, it) shifts the phase of the line's tone",
+                code="calibration",
+            )
+        if line.__class__ is not IRValue or line.vtype != "drive_line":
+            from ._emit_errors import operand_error
+
+            raise operand_error(fname, call_args)
+        if tone.__class__ is not IRValue or tone.vtype != "tone":
+            raise CompilationError(
+                f"drive(): {gate!r} shifts the phase of a tone, such as line.tone, got {tone!r}",
+                code="wrong_argument",
+            )
+        return emitter._emit_pulse_call("shift_phase", [tone, gate._values[0]])
     for index, value in enumerate(call_args):
         played = calibrated_waveform(emitter, value)
         if played is not None:
