@@ -168,6 +168,20 @@ def test_timing_that_differs_from_the_controller_program_fails(ideal):
     )
 
 
+def test_a_call_is_checked_on_its_link_apart_from_the_line_of_its_number(ideal, monkeypatch):
+    # A sequencer gives its events back in time order, so a drive on line 0
+    # may come before a call over link 0 that the program makes first.
+    backend = ToyBackend()
+    emit = backend.emit
+    monkeypatch.setattr(
+        backend,
+        "emit",
+        lambda program: [sorted(p, key=lambda e: e["start_cycles"]) for p in emit(program)],
+    )
+    lines = str(backends.validate(backend)).splitlines()
+    assert "PASS call (/1)" in lines and "PASS answer (/1)" in lines
+
+
 def test_a_wrong_number_of_programs_fails(ideal, monkeypatch):
     backend = ToyBackend()
     monkeypatch.setattr(backend, "events", lambda artifact: artifact * 2)
