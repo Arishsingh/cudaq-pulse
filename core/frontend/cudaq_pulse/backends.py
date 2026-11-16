@@ -206,7 +206,11 @@ def validate(
     one with a branch and two with values known only at run time (one a
     frequency change made ahead of the pulse that takes it), compiled
     for *controller* (by default the backend's control system's), in each
-    format the backend reads. Each must be emitted or refused with
+    format the backend reads. Two more are wired from that controller:
+    ``shared_line``, both qudits read out at once on one readout line, and
+    ``several_controllers``, on two controllers made from it, one of them
+    reading out both qudits on such a line, each controller's part in format
+    ``/1`` (not compared with ``emulate``). Each must be emitted or refused with
     ``IncompatibleBackendError``; a program
     with an event kind no format has, and one in a newer format, must be
     refused. A program that exceeds the controller's limits is skipped.

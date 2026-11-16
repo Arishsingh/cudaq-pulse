@@ -17,6 +17,7 @@ from cudaq_pulse.controller import _EVENT_KINDS, _FORMATS, unroll
 
 _PLUGINS = Path(__file__).resolve().parent / "plugins"
 _KNOWN = _EVENT_KINDS | {"drive", "readout", "submit"}
+_ON_LINE = {"drive", "readout", "wait", "frame_update"}
 
 
 class ToyBackend:
@@ -40,9 +41,15 @@ class ToyBackend:
         unknown = {e["kind"] for e in flat["events"]} - _KNOWN
         if unknown:
             raise backends.IncompatibleBackendError(f"cannot emit {sorted(unknown)}")
+        # It reports the program's lines: a format /2 shared line once.
+        lines = _validation._program_lines(program, flat)
         return [
             [
-                {**e, "start_cycles": e["start_cycles"] + (self.shift if k == 1 else 0)}
+                {
+                    **e,
+                    "line": lines.get(e["line"], e["line"]) if e["kind"] in _ON_LINE else e["line"],
+                    "start_cycles": e["start_cycles"] + (self.shift if k == 1 else 0),
+                }
                 for k, e in enumerate(flat["events"])
             ]
         ]
@@ -82,7 +89,44 @@ def test_a_conforming_backend_passes_in_every_format_it_reads(ideal):
     lines = str(report).splitlines()
     assert "PASS play (/1)" in lines and "PASS loop (/2)" in lines
     assert "PASS unsupported_event" in lines and "PASS newer_format" in lines
-    assert lines[-1] == "backend 'toy': 24 passed"
+    assert "PASS shared_line (/1)" in lines and "PASS shared_line (/2)" in lines
+    assert "PASS several_controllers[0] (/1)" in lines
+    assert "PASS several_controllers[1] (/1)" in lines
+    assert lines[-1] == "backend 'toy': 28 passed"
+
+
+def test_programs_of_several_controllers_are_exported_in_format_1_only(ideal, monkeypatch):
+    backend = ToyBackend()
+    monkeypatch.setattr(backend, "formats", (_FORMATS[1],))
+    report = str(backends.validate(backend))
+    assert "PASS shared_line" in report.splitlines()
+    assert "several_controllers" not in report
+
+
+def test_each_controller_s_part_is_checked_on_its_own(ideal):
+    system = _validation._several_controllers(
+        ControlSystem(controllers=[Controller(clock_ghz=1.0)])
+    )
+    dev = _validation._device(system)
+    compiled = pulse.compile(
+        _validation._corpus()["several_controllers"], quantum_system=dev, control_system=system
+    )
+    lowered = compiled.lower(*dev.qudits[:2])
+    feedline, other = (lowered.export_to_controller(controller=k) for k in (0, 1))
+    assert [line["qudits"] for line in feedline["lines"] if line["role"] == "readout"] == [
+        [0, 1],
+        [0, 1],
+    ]
+    assert [e["tone_slot"] for e in feedline["events"] if e["kind"] == "readout"] == [0, 1]
+    assert [(line["role"], line["qudit"]) for line in other["lines"]] == [("drive", 1)]
+    assert _validation._expected(other)[1] == {1: [("play", 0, 32)]}
+
+
+def test_pulses_on_the_tones_of_a_shared_line_may_start_together():
+    limits = Controller(instruction_cycles=4)
+    together = {0: [("readout", 0, 80), ("readout", 0, 80)]}
+    assert _validation._limits(limits, together) is not None
+    assert _validation._limits(limits, together, frozenset({0})) is None
 
 
 def test_the_corpus_tells_where_a_run_time_frequency_change_is_made():

@@ -135,7 +135,10 @@ def round_duration(
 
 
 def _require_context(op_name: str) -> NoReturn:
-    raise CompilationError(f"{op_name}() must be called inside a @cudaq_pulse.kernel function")
+    raise CompilationError(
+        f"{op_name}() must be called inside a @cudaq_pulse.kernel function",
+        code="unsupported_construct",
+    )
 
 
 # ── Channel access ───────────────────────────────────────────────────────

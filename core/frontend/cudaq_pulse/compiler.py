@@ -374,12 +374,14 @@ class _MachineModel:
                     raise CompilationError(
                         f"no link named {link!r}: compile() was given one Controller, which has"
                         " no links; give compile() a pulse.ControlSystem that describes the whole"
-                        f" control system, with its links (links={{{link!r}: pulse.Link(...)}})"
+                        f" control system, with its links (links={{{link!r}: pulse.Link(...)}})",
+                        code="control_system",
                     )
                 known = ", ".join(repr(n) for n in self.link_names) or "none"
                 raise CompilationError(
                     f"no link named {link!r} in the control system (its links: {known}); "
-                    "add it to ControlSystem(links={...})"
+                    "add it to ControlSystem(links={...})",
+                    code="control_system",
                 )
             return found
         return link
@@ -1085,7 +1087,7 @@ def _rejected_literal(
     from .kernel._emitter import add_source_note
 
     message, word = error.args
-    located = CompilationError(message)
+    located = CompilationError(message, code="wrong_argument")
     finder = traced.finder(word)
     try:
         if not finder.locate(fn, trace_args):
@@ -1188,7 +1190,8 @@ def build(
                     span = f"{defined[0]}..{defined[-1]}" if defined else "none"
                     raise CompilationError(
                         f"{name}() uses qudit {', '.join(map(str, missing))}, which quantum system "
-                        f"{target.name!r} does not define (it defines qudits {span})"
+                        f"{target.name!r} does not define (it defines qudits {span})",
+                        code="control_system",
                     )
     buf: Any = builder.get_buffer()
     routes = builder.routes
@@ -1276,7 +1279,7 @@ def build(
         # every wait at its lowest length: with any values.
         at = text.find("the program lasts more than 2**60 cycles with its lines delayed")
         if at >= 0:
-            raise CompilationError(text[at:].partition("\n")[0]) from None
+            raise CompilationError(text[at:].partition("\n")[0], code="limit_exceeded") from None
         # A call over a per-controller link that uses several controllers
         # fails with any values too. The error names the function as the
         # kernel calls it, not the version of it the module holds.
@@ -1287,7 +1290,7 @@ def build(
                 symbol = line.split("'", 2)[1]
                 called = next((f.base_name for f in builder.classical if f.name == symbol), symbol)
                 line = line.replace(f"'{symbol}'", f"'{called}'", 1)
-                raise CompilationError(f"{name}(): {line}") from None
+                raise CompilationError(f"{name}(): {line}", code="control_system") from None
         # A timing budget counts every wait at its highest length, so it
         # fails the same way with any values.
         if not parameters or any(name in text for name in _BUDGETS):
@@ -1636,14 +1639,16 @@ def _fix_keys(
                 raise CompilationError(
                     f"{label}.dispatch_keys gives {name} {key}, but {known[1]} also serves"
                     f" link {link!r} and gives it {known[0]}; give {name} one key, or put"
-                    " the processors on different links"
+                    " the processors on different links",
+                    code="control_system",
                 )
             owner = taken.get(key, name)
             if owner != name:
                 raise CompilationError(
                     f"{label}.dispatch_keys gives {name} {key}, but {table[owner][1]} also"
                     f" serves link {link!r} and gives that key to {owner}; give each"
-                    " function its own key, or put the processors on different links"
+                    " function its own key, or put the processors on different links",
+                    code="control_system",
                 )
             table[name] = (key, label)
 

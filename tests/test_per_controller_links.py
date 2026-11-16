@@ -158,6 +158,7 @@ def test_a_call_over_a_per_controller_link_runs_on_one_controller():
         "controller: play its measurements and the pulses that use its answer on one "
         "controller, or make the link shared (drop per_controller)"
     )
+    assert caught.value.code is pulse.ErrorCode.CONTROL_SYSTEM
     # Shared, the same call crosses the link between them.
     assert _lower(crossing, _device(False)).classical_report()[0].controller is None
 
@@ -185,6 +186,7 @@ def test_a_call_across_controllers_names_the_function_as_written_whatever_the_va
     message = str(caught.value)
     assert message.startswith("crossing_with(): the call of 'decode_any' over link 'decoder'")
     assert "note:" not in message and "classical.submit" not in message
+    assert caught.value.code is pulse.ErrorCode.CONTROL_SYSTEM
 
 
 def test_a_call_whose_controller_is_not_known_keeps_the_link_shared():

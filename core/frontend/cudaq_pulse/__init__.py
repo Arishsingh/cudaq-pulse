@@ -102,6 +102,7 @@ if TYPE_CHECKING:
     from . import gates as gates
     from . import viz as viz
     from ._capability import Capability as Capability
+    from ._error_codes import ErrorCode as ErrorCode
     from ._system import Controller as Controller
     from ._system import ControlSystem as ControlSystem
     from ._system import Processor as Processor
@@ -131,6 +132,8 @@ _LAZY_EXPORTS = {
     "ms": "._units",
     "s": "._units",
     "Capability": "._capability",
+    # Making an enum costs more than importing what compiling needs.
+    "ErrorCode": "._error_codes",
     "Controller": "._system",
     "ControlSystem": "._system",
     "Processor": "._system",
@@ -171,6 +174,7 @@ __all__ = [
     "IndexOutOfRangeError",
     "UnsupportedError",
     "CompilationError",
+    "ErrorCode",
     "TimingError",
     "ExecutionError",
     "InternalError",

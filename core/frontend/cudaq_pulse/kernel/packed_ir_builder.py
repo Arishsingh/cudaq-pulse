@@ -132,7 +132,9 @@ def _real(value: Any, description: str) -> float:
             raise TypeError
         return float(value)
     except (TypeError, ValueError):
-        raise CompilationError(f"{description} must be a real number, got {value!r}") from None
+        raise CompilationError(
+            f"{description} must be a real number, got {value!r}", code="wrong_argument"
+        ) from None
 
 
 def _tables(machine: Any) -> dict[int, dict[str, tuple[int, str]]]:
@@ -147,7 +149,8 @@ def _tables(machine: Any) -> dict[int, dict[str, tuple[int, str]]]:
 def _link_without_machine(link: Any) -> int:
     if isinstance(link, str):
         raise CompilationError(
-            f"link {link!r} is a name; compile with a pulse.ControlSystem whose links name it"
+            f"link {link!r} is a name; compile with a pulse.ControlSystem whose links name it",
+            code="control_system",
         )
     return int(link)
 
@@ -166,7 +169,8 @@ def _fixed_key(function: Any, table: dict[str, tuple[int, str]]) -> tuple[int, s
         raise CompilationError(
             f"{name} runs on {table[served[0]][1]}, whose dispatch_keys have no {name!r}{hint};"
             f" its firmware answers {', '.join(served)}. Add it to the processor's"
-            " dispatch_keys, or call it on another link"
+            " dispatch_keys, or call it on another link",
+            code="control_system",
         )
     key, label = found
     template = function._template
@@ -176,7 +180,8 @@ def _fixed_key(function: Any, table: dict[str, tuple[int, str]]) -> tuple[int, s
         raise CompilationError(
             f"{name} has the fixed dispatch key {key} from {label}.dispatch_keys[{name!r}], so"
             f" it has one layout, but its parameter {unsized!r} is {kind} with no length. Give"
-            f" it a fixed size: {unsized}: pulse.Length[{kind}, 8]"
+            f" it a fixed size: {unsized}: pulse.Length[{kind}, 8]",
+            code="control_system",
         )
     return key, label
 
@@ -233,7 +238,8 @@ def _complex_parts(val: Any) -> tuple[float, float]:
         parts = list(_flatten(items))
         if len(parts) not in (1, 2):
             raise CompilationError(
-                f"an amplitude sequence must be [re] or [re, im], got {len(parts)} values"
+                f"an amplitude sequence must be [re] or [re, im], got {len(parts)} values",
+                code="wrong_argument",
             )
         try:
             return (parts[0].__float__(), parts[1].__float__() if len(parts) == 2 else 0.0)
@@ -262,7 +268,10 @@ def _sample_number(sample: Any) -> complex:
             return complex(sample)
         except (TypeError, ValueError):
             pass
-    raise CompilationError(f"custom_samples() samples must be real numbers, got {sample!r}")
+    raise CompilationError(
+        f"custom_samples() samples must be real numbers, got {sample!r}",
+        code="invalid_waveform",
+    )
 
 
 def _flatten(items: Any) -> Any:
@@ -278,13 +287,14 @@ def _as_i64(value: Any, description: str) -> int:
     if value.__class__ is int:
         return value
     if isinstance(value, bool):
-        raise CompilationError(f"{description} must be an integer, got bool")
+        raise CompilationError(f"{description} must be an integer, got bool", code="wrong_argument")
     if isinstance(value, numbers.Integral):
         return int(value)
     if isinstance(value, numbers.Real) and float(value).is_integer():
         return int(float(value))
     raise CompilationError(
-        f"{description} must be an integer number of clock cycles, got {value!r}"
+        f"{description} must be an integer number of clock cycles, got {value!r}",
+        code="invalid_duration",
     )
 
 
@@ -294,14 +304,23 @@ def _wait_bounds(bounds: Any) -> tuple[int, int]:
     if bounds is None:
         return 0, -1
     if not (isinstance(bounds, (tuple, list)) and len(bounds) == 2):
-        raise CompilationError(f"bounds= takes (lowest, highest) in clock cycles, got {bounds!r}")
+        raise CompilationError(
+            f"bounds= takes (lowest, highest) in clock cycles, got {bounds!r}",
+            code="wrong_argument",
+        )
     lo, hi = bounds
     if is_symbolic(lo) or is_symbolic(hi):
-        raise CompilationError("the bounds of a wait must be known while the kernel compiles")
+        raise CompilationError(
+            "the bounds of a wait must be known while the kernel compiles",
+            code="wrong_argument",
+        )
     lowest = _as_i64(lo, "the lowest length of a wait")
     highest = -1 if hi is None else _as_i64(hi, "the highest length of a wait")
     if lowest < 0 or (hi is not None and highest < lowest):
-        raise CompilationError(f"bounds= must satisfy 0 <= lowest <= highest, got ({lo!r}, {hi!r})")
+        raise CompilationError(
+            f"bounds= must satisfy 0 <= lowest <= highest, got ({lo!r}, {hi!r})",
+            code="wrong_argument",
+        )
     return lowest, highest
 
 
@@ -569,7 +588,8 @@ class PackedIRBuilder:
                         re, im = _complex_parts(amp_raw)
                     except (TypeError, ValueError):
                         raise CompilationError(
-                            f"square amplitude must be a number or [re, im], got {amp_raw!r}"
+                            f"square amplitude must be a number or [re, im], got {amp_raw!r}",
+                            code="wrong_argument",
                         ) from None
                     vals = [dur, re, im]
                 self._emit_wf(_WF_SQUARE, rv, vals, ["i64", "f64", "f64"])
@@ -603,12 +623,14 @@ class PackedIRBuilder:
                     if width_raw < 0 or width_raw >= dur:
                         raise CompilationError(
                             "gaussian_square width must satisfy "
-                            f"0 <= width < duration, got {width_raw} and {dur}"
+                            f"0 <= width < duration, got {width_raw} and {dur}",
+                            code="invalid_waveform",
                         )
                     if (dur - width_raw) % 2:
                         raise CompilationError(
                             "gaussian_square requires duration - width to be "
-                            "even so its two edges have equal integer length"
+                            "even so its two edges have equal integer length",
+                            code="invalid_waveform",
                         )
                 rf_raw = (dur - width_raw) // 2
                 vals = [dur, amp_raw, sig_raw, rf_raw]
@@ -684,7 +706,8 @@ class PackedIRBuilder:
                     if dur < lowest or (highest >= 0 and dur > highest):
                         top = highest if highest >= 0 else None
                         raise CompilationError(
-                            f"wait duration {dur} is outside its bounds {(lowest, top)!r}"
+                            f"wait duration {dur} is outside its bounds {(lowest, top)!r}",
+                            code="invalid_duration",
                         )
             if symbolic:
                 pvid = self._get_numeric_vid(dur_raw, "i64")
@@ -742,7 +765,8 @@ class PackedIRBuilder:
             if isinstance(val_raw, IRValue):
                 raise CompilationError(
                     "a frequency must be a number; time-varying frequencies "
-                    "(a waveform as a frequency) are reserved and not supported yet"
+                    "(a waveform as a frequency) are reserved and not supported yet",
+                    code="wrong_argument",
                 )
             if is_symbolic(val_raw):
                 pvid = self._get_numeric_vid(val_raw, "f64")
@@ -763,7 +787,8 @@ class PackedIRBuilder:
             if isinstance(val_raw, IRValue):
                 raise CompilationError(
                     "a frequency must be a number; time-varying frequencies "
-                    "(a waveform as a frequency) are reserved and not supported yet"
+                    "(a waveform as a frequency) are reserved and not supported yet",
+                    code="wrong_argument",
                 )
             if is_symbolic(val_raw):
                 pvid = self._get_numeric_vid(val_raw, "f64")
@@ -791,7 +816,9 @@ class PackedIRBuilder:
             rv = results[0].vid
             scale = a["scale"]
             if scale.__class__ is float and scale - scale != 0.0:
-                raise CompilationError(f"wf_scale scale must be finite, got {scale!r}")
+                raise CompilationError(
+                    f"wf_scale scale must be finite, got {scale!r}", code="wrong_argument"
+                )
             scale_vid = self._get_numeric_vid(scale, "f64")
             self._put((_header(_WF_SCALE, 3), rv, operands[0].vid, scale_vid))
             return results
@@ -933,7 +960,8 @@ class PackedIRBuilder:
             raise CompilationError(
                 f"the answer of {name} is taken in another loop iteration or outside "
                 "the branch arm that submitted it; take it in the same loop body, "
-                "after the submission"
+                "after the submission",
+                code="runtime_value",
             )
 
     @property
@@ -948,7 +976,8 @@ class PackedIRBuilder:
             raise CompilationError(
                 f"{what} is used outside the loop, branch or kernel with its own "
                 "schedule= where it was taken; take it where it is used, or return "
-                "the future and take the answer after the kernel returns"
+                "the future and take the answer after the kernel returns",
+                code="runtime_value",
             )
 
     # ── Classical calls ───────────────────────────────────────────────────
@@ -960,7 +989,8 @@ class PackedIRBuilder:
             return index
         if function._plan is not None:  # a template reached with no arguments
             raise CompilationError(
-                f"{function.name}.submit() takes {len(function._plan)} arguments, got 0"
+                f"{function.name}.submit() takes {len(function._plan)} arguments, got 0",
+                code="wrong_argument",
             )
         for other in self.classical:
             if other.name == function.name:
@@ -991,7 +1021,8 @@ class PackedIRBuilder:
                 route(())
             raise CompilationError(
                 f"{function.name} is dispatch key {key:#x}, which {_RESERVED_KEYS[key]} uses"
-                " for its decoder messages; rename it"
+                " for its decoder messages; rename it",
+                code="control_system",
             )
         dispatched = self._dispatched
         if dispatched is None:
@@ -1001,7 +1032,7 @@ class PackedIRBuilder:
             if other is not None:
                 first = self.classical[other]
                 if own or first._key_route is None:
-                    raise CompilationError(_collision(first, function, key))
+                    raise CompilationError(_collision(first, function, key), code="control_system")
         mode = _LATENCY_MODE[function.latency_mode]
         flags = mode | (4 if function.submit_policy == "lazy" else 0)
         # Its own key is its name's hash, unless a built-in's.
@@ -1207,14 +1238,15 @@ class PackedIRBuilder:
             raise CompilationError(f"unsupported numeric type {expected_dtype}")
         if self.classical:
             if expected_dtype == "i64" and not self._answer_integers and contains_answer(value):
-                raise CompilationError(_DURATION_FROM_ANSWER)
+                raise CompilationError(_DURATION_FROM_ANSWER, code="runtime_value")
             if isinstance(value, AnswerValue):
                 self.check_scope(value.scope, "an answer of a classical call")
                 if value.dtype == expected_dtype:
                     return value.vid
                 if value.dtype == "i1":
                     raise CompilationError(
-                        "an answer bit is a branch condition, not a number; use it as `if bit:`"
+                        "an answer bit is a branch condition, not a number; use it as `if bit:`",
+                        code="runtime_value",
                     )
                 return self._emit_numeric_cast(value.vid, value.dtype, expected_dtype)
         if (
@@ -1272,7 +1304,8 @@ class PackedIRBuilder:
             if value.op == "pow":
                 raise CompilationError(
                     "symbolic exponentiation is not supported; specialize "
-                    "that value before compilation"
+                    "that value before compilation",
+                    code="symbolic_parameter",
                 )
             if value.op == "neg":
                 operand = self._get_numeric_vid(value.lhs, dtype)
@@ -1282,7 +1315,10 @@ class PackedIRBuilder:
             else:
                 opcode = _BINARY_OP.get(value.op)
                 if opcode is None:
-                    raise CompilationError(f"unsupported symbolic operation {value.op!r}")
+                    raise CompilationError(
+                        f"unsupported symbolic operation {value.op!r}",
+                        code="symbolic_parameter",
+                    )
                 lhs = self._get_numeric_vid(value.lhs, dtype)
                 rhs = self._get_numeric_vid(value.rhs, dtype)
                 result = self._next_id
@@ -1349,7 +1385,8 @@ class PackedIRBuilder:
             f"wait() on line {role[0]}{qudit}: its length comes from a classical answer, "
             "so every later operation on every line moves by it, and together the lines "
             f"move in timesteps of {grid} cycles; its bounds ({lowest}, {top}) aren't "
-            "whole numbers of timesteps: " + "; ".join(f"for {b}, use {nearest(b)}" for b in off)
+            "whole numbers of timesteps: " + "; ".join(f"for {b}, use {nearest(b)}" for b in off),
+            code="runtime_value",
         )
 
     def _role_and_qudit(self, line: IRValue) -> tuple[str, int]:
@@ -1504,12 +1541,19 @@ class PackedIRBuilder:
         try:
             sample_values = list(samples)
         except TypeError as exc:
-            raise CompilationError("custom_samples() requires a finite sequence") from exc
+            raise CompilationError(
+                "custom_samples() requires a finite sequence", code="invalid_waveform"
+            ) from exc
         most = MAX_CUSTOM_SAMPLES if rate is None else MAX_CUSTOM_SAMPLES - 2
         if len(sample_values) > most:
-            raise CompilationError(f"custom_samples() supports at most {most} samples per waveform")
+            raise CompilationError(
+                f"custom_samples() supports at most {most} samples per waveform",
+                code="limit_exceeded",
+            )
         if not sample_values:
-            raise CompilationError("custom_samples() requires at least one sample")
+            raise CompilationError(
+                "custom_samples() requires at least one sample", code="invalid_waveform"
+            )
         encoded: list[int] = []
         for sample in sample_values:
             try:
@@ -1519,7 +1563,8 @@ class PackedIRBuilder:
             if value.imag != 0.0:
                 raise CompilationError(
                     "complex custom samples are not supported yet; provide "
-                    "real-valued envelope samples"
+                    "real-valued envelope samples",
+                    code="invalid_waveform",
                 )
             encoded.append(_f2i(value.real))
         extra = 0 if rate is None else 2

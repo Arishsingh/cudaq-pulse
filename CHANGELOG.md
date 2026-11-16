@@ -11,6 +11,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ## [0.1.1] - Unreleased
 
+### Added
+
+- **Error codes.** Every `CompilationError` has a `code`, a
+  `pulse.ErrorCode` (`unknown_name`, `wrong_argument`, `runtime_value`,
+  `invalid_duration` and the others listed under Errors), so a program or
+  tool can act on the kind of error without reading the message. `fix`
+  holds what the message says to write instead, `did_you_mean` the name to
+  write in place of a misspelled op or line method (`drve` names `drive`,
+  `get_calibraton` names `get_calibration`), and `location`, for an error
+  raised while a kernel is traced, the kernel line: a `Problem` with its
+  `file`, `line`, `source` (new: the line's text), function and, for a
+  misspelling, the misspelled name as `value`. Messages read as before; a
+  few that gave no fix now give one (`drive(q, ...)` says to pass
+  `get_drive_line(q)`, `shift_phase(line, ...)` to pass `line.tone`).
+
 ### Fixed
 
 - `python -m cudaq_pulse.doctor` passes on a machine without GPU support:
@@ -43,6 +58,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `control_system.controllers[1].peer_latency_cycles is 30 in one and 20
   in the other`), the layouts, or, with the same layout, the qudits,
   couplings or calibration.
+- A program that plays a shared line (a multiplexed readout feedline,
+  `ReadoutLine([9, 10, 11, 12], max_concurrent_tones=4)`) exports in format
+  `/1`, so it exports on a control system of several controllers, on a
+  controller with its own clock, and with line delays, where 0.1.0 refused it
+  in both formats. Format `/1` keeps a line for each qudit; a line on a shared
+  line also has the line's `qudits` and `max_concurrent_tones`, and each
+  event on it a `tone_slot`, the slot format `/2` gives it. Programs on
+  dedicated lines export as before. `backends.validate` runs two more
+  programs: `shared_line`, and `several_controllers`, each controller's part
+  in `/1`.
+- `controller.unroll()` of a format `/2` program on a shared line gives each
+  event its own qudit, on a line of its own, where it gave the line's first
+  qudit.
 
 ## [0.1.0] - 2026-11-13
 

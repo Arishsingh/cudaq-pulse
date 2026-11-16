@@ -196,7 +196,8 @@ def not_a_number(choice: _Choice, operation: str) -> NoReturn:
     raise CompilationError(
         f"cannot trace {symbol} of {choice!r}: a condition on measurement results is known "
         "only when the program runs, and only an if tests it (`if x:`); it combines with "
-        "and, or, not, &, |, ^, == and != of conditions, and is not a number"
+        "and, or, not, &, |, ^, == and != of conditions, and is not a number",
+        code="runtime_value",
     )
 
 
@@ -237,20 +238,26 @@ def measurement_error(lhs: Any, symbol: str, rhs: Any) -> CompilationError:
         return CompilationError(
             f"cannot trace ({text}): it tests a measurement result and a condition on "
             "answers together, which one branch cannot; test them in nested ifs, "
-            "`if result:` and in its arm an if on the condition"
+            "`if result:` and in its arm an if on the condition",
+            code="runtime_value",
         )
     return CompilationError(
         f"cannot trace ({text}): a measurement result is known only when the program "
-        "runs, so it is not compared or combined while the kernel traces; branch on it "
-        "directly with `if result:` or `if not result:`"
+        "runs, so it is not compared or combined while the kernel traces",
+        code="runtime_value",
+        fix=_BRANCH_ON_IT,
     )
+
+
+_BRANCH_ON_IT = "branch on it directly with `if result:` or `if not result:`"
 
 
 def measurement_operand_error(name: str) -> CompilationError:
     """The error for *name* (an operator or function) given a measurement result."""
     return CompilationError(
-        f"cannot trace {name} of a measurement result: it is known only when the program "
-        "runs; branch on it directly with `if result:` or `if not result:`"
+        f"cannot trace {name} of a measurement result: it is known only when the program runs",
+        code="runtime_value",
+        fix=_BRANCH_ON_IT,
     )
 
 
@@ -269,8 +276,9 @@ def operator_error(
     if "'IRValue'" not in str(error):
         return None
     return CompilationError(
-        f"cannot trace `{symbol}` of a pulse value; to test a measurement result, branch on "
-        "it directly with `if result:` or `if not result:`"
+        f"cannot trace `{symbol}` of a pulse value",
+        code="runtime_value",
+        fix=f"to test a measurement result, {_BRANCH_ON_IT}",
     )
 
 
@@ -340,7 +348,8 @@ def bit_logic(symbol: str, lhs: Any, rhs: Any) -> Any:
             f"cannot trace {lhs!r} {symbol} {rhs!r}: it is known only when the program runs; "
             f"`{symbol}` combines only conditions (comparisons and answer bits) and True or "
             "False; bitwise operations on numbers known only when the program runs are not "
-            "supported"
+            "supported",
+            code="runtime_value",
         )
     if lhs.__class__ is _NotMeasurement:
         lhs = negated(lhs)
@@ -408,7 +417,8 @@ def contains(left: Any, right: Any, error: CompilationError) -> Any:
         raise CompilationError(
             f"cannot trace {left!r} in a {cls.__name__} of {len(right)}: it is known only "
             f"when the program runs, and `in` would compare it with each of more than "
-            f"{_MAX_MEMBERS} items; compare it with <, <= and == instead"
+            f"{_MAX_MEMBERS} items; compare it with <, <= and == instead",
+            code="runtime_value",
         ) from error
     found = False
     for item in right:
@@ -440,7 +450,8 @@ def any_or_all(either: bool, items: Any, error: CompilationError, generated: boo
         name, word = ("any", "or") if either else ("all", "and")
         raise CompilationError(
             f"{name}() of a generator of conditions known only when the program runs is "
-            f"not traced; give it a list, {name}([...]), or combine them with `{word}`"
+            f"not traced; give it a list, {name}([...]), or combine them with `{word}`",
+            code="runtime_value",
         ) from error
     found: Any = not either
     for item in items:
@@ -589,7 +600,7 @@ def identity_error(left: Any, right: Any) -> CompilationError:
 
     names = parameter_names(left) + parameter_names(right)
     if not names or run_time(left) or run_time(right):
-        return CompilationError(message)
+        return CompilationError(message, code="runtime_value")
     return SymbolicValueError(message, tuple(dict.fromkeys(names)), "the identity test is")
 
 
@@ -612,6 +623,7 @@ def rejoin_error(view: DecodedCode, branch: int) -> CompilationError:
         name, word = ("any", "or") if instrs[target + 1][1] else ("all", "and")
         return CompilationError(
             f"{name}() of a generator of conditions known only when the program runs is "
-            f"not traced; give it a list, {name}([...]), or combine them with `{word}`"
+            f"not traced; give it a list, {name}([...]), or combine them with `{word}`",
+            code="runtime_value",
         )
-    return CompilationError(_REJOIN_MESSAGE)
+    return CompilationError(_REJOIN_MESSAGE, code="runtime_value")

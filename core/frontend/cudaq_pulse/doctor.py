@@ -407,6 +407,8 @@ def _problem_json(problem: Problem) -> dict[str, Any]:
     import json
 
     fields = dataclasses.asdict(problem)
+    if not fields["source"]:
+        del fields["source"]
     value = fields.pop("value")
     if value is not UNSET:
         try:

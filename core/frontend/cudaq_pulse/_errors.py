@@ -9,7 +9,11 @@ import sys
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import Field, dataclass
+from itertools import compress, repeat
 from typing import TYPE_CHECKING, Any, ClassVar, Final
+
+if TYPE_CHECKING:
+    from ._error_codes import ErrorCode
 
 __all__ = [
     "CompilationError",
@@ -47,17 +51,20 @@ UNSET: Final[Any] = _Unset()
 
 
 # What ``dataclass(frozen=True)`` sets on a class whose body does not.
-_DATACLASS_NAMES = (
-    "__dataclass_params__",
-    "__dataclass_fields__",
-    "__init__",
-    "__repr__",
-    "__eq__",
-    "__hash__",
-    "__setattr__",
-    "__delattr__",
-    "__match_args__",
-) + (("__replace__",) if sys.version_info >= (3, 13) else ())
+_DATACLASS_NAMES = frozenset(
+    (
+        "__dataclass_params__",
+        "__dataclass_fields__",
+        "__init__",
+        "__repr__",
+        "__eq__",
+        "__hash__",
+        "__setattr__",
+        "__delattr__",
+        "__match_args__",
+    )
+    + (("__replace__",) if sys.version_info >= (3, 13) else ())
+)
 _DATACLASS_LOCK = threading.RLock()
 
 
@@ -99,13 +106,14 @@ def _dataclass_when_used(*, frozen: bool) -> Callable[[type], type]:
 
     def wrap(cls: type) -> type:
         namespace = cls.__dict__
-        for name in _DATACLASS_NAMES:
-            if name not in namespace:
-                setattr(cls, name, _WhenUsed((cls, name, None)))
-        for name in namespace.get("__annotations__", ()):
-            value = namespace.get(name)
-            if value.__class__ is Field:
-                setattr(cls, name, _WhenUsed((cls, name, value)))
+        for name in _DATACLASS_NAMES.difference(namespace):
+            setattr(cls, name, _WhenUsed((cls, name, None)))
+        # The fields given a field(), found without a Python step per field:
+        # this runs as the package is imported.
+        annotations = namespace.get("__annotations__", ())
+        given = map(isinstance, map(namespace.get, annotations), repeat(Field))
+        for name in compress(annotations, given):
+            setattr(cls, name, _WhenUsed((cls, name, namespace[name])))
         return cls
 
     return wrap
@@ -126,7 +134,8 @@ class Problem:
     user wrote (``"layout[2]"``, ``"controllers[0].drive_lines"``);
     ``value`` is the offending value (``Problem.UNSET`` when there is none);
     ``fix`` what to do. ``file``, ``line`` and ``column`` locate it in a
-    file, when it came from one; ``line`` and ``column`` count from 1.
+    file, when it came from one; ``line`` and ``column`` count from 1, and
+    ``source`` is that line's text, stripped, when it was read.
     """
 
     UNSET: ClassVar[Any] = UNSET
@@ -138,6 +147,7 @@ class Problem:
     file: str | None = None
     line: int | None = None
     column: int | None = None
+    source: str = ""
 
     def __str__(self) -> str:
         text = f"{self.path}: {self.message}" if self.path else self.message
@@ -181,8 +191,22 @@ class PulseError(Exception):
 
     @property
     def location(self) -> Problem | None:
-        """The first problem that names a file, if any."""
-        return next((p for p in self.problems if p.file is not None), None)
+        """The first problem that names a file, if any; else, for an error
+        raised while a kernel was traced, the kernel line that raised it:
+        ``file``, ``line``, ``source`` (the line's text) and ``path`` (the
+        function's name), with the error's message and fix, and as
+        ``value`` the misspelled name a ``did_you_mean`` replaces."""
+        found = next((p for p in self.problems if p.file is not None), None)
+        traced = self.__dict__.get("_traced_at")
+        if found is not None or traced is None:
+            return found
+        file, line, source, function = traced
+        fix = getattr(self, "fix", "")
+        message = Exception.__str__(self)
+        if fix and message.endswith(f"; {fix}"):
+            message = message[: -len(fix) - 2]
+        value = self.__dict__.get("_misspelled", UNSET)
+        return Problem(message, function, value, fix, file=file, line=line, source=source)
 
     def _header(self) -> str:
         return Exception.__str__(self)
@@ -234,7 +258,43 @@ class UnsupportedError(PulseError, NotImplementedError):
 class CompilationError(PulseError, RuntimeError):
     """A kernel cannot be traced or compiled: an unsupported construct, an
     operation given the wrong kind of argument, or invalid pulse IR. The
-    message says what to write instead, and a note gives the kernel line."""
+    message says what to write instead, and a note gives the kernel line.
+
+    ``code`` is the ``ErrorCode`` of the error; ``fix``, when not empty,
+    the part of the message that says what to write instead;
+    ``did_you_mean``, when not ``None``, the name to write in place of the
+    misspelled one, which ``location.value`` holds; and ``location``, for
+    an error raised while the kernel was traced, the kernel line that
+    raised it.
+    """
+
+    def __init__(
+        self,
+        *args: object,
+        problems: Iterable[Problem] = (),
+        code: str | None = None,
+        fix: str = "",
+        did_you_mean: str | None = None,
+        misspelled: str | None = None,
+    ) -> None:
+        if fix:
+            args = (f"{args[0]}; {fix}", *args[1:]) if args else (fix,)
+        super().__init__(*args, problems=problems)
+        self._code = code
+        self.fix = fix
+        self.did_you_mean = did_you_mean
+        if misspelled is not None:
+            self._misspelled = misspelled
+
+    @property
+    def code(self) -> ErrorCode:
+        """The kind of error, an ``ErrorCode``."""
+        from ._error_codes import ErrorCode
+
+        code = self.__dict__.get("_code") or (
+            "timing" if isinstance(self, TimingError) else "other"
+        )
+        return ErrorCode(code)
 
 
 class TimingError(CompilationError):

@@ -229,12 +229,14 @@ def _return_spec(value: Any, readouts: dict[int, int], name: str) -> Any:
             if ordinal is None:
                 raise CompilationError(
                     f"{name}() returns a measurement made inside a loop or branch; "
-                    "only measurements made at the top level of the kernel can be returned"
+                    "only measurements made at the top level of the kernel can be returned",
+                    code="runtime_value",
                 )
             return _Measured(ordinal)
         raise CompilationError(
             f"{name}() returns a pulse {value.vtype} value; a kernel returns "
-            "measurements or values known at compile time"
+            "measurements or values known at compile time",
+            code="unsupported_construct",
         )
     if is_symbolic(value):
         from .ir_builder import contains_answer
@@ -243,11 +245,13 @@ def _return_spec(value: Any, readouts: dict[int, int], name: str) -> Any:
             return CompilationError(
                 f"{name}() returns the answer of a classical call, which only the "
                 "running program has; called from Python, a kernel returns "
-                "measurements or values known at compile time"
+                "measurements or values known at compile time",
+                code="runtime_value",
             )
         raise CompilationError(
             f"{name}() returns a value computed from a float parameter, which is "
-            "only known when the kernel runs"
+            "only known when the kernel runs",
+            code="runtime_value",
         )
     if type(value) in (tuple, list):
         items = tuple(_return_spec(v, readouts, name) for v in value)
@@ -273,7 +277,7 @@ def _materialize(spec: Any, outcome: Callable[[int], int]) -> Any:
     if isinstance(spec, (int, float, complex, str, type(None))):
         return spec
     if isinstance(spec, CompilationError):
-        raise CompilationError(*spec.args)
+        raise CompilationError(*spec.args, code=spec.code)
     # Each call returns its own copy of a container built by the kernel.
     return copy.deepcopy(spec)
 

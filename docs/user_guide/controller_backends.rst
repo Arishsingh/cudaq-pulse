@@ -29,7 +29,8 @@ At the top level, ``quantum_system`` and ``clock_ghz`` name the quantum system a
 clock, ``schedule`` the schedule policy, ``qudits`` the quantum system qudits the
 program uses, ``lines`` each line's index, ``role`` (``"drive"`` or
 ``"readout"``) and qudit (and, with line delays, its ``fine_delay_ns``;
-see below), and ``limits`` the controller limits it was
+see below; on a shared line, the line's ``qudits`` and
+``max_concurrent_tones``; see `Shared lines`_), and ``limits`` the controller limits it was
 checked against (``null`` without). ``events`` lists every drive, readout,
 wait, sync, classical call and frame update in program order, once per loop
 iteration and both arms of a branch. ``segments``, ``calls``, ``links`` and
@@ -56,6 +57,9 @@ depends on that line's native frequency. Each event has:
 ``line``, ``qudit``
     The line it plays on and that line's qudit; ``null`` for a sync. For a
     classical call, ``line`` is its link and ``qudit`` is -1.
+``tone_slot``
+    Only on a drive, readout, wait or frame update on a shared line (see
+    `Shared lines`_): the line's tone it plays, as in ``/2``.
 ``start_cycles``, ``duration_cycles``, ``end_cycles``
     The final schedule as integers, in clock cycles. A backend places every
     event at its start and does not schedule again.
@@ -424,7 +428,11 @@ Left out
 ``cudaq_pulse.controller.unroll(program)`` turns a ``/2`` program into the
 ``/1`` program of the same kernel, for a backend that needs every
 execution; phases agree up to rounding and branches are numbered in the
-order they first appear.
+order they first appear. A ``/2`` program lists a shared line once, so on
+one, ``unroll`` numbers the lines in the order of the ``/2`` lines, each
+shared line's qudits in its order (those the program plays at), where the
+``/1`` export may number them in the order the kernel takes them, and a
+sync names every ``/1`` line of a shared line it joins.
 
 Clocks
 ------
@@ -675,10 +683,18 @@ its qudits.
 
 Format ``/2`` of the export lists a shared line once, with its
 ``max_concurrent_tones``, and gives each event on it a ``tone_slot`` and
-the ``qudits`` it is for (see `The structured format`_); format ``/1``, which has one
-qudit per line, raises ``UnsupportedError`` for a program that plays a
-shared line. Format ``/2`` does not take line delays yet, so a program on a
-delayed shared line compiles and simulates but does not export yet. The
+the ``qudits`` it is for (see `The structured format`_). Format ``/1``
+keeps a line for each qudit, as the kernel has: each line on a shared line
+also has, after its ``qudit``, the shared line's ``qudits`` and
+``max_concurrent_tones`` (lines with the same ``role`` and ``qudits`` are
+tones of one line), and each drive, readout, wait and frame update on it
+its ``tone_slot``, after its ``qudit``, the slot ``/2`` gives it; so do the
+``runtime_tones`` and ``frame_state`` entries of a line that keeps one slot.
+``/1`` lists every execution, so it gives slots to handles taking turns in
+a loop too. Format ``/1`` is the one for a shared line on a control system
+of several controllers (each controller's part has its own lines' keys), on
+a controller with its own clock, or with line delays, which ``/2`` does not
+take. On dedicated lines none of these keys are present. The
 simulator plays each tone on its own qudit. In a system file a shared line
 is ``{"qudits": [0, 1, 2, 3], "max_concurrent_tones": 4, "delay_ns": 12.0}``,
 without the keys at their defaults. ``examples/transmon/transmon_surface17_multiplexed_readout.py``
@@ -858,7 +874,15 @@ Validating a backend
 which ships with cudaq-pulse, through a backend: a program for each kind of
 event (``cudaq_pulse.Event``), one with a branch and one with values known
 only at run time, compiled for the controller (by default the backend's
-control system's) and exported in each format the backend reads. Each must be emitted or refused with
+control system's) and exported in each format the backend reads. Two more
+are wired from that controller: ``shared_line`` reads out both qudits at
+once on one readout line reaching both (``ReadoutLine([0, 1],
+max_concurrent_tones=2)`` in place of its readout lines), and
+``several_controllers`` runs on two controllers made from it, one driving
+qudit 0 and reading out both qudits on such a line, the other driving qudit
+1, with a shared reference clock; each controller's part is emitted on its
+own in format ``/1`` (``several_controllers[0]``, ``several_controllers[1]``),
+and is not compared with ``emulate``. Each must be emitted or refused with
 ``IncompatibleBackendError``, and a program with an event kind no format
 has, or in a newer format, must be refused. A program that exceeds the
 controller's limits is skipped.
@@ -875,7 +899,7 @@ controller's limits is skipped.
    # ...
    # PASS unsupported_event
    # PASS newer_format
-   # backend 'text': 7 passed, 5 refused
+   # backend 'text': 10 passed, 6 refused
    print(report.ok)  # True
 
 A backend that accepted the unknown event would instead report ``FAIL

@@ -522,31 +522,68 @@ def _count_copies(
     at_once.count = before + (at_once.count - before) * times
 
 
-def refuse_format_1(
-    lowered: ScheduledKernel, system: ControlSystem, lines: Sequence[Mapping[str, Any]]
-) -> None:
-    """Raises when *lowered* on *system* plays a shared line (format /1
-    *lines*): format /1 has one qudit per line."""
+def _insert(entry: dict[str, Any], after: str, added: Sequence[tuple[str, Any]]) -> None:
+    """Put *added* in *entry*, in place, right after its key *after*."""
+    keys = list(entry)
+    tail = keys[keys.index(after) + 1 :]
+    entry.update(added)
+    for key in tail:
+        entry[key] = entry.pop(key)
+
+
+def flat(
+    system: ControlSystem, lines: Sequence[dict[str, Any]], events: Sequence[dict[str, Any]]
+) -> dict[int, int]:
+    """Format /1 *lines* and *events* (every execution) of a program on
+    *system*, written with its shared lines, in place: each line (handle)
+    on a shared line gets, after its ``qudit``, the line's ``qudits`` and
+    ``max_concurrent_tones``, and each event on it its ``tone_slot``, the
+    slot format /2 gives it. Returns, by handle, the slot of each handle
+    that keeps one for the whole program."""
     shared = physical(system)
     if shared is None:
-        return
-    for entry in lines:
-        found = shared.get((entry["role"], entry["qudit"]))
-        if found is not None:
-            text = f"format /1 has one qudit per line, and {found.label} reaches several"
-            if (lowered._generic or lowered).fine_delays is not None:
-                raise UnsupportedError(
-                    f"{text}; format /2, which has shared lines, does not take line delays "
-                    "yet: a program on delayed shared lines does not export yet"
-                )
-            raise UnsupportedError(f"{text}: export version 2 (export_to_controller(version=2))")
+        return {}
+    on = [shared.get((entry["role"], entry["qudit"])) for entry in lines]
+    if not any(on):
+        return {}
+    for entry, line in zip(lines, on, strict=True):
+        if line is not None:
+            _insert(
+                entry,
+                "qudit",
+                [("qudits", list(line.qudits)), ("max_concurrent_tones", line.tones)],
+            )
+    slot_of, handle_slot = _tone_slots(_placed(events, on))
+    for event in events:
+        slot = slot_of.get(id(event))
+        if slot is not None:
+            _insert(event, "qudit", [("tone_slot", slot)])
+    return handle_slot
+
+
+def flat_frames(found: Any, handle_slot: Mapping[int, int]) -> Any:
+    """``frame_state`` or ``runtime_tones`` of format /1 with, on each entry
+    whose line (handle) keeps one tone slot (*handle_slot*), its
+    ``tone_slot`` after its ``line``."""
+
+    def entry(item: Mapping[str, Any]) -> dict[str, Any]:
+        out = dict(item)
+        slot = handle_slot.get(out.get("line"))  # type: ignore[arg-type]
+        if slot is not None:
+            _insert(out, "line", [("tone_slot", slot)])
+        return out
+
+    if isinstance(found, Mapping):
+        return {key: entry(item) for key, item in found.items()}
+    return [entry(item) for item in found]
 
 
 # ── Format /2 ───────────────────────────────────────────────────────────────
 
-# The /2 event kinds on a line (controller._ON_LINE), and those playing a tone.
-_ON_LINE = frozenset({"play", "readout", "wait", "frame_update"})
-_TONED = frozenset({"play", "readout"})
+# The event kinds on a line (controller._ON_LINE), and those playing a tone,
+# in either format.
+_ON_LINE = frozenset({"play", "drive", "readout", "wait", "frame_update"})
+_TONED = frozenset({"play", "drive", "readout"})
 
 
 class _Placed:
@@ -566,13 +603,13 @@ class _Placed:
 
 
 def _placed(
-    events: list[dict[str, Any]], shared: Sequence[Physical | None]
+    events: Sequence[dict[str, Any]], shared: Sequence[Physical | None]
 ) -> dict[Physical, list[_Placed]]:
     """By shared line, the events of format /2 *events* on its handles
     (*shared*: by handle, its shared line), in program order."""
     found: dict[Physical, list[_Placed]] = {}
 
-    def visit(items: list[dict[str, Any]], extra: int, looped: bool) -> None:
+    def visit(items: Sequence[dict[str, Any]], extra: int, looped: bool) -> None:
         # extra: the cycles the rolled loops around *items* move their last copy by.
         for event in items:
             if event["kind"] == "loop":
@@ -664,6 +701,30 @@ def _slots_by_event(line: Physical, placed: list[_Placed]) -> dict[int, int]:
     return given
 
 
+def _tone_slots(
+    placed_by_line: Mapping[Physical, list[_Placed]],
+) -> tuple[dict[int, int], dict[int, int]]:
+    """By ``id`` of event, the tone slot of each event *placed_by_line*
+    gives, and by handle, the slot of each handle that keeps one."""
+    slot_of: dict[int, int] = {}
+    handle_slot: dict[int, int] = {}
+    for line, placed in placed_by_line.items():
+        # One tone at once: every tone takes the line's one slot in turn.
+        per_handle = (
+            dict.fromkeys((p.handle for p in placed), 0)
+            if line.tones == 1
+            else _slots(line, placed)
+        )
+        if per_handle:
+            handle_slot.update(per_handle)
+            for p in placed:
+                # A handle that only waits or changes frames takes slot 0.
+                slot_of[id(p.event)] = per_handle.get(p.handle, 0)
+        else:
+            slot_of.update(_slots_by_event(line, placed))
+    return slot_of, handle_slot
+
+
 def structured(program: dict[str, Any], system: ControlSystem) -> dict[str, Any]:
     """Format /2 *program* on *system*, written with one line per handle
     (qudit), its shared lines as one line each: ``lines`` lists each
@@ -693,22 +754,7 @@ def structured(program: dict[str, Any], system: ControlSystem) -> dict[str, Any]
                 entry["max_concurrent_tones"] = line.tones
             lines.append(entry)
         renumbered.append(index_of[same])
-    slot_of: dict[int, int] = {}
-    handle_slot: dict[int, int] = {}
-    for line, placed in _placed(program["events"], on).items():
-        # One tone at once: every tone takes the line's one slot in turn.
-        per_handle = (
-            dict.fromkeys((p.handle for p in placed), 0)
-            if line.tones == 1
-            else _slots(line, placed)
-        )
-        if per_handle:
-            handle_slot.update(per_handle)
-            for p in placed:
-                # A handle that only waits or changes frames takes slot 0.
-                slot_of[id(p.event)] = per_handle.get(p.handle, 0)
-        else:
-            slot_of.update(_slots_by_event(line, placed))
+    slot_of, handle_slot = _tone_slots(_placed(program["events"], on))
 
     def renumber(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out = []

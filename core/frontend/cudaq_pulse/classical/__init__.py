@@ -1149,7 +1149,7 @@ def _make(template: ClassicalFunction[..., Any], key: Any) -> ClassicalFunction[
         try:
             version.results = _result_specs(template, shape, lengths, text)
         except TypeError as error:
-            raise CompilationError(str(error)) from None
+            raise CompilationError(str(error), code="wrong_argument") from None
     suffix = "_".join(str(n) if n >= 0 else f"i{-n}" for n in _key_items(key))
     version.name = f"{template.name}__{suffix}"
     version._dispatch_key = dispatch_key(version.name)
