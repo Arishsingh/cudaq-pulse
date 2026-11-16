@@ -203,8 +203,10 @@ def validate(
     name of one) and report what it does wrong.
 
     The corpus has a program for each kind of event (``cudaq_pulse.Event``),
-    one with a branch and two with values known only at run time (one a
-    frequency change made ahead of the pulse that takes it), compiled
+    one with a branch, ``answer_timeout``, which branches on whether a
+    call's answer came in time and on the answer itself, and two with
+    values known only at run time (one a frequency change made ahead of
+    the pulse that takes it), compiled
     for *controller* (by default the backend's control system's), in each
     format the backend reads. Two more are wired from that controller:
     ``shared_line``, both qudits read out at once on one readout line, and

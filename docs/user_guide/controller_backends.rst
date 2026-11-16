@@ -79,8 +79,13 @@ depends on that line's native frequency. Each event has:
     one readout is set, ``"answer"`` when it is one answer value, else
     ``"expression"``, and then ``expression`` is the condition, a bool
     expression (see `Run-time expressions`_) over those readouts and
-    answers. The event plays when every condition is its ``arm``. Events
-    in the two arms of one branch may overlap in time; only one arm plays.
+    answers. A condition with ``test`` ``"answer"`` also has ``result``,
+    which result of that answer it is, numbered as in an expression's
+    ``{"answer": i, "result": k}``: for a call with a timeout, result 0 is
+    the flag that the answer came in time and result ``k + 1`` the
+    function's value ``k``. The event plays when every condition is its
+    ``arm``. Events in the two arms of one branch may overlap in time; only
+    one arm plays.
 
 Drives and readouts also have:
 
@@ -217,7 +222,10 @@ vocabulary of terms, whatever operations the compiler computes it with:
     ground state, and the outcome is set for any other level.
 ``{"answer": i, "result": k}``
     Result ``k`` of the answer event ``i``: a float for a ``float``
-    result, an integer for an ``int`` one, a bool for a bit.
+    result, an integer for an ``int`` one, a bool for a bit. A call taken
+    with ``result(timeout=...)``, or of a function declared with
+    ``latency_mode="timeout"``, has the bool that its answer came in time
+    as result 0, before the function's values.
 ``{"op": term, "type": t, "of": [...]}``
     A term over the expressions in ``of``, computed in the type ``t`` of
     its operands, ``"int"``, ``"float"`` or ``"bool"``. A ``const`` in a
@@ -872,7 +880,9 @@ Validating a backend
 
 ``backends.validate(backend, controller=...)`` runs the export test corpus,
 which ships with cudaq-pulse, through a backend: a program for each kind of
-event (``cudaq_pulse.Event``), one with a branch and one with values known
+event (``cudaq_pulse.Event``), one with a branch, ``answer_timeout``, which
+branches on whether a call's answer came in time and on the answer itself
+(its conditions differ only in ``result``), and one with values known
 only at run time, compiled for the controller (by default the backend's
 control system's) and exported in each format the backend reads. Two more
 are wired from that controller: ``shared_line`` reads out both qudits at
@@ -899,7 +909,7 @@ controller's limits is skipped.
    # ...
    # PASS unsupported_event
    # PASS newer_format
-   # backend 'text': 10 passed, 6 refused
+   # backend 'text': 10 passed, 7 refused
    print(report.ok)  # True
 
 A backend that accepted the unknown event would instead report ``FAIL

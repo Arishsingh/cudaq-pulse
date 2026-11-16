@@ -41,11 +41,13 @@
 
 struct ControllerRecord {
   /// A branch, its arm, the readout and answer records its condition is
-  /// computed from, its test, and for the test "expression" the walk's
+  /// computed from, its test, for the test "expression" the walk's
   /// expression of the condition, whose leaves are places in those lists
+  /// (else -1), and for the test "answer" the result of the answer it is
   /// (else -1).
-  using Condition = std::tuple<int64_t, int64_t, std::vector<int64_t>,
-                               std::vector<int64_t>, std::string, int32_t>;
+  using Condition =
+      std::tuple<int64_t, int64_t, std::vector<int64_t>, std::vector<int64_t>,
+                 std::string, int32_t, int64_t>;
 
   const char *kind = "";
   mlir::Operation *op = nullptr;
@@ -1192,19 +1194,22 @@ struct ControllerWalk : ControllerExpressions {
       inputs(condition, readouts, answers);
       std::string test = "expression";
       int32_t computed = -1;
+      int64_t answerResult = -1;
       mlir::Operation *def = condition.getDefiningOp();
       if (mlir::isa_and_nonnull<pulse::IsSetOp>(def) && readouts.size() == 1)
         test = "is_set";
       else if (mlir::isa_and_nonnull<classical::WaitOp>(def) &&
-               answers.size() == 1)
+               answers.size() == 1) {
         test = "answer";
-      else
+        answerResult = mlir::cast<mlir::OpResult>(condition).getResultNumber();
+      } else
         computed = conditionExpression(condition, readouts, answers);
       if (computed >= 0) {
         // A condition computed in another way than its test names.
         const Expression &e = expressions[computed];
         if (e.kind == Expression::Answer) {
           test = "answer";
+          answerResult = e.result;
           computed = -1;
         } else if (isSet(e)) {
           test = "is_set";
@@ -1221,7 +1226,7 @@ struct ControllerWalk : ControllerExpressions {
       if (track)
         dependenciesBefore = frameDependencies;
       branches.emplace_back(id, 1, std::move(readouts), std::move(answers),
-                            std::move(test), computed);
+                            std::move(test), computed, answerResult);
       if (branch->hasAttr("pulse.then_updates"))
         listedUpdates(branch, "pulse.then_updates");
       block(*branch.thenBlock());
@@ -2602,7 +2607,7 @@ private:
     if (!compact || !r.conditions.empty()) {
       nb::list conditions = list(r.conditions.size());
       for (size_t i = 0; i < r.conditions.size(); ++i) {
-        const auto &[branch, arm, readouts, answers, test, computed] =
+        const auto &[branch, arm, readouts, answers, test, computed, answer] =
             r.conditions[i];
         nb::dict condition;
         put(condition, key.branch, integer(branch));
@@ -2612,6 +2617,8 @@ private:
         if (!compact || !answers.empty())
           put(condition, key.answers, ints(answers));
         put(condition, key.test, text(test));
+        if (answer >= 0)
+          put(condition, key.result, integer(answer));
         if (computed >= 0)
           put(condition, key.expression,
               expression(computed, readouts, answers));
@@ -2845,7 +2852,7 @@ private:
       const auto &update = all[i];
       nb::list conditions = list(update.conditions.size());
       for (size_t j = 0; j < update.conditions.size(); ++j) {
-        const auto &[branch, arm, readouts, answers, test, computed] =
+        const auto &[branch, arm, readouts, answers, test, computed, answer] =
             update.conditions[j];
         nb::dict condition;
         if (!compact || !answers.empty())
@@ -2857,6 +2864,8 @@ private:
               expression(computed, readouts, answers));
         if (!compact || !readouts.empty())
           put(condition, key.readouts, ints(readouts));
+        if (answer >= 0)
+          put(condition, key.result, integer(answer));
         put(condition, key.test, text(test));
         set(conditions, j, std::move(condition));
       }

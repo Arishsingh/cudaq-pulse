@@ -726,6 +726,101 @@ def test_export_carries_calls_with_their_measurements_and_waits():
     assert all(line["role"] in ("drive", "readout") for line in program["lines"])
 
 
+@pulse.classical(max_latency_ns=400)
+def two_bits(bits: pulse.Bits) -> pulse.Length[pulse.Bits, 2]:
+    return [bits[0], not bits[0]]
+
+
+@pulse.kernel
+def flag_and_bits(q, r):
+    d = get_drive_line(q)
+    e = get_drive_line(r)
+    ro = get_readout_line(q)
+    m = readout(ro, square(100, 0.05))
+    ok, fix = two_bits.submit([m]).result(timeout=300 * pulse.ns)
+    sync(d, e, ro)
+    if ok:
+        drive(d, square(20, 0.3))
+    if fix[0]:
+        drive(e, square(20, 0.3))
+    if fix[1]:
+        drive(e, square(20, 0.2))
+
+
+def _answer_conditions(program):
+    """(qudit driven, arm, test, result) of each condition of a drive."""
+    qudit = {line["line"]: line.get("qudits", [line.get("qudit")])[0] for line in program["lines"]}
+    return [
+        (qudit[e["line"]], c["arm"], c["test"], c.get("result"))
+        for e in program["events"]
+        if e["kind"] in ("drive", "play")
+        for c in e.get("conditions", ())
+    ]
+
+
+def test_a_branch_on_an_answer_names_the_result_it_reads():
+    lowered = pulse.compile(flag_and_bits, schedule="rcp").lower(Q[0], Q[1])
+    flat = lowered.export_to_controller()
+    structured = lowered.export_to_controller(version=2)
+    [answer] = [e for e in flat["events"] if e["kind"] == "answer"]
+    assert answer["wait"] == "timeout"
+    # Result 0 is whether the answer came in time, then the function's bits.
+    expected = [(0, True, "answer", 0), (1, True, "answer", 1), (1, True, "answer", 2)]
+    assert _answer_conditions(flat) == expected
+    assert _answer_conditions(structured) == expected
+    for e in flat["events"]:
+        for c in e["conditions"]:
+            assert c["answers"] == [answer["index"]]
+            assert list(c) == ["branch", "arm", "readouts", "answers", "test", "result"]
+    assert json.loads(json.dumps(structured)) == structured
+    unrolled = controller_module.unroll(structured)
+    assert [e["conditions"] for e in unrolled["events"] if e["conditions"]] == [
+        e["conditions"] for e in flat["events"] if e["conditions"]
+    ]
+
+
+def test_a_branch_on_an_answer_without_a_timeout_counts_from_the_first_value():
+    @pulse.kernel
+    def k(q):
+        d = get_drive_line(q)
+        ro = get_readout_line(q)
+        m = readout(ro, square(100, 0.05))
+        fix = two_bits.submit([m]).result()
+        sync(d, ro)
+        if fix[1]:
+            drive(d, square(20, 0.3))
+
+    lowered = pulse.compile(k, schedule="rcp").lower(Q[0])
+    for version in (1, 2):
+        program = lowered.export_to_controller(version=version)
+        assert _answer_conditions(program) == [(0, True, "answer", 1)]
+
+
+def test_only_a_branch_on_an_answer_has_a_result():
+    for program in (_program(), _program(version=2)):
+        for e in program["events"]:
+            assert all("result" not in c for c in e.get("conditions", ()))
+
+
+def test_branches_on_the_in_time_flag_and_on_the_answer_export_apart():
+    # `if fix[0] == 1:` and `if not ok:` exported the same condition, but
+    # for its arm: {"answers": [3], "test": "answer"}.
+    @pulse.kernel
+    def k(q, r):
+        s0 = readout(get_readout_line(q), square(200, 0.05))
+        s1 = readout(get_readout_line(r), square(200, 0.05))
+        ok, fix = check_bit.submit([s0, s1]).result(timeout=300)
+        if fix[0] == 1:
+            drive(get_drive_line(q), gaussian(40, 0.5, 10.0))
+        if not ok:
+            drive(get_drive_line(r), gaussian(40, 0.5, 10.0))
+
+    lowered = pulse.compile(k, schedule="rcp").lower(Q[0], Q[1])
+    for version in (1, 2):
+        program = lowered.export_to_controller(version=version)
+        assert _answer_conditions(program) == [(0, True, "answer", 1), (1, False, "answer", 0)]
+
+
 def test_events_after_a_variable_wait_are_in_its_segment():
     @pulse.classical(max_latency_ns=100)
     def tau() -> float:
