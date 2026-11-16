@@ -36,6 +36,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   function (`decode__1`). It is now a `CompilationError` naming the kernel,
   the function as written, the link and both controllers, and saying how to
   fix it, whether or not the kernel has arguments bound at the call.
+- `QuantumSystemMismatchError` for qudits of two quantum systems that
+  differ only in their control system read "one with layout 0..16, the
+  other with layout 0..16". It now names what differs: the control
+  systems (one has none, or the first setting that differs, such as
+  `control_system.controllers[1].peer_latency_cycles is 30 in one and 20
+  in the other`), the layouts, or, with the same layout, the qudits,
+  couplings or calibration.
 
 ## [0.1.0] - 2026-11-13
 

@@ -342,10 +342,47 @@ def _two_systems(name: str, found: QuantumSystem, quantum_system: QuantumSystem)
         if found.name == quantum_system.name
         else f"named {found.name!r} and {quantum_system.name!r}"
     )
+    differences = []
+    if found.layout != quantum_system.layout:
+        differences.append(
+            f"one with layout {_ranges(found.layout)}, the other with layout "
+            f"{_ranges(quantum_system.layout)}"
+        )
+    elif found.fingerprint != quantum_system.fingerprint:
+        differences.append("the same layout, but different qudits, couplings or calibration")
+    one, other = found.control_system, quantum_system.control_system
+    if one != other:
+
+        def described(system: Any) -> str:
+            if system is None:
+                return "none"
+            count = len(system.controllers)
+            return f"{count} controller{'' if count == 1 else 's'}"
+
+        def first_difference(a: Any, b: Any, path: str) -> str | None:
+            if isinstance(a, dict) and isinstance(b, dict):
+                for key in [*a, *(k for k in b if k not in a)]:
+                    if a.get(key) != b.get(key):
+                        return first_difference(a.get(key), b.get(key), f"{path}.{key}")
+                return None
+            if isinstance(a, list) and isinstance(b, list):
+                if len(a) != len(b):
+                    return f"{path} has {len(a)} in one and {len(b)} in the other"
+                for i, (x, y) in enumerate(zip(a, b, strict=True)):
+                    if x != y:
+                        return first_difference(x, y, f"{path}[{i}]")
+                return None
+            return None if a == b else f"{path} is {a!r} in one and {b!r} in the other"
+
+        where: str | None
+        if one is None or other is None:
+            where = f"one has {described(one)}, the other {described(other)}"
+        else:
+            where = first_difference(one.as_dict(), other.as_dict(), "control_system")
+        differences.append("their control systems differ" + (f" ({where})" if where else ""))
     return (
-        f"{name}() got qudits of two different quantum systems, {both}: one with layout "
-        f"{_ranges(found.layout)}, the other with layout {_ranges(quantum_system.layout)}; "
-        "pass handles of one quantum system"
+        f"{name}() got qudits of two different quantum systems, {both}: "
+        f"{'; '.join(differences)}; pass handles of one quantum system"
     )
 
 
