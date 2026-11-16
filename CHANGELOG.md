@@ -76,6 +76,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- `pulse.controller.sample_waveform` is annotated as returning
+  `npt.NDArray[np.complex128]`, not a bare `np.ndarray`, so editors and
+  type checkers accept `.real` and `.imag` of its samples with NumPy 2.5,
+  whose annotations allow them only on arrays of a known dtype.
 - `backends.validate` checks the order of a backend's classical calls and
   answers on their link, apart from the pulses of the line with the same
   number. A backend that gives its events back in time order, as a
