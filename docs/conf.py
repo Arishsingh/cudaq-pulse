@@ -15,8 +15,13 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
+    "sphinx.ext.extlinks",
     "myst_parser",
 ]
+
+extlinks = {
+    "example": ("https://github.com/NVIDIA/cudaq-pulse/blob/main/examples/%s", "examples/%s"),
+}
 
 myst_enable_extensions = [
     "colon_fence",

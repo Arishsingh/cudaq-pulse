@@ -45,6 +45,12 @@ Project status
    getting_started
 
 .. toctree::
+   :maxdepth: 1
+   :caption: Tutorials
+
+   tutorials/first_pulse_program
+
+.. toctree::
    :maxdepth: 2
    :caption: User Guide
 
