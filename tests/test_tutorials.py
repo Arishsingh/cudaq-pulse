@@ -11,7 +11,8 @@ prints as comment lines after its last line of code.
 Blocks with ``:class: fragment`` are not run. Blocks with ``:class: gpu``
 run only where the GPU runtime loads, ``:class: viz`` only with matplotlib,
 and ``:class: cudaq-qec`` only with CUDA-Q QEC; what they print is not
-checked on other machines.
+checked on other machines. A page may import the example modules it links
+with ``:example:``, as a reader who saves them beside the page's code would.
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ import pytest
 _TUTORIALS = Path(__file__).resolve().parents[1] / "docs" / "tutorials"
 _PAGES = sorted(p for p in _TUTORIALS.glob("*.rst") if p.name != "index.rst")
 _PRINT_WITH_VALUE = re.compile(r"^\s*print\(.*\)\s*#\s*(?P<value>.+)$")
+_EXAMPLES = _TUTORIALS.parents[1] / "examples"
+_EXAMPLE_LINK = re.compile(r":example:`(?P<path>[^`<>]+\.py)`")
 
 
 def code_blocks(page: Path) -> list[tuple[frozenset[str], str]]:
@@ -109,6 +112,8 @@ def test_tutorial_runs_and_prints_its_comments(page, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MPLBACKEND", "Agg")
     monkeypatch.delenv("CUDAQ_PULSE_QUANTUM_SYSTEM", raising=False)
+    for linked in sorted({m["path"] for m in _EXAMPLE_LINK.finditer(page.read_text())}):
+        monkeypatch.syspath_prepend(str((_EXAMPLES / linked).parent))
     namespace: dict = {"__name__": f"tutorial_{page.stem}"}
     blocks = code_blocks(page)
     assert blocks
@@ -117,7 +122,10 @@ def test_tutorial_runs_and_prints_its_comments(page, tmp_path, monkeypatch):
             continue
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            exec(compile(code, f"{page.name}, block {number}", "exec"), namespace)
+            # dont_inherit: a reader's code runs without this module's
+            # ``from __future__ import annotations``.
+            code_object = compile(code, f"{page.name}, block {number}", "exec", dont_inherit=True)
+            exec(code_object, namespace)
         printed = out.getvalue().splitlines()
         for k, want in enumerate(expected_output(code)):
             got = printed[k] if k < len(printed) else "<nothing printed>"

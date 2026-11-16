@@ -9,7 +9,9 @@ PYTHON is an environment with cudaq-pulse installed from a wheel or with
 empty project directory, pyright runs in "off" mode (the default of Pylance,
 in VS Code and VS Code-based editors) and in "standard" mode over every file of examples/ and the
 Python code blocks of each docs page, joined in order into one module, and
-must report nothing. A probe with a typo and a misused operation must still
+must report nothing. A page may import an example it links with
+``:example:``, which sits beside the pages under its own name, as a reader
+saves it. A probe with a typo and a misused operation must still
 report exactly those. Exits 1 listing every unexpected diagnostic.
 """
 
@@ -28,6 +30,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 # Examples that call CUDA-Q QEC, which installs on Linux only and has no
 # types for its native functions (cudaq_qec.qec), so no editor sees them.
 _UNTYPED_DEPENDENCIES = {"27_realtime_decoding.py"}
+_EXAMPLE_LINK = re.compile(r":example:`(?P<path>[^`<>]+\.py)`")
 
 _PROBE = """\
 import cudaq_pulse as pulse
@@ -125,6 +128,11 @@ def main() -> int:
             if p.name not in _UNTYPED_DEPENDENCIES
         }
         sources.update(docs_modules(_ROOT / "docs"))
+        for page in sorted((_ROOT / "docs").rglob("*.rst")):
+            for linked in _EXAMPLE_LINK.findall(page.read_text()):
+                example = examples / linked
+                if example.name not in _UNTYPED_DEPENDENCIES:
+                    sources.setdefault(example.name, example.read_text())
         sources["probe.py"] = _PROBE
         for name, text in sources.items():
             (project / name).write_text(text)
