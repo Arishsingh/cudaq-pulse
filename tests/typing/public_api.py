@@ -116,6 +116,18 @@ assert_type(lowered.generic.bind([0.7]), pulse.ScheduledKernel)
 assert_type(pulse.simulate(lowered, t_end=40 * pulse.ns, dt_ns=0.5), pulse.SimulationResult)
 assert_type(pulse.simulate(rabi, dev.qudits[0], 0.5), pulse.SimulationResult)
 assert_type(pulse.simulate(compiled, dev.qudits[0], 0.5), pulse.SimulationResult)
+simulated = pulse.simulate(lowered, shots_count=10)
+kept = simulated.postselect(lambda branch: branch.levels[0] == 0)
+assert_type(kept, pulse.SimulationResult)
+assert_type(kept.acceptance, float)
+simulated.postselect(lambda branch: branch.answers("decode")[-1])
+
+
+def two_arguments(branch: object, extra: int) -> bool:
+    return True
+
+
+simulated.postselect(two_arguments)  # type: ignore[arg-type]
 
 
 # pulse.classical is a module at run time; checkers see a callable decorator,

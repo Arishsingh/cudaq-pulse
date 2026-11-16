@@ -382,7 +382,10 @@ it.
 - Each of ``result.branches`` lists its path's ``calls``: the function's
   name and its version's (``function``, ``compiled_name``), inputs, answer,
   and whether it came in time; ``branch.answers("decode")`` gives the
-  answers of one function, in call order.
+  answers of one function, in call order, and
+  ``result.postselect(lambda b: b.answers("decode")[-1])`` the result over
+  the branches whose last answer is true, with the fraction it kept in
+  ``acceptance``.
 
 A whole program with unanswered calls does not lower to LLVM:
 ``ScheduledKernel.mlir("llvm")`` points to ``pulse.simulate``, which lowers the
