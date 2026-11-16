@@ -34,13 +34,58 @@ def _run(*argv):
 
 
 @compiler_only
-def test_compiler_only_build_passes_only_with_allow_no_gpu():
-    code, output = _run("--allow-no-gpu")
-    assert code == 0
-    assert "Compiler (MLIR JIT): ok" in output
-    assert "GpuSupportNotBuiltError" in output
-    assert _run()[0] == 1
+def test_a_compiler_only_build_passes_on_the_cpu(monkeypatch):
+    for argv in ([], ["--allow-no-gpu"]):
+        code, output = _run(*argv)
+        assert code == 0, output
+        assert "Compiler (MLIR JIT): ok" in output
+        assert "CPU simulation (NumPy reference): ok" in output
+        assert "GPU simulation: not set up (GpuSupportNotBuiltError)" in output
+        assert 'pip install "cudaq-pulse[cu12]" (NVIDIA driver 525.60.13 or newer)' in output
+        assert 'pip install "cudaq-pulse[cu13]" (NVIDIA driver 580 or newer)' in output
+        assert output.rstrip().endswith(
+            "Result: OK, compilation and CPU simulation work; GPU simulation is not set up."
+        )
     assert _run("--expect-no-device")[0] == 1
+    # Asking for a CUDA runtime the build does not have is a failure.
+    monkeypatch.setenv("CUDAQ_PULSE_CUDA", "12")
+    code, output = _run()
+    assert code == 1
+    assert "GPU simulation: unavailable (GpuSupportNotBuiltError)" in output
+    assert "Result: FAILED, CUDAQ_PULSE_CUDA is set but GPU simulation does not work" in output
+    assert _run("--allow-no-gpu")[0] == 0
+
+
+def test_cpu_simulation_failure_fails_every_mode(monkeypatch):
+    monkeypatch.setattr(doctor, "_check_cpu_simulation", lambda: "RuntimeError: boom")
+    monkeypatch.setattr(doctor, "_diagnose_gpu", lambda write: gpu.GpuSupportNotBuiltError())
+    for argv in ([], ["--allow-no-gpu"], ["--expect-no-device"]):
+        code, output = _run(*argv)
+        assert code == 1
+        assert "CPU simulation (NumPy reference): FAILED\n  RuntimeError: boom" in output
+        assert output.rstrip().endswith("Result: FAILED, CPU simulation does not work.")
+
+
+def test_a_driver_too_old_for_the_installed_extra_fails(monkeypatch):
+    message = (
+        "The installed NVIDIA driver supports CUDA up to 12.8, but cudaq-pulse[cu13] "
+        "needs driver 580 or newer (CUDA 13). Upgrade the driver."
+    )
+
+    def old_driver():
+        raise gpu.GpuDeviceUnavailableError(message)
+
+    monkeypatch.setattr(gpu, "_installed_cuda_majors", lambda: [13])
+    monkeypatch.setattr(gpu, "require_gpu_runtime", old_driver)
+    code, output = _run()
+    assert code == 1
+    assert "GPU simulation: unavailable (GpuDeviceUnavailableError)" in output
+    assert message in output
+    assert output.rstrip().endswith(
+        "Result: FAILED, cudaq-pulse[cu13] is installed but GPU simulation does not work "
+        "(CPU simulation does)."
+    )
+    assert _run("--expect-no-device")[0] == 0
 
 
 @compiler_only
@@ -49,7 +94,7 @@ def test_module_entry_point(tmp_path):
     # The suite's own target is registered only inside the test process.
     env.pop("CUDAQ_PULSE_QUANTUM_SYSTEM", None)
     result = subprocess.run(
-        [sys.executable, "-m", "cudaq_pulse.doctor", "--allow-no-gpu"],
+        [sys.executable, "-m", "cudaq_pulse.doctor"],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -68,6 +113,7 @@ def test_compiler_failure_fails_every_mode(monkeypatch):
         code, output = _run(*argv)
         assert code == 1
         assert "boom" in output
+        assert "CPU simulation (NumPy reference): not checked" in output
 
 
 def test_flags_are_mutually_exclusive():
@@ -77,23 +123,34 @@ def test_flags_are_mutually_exclusive():
 
 
 @pytest.mark.parametrize(
-    ("outcome", "installed", "flags", "expected"),
+    ("outcome", "installed", "env", "flags", "expected"),
     [
-        (None, [12], {}, 0),
-        (gpu.GpuDeviceUnavailableError(), [12], {}, 1),
-        (gpu.GpuSupportNotBuiltError(), [], {}, 1),
-        (gpu.GpuSupportNotBuiltError(), [], {"allow_no_gpu": True}, 0),
-        (gpu.GpuRuntimeLoadError(), [], {"allow_no_gpu": True}, 0),
-        (gpu.GpuRuntimeLoadError(), [13], {"allow_no_gpu": True}, 1),
-        (gpu.GpuDeviceUnavailableError(), [13], {"allow_no_gpu": True}, 0),
-        (gpu.GpuDeviceUnavailableError(), [12], {"expect_no_device": True}, 0),
-        (gpu.GpuRuntimeLoadError(), [12], {"expect_no_device": True}, 1),
-        (gpu.GpuSupportNotBuiltError(), [], {"expect_no_device": True}, 1),
-        (None, [12], {"expect_no_device": True}, 1),
+        (None, [12], {}, {}, 0),
+        # Nothing asks for GPU simulation: CPU simulation is enough.
+        (gpu.GpuSupportNotBuiltError(), [], {}, {}, 0),
+        (gpu.GpuRuntimeLoadError(), [], {}, {}, 0),
+        # A CUDA extra or a runtime variable asks for it, so it must work.
+        (gpu.GpuDeviceUnavailableError(), [12], {}, {}, 1),
+        (gpu.GpuDeviceUnavailableError(), [13], {}, {}, 1),
+        (gpu.GpuRuntimeLoadError(), [12, 13], {}, {}, 1),
+        (gpu.GpuSupportNotBuiltError(), [], {"CUDAQ_PULSE_CUDA": "12"}, {}, 1),
+        (gpu.GpuRuntimeLoadError(), [], {"CUDM_RUNTIME_LIB": "/none"}, {}, 1),
+        (gpu.GpuSupportNotBuiltError(), [], {}, {"allow_no_gpu": True}, 0),
+        (gpu.GpuRuntimeLoadError(), [], {}, {"allow_no_gpu": True}, 0),
+        (gpu.GpuRuntimeLoadError(), [], {"CUDM_RUNTIME_LIB": "/none"}, {"allow_no_gpu": True}, 0),
+        (gpu.GpuRuntimeLoadError(), [13], {}, {"allow_no_gpu": True}, 1),
+        (gpu.GpuRuntimeLoadError(), [12, 13], {}, {"allow_no_gpu": True}, 1),
+        (gpu.GpuDeviceUnavailableError(), [13], {}, {"allow_no_gpu": True}, 0),
+        (gpu.GpuDeviceUnavailableError(), [12], {}, {"expect_no_device": True}, 0),
+        (gpu.GpuRuntimeLoadError(), [12], {}, {"expect_no_device": True}, 1),
+        (gpu.GpuSupportNotBuiltError(), [], {}, {"expect_no_device": True}, 1),
+        (None, [12], {}, {"expect_no_device": True}, 1),
     ],
 )
-def test_exit_codes(monkeypatch, outcome, installed, flags, expected):
+def test_exit_codes(monkeypatch, outcome, installed, env, flags, expected):
     monkeypatch.setattr(gpu, "_installed_cuda_majors", lambda: installed)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     lines = []
     code = doctor._exit_code(
         outcome,

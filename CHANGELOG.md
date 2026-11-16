@@ -9,6 +9,21 @@ Each GitHub release takes its notes from the section for its version, so
 every change worth telling users about goes in the top section, the next
 release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
+## [0.1.1] - Unreleased
+
+### Fixed
+
+- `python -m cudaq_pulse.doctor` passes on a machine without GPU support:
+  it now simulates a short pulse with the NumPy reference, reports
+  `CPU simulation (NumPy reference): ok`, and says how to enable GPU
+  simulation (`[cu12]` or `[cu13]` and the NVIDIA driver each needs). It
+  still exits non-zero when the compiler, CPU simulation or
+  `cudaq-pulse-opt` fails, and when GPU simulation is set up (a CUDA extra
+  is installed, or `CUDAQ_PULSE_CUDA` or `CUDM_RUNTIME_LIB` is set) but does
+  not work: a driver too old for the extra, both extras installed, a
+  library that does not load. `GpuSupportNotBuiltError` no longer says the
+  build cannot execute pulse programs: only GPU simulation needs GPU support.
+
 ## [0.1.0] - 2026-11-13
 
 The first public release, a research preview: APIs, dialects and numerical

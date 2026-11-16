@@ -246,7 +246,7 @@ def test_the_release_notes_hold_every_entry_of_the_top_section():
     release, lines = _top_release(changelog)
     notes = _load("release-notes").release_notes(release, changelog)
     entries = [line for line in lines if line.startswith("- ")]
-    assert entries and "### Added" in notes
+    assert entries and re.search(r"^### \w", notes, flags=re.M)
     assert [line for line in entries if line not in notes.splitlines()] == []
 
 

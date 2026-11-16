@@ -68,7 +68,9 @@ Every installation can trace, compile, transform, inspect and simulate
 kernels, the last with the NumPy reference, and has the
 ``cudaq-pulse-opt`` MLIR driver on ``PATH``. Only GPU simulation needs the GPU, and it
 never degrades silently; see :ref:`gpu-errors`. If something does not
-work, run ``python -m cudaq_pulse.doctor`` first.
+work, run ``python -m cudaq_pulse.doctor`` first. Without a CUDA extra it
+ends with ``Result: OK, compilation and CPU simulation work; GPU simulation
+is not set up.`` and names the extra and driver that enable GPU simulation.
 
 Hello World
 -----------

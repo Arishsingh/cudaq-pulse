@@ -78,10 +78,12 @@ container is required.
 ### Troubleshooting
 
 Run `python -m cudaq_pulse.doctor` first. It prints the version, the wheel
-platform, which CUDA extra is installed, each GPU library with its path or
-load error, and the driver version and device count. It exits non-zero if
-GPU execution does not work (`--allow-no-gpu` accepts a working compiler-only
-installation).
+platform, whether CPU simulation works, which CUDA extra is installed, each
+GPU library with its path or load error, and the driver version and device
+count. Without a CUDA extra it passes on CPU simulation alone and says how
+to enable GPU simulation. With one installed, it exits non-zero if GPU
+simulation does not work: a driver too old for the extra, both extras
+installed, or a library that does not load.
 
 Without a usable GPU, everything except GPU simulation still works, including
 the CPU reference (`pulse.simulate(..., backend="cpu")`, the default). GPU

@@ -2,19 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Report what this cudaq-pulse installation contains and whether it works.
 
-    python -m cudaq_pulse.doctor                     # exit 0 only if GPU execution works
-    python -m cudaq_pulse.doctor --allow-no-gpu      # exit 0 if the compiler works
+    python -m cudaq_pulse.doctor                     # exit 0 if CPU simulation works and
+                                                     # GPU simulation works or is not set up
+    python -m cudaq_pulse.doctor --allow-no-gpu      # also exit 0 if a CUDA extra is
+                                                     # installed but no device is usable
     python -m cudaq_pulse.doctor --expect-no-device  # exit 0 if GPU libraries load
-                                                     # but no quantum system exists
+                                                     # but no GPU device exists
     python -m cudaq_pulse.doctor --setup-editor      # configure mypy and ruff for
                                                      # the kernel language
     python -m cudaq_pulse.doctor --system lab.json   # check a quantum system file
     python -m cudaq_pulse.doctor --system lab.json --json
 
-The compiler check always runs; any failure there exits non-zero. So does
-one of the cudaq-pulse-opt MLIR driver, from the cudaq-pulse-tools
-distribution, which an installed cudaq-pulse requires at its own version,
-and whose ``--version`` must print it.
+The compiler and CPU simulation checks always run; any failure there exits
+non-zero. So does one of the cudaq-pulse-opt MLIR driver, from the
+cudaq-pulse-tools distribution, which an installed cudaq-pulse requires at
+its own version, and whose ``--version`` must print it. GPU simulation is set
+up once a CUDA extra is installed or ``CUDAQ_PULSE_CUDA`` or
+``CUDM_RUNTIME_LIB`` is set; then it must work too, so that a driver too old
+for the extra, or both extras installed, exits non-zero.
 ``--system FILE`` instead runs the checks of ``pulse.QuantumSystem.load(FILE)`` and
 prints each problem as ``FILE:LINE:COLUMN: error: PATH: MESSAGE``, or with
 ``--json`` as one JSON object; it exits 1 if the file has a problem.
@@ -159,6 +164,30 @@ def _check_compiler() -> str | None:
     return None
 
 
+def _check_cpu_simulation() -> str | None:
+    """Simulate a short pulse with the NumPy reference; return an error message on failure."""
+    try:
+        import numpy as np
+
+        import cudaq_pulse as pulse
+
+        from ._device import Qudit
+        from .ops import drive, get_drive_line, square
+
+        @pulse.kernel
+        def probe(q: Qudit) -> None:
+            drive(get_drive_line(q), square(4, 0.1))
+
+        qudit = pulse.quantum_system("transmon_surface17").qudits[0]
+        result = pulse.simulate(pulse.compile(probe).lower(qudit), backend="cpu", levels=2)
+        trace = complex(np.trace(result.density_matrix))
+    except Exception as error:
+        return f"{type(error).__name__}: {error}"
+    if not abs(trace - 1) < 1e-9:
+        return f"the simulated density matrix has trace {trace}, expected 1"
+    return None
+
+
 def _context_budget(write: Callable[[str], None]) -> bool:
     """Print the shared MLIR context limits; return False if they are invalid."""
     from ._native import _cudaq_pulse_native as native
@@ -254,6 +283,28 @@ def _report_libraries(major: int, write: Callable[[str], None]) -> None:
             write(f"    {name:<24} {path}")
 
 
+def _gpu_setup() -> str | None:
+    """What asks for GPU simulation: an installed CUDA extra or a runtime
+    variable; ``None`` if nothing does."""
+    installed = gpu._installed_cuda_majors()
+    if installed:
+        names = " and ".join(f"cudaq-pulse[cu{major}]" for major in installed)
+        return f"{names} {'is' if len(installed) == 1 else 'are'} installed"
+    for name in (gpu._SELECT_ENV, gpu._OVERRIDE_ENV):
+        if os.environ.get(name):
+            return f"{name} is set"
+    return None
+
+
+def _gpu_hint() -> str:
+    extras = " or ".join(
+        f'pip install "cudaq-pulse[cu{major}]" (NVIDIA driver {release} or newer)'
+        for major, (_, release) in gpu._MINIMUM_DRIVER.items()
+    )
+    where = "" if sys.platform.startswith("linux") else ", on Linux with an NVIDIA GPU"
+    return f"To enable GPU simulation{where}: {extras}."
+
+
 def _diagnose_gpu(write: Callable[[str], None]) -> gpu.GpuRuntimeError | None:
     """Print the GPU path step by step; return its outcome (``None`` if usable)."""
     built = sorted(_build_config.GPU_RUNTIME_LIBRARIES)
@@ -289,10 +340,15 @@ def _diagnose_gpu(write: Callable[[str], None]) -> gpu.GpuRuntimeError | None:
     try:
         runtime = gpu.require_gpu_runtime()
     except gpu.GpuRuntimeError as error:
-        write(f"GPU execution: unavailable ({type(error).__name__})")
+        set_up = _gpu_setup() is not None
+        write(
+            f"GPU simulation: {'unavailable' if set_up else 'not set up'} ({type(error).__name__})"
+        )
         write(f"  {error}")
+        if not set_up:
+            write(f"  {_gpu_hint()}")
         return error
-    write(f"GPU execution: ready, CUDA {runtime.cuda_major} runtime {runtime.path}")
+    write(f"GPU simulation: ready, CUDA {runtime.cuda_major} runtime {runtime.path}")
     write(f"  devices: {runtime.device_count}")
     return None
 
@@ -316,15 +372,22 @@ def _exit_code(
             )
         return 1
     if outcome is None:
-        write("Result: OK, compilation and GPU execution work.")
+        write("Result: OK, compilation, CPU simulation and GPU simulation work.")
+        return 0
+    setup = _gpu_setup()
+    if setup is None:
+        write("Result: OK, compilation and CPU simulation work; GPU simulation is not set up.")
         return 0
     if allow_no_gpu and (
         isinstance(outcome, (gpu.GpuSupportNotBuiltError, gpu.GpuDeviceUnavailableError))
         or not gpu._installed_cuda_majors()
     ):
-        write("Result: OK, compilation works; GPU execution is unavailable (allowed).")
+        write(
+            "Result: OK, compilation and CPU simulation work; "
+            "GPU simulation is unavailable (allowed)."
+        )
         return 0
-    write("Result: FAILED, GPU execution is unavailable.")
+    write(f"Result: FAILED, {setup} but GPU simulation does not work (CPU simulation does).")
     return 1
 
 
@@ -469,8 +532,9 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
     modes.add_argument(
         "--allow-no-gpu",
         action="store_true",
-        help="succeed when the compiler works, even if GPU execution is unavailable "
-        "because the build is compiler-only, no CUDA extra is installed, or no device exists",
+        help="succeed when compilation and CPU simulation work, even if GPU simulation "
+        "is set up but unavailable because the build has no GPU runtime or no usable "
+        "device or driver exists",
     )
     modes.add_argument(
         "--expect-no-device",
@@ -557,6 +621,14 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
     if not _kernel_settings(write) and compiler_error is None:
         compiler_error = "invalid kernel settings"
     driver_error = _check_driver(write, None if package is None else package.version)
+    if compiler_error is None:
+        cpu_error = _check_cpu_simulation()
+        write(f"CPU simulation (NumPy reference): {'ok' if cpu_error is None else 'FAILED'}")
+        if cpu_error is not None:
+            write(f"  {cpu_error}")
+    else:
+        cpu_error = None
+        write("CPU simulation (NumPy reference): not checked (the compiler does not work)")
 
     outcome = _diagnose_gpu(write)
     if compiler_error is not None:
@@ -565,6 +637,9 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
         return 1
     if driver_error is not None:
         write("Result: FAILED, cudaq-pulse-opt does not work.")
+        return 1
+    if cpu_error is not None:
+        write("Result: FAILED, CPU simulation does not work.")
         return 1
     return _exit_code(
         outcome,
