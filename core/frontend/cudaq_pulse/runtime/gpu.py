@@ -256,8 +256,9 @@ def _resolve_runtime() -> tuple[int | None, Path]:
         return major, path
     if not _build_config.GPU_RUNTIME_ENABLED:
         raise GpuSupportNotBuiltError(
-            "This cudaq-pulse build does not include GPU support, so it can "
-            "compile pulse programs but not execute them. Install a Linux wheel "
+            "This cudaq-pulse build does not include GPU support, so it cannot "
+            'run GPU simulations; CPU simulation (backend="cpu") works without '
+            "it. For GPU simulation, install a Linux wheel "
             'with GPU support via `pip install "cudaq-pulse[cu12]"` or '
             '`pip install "cudaq-pulse[cu13]"`, or rebuild from source with '
             "-DCUDAQ_PULSE_ENABLE_GPU=ON."

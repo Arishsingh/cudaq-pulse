@@ -16,7 +16,8 @@
 # Modes:
 #   base      install cudaq-pulse; compile a kernel (on a free-threaded
 #             Python, without the GIL turning on), run the installed
-#             cudaq-pulse-opt on it, the doctor (no GPU required), and
+#             cudaq-pulse-opt on it, the doctor (which must pass on CPU
+#             simulation alone, with no CUDA extra), and
 #             pytest -m "not gpu"; then, installed without its dependencies,
 #             the doctor must fail and name the missing cudaq-pulse-tools
 #   plugin    build the example pass plugin against the MLIR toolchain
@@ -215,9 +216,12 @@ EOF
   fi
   in_venv python -c "import importlib.metadata as m; v = m.version('cudaq-pulse-tools'); \
 assert v == '${version}', f'cudaq-pulse-tools {v} is installed, expected ${version}'"
-  in_venv python -m cudaq_pulse.doctor --allow-no-gpu >"${work}/doctor.out"
+  # No CUDA extra is installed, so the doctor passes on CPU simulation alone.
+  in_venv python -m cudaq_pulse.doctor >"${work}/doctor.out"
   cat "${work}/doctor.out"
   expect_in doctor.out "MLIR driver (cudaq-pulse-opt): ${version} (LLVM "
+  expect_in doctor.out "CPU simulation (NumPy reference): ok"
+  expect_in doctor.out "Result: OK, compilation and CPU simulation work; GPU simulation is not set up."
 }
 
 # Installed with --no-deps, cudaq-pulse lacks cudaq-pulse-tools: the doctor
@@ -231,7 +235,7 @@ missing_driver_check() {
     --find-links "$wheelhouse" "cudaq-pulse==${version}"
   "${venv}/bin/python" -m pip install --no-cache-dir numpy
   echo "::endgroup::"
-  if in_venv python -m cudaq_pulse.doctor --allow-no-gpu >"${work}/doctor.out" 2>&1; then
+  if in_venv python -m cudaq_pulse.doctor >"${work}/doctor.out" 2>&1; then
     cat "${work}/doctor.out"
     echo "error: the doctor passed without cudaq-pulse-tools installed" >&2
     exit 1

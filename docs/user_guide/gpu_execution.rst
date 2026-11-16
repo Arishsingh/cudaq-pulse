@@ -59,11 +59,28 @@ Run the diagnostics first:
 
    python -m cudaq_pulse.doctor
 
-It prints the version, the wheel platform, whether the GPU runtime is built
-in, which CUDA extra is installed, each library it loads with its path or the
-load error, and the driver version and device count. It exits non-zero when
-GPU execution does not work; ``--allow-no-gpu`` accepts a working
-compiler-only installation.
+It prints the version, the wheel platform, whether CPU simulation works,
+whether the GPU runtime is built in, which CUDA extra is installed, each
+library it loads with its path or the load error, and the driver version and
+device count. Without a CUDA extra, GPU simulation is not set up, and the
+doctor passes on CPU simulation alone:
+
+.. code-block:: text
+
+   CPU simulation (NumPy reference): ok
+   GPU runtime built in: no
+   CUDA extra installed: none
+   GPU simulation: not set up (GpuSupportNotBuiltError)
+     ...
+     To enable GPU simulation, on Linux with an NVIDIA GPU: pip install "cudaq-pulse[cu12]" (NVIDIA driver 525.60.13 or newer) or pip install "cudaq-pulse[cu13]" (NVIDIA driver 580 or newer).
+   Result: OK, compilation and CPU simulation work; GPU simulation is not set up.
+
+Once a CUDA extra is installed, or ``CUDAQ_PULSE_CUDA`` or
+``CUDM_RUNTIME_LIB`` is set, GPU simulation must work too: the doctor exits
+non-zero when the driver is too old for the extra, both extras are
+installed, or a library does not load, and its output names the reason.
+``--allow-no-gpu`` also passes when an extra is installed but no device or
+driver is usable.
 
 From Python, the same check is:
 
@@ -88,8 +105,9 @@ subclasses of ``cudaq_pulse.runtime.GpuRuntimeError``:
 
 ``GpuSupportNotBuiltError``
    This installation was built without the GPU runtime: a macOS wheel or a
-   source build configured without ``CUDAQ_PULSE_ENABLE_GPU``. Reinstall a
-   Linux wheel, or rebuild with GPU support.
+   source build configured without ``CUDAQ_PULSE_ENABLE_GPU``. CPU
+   simulation still works. For GPU simulation, reinstall a Linux wheel, or
+   rebuild with GPU support.
 
 ``GpuRuntimeLoadError``
    The runtime is built in but its libraries failed to load, usually because
