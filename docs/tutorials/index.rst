@@ -26,6 +26,7 @@ Start with the first; the rest can be read in any order once you have it.
    classical_calls
    adaptive_calibration
    realtime_decoding
+   t_state_injection
 
 .. toctree::
    :maxdepth: 1
