@@ -43,6 +43,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `control_system.controllers[1].peer_latency_cycles is 30 in one and 20
   in the other`), the layouts, or, with the same layout, the qudits,
   couplings or calibration.
+- A program that plays a shared line (a multiplexed readout feedline,
+  `ReadoutLine([9, 10, 11, 12], max_concurrent_tones=4)`) exports in format
+  `/1`, so it exports on a control system of several controllers, on a
+  controller with its own clock, and with line delays, where 0.1.0 refused it
+  in both formats. Format `/1` keeps a line for each qudit; a line on a shared
+  line also has the line's `qudits` and `max_concurrent_tones`, and each
+  event on it a `tone_slot`, the slot format `/2` gives it. Programs on
+  dedicated lines export as before.
 
 ## [0.1.0] - 2026-11-13
 

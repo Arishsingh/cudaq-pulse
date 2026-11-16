@@ -886,16 +886,20 @@ def export(
     native = None if clocks is None else _native_clock(clocks)
     # In the controller's own cycles from here on.
     lines, events, frames, off, problems = _walk(lowered, True, native, True, slots)
-    if system is not None and not system._one_box:
+    if system is not None:
+        if system._one_box:
+            assert limits is not None
+            _check_at_export(lowered, limits, clocks, (lines, events, frames, off, problems))
+        else:
+            violations = system._violations(
+                lowered, lines, events, clocks, off, problems, True, None, None
+            )
+            if violations:
+                raise _limit_error(lowered, violations)
         if system._shares:
-            from ._shared_lines import refuse_format_1
+            from ._shared_lines import flat
 
-            refuse_format_1(lowered, system, lines)
-        violations = system._violations(
-            lowered, lines, events, clocks, off, problems, True, None, None
-        )
-        if violations:
-            raise _limit_error(lowered, violations)
+            tone_slots = flat(system, lines, events)
     elif limits is not None:
         _check_at_export(lowered, limits, clocks, (lines, events, frames, off, problems))
     if clocks is None:
@@ -939,7 +943,20 @@ def export(
                 event["symbols"] = symbols
     if frames:
         program = _with_frames(program, frames, _slot_names(events, role))
+        if system is not None and system._shares:
+            _framed_slots(program, tone_slots)
     return program
+
+
+def _framed_slots(program: dict[str, Any], tone_slots: Mapping[int, int]) -> None:
+    """Give the ``frame_state`` and ``runtime_tones`` entries of format /1
+    *program* on a line keeping one tone slot (*tone_slots*, by line) the
+    slot, in place."""
+    from ._shared_lines import flat_frames
+
+    for key in ("frame_state", "runtime_tones"):
+        if key in program:
+            program[key] = flat_frames(program[key], tone_slots)
 
 
 def _with_frames(
@@ -1580,15 +1597,17 @@ def _export_part(
     assert system is not None
     clocks = (lowered._generic or lowered).clocks
     lines, events, owners, parts, index, frames = _part(lowered, controller)
-    if system._shares:
-        from ._shared_lines import refuse_format_1
-
-        refuse_format_1(lowered, system, lines)
     # The checks count each controller's events in its cycles, in place.
     checked = events if clocks is None else copy.deepcopy(events)
     violations = system._violations(lowered, lines, checked, clocks, (), (), True, None, None)
     if violations:
         raise _limit_error(lowered, violations)
+    if system._shares:
+        from ._shared_lines import flat
+
+        # From the whole program, in program cycles: a shared line is one
+        # controller's, and its slots are those of every export of the program.
+        tone_slots = flat(system, lines, events)
     role = lowered._role
     plan: _ExportPlan | None = None if role is None else role.export_plan
     if role is not None:
@@ -1650,6 +1669,8 @@ def _export_part(
         # frame_state.
         tones = {"runtime_tones": frames["runtime_tones"]}
         exported = _with_frames(exported, tones, _slot_names(events, role))
+        if system._shares:
+            _framed_slots(exported, tone_slots)
     return exported
 
 

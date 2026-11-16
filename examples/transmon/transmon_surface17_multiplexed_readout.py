@@ -10,7 +10,8 @@ Demonstrates:
   - get_readout_line(q) of a qudit on the feedline: one of its tones, for q
   - The compiler's check of the tones a line plays at once
   - Format /2 of the controller export: the feedline listed once, and each
-    readout with its tone slot and qudit; format /1 has one qudit per line
+    readout with its tone slot and qudit; format /1 has a line for each
+    qudit, with the feedline's qudits, and the same tone slots
 """
 
 import cudaq_pulse as pulse
@@ -59,8 +60,8 @@ try:
 except ControllerLimitError as error:
     print("two tones at once:", error.violations[0])
 
-# Format /1 gives every line one qudit.
-try:
-    scheduled.export_to_controller()
-except pulse.UnsupportedError as error:
-    print("format /1:", error)
+# Format /1 has a line for each qudit, naming the feedline it is a tone of.
+flat = scheduled.export_to_controller()
+for line in flat["lines"]:
+    print("format /1 line", line)
+print("format /1 tone slots:", [e["tone_slot"] for e in flat["events"] if e["kind"] == "readout"])

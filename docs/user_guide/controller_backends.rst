@@ -29,7 +29,8 @@ At the top level, ``quantum_system`` and ``clock_ghz`` name the quantum system a
 clock, ``schedule`` the schedule policy, ``qudits`` the quantum system qudits the
 program uses, ``lines`` each line's index, ``role`` (``"drive"`` or
 ``"readout"``) and qudit (and, with line delays, its ``fine_delay_ns``;
-see below), and ``limits`` the controller limits it was
+see below; on a shared line, the line's ``qudits`` and
+``max_concurrent_tones``; see `Shared lines`_), and ``limits`` the controller limits it was
 checked against (``null`` without). ``events`` lists every drive, readout,
 wait, sync, classical call and frame update in program order, once per loop
 iteration and both arms of a branch. ``segments``, ``calls``, ``links`` and
@@ -56,6 +57,9 @@ depends on that line's native frequency. Each event has:
 ``line``, ``qudit``
     The line it plays on and that line's qudit; ``null`` for a sync. For a
     classical call, ``line`` is its link and ``qudit`` is -1.
+``tone_slot``
+    Only on a drive, readout, wait or frame update on a shared line (see
+    `Shared lines`_): the line's tone it plays, as in ``/2``.
 ``start_cycles``, ``duration_cycles``, ``end_cycles``
     The final schedule as integers, in clock cycles. A backend places every
     event at its start and does not schedule again.
@@ -675,10 +679,18 @@ its qudits.
 
 Format ``/2`` of the export lists a shared line once, with its
 ``max_concurrent_tones``, and gives each event on it a ``tone_slot`` and
-the ``qudits`` it is for (see `The structured format`_); format ``/1``, which has one
-qudit per line, raises ``UnsupportedError`` for a program that plays a
-shared line. Format ``/2`` does not take line delays yet, so a program on a
-delayed shared line compiles and simulates but does not export yet. The
+the ``qudits`` it is for (see `The structured format`_). Format ``/1``
+keeps a line for each qudit, as the kernel has: each line on a shared line
+also has, after its ``qudit``, the shared line's ``qudits`` and
+``max_concurrent_tones`` (lines with the same ``role`` and ``qudits`` are
+tones of one line), and each drive, readout, wait and frame update on it
+its ``tone_slot``, after its ``qudit``, the slot ``/2`` gives it; so do the
+``runtime_tones`` and ``frame_state`` entries of a line that keeps one slot.
+``/1`` lists every execution, so it gives slots to handles taking turns in
+a loop too. Format ``/1`` is the one for a shared line on a control system
+of several controllers (each controller's part has its own lines' keys), on
+a controller with its own clock, or with line delays, which ``/2`` does not
+take. On dedicated lines none of these keys are present. The
 simulator plays each tone on its own qudit. In a system file a shared line
 is ``{"qudits": [0, 1, 2, 3], "max_concurrent_tones": 4, "delay_ns": 12.0}``,
 without the keys at their defaults. ``examples/transmon/transmon_surface17_multiplexed_readout.py``

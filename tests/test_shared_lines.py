@@ -640,43 +640,170 @@ def test_format_2_refuses_handles_taking_turns_in_a_rolled_loop():
         lowered.export_to_controller(version=2)
 
 
-def test_format_1_has_one_qudit_per_line():
+def _slots(program):
+    """(qudit, start, tone slot) of each readout of an export, either format."""
+    return sorted(
+        (e["qudits"][0] if "qudits" in e else e["qudit"], e["start_cycles"], e["tone_slot"])
+        for e in _played(program["events"])
+        if e["kind"] == "readout"
+    )
+
+
+def test_format_1_gives_each_line_its_shared_line_and_tone_slot():
     lowered = _lowered(multiplexed, _feedline(4), 0, 1, 2, 3)
-    with pytest.raises(
-        pulse.UnsupportedError,
-        match=r"format /1 has one qudit per line, and the readout line of qudits 0\.\.3 "
-        r"\(controllers\[0\]\.readout_lines\[0\]\) reaches several: export version 2",
-    ):
-        lowered.export_to_controller()
+    program = lowered.export_to_controller()
+    assert program["lines"] == [
+        {
+            "line": q,
+            "role": "readout",
+            "qudit": q,
+            "qudits": [0, 1, 2, 3],
+            "max_concurrent_tones": 4,
+        }
+        for q in range(4)
+    ]
+    readouts = [e for e in program["events"] if e["kind"] == "readout"]
+    assert [(e["line"], e["qudit"], e["tone_slot"]) for e in readouts] == [
+        (0, 0, 0),
+        (1, 1, 1),
+        (2, 2, 2),
+        (3, 3, 3),
+    ]
+    assert list(readouts[0])[:5] == ["index", "kind", "line", "qudit", "tone_slot"]
+    assert "tone_slot" not in program["events"][0]
+    assert _slots(program) == _slots(lowered.export_to_controller(version=2))
 
 
-def test_a_program_on_a_delayed_shared_line_does_not_export_yet():
+def test_format_1_gives_the_slots_of_format_2_to_handles_taking_turns():
+    @pulse.kernel
+    def three(a, b, c):
+        ra = get_readout_line(a)
+        rb = get_readout_line(b)
+        rc = get_readout_line(c)
+        sync(ra, rb, rc)
+        readout(ra, square(100, 0.05))
+        readout(rb, square(100, 0.05))
+        sync(ra, rb, rc)
+        readout(rc, square(100, 0.05))
+        readout(ra, square(100, 0.05))
+
+    lowered = _lowered(three, _feedline(2, (0, 1, 2)), 0, 1, 2, schedule="asap")
+    flat = lowered.export_to_controller()
+    assert _slots(flat) == _slots(lowered.export_to_controller(version=2))
+    assert _slots(flat) == [(0, 0, 0), (0, 100, 0), (1, 0, 1), (2, 100, 1)]
+
+
+def test_format_1_gives_slots_to_handles_taking_turns_in_a_rolled_loop():
+    @pulse.kernel
+    def three(a, b, c):
+        ra = get_readout_line(a)
+        rb = get_readout_line(b)
+        rc = get_readout_line(c)
+        for _ in range(20):
+            sync(ra, rb, rc)
+            readout(ra, square(100, 0.05))
+            readout(rb, square(100, 0.05))
+            sync(ra, rb, rc)
+            readout(rc, square(100, 0.05))
+            readout(ra, square(100, 0.05))
+            sync(ra, rb, rc)
+
+    lowered = _lowered(
+        three, _feedline(2, (0, 1, 2)), 0, 1, 2, schedule="asap", unroll_threshold=10
+    )
+    with pytest.raises(pulse.UnsupportedError, match="one tone slot in every iteration"):
+        lowered.export_to_controller(version=2)
+    slots = _slots(lowered.export_to_controller())
+    assert len(slots) == 80
+    assert slots[:4] == [(0, 0, 0), (0, 100, 0), (0, 200, 0), (0, 300, 0)]
+    assert {slot for _, _, slot in slots} == {0, 1}
+
+
+def test_a_program_on_a_dedicated_line_of_a_system_with_a_feedline_has_no_slots():
+    @pulse.kernel
+    def drives(a):
+        drive(get_drive_line(a), gaussian(40, 0.5, 10.0))
+
+    program = _lowered(drives, _feedline(2, (0, 1), drive_lines=(0, 1)), 0).export_to_controller()
+    assert program["lines"] == [{"line": 0, "role": "drive", "qudit": 0}]
+    assert all("tone_slot" not in e for e in program["events"])
+
+
+def test_a_program_on_a_delayed_shared_line_exports_in_format_1():
     qs = _system([ReadoutLine([0, 1], delay_ns=12.0, max_concurrent_tones=2)], drive_lines=(0, 1))
     lowered = _lowered(together, qs, 0, 1)
-    pulse.simulate(lowered, shots_count=1)
-    with pytest.raises(
-        pulse.UnsupportedError,
-        match="reaches several; format /2, which has shared lines, does not take line delays "
-        "yet: a program on delayed shared lines does not export yet",
-    ):
-        lowered.export_to_controller()
-    with pytest.raises(pulse.UnsupportedError, match="without line delays"):
+    program = lowered.export_to_controller()
+    assert [
+        (line["qudit"], line["qudits"], "fine_delay_ns" in line) for line in program["lines"]
+    ] == [(0, [0, 1], True), (1, [0, 1], True)]
+    assert _slots(program) == [(0, 24, 0), (1, 24, 1)]
+    with pytest.raises(pulse.UnsupportedError, match="without line delays; export version 1"):
         lowered.export_to_controller(version=2)
 
 
-def test_format_1_of_several_controllers_has_one_qudit_per_line():
+@pulse.kernel
+def flip_on_feedline(a, b, c):
+    ra = get_readout_line(a)
+    rb = get_readout_line(b)
+    dc = get_drive_line(c)
+    sync(ra, rb)
+    outcome = readout(ra, square(200, 0.05))
+    readout(rb, square(200, 0.05))
+    sync(ra, dc)
+    if outcome:
+        drive(dc, gaussian(40, 0.5, 10.0))
+
+
+def _two_controllers():
+    # The feedline's controller runs at half the program clock.
     left = pulse.Controller(
-        drive_lines=[0, 1], readout_lines=[ReadoutLine([0, 1], max_concurrent_tones=2)]
+        clock_ghz=1.0,
+        drive_lines=[0, 1],
+        readout_lines=[ReadoutLine([0, 1], max_concurrent_tones=2)],
+        feedback_latency_cycles=40,
+        peer_latency_cycles=30,
     )
-    right = pulse.Controller(drive_lines=[2, 3], readout_lines=[2, 3])
-    qs = pulse.quantum_system(
+    right = pulse.Controller(
+        clock_ghz=2.0,
+        drive_lines=[2, 3],
+        readout_lines=[2, 3],
+        feedback_latency_cycles=80,
+        peer_latency_cycles=60,
+    )
+    return pulse.quantum_system(
         "transmon_surface17",
         layout=[0, 1, 2, 3],
-        control_system=pulse.ControlSystem(controllers=[left, right]),
+        control_system=pulse.ControlSystem(controllers=[left, right], reference_clock_ghz=0.01),
     )
-    lowered = _lowered(together, qs, 0, 1)
-    with pytest.raises(pulse.UnsupportedError, match="format /1 has one qudit per line"):
-        lowered.export_to_controller(controller=0)
+
+
+def test_format_1_of_several_controllers_exports_a_shared_line():
+    lowered = _lowered(flip_on_feedline, _two_controllers(), 0, 1, 2, schedule="rcp")
+    left = lowered.export_to_controller(controller=0)
+    right = lowered.export_to_controller(controller=1)
+    assert (left["clock_ghz"], left["program_clock_ghz"]) == (1.0, 2.0)
+    assert [
+        (line["qudit"], line["qudits"], line["max_concurrent_tones"]) for line in left["lines"]
+    ] == [
+        (0, [0, 1], 2),
+        (1, [0, 1], 2),
+    ]
+    readouts = [e for e in left["events"] if e["kind"] == "readout"]
+    # In the left controller's own cycles: 200 program cycles are 100 of its.
+    assert [
+        (e["qudit"], e["tone_slot"], e["start_cycles"], e["duration_cycles"]) for e in readouts
+    ] == [
+        (0, 0, 0, 100),
+        (1, 1, 0, 100),
+    ]
+    # Event ids are the program's: the right controller's drive branches on
+    # the left one's readout by its index.
+    (flip,) = (e for e in right["events"] if e["kind"] == "drive")
+    assert flip["conditions"][0]["readouts"] == [readouts[0]["index"]]
+    assert all("qudits" not in line for line in right["lines"])
+    assert all("tone_slot" not in e for e in right["events"])
+    with pytest.raises(pulse.UnsupportedError, match="format /2 is written for one controller"):
+        lowered.export_to_controller(controller=0, version=2)
 
 
 def test_a_shared_line_simulates_as_its_qudits_own_lines():
