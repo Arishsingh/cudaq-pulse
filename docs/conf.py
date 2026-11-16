@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Sphinx configuration for cudaq-pulse documentation."""
+"""Sphinx configuration for the CUDA-Q Pulse documentation."""
 
 from cudaq_pulse._build_config import PACKAGE_VERSION
 from pygments.lexers.special import TextLexer
 
-project = "cudaq-pulse"
+project = "CUDA-Q Pulse"
 copyright = "2026, NVIDIA CORPORATION & AFFILIATES"
 author = "NVIDIA Corporation"
 release = PACKAGE_VERSION

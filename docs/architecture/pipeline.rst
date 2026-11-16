@@ -5,7 +5,7 @@
 Compilation Pipeline
 ====================
 
-cudaq-pulse compiles ``@kernel`` functions through a multi-stage pipeline
+CUDA-Q Pulse compiles ``@kernel`` functions through a multi-stage pipeline
 that goes from Python source to GPU-executable code.
 
 .. code-block:: text

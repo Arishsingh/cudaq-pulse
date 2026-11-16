@@ -7,7 +7,7 @@ Getting Started
 
 .. warning::
 
-   CUDA-Q pulse is **research-preview software**, not production software or a
+   CUDA-Q Pulse is **research-preview software**, not production software or a
    product-supported CUDA-Q feature. APIs, IR, runtime behavior, build options,
    and numerical behavior may change incompatibly or be removed without
    notice. No stability or production-readiness guarantee is provided.
@@ -15,7 +15,7 @@ Getting Started
 Installation
 ------------
 
-cudaq-pulse requires Python 3.12 or newer and does not depend on CUDA-Q. Its
+CUDA-Q Pulse requires Python 3.12 or newer and does not depend on CUDA-Q. Its
 wheels contain a statically linked MLIR, so ``pip`` is the only installer
 needed. Install it from PyPI; ``pip`` picks the wheel for your platform:
 
@@ -103,7 +103,7 @@ an ``int`` number of cycles or a time with units; see :ref:`durations`.
 The Compiler Pipeline
 ---------------------
 
-cudaq-pulse is a Python-first compiler pipeline with four stages:
+CUDA-Q Pulse is a Python-first compiler pipeline with four stages:
 
 1. **Write a kernel in Python** -- the ``@pulse.kernel`` DSL
    (``get_drive_line``, ``drive``, ``gaussian``, ``wait``, ``sync``, ...).

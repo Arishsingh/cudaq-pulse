@@ -10,7 +10,7 @@ GPU Execution
    GPU execution is a **research preview**. It is not production software and
    carries no API, numerical, compatibility, or stability guarantee.
 
-cudaq-pulse contains an experimental lowering and runtime path intended to
+CUDA-Q Pulse contains an experimental lowering and runtime path intended to
 connect compiled kernels to NVIDIA cuDensityMat. This path remains active
 research and should not be treated as a production simulator.
 
@@ -46,7 +46,7 @@ used.
    * - ``[cu13]``
      - 580
 
-cudaq-pulse picks the runtime that matches the installed extra. To choose it
+CUDA-Q Pulse picks the runtime that matches the installed extra. To choose it
 explicitly, set ``CUDAQ_PULSE_CUDA`` to ``12`` or ``13``. ``CUDM_RUNTIME_LIB``
 points at a specific runtime library instead, for development builds.
 

@@ -447,7 +447,7 @@ tells apart by the id, and every pair is one version of the call
 (``get_corrections__0_3``: decoder 0, three bits). The calls without an
 answer need no ``max_latency_ns`` (it is 0 unless given); the other
 options work as a classical function's do. ``cudaq_qec`` is imported only
-when such a call has to be answered, and cudaq-pulse takes these functions
+when such a call has to be answered, and CUDA-Q Pulse takes these functions
 from cudaq-qec 0.6.0 to 0.8.1.
 
 Simulation and emulation answer with the decoders the process configured

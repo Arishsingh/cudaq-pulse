@@ -1,6 +1,11 @@
-# CUDA-Q pulse
+<p align="center">
+  <img src="https://raw.githubusercontent.com/NVIDIA/cudaq-pulse/main/docs/_static/cudaq-pulse-banner.svg"
+       alt="CUDA-Q Pulse: a Python pulse kernel beside a timeline of drive, readout and GPU lanes. A readout result goes to a GPU decoder over NVQLink within a latency budget, and the answer conditions the next drive pulse." width="100%">
+</p>
 
-CUDA-Q pulse (`cudaq-pulse`) puts the pulses, the measurements and the
+# CUDA-Q Pulse
+
+CUDA-Q Pulse (`cudaq-pulse`) puts the pulses, the measurements and the
 classical calls between them in one Python program, compiled to open MLIR,
 then simulated, emulated, or exported to your controller. One compiled
 program, three destinations:
@@ -22,7 +27,7 @@ is the only installer you need.
 ## Project Status
 
 > [!NOTE]
-> CUDA-Q pulse is an early-stage research project. We are releasing it now
+> CUDA-Q Pulse is an early-stage research project. We are releasing it now
 > because the pulse layer is where much of the open work in quantum control
 > happens, and we want to build it in the open with the people who use it.
 > It is under active development: expect bugs, incomplete features, and
