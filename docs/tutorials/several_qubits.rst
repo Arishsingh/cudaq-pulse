@@ -31,6 +31,10 @@ list:
            d = get_drive_line(q)
            drive(d, d.get_calibration(pulse.gates.X))
 
+The loop runs while the kernel compiles, once per qubit of the register.
+Lower it to see when each pulse plays:
+
+.. code-block:: python
 
    scheduled = flip_all.lower(data)
    for event in scheduled.schedule:
@@ -89,6 +93,13 @@ late as possible, which keeps a qubit's state fresh until it is measured.
    # alap [160]
    # asap [0]
 
+.. themed-figure:: figures/alap_asap.svg
+   :alt: Two timelines of the uneven kernel on D1 and D2. D1 plays three pi pulses and D2 one, and both readouts start at 120 ns. As late as possible, D2's pulse plays from 80 ns, right before the readouts; as early as possible, from 0 ns, and D2 then idles until it is measured.
+   :width: 100%
+
+   ``uneven`` under both policies, in nanoseconds of the 2 GHz clock. Only
+   the second qubit's π pulse moves; the readouts start at the same time.
+
 As late as possible, the pulse plays at cycle 160, right before the
 readouts at cycle 240. As early as possible, it plays at cycle 0 and the
 qubit then idles, and decays, for 160 cycles before it is measured. The
@@ -128,6 +139,10 @@ compare.
        sync(d, r)
        return readout(r, r.get_calibration(pulse.gates.READOUT))
 
+The two π/2 pulses on D1 are the Ramsey sequence; the π pulse on X2 before
+them sets the neighbour's state. Compare the two cases after 10 µs:
+
+.. code-block:: python
 
    for excite in (0, 1):
        result = pulse.simulate(ramsey_next_to, data[0], x2, excite, 10_000.0)
@@ -141,9 +156,9 @@ depending on its neighbour, from a phase difference of about 0.37 radians:
 once for each value and the ``if`` is decided while compiling, not during
 the shot.
 
-.. figure:: figures/zz_ramsey.svg
-   :alt: D1's excited-state population against Ramsey wait from 0 to 20 microseconds, for X2 in its ground state and X2 excited. The two curves start together and separate slowly as the wait grows.
-   :width: 90%
+.. themed-figure:: figures/zz_ramsey.svg
+   :alt: D1's excited-state population against the Ramsey wait, from 0 to 20 microseconds, with its neighbour X2 in its ground state and excited. The two curves start together and separate as the wait grows, by 0.08 at 20 microseconds.
+   :width: 100%
 
    Ramsey on D1 with its neighbour X2 in the ground state or excited. The
    curves separate as the ZZ shift accumulates phase.

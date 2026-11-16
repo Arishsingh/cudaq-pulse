@@ -180,6 +180,10 @@ Controller Backend
    * - ``pyproject.toml``
      - Its distribution, registering it in the ``cudaq_pulse.backends``
        entry-point group
+   * - ``text_backend.py``
+     - A backend in thirty lines that plays a program as text, registered in
+       the running process; :doc:`tutorials/kernel_to_controller` shows it a
+       method at a time
 
 See :doc:`user_guide/controller_backends`.
 

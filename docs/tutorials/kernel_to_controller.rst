@@ -30,6 +30,10 @@ cycles.
        clock_ghz=1.0,
    )
 
+One qudit at 5 GHz with a 1 GHz clock keeps the numbers simple: one cycle is
+one nanosecond. The kernel drives it and reads it out:
+
+.. code-block:: python
 
    @pulse.kernel
    def drive_and_measure(q):
@@ -39,6 +43,9 @@ cycles.
        sync(d, r)
        readout(r, square(200 * pulse.ns, 0.05))
 
+Export one call:
+
+.. code-block:: python
 
    program = drive_and_measure.lower(qs.qudits[0]).export_to_controller()
    print(program["format"])   # cudaq-pulse.controller/1
@@ -74,6 +81,10 @@ controller can play at most two drive lines at once:
                violations.append((time, active))
        return violations
 
+Each drive adds a step up at its start and a step down at its end; the
+running count is how many play at once. Try it on four π pulses:
+
+.. code-block:: python
 
    @pulse.kernel
    def flip_four(qudits):
@@ -99,6 +110,14 @@ the resource-constrained policy:
 
 Two pulses play first and two follow, so the limit holds.
 
+.. themed-figure:: figures/concurrent_drives.svg
+   :alt: Two timelines of flip_four on the drive lines of 4 qudits. As late as possible, all 4 pi pulses play at once, from 0 ns. With the resource-constrained policy and at most 2 drives at once, 2 play from 0 ns and the others from 40 ns.
+   :width: 100%
+
+   ``flip_four`` as late as possible, and with ``schedule="rcp"`` under
+   ``max_concurrent_drives=2``. The second schedule plays two π pulses and
+   then the other two.
+
 A backend in thirty lines
 -------------------------
 
@@ -107,40 +126,37 @@ says what its controller can play, ``emit`` turns an exported program into
 the controller's own form, and ``run`` plays it. This one emits a line of
 text per drive and readout:
 
-.. code-block:: python
+It is :example:`controller_backend/text_backend.py`, shown here a method at
+a time. It needs the controller interface and the export format's name:
 
-   from collections.abc import Mapping
-   from typing import Any
+.. literalinclude:: ../../examples/controller_backend/text_backend.py
+   :language: python
+   :start-after: # [start imports]
+   :end-before: # [end imports]
 
-   from cudaq_pulse import Controller, backends
-   from cudaq_pulse.backends import IncompatibleBackendError
-   from cudaq_pulse.controller import FORMAT
+``control_system`` states what the controller can do:
 
+.. literalinclude:: ../../examples/controller_backend/text_backend.py
+   :language: python
+   :class: continues
+   :start-after: # [start class]
+   :end-before: # [end class]
 
-   class TextBackend:
-       name = "text"
-       formats = (FORMAT,)
+``emit`` checks the format, skips what takes no instruction, and refuses
+what it can't play:
 
-       def control_system(self) -> Controller:
-           return Controller(clock_ghz=1.0, instruction_cycles=2, min_idle_cycles=2)
+.. literalinclude:: ../../examples/controller_backend/text_backend.py
+   :language: python
+   :class: continues
+   :start-after: # [start emit]
+   :end-before: # [end emit]
 
-       def emit(self, program: Mapping[str, Any]) -> list[str]:
-           if program["format"] != FORMAT:
-               raise IncompatibleBackendError(f"cannot read {program['format']}")
-           played = []
-           for event in program["events"]:
-               if event["kind"] in ("wait", "sync"):
-                   continue
-               if event["kind"] not in ("drive", "readout") or event["conditions"]:
-                   raise IncompatibleBackendError(f"cannot play event {event['index']}")
-               played.append(
-                   f"{event['start_cycles']} {event['kind']} line {event['line']} "
-                   f"{event['waveform']['shape']} at {event['frequency_hz']:.6g} Hz"
-               )
-           return played
+``run`` plays the emitted text once per shot:
 
-       def run(self, artifact: Any, *, shots_count: int = 1) -> list[list[str]]:
-           return [list(artifact) for _ in range(shots_count)]
+.. literalinclude:: ../../examples/controller_backend/text_backend.py
+   :language: python
+   :start-after: # [start run]
+   :end-before: # [end run]
 
 ``Controller`` states the controller's limits: a 1 GHz clock, one
 instruction every 2 cycles, and idle gaps of at least 2 cycles. Compiling
@@ -158,7 +174,9 @@ the running process instead:
 
    backends.register("text", TextBackend)
    backend = backends.get("text")
-   compiled = pulse.compile(drive_and_measure, quantum_system=qs, control_system=backend.control_system())
+   compiled = pulse.compile(
+       drive_and_measure, quantum_system=qs, control_system=backend.control_system()
+   )
    artifact = backend.emit(compiled.lower(qs.qudits[0]).export_to_controller())
    for line in backend.run(artifact)[0]:
        print(line)
@@ -180,6 +198,22 @@ The text backend plays drives, readouts, waits, syncs and loops, and refuses
 classical calls, frame updates, branches and values known only at run time.
 Refusing is a pass: what fails validation is a backend that emits a program
 it can't play faithfully, or reads a format it doesn't know.
+
+One program, two controllers
+----------------------------
+
+On a control system of several controllers, ``export_to_controller(controller=i)``
+gives each controller the events of its own lines, in its own cycles. In
+:example:`23_define_a_qpu.py`, one controller reads D1 out and another plays
+the correction on D3 that a function on the feedback link decides:
+
+.. themed-figure:: figures/two_controllers.svg
+   :alt: Timeline of one program on two controllers. Controller 0 reads D1 out; the outcome goes over the feedback link, 40 ns on the link, at most 400 ns in the correction function and 20 ns of feedback, to controller 1, which plays a pulse on D3 only if the qubit read 1, at 561 ns. A sync ties the two controllers' lines at the end of the readout.
+   :width: 100%
+
+   The two exports of one program. The sync at the end of the readout ties a
+   line of each controller; the dashed pulse plays only when the answer says
+   to flip.
 
 Where to go next
 ----------------

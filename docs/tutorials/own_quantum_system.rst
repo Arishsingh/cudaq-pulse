@@ -11,13 +11,14 @@ and couplings. This tutorial describes a pair of transmons from those
 numbers, calibrates their π pulses, compiles one kernel for both qudits,
 follows a recalibration, and saves the description to a file.
 
-.. figure:: figures/transmon_surface17.svg
-   :alt: Layout of the 17-qubit distance-3 surface-code processor after Krinner et al.: nine data qubits, four Z ancillas and four X ancillas joined by 24 couplers, with a panel listing the modeled physics.
+.. themed-figure:: figures/transmon_surface17.svg
+   :alt: The 17 qudits of transmon_surface17 and its 24 couplings: nine data qubits, D1 to D9, in a 3 by 3 grid, and the ancillas X1, X2, X3, X4, Z1, Z2, Z3, Z4, each coupled to the four data qubits around it or, at the edge, to two. Each qudit is labelled with its 0-1 frequency: the data qubits between 3.74 and 4.14 GHz, the ancillas between 5.88 and 6.33 GHz.
    :width: 90%
 
    The shipped ``transmon_surface17`` quantum system, after Krinner et al.,
-   Nature 605, 669 (2022). A quantum system of your own is described the
-   same way, qudit by qudit and coupling by coupling.
+   Nature 605, 669 (2022), drawn from its ``physical_qudits`` and
+   ``couplings``. A quantum system of your own is described the same way,
+   qudit by qudit and coupling by coupling.
 
 Qudits and a coupling
 ---------------------
@@ -34,6 +35,10 @@ and T2* in microseconds, then the rest by keyword:
    import cudaq_pulse as pulse
    from cudaq_pulse.quantum_systems import Coupling, DragPulse, PhysicalQudit
 
+The π pulse's shape is shared by both qudits; each gets its own amplitude:
+
+.. code-block:: python
+
    x_pulse = {pulse.gates.X: DragPulse(duration_ns=40.0, sigma_ns=10.0)}
    pair = pulse.quantum_system(
        name="my_pair",
@@ -49,6 +54,14 @@ and T2* in microseconds, then the rest by keyword:
 The anharmonicity, the shift of the 1-2 transition below the 0-1 one, is
 what makes a transmon a usable qubit, and simulating its third level needs
 it. The coupling's ``strength_hz`` is the exchange rate g / 2π.
+
+.. themed-figure:: figures/pair_levels.svg
+   :alt: The three lowest levels of each transmon of my_pair, qudit 0: 0-1 at 5.10 GHz and 1-2 at 4.88 GHz; qudit 1: 0-1 at 5.30 GHz and 1-2 at 5.09 GHz. The 1-2 transition sits below the 0-1 by the anharmonicity. The two are coupled with g / 2 pi = 3 MHz.
+   :width: 80%
+
+   The three lowest levels of each qudit of ``pair``, from its
+   ``physical_qudits``. A drive at the 0-1 frequency stays off the 1-2 line,
+   hundreds of megahertz away.
 
 The calibration gives each qudit's π pulse a shape, a 40 ns DRAG pulse with
 a 10 ns width, but no amplitude. The quantum system works it out from the
