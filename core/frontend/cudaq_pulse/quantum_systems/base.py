@@ -599,6 +599,22 @@ def _published(calibrations: Mapping[Any, Any]) -> str:
     return "it publishes " + ", ".join(names)
 
 
+def _by_gate(calibrations: Mapping[Any, Any]) -> Mapping[Any, Any]:
+    """*calibrations*, which are keyed by gate value, keyed by
+    ``pulse.gates.Gate`` (with the transition, for one other than (0, 1)):
+    read-only."""
+    if not calibrations:
+        return _EMPTY
+    from ..gates import Gate
+
+    return MappingProxyType(
+        {
+            (Gate(key) if key.__class__ is str else (Gate(key[0]), key[1])): value
+            for key, value in calibrations.items()
+        }
+    )
+
+
 def _qudit_calibration(qudit: PhysicalQudit, gate: Any, transition: Any) -> Any:
     """``PhysicalQudit.get_calibration``: the calibration *gate* of *qudit*, derived as
     ``pulse.gates`` describes where it is not published."""
@@ -691,8 +707,9 @@ class PhysicalQudit(_QuditFields):
     ``DispersiveReadout``), or ``None`` when not given. ``calibrations=``
     gives the pulses it is tuned for, by gate: ``{pulse.gates.X:
     DragPulse(...), pulse.gates.READOUT: ReadoutPulse(...)}`` (a key
-    ``(gate, (lower, upper))`` for a transition other than (0, 1)), and
-    ``get_calibration`` reads them, deriving what is not given. ``metadata`` is the user's own data
+    ``(gate, (lower, upper))`` for a transition other than (0, 1)),
+    ``calibrations`` gives them as published, and ``get_calibration`` reads
+    them, deriving what is not given. ``metadata`` is the user's own data
     (JSON values), which the library never reads, and which does not make
     a quantum system differ; values the library knows are fields, never metadata.
     A qubit is read-only: ``replace`` makes a changed copy.
@@ -803,6 +820,18 @@ class PhysicalQudit(_QuditFields):
         readout = self.readout
         return 0.0 if readout is None else readout._depletion_ns()
 
+    @property
+    def calibrations(
+        self,
+    ) -> Mapping[Gate | tuple[Gate, tuple[int, int]], DragPulse | ReadoutPulse]:
+        """The calibrations the qudit publishes, as ``calibrations=`` gives
+        them: by ``pulse.gates.Gate``, or by ``(gate, (lower, upper))`` for a
+        transition other than (0, 1); read-only. Only what is published:
+        ``get_calibration`` also derives the rest (``X90`` from ``X``, an
+        unpublished amplitude). ``replace(calibrations={**q.calibrations,
+        pulse.gates.X: pulse})`` changes one."""
+        return _by_gate(self._calibrations)
+
     if TYPE_CHECKING:
 
         @overload
@@ -845,7 +874,8 @@ class Coupling:
     ``strength_hz`` of ``None`` is one not measured yet: the system
     compiles, schedules and exports, and ``simulate`` refuses it.
     ``calibrations=`` gives the gates it is tuned for, ``{pulse.gates.CZ:
-    FluxCZ(...)}``, which ``get_calibration`` reads. A coupling is
+    FluxCZ(...)}``, which ``calibrations`` gives back and ``get_calibration``
+    reads. A coupling is
     read-only: ``replace`` makes a changed copy.
 
     A plain slotted class, as ``PhysicalQudit`` is: its calibrations are
@@ -916,6 +946,13 @@ class Coupling:
         return type(self)(**values)
 
     __replace__ = replace
+
+    @property
+    def calibrations(self) -> Mapping[Gate | tuple[Gate, tuple[int, int]], FluxCZ]:
+        """The calibrations the coupling publishes, as ``calibrations=`` gives
+        them: by ``pulse.gates.Gate`` (``CZ``), or by ``(gate, (lower,
+        upper))`` for a transition other than (0, 1); read-only."""
+        return _by_gate(self._calibrations)
 
     def get_calibration(self, gate: Any, transition: tuple[int, int] = (0, 1)) -> FluxCZ:
         """The calibration of *gate* (``pulse.gates.CZ``) on the coupling; a

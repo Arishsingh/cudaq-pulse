@@ -146,8 +146,36 @@ def test_a_qudit_checks_its_calibrations():
         _qudit(calibrations={CZ: FluxCZ(duration_ns=60.0)})
     with pytest.raises(pulse.InvalidTypeError, match="map gates to calibrations"):
         _qudit(calibrations=[X])
-    # Given to the constructor, read only through get_calibration.
-    assert not hasattr(_qudit(), "calibrations")
+
+
+def test_calibrations_give_what_is_published_by_gate():
+    x12 = DragPulse(duration_ns=40.0, sigma_ns=10.0, amplitude=0.2)
+    qudit = _qudit(calibrations={"x": _X, READOUT: _READOUT, ("x", (1, 2)): x12})
+    published = qudit.calibrations
+    assert published == {X: _X, READOUT: _READOUT, (X, (1, 2)): x12}
+    assert all(type(k) is Gate or (type(k[0]) is Gate and k[1] == (1, 2)) for k in published)
+    # Only what is published: X90 is derived, not given.
+    assert X90 not in published
+    assert qudit.get_calibration(X90) is not None
+    with pytest.raises(TypeError):
+        published[X] = x12  # type: ignore[index]
+    assert _qudit(calibrations={}).calibrations == {}
+    assert qudit.replace(calibrations=published) == qudit
+    tuned = qudit.replace(calibrations={**published, X: x12})
+    assert tuned.get_calibration(X) == x12
+    assert tuned.get_calibration(READOUT) == _READOUT
+    coupling = _device().couplings[0]
+    assert dict(coupling.calibrations) == {
+        CZ: FluxCZ(duration_ns=60.0, buffer_ns=10.0, interaction_frequency_hz=4.4e9)
+    }
+
+
+def test_calibrations_of_a_shipped_system_are_its_published_pulses():
+    dev = pulse.quantum_system("transmon_surface17")
+    for qudit in dev.physical_qudits.values():
+        for gate, published in qudit.calibrations.items():
+            assert qudit.get_calibration(*(gate if type(gate) is tuple else (gate,))) is not None
+            assert type(published) is (ReadoutPulse if gate == READOUT else DragPulse)
 
 
 # ── On a quantum system ─────────────────────────────────────────────────────────────

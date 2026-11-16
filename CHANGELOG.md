@@ -33,6 +33,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   units, `0`, `round_duration` counts and calibrated pulses are not
   warned. It is off by default, does not change the program, and a
   compilation without it checks nothing.
+- **Reading calibrations.** `PhysicalQudit.calibrations` and
+  `Coupling.calibrations` give the calibrations a qudit or coupling
+  publishes, read-only and keyed as `calibrations=` takes them (by
+  `pulse.gates.Gate`, or `(gate, transition)`), so a calibration step can
+  change one and keep the rest: `q.replace(calibrations={**q.calibrations,
+  pulse.gates.X: tuned})`. `get_calibration` still derives what is not
+  published.
 
 ### Fixed
 

@@ -148,6 +148,17 @@ transition's (``transition=(1, 2)``) calibration. A ``FluxCZ`` does not play:
 flux lines are not modeled yet, so a kernel leaves the qudits idle for its
 ``duration_ns``.
 
+``calibrations`` of a ``PhysicalQudit`` or ``Coupling`` gives what it
+publishes and nothing derived, read-only and keyed as ``calibrations=``
+takes them, so a calibration step can change one and keep the rest:
+
+.. code-block:: python
+
+   q = qs.physical_qudits[4]
+   x = q.calibrations[pulse.gates.X]                          # a DragPulse, as published
+   tuned = q.replace(calibrations={**q.calibrations, pulse.gates.X: x.replace(amplitude=0.13)})
+   qs = qs.replace(qudits={**qs.physical_qudits, 4: tuned})
+
 The process quantum system
 --------------------------
 

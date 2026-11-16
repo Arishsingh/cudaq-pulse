@@ -172,8 +172,7 @@ def test_a_cz_calibration_belongs_to_its_coupling_and_is_read_only():
     assert cz == FluxCZ(duration_ns=98.0, buffer_ns=15.0, interaction_frequency_hz=4.4e9)
     with pytest.raises(AttributeError):
         cz.duration_ns = 4.5e9  # type: ignore[misc]
-    # Given to the constructor, read only through get_calibration.
-    assert not hasattr(coupling, "calibrations")
+    assert coupling.calibrations == {pulse.gates.CZ: cz}
     with pytest.raises(AttributeError, match="cannot assign to field 'strength_hz'"):
         coupling.strength_hz = 1.0  # type: ignore[misc]
     assert not hasattr(cz, "fidelity") and not hasattr(coupling, "gate")
