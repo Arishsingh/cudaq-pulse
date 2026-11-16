@@ -29,7 +29,7 @@ name: wheels
 
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -281,7 +281,7 @@ jobs:
 
   # The GPU tests from the wheels (gpu-tests.yml), once the GPU_RUNNERS
   # repository variable names the GPU runners: the quick rows on pushes to
-  # main and staging, every row on release tags and on manual runs with
+  # main, every row on release tags and on manual runs with
   # `gpu`. Each row installs one CUDA extra in an image with no CUDA
   # toolkit, since the extras supply every library. Pull requests never
   # reach it.
