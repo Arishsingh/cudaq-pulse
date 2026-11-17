@@ -222,7 +222,9 @@ does not depend on the trip count, unless it is small: when the trip count
 times the number of calls in the body is at most the unroll threshold, the
 loop is unrolled while tracing (see below). Loops that read the induction variable,
 or that carry Python state from one iteration to the next, are unrolled
-exactly at trace time. Compiling keeps the same loops as an ``scf.for`` that
+exactly at trace time. A name the body binds before reading it, such as an
+inner loop's variable, carries nothing, even if the kernel used the name
+before the loop. Compiling keeps the same loops as an ``scf.for`` that
 carries the lines and tones its body advances; the scheduler times every
 iteration. A loop bound given by a ``float`` argument specializes the kernel
 on its value; ``while`` loops are rejected.

@@ -181,6 +181,65 @@ def test_nested_inside_a_retained_range_loop():
     assert "scf.for" in _text(nested)
 
 
+def test_an_inner_loop_reusing_an_earlier_loops_variable_stays_rolled():
+    @pulse.kernel
+    def reused(q):
+        d = get_drive_line(q)
+        for i in range(3):
+            drive(d, square(DURS[i], 0.1))
+        for _ in range(64):
+            for i in range(2):
+                drive(d, square(DURS[i], 0.2))
+
+    @pulse.kernel
+    def distinct(q):
+        d = get_drive_line(q)
+        for i in range(3):
+            drive(d, square(DURS[i], 0.1))
+        for _ in range(64):
+            for k in range(2):
+                drive(d, square(DURS[k], 0.2))
+
+    _same(reused, distinct)
+    assert "scf.for" in _text(reused)
+
+
+def test_an_inner_loop_rebinding_a_qudits_name_to_lines_stays_rolled():
+    @pulse.kernel
+    def reused(qs):
+        drives = [get_drive_line(q) for q in qs]
+        for q in qs:
+            drive(get_drive_line(q), square(16, 0.1))
+        for _ in range(64):
+            for q in drives:
+                drive(q, square(16, 0.2))
+
+    @pulse.kernel
+    def distinct(qs):
+        drives = [get_drive_line(q) for q in qs]
+        for q in qs:
+            drive(get_drive_line(q), square(16, 0.1))
+        for _ in range(64):
+            for d in drives:
+                drive(d, square(16, 0.2))
+
+    _same(reused, distinct, qudit_count=2)
+    assert "scf.for" in _text(reused, qudit_count=2)
+
+
+def test_a_body_reading_a_name_before_rebinding_it_is_unrolled():
+    @pulse.kernel
+    def carries(q):
+        d = get_drive_line(q)
+        width = 16
+        for _ in range(64):
+            drive(d, square(width, 0.2))
+            width = 32
+
+    kinds = [op.kind for op in python_ir(carries, Q[0]).ops]
+    assert "scf.for" not in kinds and kinds.count("pulse.drive") == 64
+
+
 def test_range_loops_are_still_retained():
     @pulse.kernel
     def rolled(q):
