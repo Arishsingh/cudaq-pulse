@@ -57,6 +57,22 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   multiplies the samples by `exp(-i phase_rad)`. Each rule has a snippet
   that shows it; `tests/test_conventions.py` runs the snippets, checks what
   they print, and checks each rule.
+- **Update buses.** `Controller(update_buses=[UpdateBus(drive_lines=[0, 1],
+  cycles_per_update=8)])` (`cudaq_pulse.controller.UpdateBus`) states that
+  a group of lines is retuned over one shared bus, one update at a time.
+  An update is a frame update, or a drive or readout whose frequency, or
+  whose phase other than as its tone runs on, differs from the one before
+  it on its line. Compiling checks that updates on one bus start at least
+  `cycles_per_update` apart, naming the bus, the lines and the times, on
+  each controller of a control system; on one clock a rolled loop is
+  checked at its first three iterations and its last two, which stand for
+  every iteration. With `Controller(space_updates=True)` compiling spaces
+  the updates instead: it holds the first update that clashes back on its
+  line as little as it must and schedules again, until none clashes, and
+  the checks, the export and the simulator all read the spaced program.
+  The buses are wiring, given when a description is loaded. There are
+  none by default and spacing is off, and the export lists both only when
+  set, so existing programs and exports are unchanged.
 - **Phase gates.** `pulse.gates.Z`, `S` and `T` are virtual Z rotations by
   pi, pi / 2 and pi / 4. `get_calibration` gives each as a `VirtualZ`
   (`cudaq_pulse.quantum_systems.VirtualZ(phase_rad=...)`), derived on every

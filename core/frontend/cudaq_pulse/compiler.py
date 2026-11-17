@@ -1312,6 +1312,8 @@ def build(
         if not parameters or any(name in text for name in _BUDGETS):
             raise
         scheduled = False
+    if scheduled and not plain:
+        module = _spaced(module, machine, target, schedule_args)
     metrics.schedule_ms = (time.perf_counter() - t0) * 1000
     metrics.total_ms = metrics.trace_ms + metrics.ffi_ms + metrics.passes_ms + metrics.schedule_ms
 
@@ -1503,6 +1505,19 @@ def _line_delays(
         raise CompilationError(str(e)) from None
 
 
+def _spaced(module: Any, machine: _MachineModel, target: QuantumSystem, args: Any) -> Any:
+    """*module*, scheduled, with the updates on the update buses of the
+    controllers that ask for it spaced (``_bus_spacing``)."""
+    system = machine._system
+    given = (machine.controller,) if system is None else system.controllers
+    spacing = [c for c in given if c is not None and c.space_updates and c.update_buses]
+    if not spacing:
+        return module
+    from ._bus_spacing import spaced
+
+    return spaced(module, spacing, target, args)
+
+
 def _check_controller(lowered: ScheduledKernel) -> ScheduledKernel:
     """*lowered*, checked against its controller limits: those it exceeds
     whatever its float values fail now, and when some values may exceed
@@ -1557,6 +1572,7 @@ def with_line_delays(lowered: _Kernel, options: CompileOptions) -> _Kernel | Non
             )
     except Exception:
         return None
+    module = _spaced(module, options.machine, target, schedule_args)
     old = lowered.metrics
     metrics = CompileMetrics(quantum_system=old.quantum_system)
     metrics.op_count = old.op_count

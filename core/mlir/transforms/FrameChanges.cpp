@@ -298,6 +298,16 @@ public:
         }
       }
     }
+    // Spacing for an update bus holds a change back (`pulse.hold_cycles`),
+    // never past the drive or readout that plays with it.
+    if (auto hold =
+            change->getAttrOfType<mlir::IntegerAttr>("pulse.hold_cycles")) {
+      Time held = *time;
+      held.base += hold.getInt();
+      std::optional<Time> next = nextPulse(change->getResult(0), depth);
+      if (!next || notBefore(*next, held))
+        time = std::move(held);
+    }
     pulse::setTiming(change, time->base, 0, time->periods);
   }
 

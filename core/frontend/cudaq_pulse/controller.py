@@ -56,7 +56,7 @@ import math
 import os
 import sys
 import types
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
@@ -91,6 +91,7 @@ if TYPE_CHECKING:
     from ._controller_cost import ProcessorUsage as ProcessorUsage
     from ._controller_cost import UsageReport as UsageReport
     from ._controller_cost import usage as usage
+    from ._device import QuantumSystem
     from ._op_classes import ExpressionTerm as ExpressionTerm
     from ._op_classes import OpClass as OpClass
     from ._op_tables import OpCounts as OpCounts
@@ -98,6 +99,7 @@ if TYPE_CHECKING:
     from ._system import Controller, ControlSystem
     from ._system import DriveLine as DriveLine
     from ._system import ReadoutLine as ReadoutLine
+    from ._system import UpdateBus as UpdateBus
     from .compiler import ScheduledKernel
 
     # The real and the imaginary parts of a waveform's samples.
@@ -119,6 +121,7 @@ __all__ = [
     "OpCycles",
     "ProcessorUsage",
     "ReadoutLine",
+    "UpdateBus",
     "UsageReport",
     "WaveformMemoryScope",
     "check",
@@ -2026,6 +2029,23 @@ def _memory(limits: Controller) -> tuple[int, int, bool, bool, list[str], bool]:
     return samples, 1, shared, True, [], False
 
 
+def _walks_every(
+    lowered: ScheduledKernel, limits: Controller, clocks: _clocks.ClockPlan | None
+) -> bool:
+    """Whether a check of *limits* walks every execution rather than a walk
+    that summarizes loops: for calls that hold the lines, and for update
+    buses with a violation to list, which the summarizing walk, without
+    frame updates, cannot. On one clock the native check says whether
+    there is one (``_bus_fast``); a call binds a runtime qudit's bus."""
+    if limits.blocks_on_calls:
+        return True
+    if not limits.update_buses:
+        return False
+    if not _one_clock(clocks) or (lowered._role is not None and lowered._role.slots > 0):
+        return True
+    return bool(_bus_fast(lowered, lowered._concrete(), limits))
+
+
 def _checks_natively(limits: Controller, clocks: _clocks.ClockPlan | None) -> bool:
     """Whether the native check counts every limit of *limits* on *clocks*."""
     return (
@@ -2070,6 +2090,9 @@ def _native_check(
         found.extend(_amplitude_violations(lowered, module, limits.max_amplitude, unresolved))
     if limits.min_pulse_cycles and not found:
         found.extend(_short_pulse_violations(lowered, module, limits))
+    # A value a call sets is an update here; the walk tells it apart.
+    if limits.update_buses and not found:
+        found.extend(_bus_fast(lowered, module, limits))
     return found
 
 
@@ -2121,7 +2144,7 @@ def _limit_violations(
             _native_clock(clocks),
             False,
             # Held lines are checked call by call, every iteration walked.
-            summary=None if limits.blocks_on_calls else (repeats, periods),
+            summary=None if _walks_every(lowered, limits, clocks) else (repeats, periods),
         )
         if not repeats:
             break
@@ -2302,6 +2325,8 @@ def _violations(
                         f"{event['start_cycles']} starts before the detector is free at {free} "
                         f"(the readout of qudit {previous['qudit']} at {previous['start_cycles']})"
                     )
+    if limits.update_buses:
+        found.extend(_bus_violations(lowered, events, limits, lines, clocks, unresolved))
     if limits.feedback_latency_cycles:
         for event in timed:
             for condition in event["conditions"]:
@@ -2346,6 +2371,239 @@ def _held(lowered: ScheduledKernel) -> list[str]:
         _held_text(submit, call, event)
         for submit, call, event in _played_while_out(events, lowered.classical_report())
     ]
+
+
+# How far apart two phases may be and still be the same, in radians.
+_PHASE_TOLERANCE = 1e-6
+
+
+def _bus_violations(
+    lowered: ScheduledKernel,
+    events: Sequence[Mapping[str, Any]],
+    limits: Controller,
+    lines: Sequence[Mapping[str, Any]],
+    clocks: _clocks.ClockPlan | None,
+    unresolved: list[str] | None,
+) -> list[str]:
+    """The updates (``_updates``) on one of ``limits.update_buses`` that
+    start less than its ``cycles_per_update`` after the update before them
+    on the bus, on one path; *events* as ``_violations`` takes them. With
+    *unresolved*, a bus whose updates need the call's values is noted there
+    instead."""
+    if clocks is not None and clocks.owners is None:
+        clock_ghz = clocks.controllers[0].clock_ghz
+    else:
+        clock_ghz = lowered.quantum_system.clock_ghz
+    clashes = _bus_clashes(lowered.quantum_system, events, limits, lines, clock_ghz, unresolved)
+    return [_clash_text(limits, *clash) for clash in clashes]
+
+
+def _clash_text(
+    limits: Controller,
+    index: int,
+    previous: Mapping[str, Any],
+    event: Mapping[str, Any],
+    gap: int,
+) -> str:
+    bus = limits.update_buses[index]
+    return (
+        f"update bus {index} ({bus._named()}): the {event['kind']} on line "
+        f"{event['line']} at {event['start_cycles']} updates its tone {gap} cycles "
+        f"after the {previous['kind']} on line {previous['line']} at "
+        f"{previous['start_cycles']}; the bus carries one update per "
+        f"{bus.cycles_per_update} cycles (Controller.update_buses)"
+    )
+
+
+def _bus_clashes(
+    target: QuantumSystem,
+    events: Sequence[Mapping[str, Any]],
+    limits: Controller,
+    lines: Sequence[Mapping[str, Any]],
+    clock_ghz: float,
+    unresolved: list[str] | None,
+    cycles: Sequence[int] | None = None,
+) -> list[tuple[int, Mapping[str, Any], Mapping[str, Any], int]]:
+    """(bus, previous, update, gap) for each update on one of
+    ``limits.update_buses`` that starts less than its *cycles* (by bus;
+    else its ``cycles_per_update``) after the update before it on the bus,
+    on one path, in time order on each bus; *events* in cycles of
+    *clock_ghz*, of a program on quantum system *target*."""
+    # A controller that lists its lines plays only those.
+    plays = {(line._role, q) for line in limits._all_lines for q in line.qudits}
+    bus_of = {}
+    for line in lines:
+        handle = (line["role"], line["qudit"])
+        if line["qudit"] < 0 and unresolved is not None:
+            # Which bus a runtime qudit's line is on, each call says.
+            unresolved.append("update buses")
+            return []
+        if plays and handle not in plays:
+            continue
+        for index, bus in enumerate(limits.update_buses):
+            if handle in bus._lines:
+                bus_of[line["line"]] = index
+    if not bus_of:
+        return []
+    updates = _updates(target, events, lines, bus_of, clock_ghz, unresolved)
+    if updates is None:
+        return []
+    if cycles is None:
+        cycles = [bus.cycles_per_update for bus in limits.update_buses]
+    found = []
+    for index in range(len(limits.update_buses)):
+        on_bus = [e for e in updates if bus_of[e["line"]] == index]
+        for previous, event in _pairs(on_bus):
+            gap = event["start_cycles"] - previous["start_cycles"]
+            if gap < cycles[index]:
+                found.append((index, previous, event, gap))
+    return found
+
+
+# A rolled loop of more trips is played at iterations 0, 1, 2 and its last
+# two only (``_bus_fast``).
+_SUMMARY_TRIPS = 5
+
+
+def _bus_fast(lowered: ScheduledKernel, module: Any, limits: Controller) -> list[str]:
+    """``_bus_violations`` on one clock, on the format /2 walk of *module*,
+    each loop it keeps rolled (each tone's frequency the same in every
+    iteration, its phase one step on) played at iterations 0, 1, 2 and its
+    last two. Whether a pulse is an update depends only on the pulse before
+    it on its line, and a clash only on the update before it on its bus;
+    from iteration 1 on, both are those of the iteration before, shifted by
+    one period and one phase step, so iterations 1 and 2 clash as every
+    later one does, iteration 0 is the entry and the last two what follows
+    the loop follows. It finds a violation if any execution has one; a
+    caller lists them all from a walk of every execution."""
+    with lowered._lock:
+        found_lines, events, _ = module.controller_program(
+            _PARAMETERS, _AMPLITUDES, False, True, _Waveforms(), exportable=False
+        )
+    lines = [{"line": i, "role": r, "qudit": q} for i, (r, q) in enumerate(found_lines)]
+    played: list[dict[str, Any]] = []
+    _copies(events, played, 0, ())
+    clock_ghz = lowered.quantum_system.clock_ghz
+    clashes = _bus_clashes(lowered.quantum_system, played, limits, lines, clock_ghz, None)
+    return [_clash_text(limits, *clash) for clash in clashes]
+
+
+def _copies(
+    events: Sequence[Mapping[str, Any]],
+    out: list[dict[str, Any]],
+    shift: int,
+    trips: tuple[int, ...],
+) -> None:
+    """The format /2 *events* as format /1 events into *out*, each rolled
+    loop at the iterations ``_bus_fast`` plays: shifted *shift* cycles, at
+    iteration *trips* of each rolled loop around them (outermost first)."""
+    for event in events:
+        kind = event["kind"]
+        if kind == "loop":
+            count = event["trips"]
+            picked: Iterable[int] = (
+                range(count) if count <= _SUMMARY_TRIPS else (0, 1, 2, count - 2, count - 1)
+            )
+            for k in picked:
+                _copies(event["body"], out, shift + k * event["period_cycles"], (*trips, k))
+            continue
+        start = event.get("start_cycles")
+        copy: dict[str, Any] = {
+            "kind": _FLAT_KINDS.get(kind, kind),
+            "index": len(out),
+            "line": event.get("line"),
+            "start_cycles": None if start is None else start + shift,
+            "conditions": event.get("conditions", []),
+            "iteration": _iteration(event.get("iteration", []), trips),
+        }
+        duration = event.get("duration_cycles")
+        copy["end_cycles"] = None if start is None or duration is None else start + shift + duration
+        tones = event.get("tones")
+        if tones is not None:
+            tone = tones[0] if len(tones) == 1 else {}
+            phase = tone.get("phase_rad")
+            if phase is not None:
+                steps = tone.get("phase_step_rad", ())
+                phase += sum(k * step for k, step in zip(trips, steps, strict=False))
+            copy["frequency_hz"] = tone.get("frequency_hz")
+            copy["phase_rad"] = phase
+        out.append(copy)
+
+
+def _iteration(given: Sequence[int | None], copies: tuple[int, ...]) -> list[int]:
+    """An event's iteration in format /2, a rolled loop's ``None``, with the
+    rolled loops' iterations *copies* in their places."""
+    rolled = iter(copies)
+    return [next(rolled, 0) if k is None else k for k in given]
+
+
+def _updates(
+    target: QuantumSystem,
+    events: Sequence[Mapping[str, Any]],
+    lines: Sequence[Mapping[str, Any]],
+    bus_of: Mapping[int, int],
+    clock_ghz: float,
+    unresolved: list[str] | None,
+) -> list[Mapping[str, Any]] | None:
+    """The events on the lines of *bus_of* that update their line's tone:
+    each frame update, and each drive or readout whose frequency, or whose
+    phase other than as its tone runs on, differs from that of the drive or
+    readout before it on its line, on one path; the first on a line is set
+    before the shot. A frequency or phase known only at run time is an
+    update. With *unresolved*, ``None`` when one waits for the call's
+    values, after noting it there."""
+    played: dict[int, list[Mapping[str, Any]]] = {}
+    found = []
+    for event in events:
+        line = event.get("line")
+        if line is None or line not in bus_of:
+            continue
+        if event["kind"] == "frame_update":
+            found.append(event)
+        elif event["kind"] in _PLAYED and event["end_cycles"] is not None:
+            played.setdefault(line, []).append(event)
+            if unresolved is not None and None in (event["frequency_hz"], event["phase_rad"]):
+                unresolved.append("update buses")
+                return None
+    reached = [lines[line]["qudit"] for line in played]
+    _, drive, readout = target._frequency_tables(max(reached, default=-1) + 1)
+    for line, items in played.items():
+        qudit = lines[line]["qudit"]
+        table = drive if lines[line]["role"] == "drive" else readout
+        native = None if qudit < 0 else table[qudit]
+        found.extend(
+            event
+            for previous, event in _pairs(items)
+            if _retunes(previous, event, native, clock_ghz)
+        )
+    return found
+
+
+def _retunes(
+    previous: Mapping[str, Any], event: Mapping[str, Any], native: float | None, clock_ghz: float
+) -> bool:
+    """Whether drive or readout *event* plays another tone than *previous*,
+    the one before it on its line: another frequency, or a phase the tone
+    does not reach by running on. A tone at its frame's frequency keeps its
+    phase; one retuned from its line's *native* frequency gains phase at the
+    detuning."""
+    before, after = previous["frequency_hz"], event["frequency_hz"]
+    if before is None or after is None or before != after:
+        return True
+    if previous["phase_rad"] is None or event["phase_rad"] is None:
+        return True
+    turned = event["phase_rad"] - previous["phase_rad"]
+    if _same_angle(turned, 0.0):
+        return False
+    if native is None:
+        return True
+    seconds = (event["start_cycles"] - previous["start_cycles"]) / clock_ghz * 1e-9
+    return not _same_angle(turned, 2.0 * math.pi * (after - native) * seconds)
+
+
+def _same_angle(a: float, b: float) -> bool:
+    off = math.remainder(a - b, 2.0 * math.pi)
+    return abs(off) < _PHASE_TOLERANCE
 
 
 def _played_while_out(
@@ -2628,13 +2886,19 @@ def _compile_check(
             return [], not maybe
     # Held lines are checked call by call, every iteration walked.
     repeats: list[tuple[int, ...]] | None = (
-        None if limits is not None and limits.blocks_on_calls else []
+        None if limits is not None and _walks_every(lowered, limits, clocks) else []
     )
     # Loops of lines of different periods summarized too, then not, then none.
     passes: tuple[bool | None, ...] = (True, False, None)
     if system is not None:
         passes = (False, None)
-        if repeats is None or not system._lines_up or slots and not system._plays_everything:
+        if (
+            repeats is None
+            or not system._lines_up
+            or slots
+            and not system._plays_everything
+            or any(c.update_buses for c in system.controllers)
+        ):
             repeats = None
         elif clocks is not None and clocks.owners is not None:
             # A controller counting cycles of its own is walked in full.
@@ -2703,7 +2967,11 @@ def _call_violations(lowered: ScheduledKernel) -> Sequence[str]:
         return [*found, *extra] if extra else found
     if system is not None:
         repeats: list[tuple[int, ...]] | None = []
-        if not system._lines_up or system._blocking:
+        if (
+            not system._lines_up
+            or system._blocking
+            or any(c.update_buses for c in system.controllers)
+        ):
             repeats = None
         elif clocks is not None and clocks.owners is not None:
             # A controller counting cycles of its own is walked in full.
@@ -2806,6 +3074,7 @@ class ControllerNames(Protocol):
     if TYPE_CHECKING:
         DriveLine: type[DriveLine]
         ReadoutLine: type[ReadoutLine]
+        UpdateBus: type[UpdateBus]
         ExpressionTerm: type[ExpressionTerm]
         OpClass: type[OpClass]
         OpCounts: type[OpCounts]
@@ -2874,6 +3143,7 @@ class _Loaded(str):
 _ELSEWHERE = {
     "DriveLine": "cudaq_pulse._system",
     "ReadoutLine": "cudaq_pulse._system",
+    "UpdateBus": "cudaq_pulse._system",
     "ExpressionTerm": "cudaq_pulse._op_classes",
     "OpClass": "cudaq_pulse._op_classes",
     "OpCounts": "cudaq_pulse._op_tables",
@@ -2914,6 +3184,7 @@ class _ControllerModule(types.ModuleType):
         OpCycles: Any
         DriveLine: Any
         ReadoutLine: Any
+        UpdateBus: Any
 
     FunctionCost = _Loaded("FunctionCost")
     ControllerUsage = _Loaded("ControllerUsage")
@@ -2929,6 +3200,7 @@ class _ControllerModule(types.ModuleType):
     OpCycles = _Loaded("OpCycles")
     DriveLine = _Loaded("DriveLine")
     ReadoutLine = _Loaded("ReadoutLine")
+    UpdateBus = _Loaded("UpdateBus")
 
 
 sys.modules[__name__].__class__ = _ControllerModule
