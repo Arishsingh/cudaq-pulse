@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The rules docs/user_guide/conventions.rst states: units, time bases and
 signs, one test each, which the page names; and the page's snippets, which
-run and print what their comments say, as a tutorial page's do."""
+run and print what their output blocks or comments say, as a tutorial page's do."""
 
 from __future__ import annotations
 
@@ -71,14 +71,23 @@ def test_the_page_runs_and_prints_its_comments(tmp_path, monkeypatch):
     namespace: dict = {"__name__": "conventions_page"}
     blocks = code_blocks(_PAGE)
     assert len(blocks) > 10
-    for number, (_, code) in enumerate(blocks, 1):
+    checked = 0
+    for number, (_, code, shown) in enumerate(blocks, 1):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             exec(compile(code, f"{_PAGE.name}, block {number}", "exec"), namespace)
-        printed = out.getvalue().splitlines()
+        printed = [line.rstrip() for line in out.getvalue().splitlines()]
+        if shown is not None:
+            assert printed == shown, (
+                f"block {number}: printed {printed!r}, its output block shows {shown!r}"
+            )
+            checked += len(shown)
+            continue
         for k, want in enumerate(expected_output(code)):
             got = printed[k] if k < len(printed) else "<nothing printed>"
             assert _matches(want, got), f"block {number}: printed {got!r}, says {want!r}"
+            checked += 1
+    assert checked > 10
 
 
 # The tests of the page itself, which it does not name.
