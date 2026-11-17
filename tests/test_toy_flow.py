@@ -58,7 +58,12 @@ def rounded(value):
 @pytest.mark.slow
 @pytest.mark.skipif(importlib.util.find_spec("matplotlib") is None, reason="needs matplotlib")
 def test_the_data_is_what_the_page_compiles_to_today(tmp_path):
-    env = {**os.environ, "PULSE_FIGURES_DIR": str(tmp_path), "MPLBACKEND": "Agg"}
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(p for p in sys.path if p),
+        "PULSE_FIGURES_DIR": str(tmp_path),
+        "MPLBACKEND": "Agg",
+    }
     env.setdefault("MPLCONFIGDIR", str(tmp_path / "mpl"))
     env.pop("CUDAQ_PULSE_QUANTUM_SYSTEM", None)
     result = subprocess.run(
