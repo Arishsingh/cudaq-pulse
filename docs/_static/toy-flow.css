@@ -1,0 +1,240 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The toy controllers' data flow (toy-flow.js), in the tutorial figures'
+ * palette (docs/tutorials/figures/_style.py): drive green, readout rose,
+ * classical calls and latencies teal, in the theme's light and dark modes.
+ * A conditional pulse is outlined dashed, so color is never the only cue.
+ */
+
+.pulse-toy-flow {
+  --tf-drive: #5b8c00;
+  --tf-readout: #c2185b;
+  --tf-classical: #00796b;
+  --tf-text: #1a1a1a;
+  --tf-muted: #5c636a;
+  --tf-grid: #e8e8e8;
+  --tf-rule: #b8bdc2;
+  --tf-panel: rgba(0, 0, 0, 0.025);
+  --tf-pc: rgba(91, 140, 0, 0.16);
+  --tf-on-pill: #ffffff;
+  margin: 1rem 0 0.5rem;
+  text-align: left;
+}
+
+html[data-theme="dark"] .pulse-toy-flow {
+  --tf-drive: #76b900;
+  --tf-readout: #f06292;
+  --tf-classical: #4dd0c4;
+  --tf-text: #eeeeee;
+  --tf-muted: #b4bac1;
+  --tf-grid: #2c2f33;
+  --tf-rule: #5a6066;
+  --tf-panel: rgba(255, 255, 255, 0.03);
+  --tf-pc: rgba(118, 185, 0, 0.22);
+  --tf-on-pill: #0b0b0b;
+}
+
+.pulse-toy-flow:empty,
+.pulse-data-figure .pulse-fallback[hidden] {
+  display: none;
+}
+
+.pulse-toy-flow .tf-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.tf-svg text {
+  fill: var(--tf-text);
+  font-size: 12px;
+}
+
+.tf-svg .tf-title {
+  font-weight: 600;
+}
+
+.tf-svg .tf-muted,
+.tf-svg .tf-small,
+.tf-svg .tf-lane {
+  fill: var(--tf-muted);
+}
+
+.tf-svg .tf-small {
+  font-size: 10px;
+}
+
+.tf-svg .tf-span {
+  fill: var(--tf-classical);
+}
+
+.tf-svg .tf-lane,
+.tf-svg .tf-code,
+.tf-svg .tf-pill text {
+  font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace);
+}
+
+.tf-svg .tf-lane {
+  font-size: 10.5px;
+}
+
+.tf-svg .tf-code {
+  font-size: 11px;
+}
+
+.tf-svg .tf-code.tf-skipped {
+  fill: var(--tf-muted);
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+.tf-box {
+  fill: var(--tf-panel);
+  stroke: var(--tf-rule);
+}
+
+.tf-box.tf-busy {
+  stroke: var(--tf-classical);
+  stroke-width: 1.5;
+}
+
+.tf-pc {
+  fill: var(--tf-pc);
+}
+
+.tf-bus,
+.tf-link,
+.tf-wire,
+.tf-qudit {
+  fill: none;
+  stroke: var(--tf-rule);
+  stroke-width: 1.5;
+}
+
+.tf-link {
+  stroke-dasharray: 4 3;
+}
+
+.tf-link.tf-on {
+  stroke: var(--tf-classical);
+}
+
+.tf-grid {
+  stroke: var(--tf-grid);
+}
+
+.tf-head {
+  stroke: var(--tf-text);
+  opacity: 0.6;
+}
+
+.tf-wire.tf-on,
+.tf-qudit.tf-on {
+  stroke-width: 3;
+}
+
+.tf-wire.tf-on {
+  stroke-dasharray: 6 4;
+  animation: tf-flow 0.6s linear infinite;
+}
+
+.tf-wire.tf-on.tf-still {
+  stroke-dasharray: none;
+  animation: none;
+}
+
+.tf-drive {
+  stroke: var(--tf-drive);
+}
+
+.tf-readout {
+  stroke: var(--tf-readout);
+}
+
+@keyframes tf-flow {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+
+.tf-ghost {
+  fill: none;
+  stroke: var(--tf-rule);
+}
+
+.tf-ghost.tf-cond {
+  stroke-dasharray: 3 2;
+}
+
+.tf-ghost.tf-window-ghost {
+  stroke: var(--tf-classical);
+  stroke-dasharray: 2 2;
+}
+
+.tf-fill.tf-drive {
+  fill: var(--tf-drive);
+}
+
+.tf-fill.tf-readout {
+  fill: var(--tf-readout);
+}
+
+.tf-fill.tf-classical {
+  fill: var(--tf-classical);
+}
+
+.tf-fill.tf-window,
+.tf-window {
+  fill: var(--tf-classical);
+  opacity: 0.35;
+}
+
+.tf-pill rect {
+  fill: var(--tf-classical);
+}
+
+.tf-svg .tf-pill text {
+  fill: var(--tf-on-pill);
+  font-size: 10.5px;
+}
+
+.tf-pill.tf-pending rect {
+  fill: none;
+  stroke: var(--tf-classical);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 2;
+}
+
+.tf-svg .tf-pill.tf-pending text {
+  fill: var(--tf-classical);
+}
+
+.pulse-toy-flow .tf-caption {
+  min-height: 2.8em;
+  margin: 0.3rem 0 0.3rem;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.pulse-toy-flow .tf-button {
+  color: var(--pst-color-text-base, inherit);
+  background: var(--pst-color-surface, transparent);
+  border: 1px solid var(--pst-color-border, #c8c8c8);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.pulse-toy-flow .tf-button:focus-visible {
+  outline: 2px solid var(--pst-color-primary, var(--tf-drive));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tf-wire.tf-on {
+    stroke-dasharray: none;
+    animation: none;
+  }
+}

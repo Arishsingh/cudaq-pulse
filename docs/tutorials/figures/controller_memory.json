@@ -1,0 +1,97 @@
+{
+ "source": "docs/tutorials/isa_limits.rst",
+ "model": "toy.sequencer",
+ "limits": {
+  "pulses": 256,
+  "samples": 1024,
+  "frequencies": 2
+ },
+ "rows": [
+  {
+   "name": "rabi",
+   "label": "Rabi sweep at 0.2 and 0.4",
+   "note": "one entry, played at 0.2 and 0.4",
+   "pulses": 1,
+   "samples": 40,
+   "entries": [
+    40
+   ],
+   "frequencies": 1,
+   "refused": false
+  },
+  {
+   "name": "widths",
+   "label": "30 pulse widths",
+   "pulses": 30,
+   "samples": 1200,
+   "entries": [
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40,
+    40
+   ],
+   "frequencies": 1,
+   "refused": true
+  },
+  {
+   "name": "hops",
+   "label": "3 frequencies on one line",
+   "pulses": 3,
+   "samples": 40,
+   "entries": [
+    40
+   ],
+   "frequencies": 3,
+   "refused": true
+  },
+  {
+   "name": "train",
+   "label": "1,000-pulse train, no loop",
+   "pulses": 1000,
+   "samples": 40,
+   "entries": [
+    40
+   ],
+   "frequencies": 1,
+   "refused": true
+  },
+  {
+   "name": "train_loop",
+   "label": "1,000-pulse train, with loop",
+   "note": "one body, 1,000 trips",
+   "pulses": 1,
+   "samples": 40,
+   "entries": [
+    40
+   ],
+   "frequencies": 1,
+   "refused": false
+  }
+ ]
+}

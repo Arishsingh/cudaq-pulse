@@ -1,0 +1,567 @@
+{
+ "source": "docs/tutorials/isa_limits.rst",
+ "scenes": [
+  {
+   "name": "flip_other",
+   "title": "A branch on another controller's readout",
+   "clock_ghz": 1.0,
+   "controllers": [
+    {
+     "id": 0,
+     "model": "toy.sequencer",
+     "qudits": [
+      0,
+      1
+     ],
+     "listing": [
+      "set_freq ch0.0 5000000000",
+      "acquire ch0.0 w0 0.05 m0"
+     ],
+     "channels": [
+      {
+       "name": "ch0.0",
+       "role": "readout",
+       "qudit": 0
+      }
+     ]
+    },
+    {
+     "id": 1,
+     "model": "toy.sequencer",
+     "qudits": [
+      2
+     ],
+     "listing": [
+      "wait 80",
+      "branch !m0 end0",
+      "set_freq ch0 5600000000",
+      "play ch0 w0 0.5",
+      "end0:"
+     ],
+     "channels": [
+      {
+       "name": "ch0",
+       "role": "drive",
+       "qudit": 2
+      }
+     ]
+    }
+   ],
+   "bits": [
+    {
+     "name": "m0",
+     "controller": 0,
+     "ends_cycles": 200,
+     "ready_cycles": 280,
+     "peers": [
+      {
+       "controller": 1,
+       "ready_cycles": 320
+      }
+     ]
+    }
+   ],
+   "calls": [],
+   "shots": [
+    {
+     "label": "If m0 reads 1, controller 1 drives q2.",
+     "outcomes": {
+      "m0": 1
+     },
+     "issued": [
+      [
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       0,
+       0
+      ],
+      [
+       1,
+       320,
+       1
+      ],
+      [
+       1,
+       320,
+       2
+      ],
+      [
+       1,
+       320,
+       3
+      ]
+     ],
+     "pulses": [
+      {
+       "controller": 0,
+       "channel": "ch0.0",
+       "qudit": 0,
+       "kind": "readout",
+       "start_cycles": 0,
+       "duration_cycles": 200,
+       "bit": "m0"
+      },
+      {
+       "controller": 1,
+       "channel": "ch0",
+       "qudit": 2,
+       "kind": "drive",
+       "start_cycles": 320,
+       "duration_cycles": 40
+      }
+     ],
+     "moments": [
+      [
+       0,
+       "Controller 0 acquires m0 from q0."
+      ],
+      [
+       200,
+       "The acquisition ends at 200. m0 takes 80 cycles of feedback latency."
+      ],
+      [
+       280,
+       "m0 is on the bus at 280. It reaches controller 1 40 cycles later."
+      ],
+      [
+       320,
+       "Controller 1's wait ends at 320. It branches on m0 = 1, so controller 1 drives q2."
+      ]
+     ]
+    },
+    {
+     "label": "If m0 reads 0, controller 1 skips its drive on q2.",
+     "outcomes": {
+      "m0": 0
+     },
+     "issued": [
+      [
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       0,
+       0
+      ],
+      [
+       1,
+       320,
+       1
+      ]
+     ],
+     "pulses": [
+      {
+       "controller": 0,
+       "channel": "ch0.0",
+       "qudit": 0,
+       "kind": "readout",
+       "start_cycles": 0,
+       "duration_cycles": 200,
+       "bit": "m0"
+      }
+     ],
+     "moments": [
+      [
+       0,
+       "Controller 0 acquires m0 from q0."
+      ],
+      [
+       200,
+       "The acquisition ends at 200. m0 takes 80 cycles of feedback latency."
+      ],
+      [
+       280,
+       "m0 is on the bus at 280. It reaches controller 1 40 cycles later."
+      ],
+      [
+       320,
+       "Controller 1's wait ends at 320. It branches on m0 = 0, so controller 1 skips its drive on q2."
+      ]
+     ]
+    }
+   ],
+   "end_cycles": 360
+  },
+  {
+   "name": "correct_across",
+   "title": "A decoder between two controllers",
+   "clock_ghz": 1.0,
+   "controllers": [
+    {
+     "id": 0,
+     "model": "toy.sequencer",
+     "qudits": [
+      0,
+      1
+     ],
+     "listing": [
+      "set_freq ch0.0 5000000000",
+      "acquire ch0.0 w0 0.05 m0",
+      "set_freq ch0.1 5300000000",
+      "acquire ch0.1 w0 0.05 m1",
+      "wait 70",
+      "submit L0 m0 m1",
+      "wait 18",
+      "poll L0 a3",
+      "branch a3.ok end1",
+      "set_freq ch1 5300000000",
+      "play ch1 w1 0.5",
+      "end1:"
+     ],
+     "channels": [
+      {
+       "name": "ch0.0",
+       "role": "readout",
+       "qudit": 0
+      },
+      {
+       "name": "ch0.1",
+       "role": "readout",
+       "qudit": 1
+      },
+      {
+       "name": "ch1",
+       "role": "drive",
+       "qudit": 1
+      }
+     ]
+    },
+    {
+     "id": 1,
+     "model": "toy.sequencer",
+     "qudits": [
+      2
+     ],
+     "listing": [
+      "wait 88",
+      "poll L0 a3",
+      "branch !a3 end0",
+      "set_freq ch0 5600000000",
+      "play ch0 w0 0.5",
+      "end0:"
+     ],
+     "channels": [
+      {
+       "name": "ch0",
+       "role": "drive",
+       "qudit": 2
+      }
+     ]
+    }
+   ],
+   "bits": [
+    {
+     "name": "m0",
+     "controller": 0,
+     "ends_cycles": 200,
+     "ready_cycles": 280,
+     "peers": []
+    },
+    {
+     "name": "m1",
+     "controller": 0,
+     "ends_cycles": 200,
+     "ready_cycles": 280,
+     "peers": []
+    }
+   ],
+   "calls": [
+    {
+     "link": 0,
+     "name": "decoder",
+     "controller": 0,
+     "bits": [
+      "m0",
+      "m1"
+     ],
+     "answer": "a3",
+     "submit_cycles": 280,
+     "sent_cycles": 284,
+     "deadline_cycles": 344,
+     "taken_cycles": 352,
+     "takers": [
+      0,
+      1
+     ]
+    }
+   ],
+   "shots": [
+    {
+     "label": "If the answer is in time with a3 = 1, controller 1 drives q2 and controller 0 skips its drive on q1.",
+     "outcomes": {
+      "a3.ok": 1,
+      "a3": 1
+     },
+     "issued": [
+      [
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       1
+      ],
+      [
+       0,
+       0,
+       2
+      ],
+      [
+       0,
+       0,
+       3
+      ],
+      [
+       0,
+       0,
+       4
+      ],
+      [
+       1,
+       0,
+       0
+      ],
+      [
+       0,
+       280,
+       5
+      ],
+      [
+       0,
+       280,
+       6
+      ],
+      [
+       0,
+       352,
+       7
+      ],
+      [
+       0,
+       352,
+       8
+      ],
+      [
+       1,
+       352,
+       1
+      ],
+      [
+       1,
+       352,
+       2
+      ],
+      [
+       1,
+       352,
+       3
+      ],
+      [
+       1,
+       352,
+       4
+      ]
+     ],
+     "pulses": [
+      {
+       "controller": 0,
+       "channel": "ch0.0",
+       "qudit": 0,
+       "kind": "readout",
+       "start_cycles": 0,
+       "duration_cycles": 200,
+       "bit": "m0"
+      },
+      {
+       "controller": 0,
+       "channel": "ch0.1",
+       "qudit": 1,
+       "kind": "readout",
+       "start_cycles": 0,
+       "duration_cycles": 200,
+       "bit": "m1"
+      },
+      {
+       "controller": 1,
+       "channel": "ch0",
+       "qudit": 2,
+       "kind": "drive",
+       "start_cycles": 352,
+       "duration_cycles": 40
+      }
+     ],
+     "moments": [
+      [
+       0,
+       "Controller 0 acquires m0 and m1 from q0 and q1."
+      ],
+      [
+       200,
+       "The acquisition ends at 200. Each bit takes 80 cycles of feedback latency."
+      ],
+      [
+       280,
+       "submit sends m0 m1 over link L0 to the decoder."
+      ],
+      [
+       284,
+       "The answer may come any time in the next 60 cycles."
+      ],
+      [
+       352,
+       "Controllers 0 and 1 poll at 352: the answer is there, a3 = 1. Then controller 1 drives q2 and controller 0 skips its drive on q1."
+      ]
+     ]
+    },
+    {
+     "label": "If the answer is late, controller 0 drives q1 and controller 1 skips its drive on q2.",
+     "outcomes": {
+      "a3.ok": 0,
+      "a3": 0
+     },
+     "issued": [
+      [
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       1
+      ],
+      [
+       0,
+       0,
+       2
+      ],
+      [
+       0,
+       0,
+       3
+      ],
+      [
+       0,
+       0,
+       4
+      ],
+      [
+       1,
+       0,
+       0
+      ],
+      [
+       0,
+       280,
+       5
+      ],
+      [
+       0,
+       280,
+       6
+      ],
+      [
+       0,
+       352,
+       7
+      ],
+      [
+       0,
+       352,
+       8
+      ],
+      [
+       0,
+       352,
+       9
+      ],
+      [
+       0,
+       352,
+       10
+      ],
+      [
+       1,
+       352,
+       1
+      ],
+      [
+       1,
+       352,
+       2
+      ]
+     ],
+     "pulses": [
+      {
+       "controller": 0,
+       "channel": "ch0.0",
+       "qudit": 0,
+       "kind": "readout",
+       "start_cycles": 0,
+       "duration_cycles": 200,
+       "bit": "m0"
+      },
+      {
+       "controller": 0,
+       "channel": "ch0.1",
+       "qudit": 1,
+       "kind": "readout",
+       "start_cycles": 0,
+       "duration_cycles": 200,
+       "bit": "m1"
+      },
+      {
+       "controller": 0,
+       "channel": "ch1",
+       "qudit": 1,
+       "kind": "drive",
+       "start_cycles": 352,
+       "duration_cycles": 40
+      }
+     ],
+     "moments": [
+      [
+       0,
+       "Controller 0 acquires m0 and m1 from q0 and q1."
+      ],
+      [
+       200,
+       "The acquisition ends at 200. Each bit takes 80 cycles of feedback latency."
+      ],
+      [
+       280,
+       "submit sends m0 m1 over link L0 to the decoder."
+      ],
+      [
+       284,
+       "The answer may come any time in the next 60 cycles."
+      ],
+      [
+       352,
+       "Controllers 0 and 1 poll at 352: no answer, so a3.ok = 0. Then controller 0 drives q1 and controller 1 skips its drive on q2."
+      ]
+     ]
+    }
+   ],
+   "end_cycles": 392
+  }
+ ]
+}
