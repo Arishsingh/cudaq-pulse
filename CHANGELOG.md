@@ -179,6 +179,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   formats `/1` and `/2`, and `controller.unroll()` keeps it. Other
   conditions export as before. `backends.validate` runs one more program,
   `answer_timeout`, which branches on both.
+- In the controller export, the answer of a function declared with
+  `latency_mode="timeout"` and taken with `result()` had `wait`
+  `"bounded"` and a `timeout_ns` of `null`, though its result 0 is the
+  in-time flag. It now has `wait` `"timeout"` and the function's
+  `timeout_ns`, as a call taken with `result(timeout=...)` does, whose own
+  timeout still wins. This holds in formats `/1` and `/2`, and
+  `controller.unroll()` keeps it. Other answers export as before.
+  `backends.validate` runs one more program, `timeout_function`, which
+  branches on such an answer.
 
 ## [0.1.0] - 2026-11-13
 

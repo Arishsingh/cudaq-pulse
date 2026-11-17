@@ -127,6 +127,12 @@ def _pulses(scheduled):
     )
 
 
+def _run(programs, outcomes):
+    """The pulses the emulated controllers play: the plays and
+    acquisitions among the instructions they issue."""
+    return [step for step in toy_isa.run(programs, outcomes) if step.plays()]
+
+
 def _played(programs):
     return sorted(
         (e["kind"], e["line"], e["start_cycles"], e["duration_cycles"])
@@ -152,8 +158,8 @@ def test_read_back_listings_play_the_schedule(qpu):
 def test_both_arms_of_a_branch_end_in_step(qpu):
     program = toy_isa.lower(_lower(_either, qpu, 0).export_to_controller())
     assert "jump end0" in program.code and "else0:" in program.code
-    taken = toy_isa.run([program], {"m0": 1})
-    skipped = toy_isa.run([program], {"m0": 0})
+    taken = _run([program], {"m0": 1})
+    skipped = _run([program], {"m0": 0})
     assert [p.instruction.split()[2] for p in taken] == ["w0", "w1", "w1", "w0"]
     assert [p.instruction.split()[2] for p in skipped] == ["w0", "w2", "w1", "w0"]
     # What follows the branch starts at the same cycle whichever arm played.
@@ -174,9 +180,29 @@ def test_a_branch_on_another_controllers_outcome(qpu):
     assert "acquire ch0.0 w0 0.05 m0" in reader.code
     assert user.code[:2] == ["wait 80", "branch !m0 end0"]
     assert _played([reader, user]) == _pulses(scheduled)
-    flipped = toy_isa.run([reader, user], {"m0": 1})
+    flipped = _run([reader, user], {"m0": 1})
     assert [(p.controller, p.start_cycles) for p in flipped][-1] == (1, 320)
-    assert all(p.controller == 0 for p in toy_isa.run([reader, user], {"m0": 0}))
+    assert all(p.controller == 0 for p in _run([reader, user], {"m0": 0}))
+
+
+def test_the_emulator_gives_back_each_instruction_it_issues(qpu):
+    scheduled = _lower(_flip_other, qpu, 0, 2)
+    reader, user = (toy_isa.lower(scheduled.export_to_controller(controller=k)) for k in range(2))
+    flipped = toy_isa.run([reader, user], {"m0": 1})
+    assert [str(step) for step in flipped] == [
+        "controller 0 at   0: set_freq ch0.0 5000000000",
+        "controller 0 at   0: acquire ch0.0 w0 0.05 m0",
+        "controller 1 at   0: wait 80",
+        "controller 1 at 320: branch !m0 end0",
+        "controller 1 at 320: set_freq ch0 5600000000",
+        "controller 1 at 320: play ch0 w0 0.5",
+    ]
+    # Each step is where the listing has it; a skipped arm and labels are not issued.
+    for step in flipped:
+        program = (reader, user)[step.controller]
+        assert program.code[step.counter] == step.instruction
+    skipped = toy_isa.run([reader, user], {"m0": 0})
+    assert [step.counter for step in skipped if step.controller == 1] == [0, 1]
 
 
 def _parity(bits: pulse.Bits) -> pulse.Bits:
@@ -206,8 +232,8 @@ def test_a_decoder_call_is_submitted_and_answered_where_the_schedule_has_them(qp
     timed = {e["kind"]: e["start_cycles"] for e in toy_isa.events(program)}
     # The answer is due 4 + 100 + 8 cycles after the request leaves.
     assert (timed["submit"], timed["answer"]) == (280, 392)
-    assert [p.start_cycles for p in toy_isa.run([program], {"a3": 1})][-1] == 392
-    assert len(toy_isa.run([program], {"a3": 0})) == 2
+    assert [p.start_cycles for p in _run([program], {"a3": 1})][-1] == 392
+    assert len(_run([program], {"a3": 0})) == 2
 
 
 @pulse.kernel
@@ -234,9 +260,9 @@ def test_a_call_with_a_deadline_is_polled_and_its_flag_tested(qpu):
     timed = {e["kind"]: e["start_cycles"] for e in toy_isa.events(program)}
     # The poll is at the deadline: 4 + 60 + 8 cycles after the request.
     assert (timed["submit"], timed["answer"]) == (280, 352)
-    late = [p.instruction for p in toy_isa.run([program], {})]
+    late = [p.instruction for p in _run([program], {})]
     assert late[-1] == "play ch2 w1 0.5"
-    in_time = [p.instruction for p in toy_isa.run([program], {"a3.ok": 1, "a3": 1})]
+    in_time = [p.instruction for p in _run([program], {"a3.ok": 1, "a3": 1})]
     assert in_time[-1] == "play ch1 w1 0.5"
 
 
@@ -245,7 +271,7 @@ def test_the_emulator_fails_a_branch_before_its_outcome_arrives(qpu):
     reader, user = (toy_isa.lower(scheduled.export_to_controller(controller=k)) for k in range(2))
     user.code[0] = "wait 79"
     with pytest.raises(RuntimeError, match="branches on m0 at cycle 316, before cycle 320"):
-        toy_isa.run([reader, user], {"m0": 1})
+        _run([reader, user], {"m0": 1})
 
 
 def test_the_backend_passes_validation():
@@ -253,7 +279,7 @@ def test_the_backend_passes_validation():
         toy_isa.ToyBackend(), controller=toy_isa.toy_controller(feedback_latency_cycles=0)
     )
     assert report.ok, str(report)
-    assert str(report).splitlines()[-1] == "backend 'toy': 15 passed, 2 skipped"
+    assert str(report).splitlines()[-1] == "backend 'toy': 16 passed, 2 skipped"
 
 
 def test_what_the_toy_sequencer_cannot_play_is_refused(qpu):

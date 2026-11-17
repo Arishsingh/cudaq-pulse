@@ -167,9 +167,10 @@ branches on it:
    play ch0 w0 0.5
    end0:
 
-.. themed-figure:: figures/isa_feedback.svg
+.. toy-flow:: figures/toy_flow.json
+   :scene: flip_other
+   :fallback: figures/isa_feedback.svg
    :alt: Timeline of flip_other on two toy controllers, in nanoseconds of the 1 GHz clock. Controller 0 acquires q0 from 0 to 200 ns into bit m0. The bit is ready on controller 0 80 ns later, after its feedback latency, and on controller 1 another 40 ns later, after the peer latency. Controller 1 plays the flip of q2 from 320 ns, only when the bit is 1.
-   :width: 100%
 
    The two listings in time, on the 1 GHz clock, so a nanosecond is a
    cycle. Bit m0 is ready for the second controller at cycle 320, where
@@ -402,6 +403,12 @@ format keeps the train as one loop:
      play
      wait
 
+Against the controller's instruction memory:
+
+.. memory-gauge:: figures/controller_memory.json
+   :rows: train train_loop
+   :columns: pulses
+
 Takeaway: a sequencer with a loop counter lowers the body once.
 
 A decoder with a deadline
@@ -546,6 +553,92 @@ condition says which one:
 
 Result 0 is the in-time flag. Result 1 is the decoder's first value.
 
+A decoder between two controllers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Both controllers reach the decoder's link. So the answer can steer a
+pulse on either one.
+
+In this round, the first controller reads the syndromes. The data qudit
+it corrects is on the second controller:
+
+.. code-block:: python
+
+   @pulse.kernel
+   def correct_across(ancilla_0, ancilla_1, data):
+       probe = square(duration=200, amplitude=0.05)
+       flip = gaussian(duration=40, amplitude=0.5, sigma=10.0)
+
+       syndrome_0 = readout(get_readout_line(ancilla_0), probe)
+       syndrome_1 = readout(get_readout_line(ancilla_1), probe)
+       request = decode.submit([syndrome_0, syndrome_1])
+       in_time, fix = request.result(timeout=60 * pulse.ns)
+
+       if fix[0]:
+           drive(get_drive_line(data), flip)
+       if not in_time:
+           drive(get_drive_line(ancilla_1), flip)
+
+Lower it with qudits 0 and 1 as the ancillas and qudit 2 as the data,
+then print each controller's listing:
+
+.. code-block:: python
+
+   compiled = pulse.compile(
+       correct_across,
+       quantum_system=qpu,
+       schedule="rcp",
+   )
+   across = compiled.lower(q0, q1, q2)
+
+   for number in range(2):
+       part = across.export_to_controller(controller=number)
+       print(f"; controller {number}")
+       for line in lower(part).code:
+           print(line)
+
+.. code-block:: text
+   :class: output
+
+   ; controller 0
+   set_freq ch0.0 5000000000
+   acquire ch0.0 w0 0.05 m0
+   set_freq ch0.1 5300000000
+   acquire ch0.1 w0 0.05 m1
+   wait 70
+   submit L0 m0 m1
+   wait 18
+   poll L0 a3
+   branch a3.ok end1
+   set_freq ch1 5300000000
+   play ch1 w1 0.5
+   end1:
+   ; controller 1
+   wait 88
+   poll L0 a3
+   branch !a3 end0
+   set_freq ch0 5600000000
+   play ch0 w0 0.5
+   end0:
+
+What to notice:
+
+- Only the first controller submits. The request leaves at cycle 280,
+  as before.
+- Both controllers poll at cycle 352. Each branches on the result it
+  needs: the second on the fix, the first on the in-time flag.
+- The second controller never branches on ``m0`` or ``m1``. It uses only
+  the decoder's answer.
+
+Here is the round playing, once with the answer in time and once late:
+
+.. toy-flow:: figures/toy_flow.json
+   :scene: correct_across
+
+The shaded stretch on the link runs from the request's departure to its
+deadline. The decoder may answer at any point in it. The polls, 8 cycles
+after the deadline, take the answer if it came.
+
 Takeaway: the deadline is a number the compiler schedules around. Your
 sequencer only polls once, where the compiler put the poll.
 
@@ -636,6 +729,12 @@ What to notice:
 - Thirty widths overflow the channel's 1,024 samples.
 - Three frequencies overflow its two oscillator settings.
 - Both are compile errors, not a failed upload.
+
+Here are the three programs against the channel's memories:
+
+.. memory-gauge:: figures/controller_memory.json
+   :rows: rabi widths hops
+   :columns: samples frequencies
 
 Phase is cheaper still. The compiler folds constant phase shifts into
 the next pulse's frame, as it did with the Ramsey sequence's virtual Z.

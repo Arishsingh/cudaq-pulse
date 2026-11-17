@@ -199,7 +199,10 @@ and ``operands``, its arguments in the order of the function's argument
 descriptors (one per scalar or element, and one ``{"readout": i}`` per
 measurement), each an expression; an answer has ``wait``,
 ``"bounded"`` (by the latency budget), ``"blocking"`` or ``"timeout"``,
-with ``timeout_ns``.
+with ``timeout_ns``. A call taken with ``result(timeout=...)`` waits
+with that timeout, and one of a function declared with
+``latency_mode="timeout"`` (and taken without one) with the function's
+``timeout_ns``.
 
 The events of one operation, and of operations with the same waveform,
 share their ``waveform`` and ``amplitude`` objects; copy one before
@@ -882,11 +885,13 @@ Validating a backend
 which ships with cudaq-pulse, through a backend: a program for each kind of
 event (``cudaq_pulse.Event``), one with a branch, ``answer_timeout``, which
 branches on whether a call's answer came in time and on the answer itself
-(its conditions differ only in ``result``), and one with values known
-only at run time, compiled for the controller (by default the backend's
-control system's) and exported in each format the backend reads. Two more
-are wired from that controller: ``shared_line`` reads out both qudits at
-once on one readout line reaching both (``ReadoutLine([0, 1],
+(its conditions differ only in ``result``), ``timeout_function``, the
+same for a function declared with ``latency_mode="timeout"``, and one
+with values known only at run time, compiled for the controller (by
+default the backend's control system's) and exported in each format the
+backend reads. Two more are wired from that controller: ``shared_line``
+reads out both qudits at once on one readout line reaching both
+(``ReadoutLine([0, 1],
 max_concurrent_tones=2)`` in place of its readout lines), and
 ``several_controllers`` runs on two controllers made from it, one driving
 qudit 0 and reading out both qudits on such a line, the other driving qudit
@@ -909,7 +914,7 @@ controller's limits is skipped.
    # ...
    # PASS unsupported_event
    # PASS newer_format
-   # backend 'text': 10 passed, 7 refused
+   # backend 'text': 10 passed, 8 refused
    print(report.ok)  # True
 
 A backend that accepted the unknown event would instead report ``FAIL

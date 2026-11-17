@@ -204,7 +204,9 @@ def validate(
 
     The corpus has a program for each kind of event (``cudaq_pulse.Event``),
     one with a branch, ``answer_timeout``, which branches on whether a
-    call's answer came in time and on the answer itself, and two with
+    call's answer came in time and on the answer itself,
+    ``timeout_function``, the same for a function declared with
+    ``latency_mode="timeout"``, and two with
     values known only at run time (one a frequency change made ahead of
     the pulse that takes it), compiled
     for *controller* (by default the backend's control system's), in each
