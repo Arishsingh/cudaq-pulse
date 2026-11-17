@@ -72,15 +72,13 @@ What the arguments mean:
 - the next wait is kept between 100 ns and 200 µs;
 - the estimator has 500 ns to answer, a budget for code on the controller.
 
-.. animation-candidate: a later animation may replace these panels with one
-   distribution that moves after each readout.
-
-.. themed-figure:: figures/t1_belief.svg
-   :alt: Three small plots of the estimator's distribution over T1, with its estimate marked: before any shot, 150 microseconds; after reading 1 at 50 µs, 163 microseconds; after reading 0 at 50 µs, 128 microseconds. A qubit still excited after the wait pushes the estimate up, one that decayed pulls it down.
-   :width: 100%
+.. pulse-visual:: figures/adaptive_calibration.json
+   :scene: t1_belief
+   :alt: One readout moves the estimate. Before any shot, the prior puts T1 at 150 µs. The next wait would be 76.5 µs. Reading 1 after the 50 µs wait: still excited, so the estimate rises to 163 µs. The next wait would be 83.1 µs. Reading 0 after the 50 µs wait: decayed, so it falls to 128 µs. The next wait would be 65.1 µs.
 
    The prior this page uses, and where one readout after a 50 µs wait moves
-   it, from ``cal.adaptive_t1_update``.
+   it, from ``cal.adaptive_t1_update``, with the next wait ``update_t1``
+   answers.
 
 What to notice: a qubit still excited after the wait raises the estimate.
 One that decayed lowers it.

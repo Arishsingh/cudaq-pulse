@@ -7,8 +7,10 @@ Usage: python docs/tutorials/figures/adaptive_calibration.py
 Needs matplotlib (the ``[viz]`` extra). Writes, each with its ``-dark`` twin,
 next to this file:
 
-- ``t1_belief.svg``, the estimator's distribution before and after a readout,
-  from the calibration module's own update;
+- ``t1_belief``, the estimator's distribution moving from the prior after a
+  readout of either value, from the calibration module's own update,
+  animated: a scene of ``adaptive_calibration.json``, whose still
+  ``tools/render-pulse-visual.js`` draws;
 - ``adaptive_shots.svg``, three shots of the tracking kernel the page compiles;
 - ``adaptive_branches.svg``, the estimate along every branch of the page's
   three-shot simulation;
@@ -21,10 +23,10 @@ import json
 import math
 
 import cudaq_pulse as pulse
-import matplotlib.pyplot as plt
 import numpy as np
 from _style import HERE, end_label, page_namespace, plot_axes, save_themed
 from _timeline import Timeline, compress, draw
+from _visual import write
 
 
 def adaptive_shots(page) -> None:
@@ -133,45 +135,58 @@ def _t1_density(shape: float, rate: float, t1_us: np.ndarray) -> np.ndarray:
     return np.exp(log) / t1_ns**2 * 1000
 
 
-def t1_belief(page) -> None:
+def t1_belief(page) -> dict:
+    """The estimator's distribution over T1, moving from the prior to where one
+    readout after a 50 µs wait takes it, for each outcome, with the next wait
+    ``update_t1`` would answer."""
     cal = page["cal"]
     shape, rate, wait_ns = 3.0, 450_000.0, 50_000.0
-    steps = [("before any shot", shape, rate)]
-    for bit, word in ((1, "after reading 1"), (0, "after reading 0")):
+    steps = [("before any shot", None, shape, rate)]
+    for bit in (1, 0):
         new_shape, new_rate = cal.adaptive_t1_update(
             shape, rate, bit, wait_ns, error_1to0=0.11, error_0to1=0.14
         )
-        steps.append((f"{word} at {wait_ns / 1000:g} µs", new_shape, new_rate))
-    t1_us = np.linspace(5, 600, 500)
-
-    def figure(p):
-        fig, axes = plt.subplots(1, len(steps), figsize=(7.2, 1.7), sharey=True)
-        peak = max(_t1_density(a, b, t1_us).max() for _, a, b in steps)
-        for ax, (title, a, b) in zip(axes, steps, strict=True):
-            density = _t1_density(a, b, t1_us)
-            estimate = b / a / 1000
-            ax.fill_between(t1_us, 0, density, color=p.drive, alpha=p.fill_alpha, lw=0)
-            ax.plot(t1_us, density, color=p.drive, lw=1.3)
-            ax.axvline(estimate, color=p.text, lw=0.9, ls=(0, (1, 2)))
-            end_label(ax, estimate, peak * 0.95, f"{estimate:.0f} µs", p.text, dx=4, fontsize=8)
-            ax.set_title(title, loc="left", fontsize=8.5, color=p.text)
-            ax.set_yticks([])
-            ax.grid(False)
-            ax.spines["bottom"].set_color(p.rule)
-            ax.set_xlim(0, t1_us[-1])
-            ax.set_ylim(0, peak * 1.15)
-            ax.set_xticks([0, 200, 400, 600])
-        axes[1].set_xlabel("T1 (µs)")
-        fig.subplots_adjust(wspace=0.1)
-        return fig
-
-    alt = (
-        "Three small plots of the estimator's distribution over T1, with its estimate marked: "
-        + "; ".join(f"{title}, {b / a / 1000:.0f} microseconds" for title, a, b in steps)
-        + ". A qubit still excited after the wait pushes the estimate up, one that decayed "
-        "pulls it down."
-    )
-    save_themed(figure, "t1_belief", title="One readout moves the estimate", desc=alt)
+        steps.append((f"after reading {bit} at {wait_ns / 1000:g} µs", bit, new_shape, new_rate))
+    t1_us = np.linspace(5, 600, 120)
+    peak = max(_t1_density(a, b, t1_us).max() for _, _, a, b in steps)
+    snapshots = []
+    for title, bit, a, b in steps:
+        estimate = b / a / 1000
+        next_wait = min(max(cal.adaptive_t1_wait(a, b), 100.0), 200_000.0) / 1000
+        if bit is None:
+            say = f"Before any shot, the prior puts T1 at {estimate:.0f} µs."
+        else:
+            moved = "still excited, so the estimate rises" if bit else "decayed, so it falls"
+            wait_us = wait_ns / 1000
+            say = f"Reading {bit} after the {wait_us:g} µs wait: {moved} to {estimate:.0f} µs."
+        snapshot = {
+            "label": title[0].upper() + title[1:],
+            "short": title,
+            "say": f"{say} The next wait would be {next_wait:.1f} µs.",
+            "spans": {},
+            "curve": {
+                "y": [round(v, 4) for v in _t1_density(a, b, t1_us) / peak],
+                "at": round(estimate, 3),
+                "text": f"{estimate:.0f} µs",
+            },
+            "value": f"T1 {estimate:.0f} µs, next wait {next_wait:.1f} µs",
+        }
+        if bit is not None:
+            snapshot["from"] = 0
+        snapshots.append(snapshot)
+    return {
+        "name": "t1_belief",
+        "title": "One readout moves the estimate",
+        "curve": {
+            "x": [round(v, 3) for v in t1_us],
+            "ticks": [0, 200, 400, 600],
+            "label": "T1 (µs)",
+            "name": "belief",
+        },
+        "snapshots": snapshots,
+        "share_label": "estimate",
+        "panels": ["curve", "cases"],
+    }
 
 
 def adaptive_branches(page) -> None:
@@ -218,10 +233,10 @@ def adaptive_branches(page) -> None:
 
 def main() -> None:
     page = page_namespace("adaptive_calibration.rst")
-    t1_belief(page)
     adaptive_shots(page)
     adaptive_branches(page)
     adaptive_estimates()
+    write("adaptive_calibration", "docs/tutorials/adaptive_calibration.rst", [t1_belief(page)])
 
 
 if __name__ == "__main__":
