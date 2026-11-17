@@ -12,7 +12,9 @@ prints as comment lines after its last line of code.
 
 A ``literalinclude`` of Python, cut by ``:start-after:`` and
 ``:end-before:``, runs like a code block, so code a page shows from an
-example file runs as the page shows it. A block with ``:class: continues``
+example file runs as the page shows it. One cut any other way (such as by
+``:pyobject:``) must have ``:class: fragment``, and the page imports the
+example to run it. A block with ``:class: continues``
 runs joined to the next one, as a class shown a method at a time.
 
 Blocks with ``:class: fragment`` are not run. Blocks with ``:class: gpu``
@@ -80,6 +82,13 @@ def code_blocks(page: Path) -> list[tuple[frozenset[str], str, list[str] | None]
             if include:
                 if options.get("language") != "python":
                     continue
+                cut_by = {"pyobject", "lines", "start-at", "end-at"} & options.keys()
+                if cut_by and "fragment" not in classes:
+                    raise ValueError(
+                        f"{page.name}: a literalinclude cut by {sorted(cut_by)} can't be run "
+                        "as the page shows it; cut it with start-after and end-before, "
+                        "or give it the class fragment"
+                    )
                 body = [included(page, include[1], options)]
             blocks.append([classes, "\n".join(body), None])
         else:
