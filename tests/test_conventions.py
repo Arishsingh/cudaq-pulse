@@ -71,7 +71,7 @@ def test_the_page_runs_and_prints_its_comments(tmp_path, monkeypatch):
     namespace: dict = {"__name__": "conventions_page"}
     blocks = code_blocks(_PAGE)
     assert len(blocks) > 10
-    for number, (_, code) in enumerate(blocks, 1):
+    for number, (_, code, _) in enumerate(blocks, 1):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             exec(compile(code, f"{_PAGE.name}, block {number}", "exec"), namespace)
