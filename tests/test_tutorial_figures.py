@@ -129,7 +129,12 @@ def test_every_tutorial_figure_follows_the_theme_and_every_svg_is_used():
 @pytest.mark.skipif(importlib.util.find_spec("matplotlib") is None, reason="needs matplotlib")
 @pytest.mark.parametrize("script", _SCRIPTS, ids=lambda p: p.stem)
 def test_each_figure_is_what_its_script_draws(script, tmp_path):
-    env = {**os.environ, "PULSE_FIGURES_DIR": str(tmp_path), "MPLBACKEND": "Agg"}
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(p for p in sys.path if p),
+        "PULSE_FIGURES_DIR": str(tmp_path),
+        "MPLBACKEND": "Agg",
+    }
     env.setdefault("MPLCONFIGDIR", str(tmp_path / "mpl"))
     env.pop("CUDAQ_PULSE_QUANTUM_SYSTEM", None)
     result = subprocess.run(
