@@ -198,14 +198,11 @@ After the state, one pulse picks the axis:
        sync(drive_line, readout_line)
        readout(readout_line, measurement)
 
-.. animation-candidate: a later animation may replace this step sequence,
-   turning each axis of the state onto Z in turn.
+.. pulse-visual:: figures/t_state_injection.json
+   :scene: tomography_axes
+   :alt: One pulse picks the axis. X axis: −Y90 turns +X onto Z. The readout gives ⟨X⟩ = 0.71. Y axis: X90 turns +Y onto Z. The readout gives ⟨Y⟩ = 0.71. Z axis: no pulse. The T gate shows as a +π/4 frame shift. The readout gives ⟨Z⟩ = 0.01.
 
-.. themed-figure:: figures/tomography_axes.svg
-   :alt: Three schedules of the tomography kernel, one per axis, on D5's drive and readout lines. Each starts with the Y90 pulse and the T frame shift. For X, a minus Y90 pulse turns plus X onto Z; for Y, an X90 pulse turns plus Y onto Z; for Z there is no pulse. A readout then measures Z.
-   :width: 100%
-
-   The three schedules of ``t_tomography``, one per axis.
+   The three schedules of ``t_tomography``, one axis at a time.
 
 What to notice: only the second pulse changes. Each one moves a different
 axis of the state onto Z, where the readout can see it.
@@ -376,15 +373,12 @@ Compile it against the control system with the controller link:
        control_system=control_system,
    )
 
-.. animation-candidate: a later animation may play this schedule with a
-   moving playhead, one attempt at a time.
+.. pulse-visual:: figures/t_state_injection.json
+   :scene: herald_loop
+   :alt: Two heralded attempts, then the T state. Attempt 1 reads D5 out. The outcome goes to herald on the controller link. herald accepts the shot: no π pulse. Attempt 2 reads D5 out. The outcome goes to herald on the controller link. herald accepts the shot: no π pulse. Y90 and the T gate's +π/4 frame shift prepare |T⟩. The last readout measures Z. Post-selection keeps the shot. If herald accepts both attempts, no π pulse plays (97.2% of shots). If herald rejects attempt 1 and accepts attempt 2, π 1 plays (2.7% of shots). If herald rejects both attempts, both π pulses play (8.2e-4 of shots). If herald accepts attempt 1 and rejects attempt 2, π 2 plays (3.2e-4 of shots).
 
-.. themed-figure:: figures/herald_loop.svg
-   :alt: Timeline of the heralded T-state kernel with two attempts, on D5's drive and readout lines and the controller link. Each attempt reads D5 out for 300 ns, sends the outcome to the herald function, and plays a pi pulse only if the qubit read 1. After the second attempt, a Y90 pulse and a pi/4 frame shift prepare the T state, and a last readout from 824 ns measures it.
-   :width: 100%
-
-   ``heralded_t`` with two attempts. Dashed pulses play only on shots whose
-   herald said no.
+   ``heralded_t`` with two attempts, played for the two likeliest answers.
+   Dashed pulses play only on shots whose herald said no.
 
 What to notice: each attempt is the same three steps. A readout, a call on
 the controller link, and a π pulse that waits for its answer.
@@ -401,14 +395,11 @@ herald answer was true:
    def herald_accepted(branch):
        return branch.answers("herald")[-1]
 
-.. animation-candidate: a later animation may grow this tree one readout at
-   a time.
+.. pulse-visual:: figures/t_state_injection.json
+   :scene: herald_branches
+   :alt: What post-selection keeps. Every shot starts in D5's thermal mixture. The herald readout splits the shots: it reads 0 on 97.2%, 1 on 2.7%, 2 on 7.5e-4. Post-selection keeps the branches herald accepts, the 97.2% that read 0. The rest are dropped. Of the kept shots, Z reads 0 on 49.1% and 1 or 2 on 48.1%, as |T⟩ gives.
 
-.. themed-figure:: figures/herald_branches.svg
-   :alt: The branches of one heralded attempt measured on Z. The herald reads 0 with probability 97.2%; The herald reads 1 with probability 2.7%; The herald reads 2 with probability 7.5e-4. Post-selection keeps only the branches whose herald read 0, 97.2% of the shots: of those, Z reads 0 in 49.1% and 1 or 2 in 48.1%, as the T state gives. The rest are dropped.
-   :width: 100%
-
-   The branches of one attempt, measured on Z.
+   The branches of one attempt, measured on Z, one readout at a time.
 
 What to notice: post-selection keeps the branches whose herald read 0.
 Among them, Z reads 0 and 1 about equally, as ``|T>`` should.

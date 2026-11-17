@@ -1,825 +1,145 @@
 <!--
-   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-   SPDX-License-Identifier: Apache-2.0
+  SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+  SPDX-License-Identifier: Apache-2.0
+  Drawn by tools/render-pulse-visual.js from the figure's JSON; do not edit.
 -->
-<svg role="img" aria-labelledby="title desc" xmlns:xlink="http://www.w3.org/1999/xlink" width="490.97pt" height="137.32pt" viewBox="0 0 490.97 137.32" xmlns="http://www.w3.org/2000/svg" version="1.1">
+<svg xmlns="http://www.w3.org/2000/svg" class="pv-svg" role="img" aria-labelledby="title desc" viewBox="0 0 760 272">
  <title id="title">Two heralded attempts, then the T state</title>
- <desc id="desc">Timeline of the heralded T-state kernel with two attempts, on D5's drive and readout lines and the controller link. Each attempt reads D5 out for 300 ns, sends the outcome to the herald function, and plays a pi pulse only if the qubit read 1. After the second attempt, a Y90 pulse and a pi/4 frame shift prepare the T state, and a last readout from 824 ns measures it.</desc>
+ <desc id="desc">Two heralded attempts, then the T state. Attempt 1 reads D5 out. The outcome goes to herald on the controller link. herald accepts the shot: no π pulse. Attempt 2 reads D5 out. The outcome goes to herald on the controller link. herald accepts the shot: no π pulse. Y90 and the T gate's +π/4 frame shift prepare |T⟩. The last readout measures Z. Post-selection keeps the shot. If herald accepts both attempts, no π pulse plays (97.2% of shots). If herald rejects attempt 1 and accepts attempt 2, π 1 plays (2.7% of shots). If herald rejects both attempts, both π pulses play (8.2e-4 of shots). If herald accepts attempt 1 and rejects attempt 2, π 2 plays (3.2e-4 of shots).</desc>
+ <style>.pv-svg { --pv-drive: #5b8c00; --pv-q: #3d6fa3; --pv-readout: #c2185b; --pv-classical: #00796b; --pv-text: #1a1a1a; --pv-muted: #5c636a; --pv-grid: #e8e8e8; --pv-rule: #b8bdc2; --pv-panel: rgba(0, 0, 0, 0.03); --pv-on-pill: #ffffff; --pv-page: #ffffff; display: block; width: 100%; height: auto; font-family: var(--pst-font-family-base, NVIDIA, Arial, Helvetica, sans-serif);}
+.pv-svg.pv-dark { --pv-drive: #76b900; --pv-q: #8fb8e8; --pv-readout: #f06292; --pv-classical: #4dd0c4; --pv-text: #eeeeee; --pv-muted: #b4bac1; --pv-grid: #2c2f33; --pv-rule: #5a6066; --pv-panel: rgba(255, 255, 255, 0.04); --pv-on-pill: #0b0b0b; --pv-page: #111111;}
+.pv-svg text { fill: var(--pv-text); font-size: 12px;}
+.pv-svg .pv-title { font-weight: 600; font-size: 12.5px;}
+.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted);}
+.pv-svg .pv-small { font-size: 10px;}
+.pv-svg .pv-tiny { font-size: 9px;}
+.pv-svg .pv-tiny.pv-on-text, .pv-svg .pv-on-bar { fill: var(--pv-on-pill);}
+.pv-svg .pv-lane { font-size: 10.5px;}
+.pv-svg .pv-lane, .pv-svg .pv-pill text { font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace);}
+.pv-svg .pv-classical-text, .pv-svg .pv-window-text { fill: var(--pv-classical);}
+.pv-svg .pv-drive-text { fill: var(--pv-drive);}
+.pv-grid { stroke: var(--pv-grid);}
+.pv-head { stroke: var(--pv-text); opacity: 0.6;}
+.pv-svg .pv-halo { paint-order: stroke; stroke: var(--pv-page); stroke-width: 3px; stroke-linejoin: round;}
+.pv-hatch { fill: var(--pv-muted); opacity: 0.55;}
+.pv-ghost { fill: none; stroke: var(--pv-rule);}
+.pv-ghost.pv-cond { stroke-dasharray: 3 2;}
+.pv-fill.pv-drive { fill: var(--pv-drive);}
+.pv-fill.pv-readout { fill: var(--pv-readout);}
+.pv-frame { fill: var(--pv-drive);}
+.pv-window { stroke: none;}
+.pv-window-answer { fill: var(--pv-classical); opacity: 0.16;}
+.pv-window-passed { fill: var(--pv-classical); opacity: 0.22;}
+.pv-sync { stroke: var(--pv-muted); stroke-dasharray: 1 3;}
+.pv-due { stroke: var(--pv-classical); stroke-width: 2;}
+.pv-arrow { fill: none; stroke: var(--pv-classical); stroke-width: 1.4;}
+.pv-arrow-answer { stroke-dasharray: 4 2;}
+.pv-track { fill: var(--pv-grid);}
+.pv-share { fill: var(--pv-classical);}
+.pv-case-band { fill: transparent;}
+.pv-case-band.pv-current { fill: var(--pv-panel); stroke: var(--pv-rule);}</style>
  <defs>
-  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+  <pattern id="pvh2" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+   <rect width="2" height="5" class="pv-hatch"/>
+  </pattern>
  </defs>
- <g id="figure_1">
-  <g id="patch_1">
-   <path d="M 0 137.32
-L 490.97 137.32
-L 490.97 0
-L 0 0
-L 0 137.32
-z
-" style="fill: none"/>
-  </g>
-  <g id="axes_1">
-   <g id="patch_2">
-    <path d="M 67.47 109.44
-L 488.09 109.44
-L 488.09 2.88
-L 67.47 2.88
-L 67.47 109.44
-z
-" style="fill: none"/>
-   </g>
-   <g id="line2d_1">
-    <path d="M 67.47 47.52
-L 488.09 47.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #e8e8e8; stroke-width: 0.8; stroke-linecap: round"/>
-   </g>
-   <g id="line2d_2">
-    <path d="M 67.47 83.52
-L 488.09 83.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #e8e8e8; stroke-width: 0.8; stroke-linecap: round"/>
-   </g>
-   <g id="line2d_3">
-    <path d="M 67.47 109.44
-L 488.09 109.44
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #e8e8e8; stroke-width: 0.8; stroke-linecap: round"/>
-   </g>
-   <g id="matplotlib.axis_1">
-    <g id="xtick_1">
-     <g id="line2d_4">
-      <path d="M 67.47 109.44
-L 67.47 2.88
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #e8e8e8; stroke-width: 0.8; stroke-linecap: round"/>
-     </g>
-     <g id="line2d_5">
-      <defs>
-       <path id="m5b935c8b90" d="M 0 0
-L 0 3
-" style="stroke: #b8bdc2; stroke-width: 0.8"/>
-      </defs>
-      <g>
-       <use xlink:href="#m5b935c8b90" x="67.47" y="109.44" style="fill: #b8bdc2; stroke: #b8bdc2; stroke-width: 0.8"/>
-      </g>
-     </g>
-     <g id="text_1">
-      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="67.47" y="122.39" transform="rotate(-0 67.47 122.39)">0</text>
-     </g>
-    </g>
-    <g id="xtick_2">
-     <g id="line2d_6">
-      <path d="M 141.57 109.44
-L 141.57 2.88
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #e8e8e8; stroke-width: 0.8; stroke-linecap: round"/>
-     </g>
-     <g id="line2d_7">
-      <g>
-       <use xlink:href="#m5b935c8b90" x="141.57" y="109.44" style="fill: #b8bdc2; stroke: #b8bdc2; stroke-width: 0.8"/>
-      </g>
-     </g>
-     <g id="text_2">
-      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="141.57" y="122.39" transform="rotate(-0 141.57 122.39)">200</text>
-     </g>
-    </g>
-    <g id="xtick_3">
-     <g id="line2d_8">
-      <path d="M 215.67 109.44
-L 215.67 2.88
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #e8e8e8; stroke-width: 0.8; stroke-linecap: round"/>
-     </g>
-     <g id="line2d_9">
-      <g>
-       <use xlink:href="#m5b935c8b90" x="215.67" y="109.44" style="fill: #b8bdc2; stroke: #b8bdc2; stroke-width: 0.8"/>
-      </g>
-     </g>
-     <g id="text_3">
-      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="215.67" y="122.39" transform="rotate(-0 215.67 122.39)">400</text>
-     </g>
-    </g>
-    <g id="xtick_4">
-     <g id="line2d_10">
-      <path d="M 289.78 109.44
-L 289.78 2.88
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #e8e8e8; stroke-width: 0.8; stroke-linecap: round"/>
-     </g>
-     <g id="line2d_11">
-      <g>
-       <use xlink:href="#m5b935c8b90" x="289.78" y="109.44" style="fill: #b8bdc2; stroke: #b8bdc2; stroke-width: 0.8"/>
-      </g>
-     </g>
-     <g id="text_4">
-      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="289.78" y="122.39" transform="rotate(-0 289.78 122.39)">600</text>
-     </g>
-    </g>
-    <g id="xtick_5">
-     <g id="line2d_12">
-      <path d="M 363.88 109.44
-L 363.88 2.88
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #e8e8e8; stroke-width: 0.8; stroke-linecap: round"/>
-     </g>
-     <g id="line2d_13">
-      <g>
-       <use xlink:href="#m5b935c8b90" x="363.88" y="109.44" style="fill: #b8bdc2; stroke: #b8bdc2; stroke-width: 0.8"/>
-      </g>
-     </g>
-     <g id="text_5">
-      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="363.88" y="122.39" transform="rotate(-0 363.88 122.39)">800</text>
-     </g>
-    </g>
-    <g id="xtick_6">
-     <g id="line2d_14">
-      <path d="M 437.98 109.44
-L 437.98 2.88
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #e8e8e8; stroke-width: 0.8; stroke-linecap: round"/>
-     </g>
-     <g id="line2d_15">
-      <g>
-       <use xlink:href="#m5b935c8b90" x="437.98" y="109.44" style="fill: #b8bdc2; stroke: #b8bdc2; stroke-width: 0.8"/>
-      </g>
-     </g>
-     <g id="text_6">
-      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="437.98" y="122.39" transform="rotate(-0 437.98 122.39)">1000</text>
-     </g>
-    </g>
-    <g id="text_7">
-     <text style="font-size: 9px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #5c636a" x="488.09" y="132.27" transform="rotate(-0 488.09 132.27)">time (ns)</text>
-    </g>
-   </g>
-   <g id="matplotlib.axis_2"/>
-   <g id="FillBetweenPolyCollection_1">
-    <defs>
-     <path id="ma1af37b2a1" d="M 67.47 -53.80
-L 67.47 -53.80
-L 67.56 -53.80
-L 68.49 -53.80
-L 69.04 -53.80
-L 69.60 -53.80
-L 70.34 -53.80
-L 72.01 -53.80
-L 72.75 -53.80
-L 73.30 -53.80
-L 73.86 -53.80
-L 74.41 -53.80
-L 74.97 -53.80
-L 171.49 -53.80
-L 171.86 -53.80
-L 172.23 -53.80
-L 172.60 -53.80
-L 173.16 -53.80
-L 174.08 -53.80
-L 175.75 -53.80
-L 176.68 -53.80
-L 177.60 -53.80
-L 178.53 -53.80
-L 178.62 -53.80
-L 178.62 -53.80
-L 178.62 -53.80
-L 178.53 -57.02
-L 177.60 -58.89
-L 176.68 -61.34
-L 175.75 -64.31
-L 174.08 -70.10
-L 173.16 -72.86
-L 172.60 -74.11
-L 172.23 -74.73
-L 171.86 -75.15
-L 171.49 -75.37
-L 74.97 -75.40
-L 74.41 -75.15
-L 73.86 -74.45
-L 73.30 -73.32
-L 72.75 -71.84
-L 72.01 -69.48
-L 70.34 -63.68
-L 69.60 -61.34
-L 69.04 -59.80
-L 68.49 -58.47
-L 67.56 -56.72
-L 67.47 -53.80
-z
-"/>
-    </defs>
-    <g clip-path="url(#p3cef9e28ad)">
-     <use xlink:href="#ma1af37b2a1" x="0" y="137.32" style="fill: #c2185b; fill-opacity: 0.16"/>
-    </g>
-   </g>
-   <g id="FillBetweenPolyCollection_2">
-    <defs>
-     <path id="mb7e12153a6" d="M 197.89 -89.80
-L 197.89 -89.80
-L 197.98 -89.80
-L 198.91 -89.80
-L 199.46 -89.80
-L 200.02 -89.80
-L 200.76 -89.80
-L 202.43 -89.80
-L 203.17 -89.80
-L 203.72 -89.80
-L 204.28 -89.80
-L 204.84 -89.80
-L 205.39 -89.80
-L 205.95 -89.80
-L 206.50 -89.80
-L 207.06 -89.80
-L 207.61 -89.80
-L 208.35 -89.80
-L 210.02 -89.80
-L 210.76 -89.80
-L 211.69 -89.80
-L 212.62 -89.80
-L 212.71 -89.80
-L 212.71 -89.80
-L 212.71 -89.80
-L 212.62 -93.04
-L 211.69 -94.91
-L 210.76 -97.37
-L 210.02 -99.70
-L 208.35 -105.49
-L 207.61 -107.85
-L 207.06 -109.32
-L 206.50 -110.45
-L 205.95 -111.15
-L 205.39 -111.40
-L 204.84 -111.15
-L 204.28 -110.45
-L 203.72 -109.32
-L 203.17 -107.85
-L 202.43 -105.49
-L 200.76 -99.70
-L 200.02 -97.37
-L 199.46 -95.82
-L 198.91 -94.49
-L 197.98 -92.73
-L 197.89 -89.80
-z
-"/>
-    </defs>
-    <g clip-path="url(#p3cef9e28ad)">
-     <use xlink:href="#mb7e12153a6" x="0" y="137.32" style="fill: #5b8c00; fill-opacity: 0.08"/>
-    </g>
-   </g>
-   <g id="FillBetweenPolyCollection_3">
-    <defs>
-     <path id="m71452b5cf9" d="M 212.71 -53.80
-L 212.71 -53.80
-L 212.80 -53.80
-L 213.73 -53.80
-L 214.28 -53.80
-L 214.84 -53.80
-L 215.58 -53.80
-L 217.25 -53.80
-L 217.99 -53.80
-L 218.54 -53.80
-L 219.10 -53.80
-L 219.66 -53.80
-L 220.21 -53.80
-L 316.73 -53.80
-L 317.10 -53.80
-L 317.47 -53.80
-L 317.84 -53.80
-L 318.40 -53.80
-L 319.32 -53.80
-L 320.99 -53.80
-L 321.92 -53.80
-L 322.84 -53.80
-L 323.77 -53.80
-L 323.86 -53.80
-L 323.86 -53.80
-L 323.86 -53.80
-L 323.77 -57.02
-L 322.84 -58.89
-L 321.92 -61.34
-L 320.99 -64.31
-L 319.32 -70.10
-L 318.40 -72.86
-L 317.84 -74.11
-L 317.47 -74.73
-L 317.10 -75.15
-L 316.73 -75.37
-L 220.21 -75.40
-L 219.66 -75.15
-L 219.10 -74.45
-L 218.54 -73.32
-L 217.99 -71.84
-L 217.25 -69.48
-L 215.58 -63.68
-L 214.84 -61.34
-L 214.28 -59.80
-L 213.73 -58.47
-L 212.80 -56.72
-L 212.71 -53.80
-z
-"/>
-    </defs>
-    <g clip-path="url(#p3cef9e28ad)">
-     <use xlink:href="#m71452b5cf9" x="0" y="137.32" style="fill: #c2185b; fill-opacity: 0.16"/>
-    </g>
-   </g>
-   <g id="FillBetweenPolyCollection_4">
-    <defs>
-     <path id="m9c28d32063" d="M 343.13 -89.80
-L 343.13 -89.80
-L 343.22 -89.80
-L 344.15 -89.80
-L 344.70 -89.80
-L 345.26 -89.80
-L 346.00 -89.80
-L 347.67 -89.80
-L 348.41 -89.80
-L 348.97 -89.80
-L 349.52 -89.80
-L 350.08 -89.80
-L 350.63 -89.80
-L 351.19 -89.80
-L 351.74 -89.80
-L 352.30 -89.80
-L 352.86 -89.80
-L 353.60 -89.80
-L 355.26 -89.80
-L 356.01 -89.80
-L 356.93 -89.80
-L 357.86 -89.80
-L 357.95 -89.80
-L 357.95 -89.80
-L 357.95 -89.80
-L 357.86 -93.04
-L 356.93 -94.91
-L 356.01 -97.37
-L 355.26 -99.70
-L 353.60 -105.49
-L 352.86 -107.85
-L 352.30 -109.32
-L 351.74 -110.45
-L 351.19 -111.15
-L 350.63 -111.40
-L 350.08 -111.15
-L 349.52 -110.45
-L 348.97 -109.32
-L 348.41 -107.85
-L 347.67 -105.49
-L 346.00 -99.70
-L 345.26 -97.37
-L 344.70 -95.82
-L 344.15 -94.49
-L 343.22 -92.73
-L 343.13 -89.80
-z
-"/>
-    </defs>
-    <g clip-path="url(#p3cef9e28ad)">
-     <use xlink:href="#m9c28d32063" x="0" y="137.32" style="fill: #5b8c00; fill-opacity: 0.08"/>
-    </g>
-   </g>
-   <g id="FillBetweenPolyCollection_5">
-    <defs>
-     <path id="me223153d43" d="M 357.95 -89.80
-L 357.95 -89.80
-L 358.04 -89.80
-L 358.97 -89.80
-L 359.53 -89.80
-L 360.08 -89.80
-L 360.82 -89.80
-L 362.49 -89.80
-L 363.23 -89.80
-L 363.79 -89.80
-L 364.34 -89.80
-L 364.90 -89.80
-L 365.45 -89.80
-L 366.01 -89.80
-L 366.57 -89.80
-L 367.12 -89.80
-L 367.68 -89.80
-L 368.42 -89.80
-L 370.08 -89.80
-L 370.83 -89.80
-L 371.75 -89.80
-L 372.68 -89.80
-L 372.77 -89.80
-L 372.77 -89.80
-L 372.77 -89.80
-L 372.68 -91.42
-L 371.75 -92.35
-L 370.83 -93.58
-L 370.08 -94.75
-L 368.42 -97.64
-L 367.68 -98.82
-L 367.12 -99.56
-L 366.57 -100.12
-L 366.01 -100.48
-L 365.45 -100.60
-L 364.90 -100.48
-L 364.34 -100.12
-L 363.79 -99.56
-L 363.23 -98.82
-L 362.49 -97.64
-L 360.82 -94.75
-L 360.08 -93.58
-L 359.53 -92.81
-L 358.97 -92.14
-L 358.04 -91.26
-L 357.95 -89.80
-z
-"/>
-    </defs>
-    <g clip-path="url(#p3cef9e28ad)">
-     <use xlink:href="#me223153d43" x="0" y="137.32" style="fill: #5b8c00; fill-opacity: 0.16"/>
-    </g>
-   </g>
-   <g id="FillBetweenPolyCollection_6">
-    <defs>
-     <path id="m48b3e51ed5" d="M 372.77 -53.80
-L 372.77 -53.80
-L 372.86 -53.80
-L 373.79 -53.80
-L 374.35 -53.80
-L 374.90 -53.80
-L 375.64 -53.80
-L 377.31 -53.80
-L 378.05 -53.80
-L 378.61 -53.80
-L 379.16 -53.80
-L 379.72 -53.80
-L 380.27 -53.80
-L 476.79 -53.80
-L 477.16 -53.80
-L 477.53 -53.80
-L 477.90 -53.80
-L 478.46 -53.80
-L 479.39 -53.80
-L 481.05 -53.80
-L 481.98 -53.80
-L 482.91 -53.80
-L 483.83 -53.80
-L 483.93 -53.80
-L 483.93 -53.80
-L 483.93 -53.80
-L 483.83 -57.02
-L 482.91 -58.89
-L 481.98 -61.34
-L 481.05 -64.31
-L 479.39 -70.10
-L 478.46 -72.86
-L 477.90 -74.11
-L 477.53 -74.73
-L 477.16 -75.15
-L 476.79 -75.37
-L 380.27 -75.40
-L 379.72 -75.15
-L 379.16 -74.45
-L 378.61 -73.32
-L 378.05 -71.84
-L 377.31 -69.48
-L 375.64 -63.68
-L 374.90 -61.34
-L 374.35 -59.80
-L 373.79 -58.47
-L 372.86 -56.72
-L 372.77 -53.80
-z
-"/>
-    </defs>
-    <g clip-path="url(#p3cef9e28ad)">
-     <use xlink:href="#m48b3e51ed5" x="0" y="137.32" style="fill: #c2185b; fill-opacity: 0.16"/>
-    </g>
-   </g>
-   <g id="line2d_16">
-    <path d="M 67.47 83.52
-L 67.56 80.59
-L 68.49 78.84
-L 69.04 77.51
-L 69.60 75.97
-L 70.34 73.63
-L 72.01 67.83
-L 72.75 65.47
-L 73.30 63.99
-L 73.86 62.87
-L 74.41 62.16
-L 74.97 61.92
-L 171.49 61.94
-L 171.86 62.16
-L 172.23 62.58
-L 172.60 63.20
-L 173.16 64.45
-L 174.08 67.21
-L 175.75 73.00
-L 176.68 75.97
-L 177.60 78.42
-L 178.53 80.29
-L 178.62 83.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #c2185b; stroke-width: 1.4; stroke-linecap: round"/>
-   </g>
-   <g id="line2d_17">
-    <path d="M 197.89 47.52
-L 197.98 44.59
-L 198.91 42.84
-L 199.46 41.51
-L 200.02 39.97
-L 200.76 37.63
-L 202.43 31.83
-L 203.17 29.47
-L 203.72 27.99
-L 204.28 26.87
-L 204.84 26.16
-L 205.39 25.92
-L 205.95 26.16
-L 206.50 26.87
-L 207.06 27.99
-L 207.61 29.47
-L 208.35 31.83
-L 210.02 37.63
-L 210.76 39.97
-L 211.69 42.42
-L 212.62 44.29
-L 212.71 47.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke-dasharray: 4.2,2.52; stroke-dashoffset: 0; stroke: #5b8c00; stroke-width: 1.4"/>
-   </g>
-   <g id="line2d_18">
-    <path d="M 197.89 47.52
-L 197.98 47.22
-L 198.91 47.10
-L 199.46 47.03
-L 200.02 46.96
-L 200.76 46.89
-L 202.43 46.88
-L 203.17 46.96
-L 203.72 47.07
-L 204.28 47.20
-L 204.84 47.35
-L 205.39 47.52
-L 205.95 47.68
-L 206.50 47.83
-L 207.06 47.96
-L 207.61 48.07
-L 208.35 48.15
-L 210.02 48.14
-L 210.76 48.07
-L 211.69 47.96
-L 212.62 47.83
-L 212.71 47.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke-dasharray: 2.88,1.92; stroke-dashoffset: 0; stroke: #3d6fa3; stroke-width: 1.2"/>
-   </g>
-   <g id="line2d_19">
-    <path d="M 212.71 83.52
-L 212.80 80.59
-L 213.73 78.84
-L 214.28 77.51
-L 214.84 75.97
-L 215.58 73.63
-L 217.25 67.83
-L 217.99 65.47
-L 218.54 63.99
-L 219.10 62.87
-L 219.66 62.16
-L 220.21 61.92
-L 316.73 61.94
-L 317.10 62.16
-L 317.47 62.58
-L 317.84 63.20
-L 318.40 64.45
-L 319.32 67.21
-L 320.99 73.00
-L 321.92 75.97
-L 322.84 78.42
-L 323.77 80.29
-L 323.86 83.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #c2185b; stroke-width: 1.4; stroke-linecap: round"/>
-   </g>
-   <g id="line2d_20">
-    <path d="M 343.13 47.52
-L 343.22 44.59
-L 344.15 42.84
-L 344.70 41.51
-L 345.26 39.97
-L 346.00 37.63
-L 347.67 31.83
-L 348.41 29.47
-L 348.97 27.99
-L 349.52 26.87
-L 350.08 26.16
-L 350.63 25.92
-L 351.19 26.16
-L 351.74 26.87
-L 352.30 27.99
-L 352.86 29.47
-L 353.60 31.83
-L 355.26 37.63
-L 356.01 39.97
-L 356.93 42.42
-L 357.86 44.29
-L 357.95 47.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke-dasharray: 4.2,2.52; stroke-dashoffset: 0; stroke: #5b8c00; stroke-width: 1.4"/>
-   </g>
-   <g id="line2d_21">
-    <path d="M 343.13 47.52
-L 343.22 47.22
-L 344.15 47.10
-L 344.70 47.03
-L 345.26 46.96
-L 346.00 46.89
-L 347.67 46.88
-L 348.41 46.96
-L 348.97 47.07
-L 349.52 47.20
-L 350.08 47.35
-L 350.63 47.52
-L 351.19 47.68
-L 351.74 47.83
-L 352.30 47.96
-L 352.86 48.07
-L 353.60 48.15
-L 355.26 48.14
-L 356.01 48.07
-L 356.93 47.96
-L 357.86 47.83
-L 357.95 47.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke-dasharray: 2.88,1.92; stroke-dashoffset: 0; stroke: #3d6fa3; stroke-width: 1.2"/>
-   </g>
-   <g id="line2d_22">
-    <path d="M 357.95 47.52
-L 358.04 46.05
-L 358.97 45.18
-L 359.53 44.51
-L 360.08 43.74
-L 360.82 42.57
-L 362.49 39.67
-L 363.23 38.49
-L 363.79 37.75
-L 364.34 37.19
-L 364.90 36.84
-L 365.45 36.72
-L 366.01 36.84
-L 366.57 37.19
-L 367.12 37.75
-L 367.68 38.49
-L 368.42 39.67
-L 370.08 42.57
-L 370.83 43.74
-L 371.75 44.97
-L 372.68 45.90
-L 372.77 47.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke-dasharray: 2.88,1.92; stroke-dashoffset: 0; stroke: #3d6fa3; stroke-width: 1.2"/>
-   </g>
-   <g id="line2d_23">
-    <path d="M 372.77 83.52
-L 372.86 80.59
-L 373.79 78.84
-L 374.35 77.51
-L 374.90 75.97
-L 375.64 73.63
-L 377.31 67.83
-L 378.05 65.47
-L 378.61 63.99
-L 379.16 62.87
-L 379.72 62.16
-L 380.27 61.92
-L 476.79 61.94
-L 477.16 62.16
-L 477.53 62.58
-L 477.90 63.20
-L 478.46 64.45
-L 479.39 67.21
-L 481.05 73.00
-L 481.98 75.97
-L 482.91 78.42
-L 483.83 80.29
-L 483.93 83.52
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #c2185b; stroke-width: 1.4; stroke-linecap: round"/>
-   </g>
-   <g id="line2d_24">
-    <path d="M 197.89 107.88
-L 197.89 90.25
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #00796b; stroke-width: 1.3; stroke-linecap: round"/>
-   </g>
-   <g id="line2d_25">
-    <path d="M 343.13 107.88
-L 343.13 90.25
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #00796b; stroke-width: 1.3; stroke-linecap: round"/>
-   </g>
-   <g id="patch_3">
-    <path d="M 67.47 109.44
-L 488.09 109.44
-" style="fill: none; stroke: #b8bdc2; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
-   </g>
-   <g id="text_8">
-    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #1a1a1a" x="61.16" y="38.92" transform="rotate(-0 61.16 38.92)">D5 drive</text>
-   </g>
-   <g id="text_9">
-    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #1a1a1a" x="61.16" y="74.92" transform="rotate(-0 61.16 74.92)">D5 readout</text>
-   </g>
-   <g id="text_10">
-    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #00796b" x="61.16" y="103.87" transform="rotate(-0 61.16 103.87)">controller link</text>
-   </g>
-   <g id="text_11">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="123.04" y="57.83" transform="rotate(-0 123.04 57.83)">herald</text>
-   </g>
-   <g id="text_12">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="205.30" y="21.83" transform="rotate(-0 205.30 21.83)">π if read 1</text>
-   </g>
-   <g id="text_13">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="268.29" y="57.83" transform="rotate(-0 268.29 57.83)">herald</text>
-   </g>
-   <g id="text_14">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="350.54" y="21.83" transform="rotate(-0 350.54 21.83)">π if read 1</text>
-   </g>
-   <g id="text_15">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="384.90" y="21.83" transform="rotate(-0 384.90 21.83)">Y90</text>
-   </g>
-   <g id="text_16">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="428.35" y="57.83" transform="rotate(-0 428.35 57.83)">tomography</text>
-   </g>
-   <g id="text_17">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5b8c00" x="403.58" y="21.83" transform="rotate(-0 403.58 21.83)">+π/4</text>
-   </g>
-   <g id="line2d_26">
-    <path d="M 180.10 99.07
-L 197.89 99.07
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #00796b; stroke-linecap: round"/>
-   </g>
-   <g id="text_18">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #00796b" x="200.89" y="101.15" transform="rotate(-0 200.89 101.15)">herald</text>
-   </g>
-   <g id="line2d_27">
-    <path d="M 325.35 99.07
-L 343.13 99.07
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #00796b; stroke-linecap: round"/>
-   </g>
-   <g id="text_19">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #00796b" x="346.13" y="101.15" transform="rotate(-0 346.13 101.15)">herald</text>
-   </g>
-   <g id="line2d_28">
-    <path d="M 372.77 47.52
-" style="fill: none; stroke: #5b8c00; stroke-width: 1.6; stroke-linecap: round"/>
-    <defs>
-     <path id="m703d2847c2" d="M -0 3.18
-L 3.18 0
-L 0 -3.18
-L -3.18 -0
-z
-" style="stroke: #000000; stroke-opacity: 0; stroke-linejoin: miter"/>
-    </defs>
-    <g>
-     <use xlink:href="#m703d2847c2" x="372.77" y="47.52" style="fill: #5b8c00; stroke: #000000; stroke-opacity: 0; stroke-linejoin: miter"/>
-    </g>
-   </g>
-   <g id="patch_4">
-    <path d="M 178.62 104.77
-L 180.12 104.77
-L 180.12 93.36
-L 178.62 93.36
-z
-" clip-path="url(#p3cef9e28ad)" style="fill: #00796b"/>
-   </g>
-   <g id="patch_5">
-    <path d="M 323.86 104.77
-L 325.36 104.77
-L 325.36 93.36
-L 323.86 93.36
-z
-" clip-path="url(#p3cef9e28ad)" style="fill: #00796b"/>
-   </g>
-   <g id="patch_6">
-    <path d="M 178.62 83.52
-Q 178.62 88.19 178.62 91.74
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #00796b; stroke-width: 1.1; stroke-linecap: round"/>
-    <path d="M 180.62 88.14
-L 178.62 91.74
-L 176.62 88.14
-z
-" clip-path="url(#p3cef9e28ad)" style="fill: #00796b; stroke: #00796b; stroke-width: 1.1; stroke-linecap: round"/>
-   </g>
-   <g id="patch_7">
-    <path d="M 197.89 90.25
-Q 197.89 69.13 197.89 49.15
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #00796b; stroke-width: 1.1; stroke-linecap: round"/>
-    <path d="M 195.89 52.75
-L 197.89 49.15
-L 199.89 52.75
-z
-" clip-path="url(#p3cef9e28ad)" style="fill: #00796b; stroke: #00796b; stroke-width: 1.1; stroke-linecap: round"/>
-   </g>
-   <g id="patch_8">
-    <path d="M 323.86 83.52
-Q 323.86 88.19 323.86 91.74
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #00796b; stroke-width: 1.1; stroke-linecap: round"/>
-    <path d="M 325.86 88.14
-L 323.86 91.74
-L 321.86 88.14
-z
-" clip-path="url(#p3cef9e28ad)" style="fill: #00796b; stroke: #00796b; stroke-width: 1.1; stroke-linecap: round"/>
-   </g>
-   <g id="patch_9">
-    <path d="M 343.13 90.25
-Q 343.13 69.13 343.13 49.15
-" clip-path="url(#p3cef9e28ad)" style="fill: none; stroke: #00796b; stroke-width: 1.1; stroke-linecap: round"/>
-    <path d="M 341.13 52.75
-L 343.13 49.15
-L 345.13 52.75
-z
-" clip-path="url(#p3cef9e28ad)" style="fill: #00796b; stroke: #00796b; stroke-width: 1.1; stroke-linecap: round"/>
+ <text x="14" y="18" class="pv-title">If herald accepts both attempts, no π pulse plays.</text>
+ <g class="pv-timeline">
+  <path d="M 132 46 V 140" class="pv-grid"/>
+  <text x="132" y="42" class="pv-small" text-anchor="middle">0</text>
+  <path d="M 238.07 46 V 140" class="pv-grid"/>
+  <text x="238.07" y="42" class="pv-small" text-anchor="middle">200</text>
+  <path d="M 344.14 46 V 140" class="pv-grid"/>
+  <text x="344.14" y="42" class="pv-small" text-anchor="middle">400</text>
+  <path d="M 450.21 46 V 140" class="pv-grid"/>
+  <text x="450.21" y="42" class="pv-small" text-anchor="middle">600</text>
+  <path d="M 556.28 46 V 140" class="pv-grid"/>
+  <text x="556.28" y="42" class="pv-small" text-anchor="middle">800</text>
+  <path d="M 662.35 46 V 140" class="pv-grid"/>
+  <text x="662.35" y="42" class="pv-small" text-anchor="middle">1000</text>
+  <text x="124" y="42" class="pv-small" text-anchor="end">ns</text>
+  <text x="124" y="68" class="pv-lane" text-anchor="end">D5 drive</text>
+  <text x="124" y="100" class="pv-lane" text-anchor="end">D5 readout</text>
+  <text x="124" y="132" class="pv-lane pv-classical-text" text-anchor="end">controller link</text>
+  <g>
+   <rect x="305.95" y="120" width="8.48" height="16" class="pv-window pv-window-answer"/>
+   <rect x="305.95" y="120" width="8.48" height="16" class="pv-window-passed"/>
+   <rect x="513.85" y="120" width="8.48" height="16" class="pv-window pv-window-answer"/>
+   <rect x="513.85" y="120" width="8.48" height="16" class="pv-window-passed"/>
+   <rect x="132" y="88" width="159.10" height="16" rx="1.5" class="pv-ghost"/>
+   <rect x="132" y="88" width="159.10" height="16" rx="1.5" class="pv-fill pv-readout"/>
+   <text x="211.55" y="100" text-anchor="middle" class="pv-small pv-on-bar">outcome</text>
+   <rect x="318.68" y="56" width="21.21" height="16" rx="1.5" class="pv-ghost pv-cond"/>
+   <rect x="339.89" y="88" width="159.10" height="16" rx="1.5" class="pv-ghost"/>
+   <rect x="339.89" y="88" width="159.10" height="16" rx="1.5" class="pv-fill pv-readout"/>
+   <text x="419.45" y="100" text-anchor="middle" class="pv-small pv-on-bar">outcome</text>
+   <rect x="526.58" y="56" width="21.21" height="16" rx="1.5" class="pv-ghost pv-cond"/>
+   <rect x="547.79" y="56" width="21.21" height="16" rx="1.5" class="pv-ghost"/>
+   <rect x="547.79" y="56" width="21.21" height="16" rx="1.5" class="pv-fill pv-drive"/>
+   <rect x="569.01" y="88" width="159.10" height="16" rx="1.5" class="pv-ghost"/>
+   <rect x="569.01" y="88" width="159.10" height="16" rx="1.5" class="pv-fill pv-readout"/>
+   <text x="648.56" y="100" text-anchor="middle" class="pv-small pv-on-bar">Z readout</text>
+   <path d="M 291.10 54 V 106" class="pv-sync"/>
+   <path d="M 339.89 54 V 106" class="pv-sync"/>
+   <path d="M 499.00 54 V 106" class="pv-sync"/>
+   <path d="M 547.79 54 V 106" class="pv-sync"/>
+   <path d="M 569.01 67 l 5 5 l -5 5 l -5 -5 z" class="pv-frame"/>
+   <text x="576.01" y="69" class="pv-small pv-drive-text pv-halo">+π/4</text>
+   <path d="M 569.01 54 V 106" class="pv-sync"/>
+   <path d="M 318.68 117 V 141" class="pv-due"/>
+   <text x="318.68" y="151" text-anchor="middle" class="pv-small pv-classical-text">due 352 ns</text>
+   <path d="M 526.58 117 V 141" class="pv-due"/>
+   <text x="526.58" y="151" text-anchor="middle" class="pv-small pv-classical-text">due 744 ns</text>
+   <path d="M 291.10 96 L 293.22 128" class="pv-arrow pv-arrow-request"/>
+   <path d="M 314.44 128 L 318.68 64" class="pv-arrow pv-arrow-answer"/>
+   <path d="M 499.00 96 L 501.12 128" class="pv-arrow pv-arrow-request"/>
+   <path d="M 522.33 128 L 526.58 64" class="pv-arrow pv-arrow-answer"/>
+   <g>
+    <text x="262.59" y="117" class="pv-small pv-halo pv-window-text">answer may arrive</text>
+    <text x="470.49" y="117" class="pv-small pv-halo pv-window-text">answer may arrive</text>
+    <text x="550.00" y="53" class="pv-small pv-halo ">Y90</text>
    </g>
   </g>
+  <path class="pv-head" d=""/>
  </g>
- <defs>
-  <clipPath id="p3cef9e28ad">
-   <rect x="67.47" y="2.88" width="420.62" height="106.56"/>
-  </clipPath>
- </defs>
+ <g class="pv-cases">
+  <text x="14" y="174" class="pv-lane">every case</text>
+  <rect x="128" y="182" width="618" height="18" rx="3" class="pv-case-band pv-current"/>
+  <text x="132" y="195" class="pv-small">accepts, then accepts: kept</text>
+  <rect x="342" y="186" width="44" height="12" rx="2" class="pv-ghost pv-cond"/>
+  <text x="364" y="195" text-anchor="middle" class="pv-tiny">π 1</text>
+  <rect x="394" y="186" width="44" height="12" rx="2" class="pv-ghost pv-cond"/>
+  <text x="416" y="195" text-anchor="middle" class="pv-tiny">π 2</text>
+  <rect x="454" y="187" width="232" height="10" class="pv-track"/>
+  <rect x="454" y="187" width="225.49" height="10" class="pv-share"/>
+  <text x="692" y="195" class="pv-small">97.2%</text>
+  <rect x="128" y="202" width="618" height="18" rx="3" class="pv-case-band"/>
+  <text x="132" y="215" class="pv-small">rejects, then accepts: kept</text>
+  <rect x="342" y="206" width="44" height="12" rx="2" class="pv-fill pv-drive"/>
+  <text x="364" y="215" text-anchor="middle" class="pv-tiny pv-on-text">π 1</text>
+  <rect x="394" y="206" width="44" height="12" rx="2" class="pv-ghost pv-cond"/>
+  <text x="416" y="215" text-anchor="middle" class="pv-tiny">π 2</text>
+  <rect x="454" y="207" width="232" height="10" class="pv-track"/>
+  <rect x="454" y="207" width="6.24" height="10" class="pv-share"/>
+  <text x="692" y="215" class="pv-small">2.7%</text>
+  <rect x="128" y="222" width="618" height="18" rx="3" class="pv-case-band"/>
+  <text x="132" y="235" class="pv-small">rejects, then rejects: dropped</text>
+  <rect x="342" y="226" width="44" height="12" rx="2" class="pv-fill pv-drive"/>
+  <text x="364" y="235" text-anchor="middle" class="pv-tiny pv-on-text">π 1</text>
+  <rect x="394" y="226" width="44" height="12" rx="2" class="pv-fill pv-drive"/>
+  <text x="416" y="235" text-anchor="middle" class="pv-tiny pv-on-text">π 2</text>
+  <rect x="454" y="227" width="232" height="10" class="pv-track"/>
+  <rect x="454" y="227" width="1" height="10" class="pv-share"/>
+  <text x="692" y="235" class="pv-small">8.2e-4</text>
+  <rect x="128" y="242" width="618" height="18" rx="3" class="pv-case-band"/>
+  <text x="132" y="255" class="pv-small">accepts, then rejects: dropped</text>
+  <rect x="342" y="246" width="44" height="12" rx="2" class="pv-ghost pv-cond"/>
+  <text x="364" y="255" text-anchor="middle" class="pv-tiny">π 1</text>
+  <rect x="394" y="246" width="44" height="12" rx="2" class="pv-fill pv-drive"/>
+  <text x="416" y="255" text-anchor="middle" class="pv-tiny pv-on-text">π 2</text>
+  <rect x="454" y="247" width="232" height="10" class="pv-track"/>
+  <rect x="454" y="247" width="1" height="10" class="pv-share"/>
+  <text x="692" y="255" class="pv-small">3.2e-4</text>
+  <text x="454" y="174" class="pv-small">share of shots</text>
+ </g>
 </svg>

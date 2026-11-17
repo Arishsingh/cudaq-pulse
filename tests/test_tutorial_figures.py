@@ -11,15 +11,18 @@ matplotlib upgrade that moves a point by a hundredth still matches; a
 changed schedule, value or label doesn't. Figures lay text out with DejaVu
 Sans, which comes with matplotlib, so they draw the same on every machine.
 To update a figure, run its script: ``python docs/tutorials/figures/<script>.py``.
+The data a script writes for an animated figure (``<script>.json``) must match
+the committed file too, every number to within 1e-3.
 
-A ``themed-figure`` of a page, or the fallback figure of a ``toy-flow``, has
-its ``-dark`` twin, both have a title and a description, and the page's
-``:alt:`` is the description.
+A ``themed-figure`` of a page, the fallback figure of a ``toy-flow`` and
+the still of a ``pulse-visual`` each have a ``-dark`` twin, both have a
+title and a description, and the page's ``:alt:`` is the description.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -70,11 +73,12 @@ def same_figure(a: str, b: str) -> bool:
 
 
 def _themed_figures(page: Path):
-    """(light file, alt text) of each ``themed-figure`` of *page*, and of the
-    ``:fallback:`` figure of each ``toy-flow``."""
+    """(light file, alt text) of each ``themed-figure`` of *page*, of the
+    ``:fallback:`` figure of each ``toy-flow``, and of each ``pulse-visual``'s
+    still, ``<scene>.svg`` next to its JSON."""
     lines = page.read_text().splitlines()
     for i, line in enumerate(lines):
-        m = re.match(r"\s*\.\. (themed-figure|toy-flow):: (\S+)", line)
+        m = re.match(r"\s*\.\. (themed-figure|toy-flow|pulse-visual):: (\S+)", line)
         if not m:
             continue
         options = {}
@@ -83,7 +87,12 @@ def _themed_figures(page: Path):
                 break
             key, _, value = option.strip()[1:].partition(":")
             options[key] = value.strip()
-        light = m[2] if m[1] == "themed-figure" else options.get("fallback")
+        if m[1] == "themed-figure":
+            light = m[2]
+        elif m[1] == "toy-flow":
+            light = options.get("fallback")
+        else:
+            light = str(Path(m[2]).with_name(f"{options.get('scene')}.svg"))
         if light:
             yield page.parent / light, options.get("alt")
 
@@ -150,3 +159,25 @@ def test_each_figure_is_what_its_script_draws(script, tmp_path):
             f"{svg.name} is not what {script.name} draws now; "
             f"run python docs/tutorials/figures/{script.name}"
         )
+    for data in sorted(tmp_path.glob("*.json")):
+        committed = _FIGURES / data.name
+        assert committed.exists(), f"{script.name} writes {data.name}, which is not committed"
+        assert same_data(json.loads(data.read_text()), json.loads(committed.read_text())), (
+            f"{data.name} is not what {script.name} writes now; "
+            f"run python docs/tutorials/figures/{script.name}"
+        )
+
+
+def same_data(a, b) -> bool:
+    """Whether two animated figures' data say the same: the same structure and
+    text, and every number within 1e-3 of the other, relative or absolute (a
+    simulated share of shots may move in its sixth digit between machines)."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(a - b) <= 1e-3 * max(1.0, abs(a), abs(b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(same_data(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(same_data(x, y) for x, y in zip(a, b, strict=True))
+    return a == b
