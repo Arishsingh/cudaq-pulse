@@ -477,6 +477,42 @@ CudmStatus integrateStepCrankNicolson(HandleData *handle, OperatorData *op,
   return status;
 }
 
+CudmStatus createElementaryOp(CudmHandle handle, CudmElementaryOp *elementaryOp,
+                              const void *tensorData, int64_t tensorValueCount,
+                              const int64_t *modeExtents, int32_t numModes,
+                              cudensitymatElementaryOperatorSparsity_t sparsity,
+                              int32_t numDiagonals,
+                              const int32_t *diagonalOffsets) {
+  auto *data = new (std::nothrow) ElementaryOpData{};
+  if (!data)
+    return fail(CUDM_ERROR_INTERNAL,
+                "failed to allocate elementary operator wrapper");
+  data->owner = static_cast<HandleData *>(handle);
+  const size_t bytes = static_cast<size_t>(tensorValueCount) * sizeof(double);
+  auto status = checkCuda(cudaMalloc(&data->tensorData, bytes),
+                          "cudaMalloc(elementary tensor)");
+  if (status == CUDM_SUCCESS)
+    status = checkCuda(
+        cudaMemcpy(data->tensorData, tensorData, bytes, cudaMemcpyHostToDevice),
+        "cudaMemcpy(elementary tensor)");
+  if (status == CUDM_SUCCESS)
+    status =
+        checkCudm(cudensitymatCreateElementaryOperator(
+                      data->owner->native, numModes, modeExtents, sparsity,
+                      numDiagonals, diagonalOffsets, CUDA_C_64F,
+                      data->tensorData, cudensitymatTensorCallbackNone,
+                      cudensitymatTensorGradientCallbackNone, &data->native),
+                  "cudensitymatCreateElementaryOperator");
+  if (status != CUDM_SUCCESS) {
+    if (data->tensorData)
+      cudaFree(data->tensorData);
+    delete data;
+    return status;
+  }
+  *elementaryOp = data;
+  return CUDM_SUCCESS;
+}
+
 } // namespace
 
 extern "C" {
@@ -750,34 +786,37 @@ CudmStatus cudm_elementary_op_create(CudmHandle handle,
   if (dataType != complex128DataType)
     return fail(CUDM_ERROR_INTERNAL,
                 "cudm-runtime supports complex128 (f64) operators only");
-  auto *data = new (std::nothrow) ElementaryOpData{};
-  if (!data)
+  return createElementaryOp(handle, elementaryOp, tensorData, tensorValueCount,
+                            modeExtents, numModes,
+                            CUDENSITYMAT_OPERATOR_SPARSITY_NONE, 0, nullptr);
+}
+
+CudmStatus cudm_elementary_op_create_multidiagonal(
+    CudmHandle handle, CudmElementaryOp *elementaryOp, const void *tensorData,
+    int64_t tensorValueCount, const int64_t *modeExtents, int32_t numModes,
+    int32_t dataType, int32_t numDiagonals, const int32_t *diagonalOffsets) {
+  if (elementaryOp)
+    *elementaryOp = nullptr;
+  if (!handle || !elementaryOp || !tensorData || !modeExtents ||
+      numModes != 1 || numDiagonals <= 0 || !diagonalOffsets)
+    return fail(CUDM_ERROR_INVALID_HANDLE,
+                "multi-diagonal operator create received invalid arguments");
+  if (dataType != complex128DataType)
     return fail(CUDM_ERROR_INTERNAL,
-                "failed to allocate elementary operator wrapper");
-  data->owner = static_cast<HandleData *>(handle);
-  const size_t bytes = static_cast<size_t>(tensorValueCount) * sizeof(double);
-  auto status = checkCuda(cudaMalloc(&data->tensorData, bytes),
-                          "cudaMalloc(elementary tensor)");
-  if (status == CUDM_SUCCESS)
-    status = checkCuda(
-        cudaMemcpy(data->tensorData, tensorData, bytes, cudaMemcpyHostToDevice),
-        "cudaMemcpy(elementary tensor)");
-  if (status == CUDM_SUCCESS)
-    status = checkCudm(
-        cudensitymatCreateElementaryOperator(
-            data->owner->native, numModes, modeExtents,
-            CUDENSITYMAT_OPERATOR_SPARSITY_NONE, 0, nullptr, CUDA_C_64F,
-            data->tensorData, cudensitymatTensorCallbackNone,
-            cudensitymatTensorGradientCallbackNone, &data->native),
-        "cudensitymatCreateElementaryOperator");
-  if (status != CUDM_SUCCESS) {
-    if (data->tensorData)
-      cudaFree(data->tensorData);
-    delete data;
-    return status;
-  }
-  *elementaryOp = data;
-  return CUDM_SUCCESS;
+                "cudm-runtime supports complex128 (f64) operators only");
+  const int64_t extent = modeExtents[0];
+  for (int32_t i = 0; i < numDiagonals; ++i)
+    if (diagonalOffsets[i] <= -extent || diagonalOffsets[i] >= extent ||
+        (i > 0 && diagonalOffsets[i] <= diagonalOffsets[i - 1]))
+      return fail(CUDM_ERROR_INVALID_HANDLE,
+                  "multi-diagonal offsets must ascend within the mode");
+  if (tensorValueCount != 2 * numDiagonals * extent)
+    return fail(CUDM_ERROR_INVALID_HANDLE,
+                "multi-diagonal data must hold one vector per diagonal");
+  return createElementaryOp(handle, elementaryOp, tensorData, tensorValueCount,
+                            modeExtents, numModes,
+                            CUDENSITYMAT_OPERATOR_SPARSITY_MULTIDIAGONAL,
+                            numDiagonals, diagonalOffsets);
 }
 
 CudmStatus cudm_elementary_op_destroy(CudmElementaryOp elementaryOp) {

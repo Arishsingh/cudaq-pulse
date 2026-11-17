@@ -291,7 +291,7 @@ class _Found:
 
 def report(lowered: "ScheduledKernel") -> list[ClassicalCall]:
     """``lowered.classical_report()``."""
-    module = lowered._module if lowered.scheduled and not lowered.carriers else lowered._concrete()
+    module = lowered._concrete() if lowered._retimed or lowered.carriers else lowered._module
     with lowered._lock:
         calls = module.classical_calls()
         if not calls:

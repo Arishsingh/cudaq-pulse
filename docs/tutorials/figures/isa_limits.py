@@ -17,9 +17,11 @@ file:
   controller's instruction memory, waveform memory and oscillators, against
   the description's limits, and whether the compiler refuses it.
   ``docs/_static/mem-gauge.js`` draws it.
-- ``isa_feedback.svg`` and ``isa_feedback-dark.svg``: the feedback branch
-  across two controllers, the animation's last frame for readers without
-  JavaScript.
+- ``isa_feedback.svg`` and ``isa_deadline.svg``, each with its ``-dark``
+  twin: the branch on another controller's readout, as the rcp schedule
+  places it on the page's two toy controllers, and the page's QEC round with
+  its decoder deadline. The feedback figure is what readers without
+  JavaScript see in place of the flip_other animation.
 """
 
 import dataclasses
@@ -27,8 +29,7 @@ import json
 import sys
 
 from _style import HERE, output_dir, page_namespace, save_themed
-from _timeline import Timeline, draw, layout
-from matplotlib.patches import FancyArrowPatch, Rectangle
+from _timeline import Timeline, draw
 
 sys.path.insert(0, str(HERE.parents[2] / "examples" / "isa_lowering"))
 
@@ -443,91 +444,65 @@ def memory(page: dict) -> dict:
     }
 
 
-# ── The static figure ─────────────────────────────────────────────────
+# ── The static figures ────────────────────────────────────────────────
 
 
-def feedback_figure(page: dict, data: dict) -> None:
-    """The feedback branch across two controllers, as the animation ends: the
-    readout, the bit's feedback and peer latency, and the flip it gates."""
-    timeline = Timeline.of(page["split"], names={0: "q0", 1: "q1", 2: "q2"})
-    flip = data["scenes"][0]
-    (bit,) = flip["bits"]
-    (peer,) = bit["peers"]
-    feedback = bit["ready_cycles"] - bit["ends_cycles"]
-    hop = peer["ready_cycles"] - bit["ready_cycles"]
-    to_ns = 1 / flip["clock_ghz"]
-    (gated,) = [pl for pl in timeline.pulses if pl.conditional]
+NAMES = {0: "q0", 1: "q1", 2: "q2"}
 
-    def figure(p):
-        fig = draw(timeline, p, syncs="none", pulse_labels=words)
-        ax = fig.axes[0]
-        order, ys, _ = layout(timeline)
-        readout_lane = next(ln.key for ln in order if ln.role == "readout")
-        drive_lane = next(ln.key for ln in order if ln.role == "drive")
-        base, height = ys[readout_lane]
-        y = base + height * 0.3
-        ends, ready, there = (
-            bit["ends_cycles"] * to_ns,
-            bit["ready_cycles"] * to_ns,
-            peer["ready_cycles"] * to_ns,
-        )
-        ax.add_patch(Rectangle((ends, y - 0.03), ready - ends, 0.06, color=p.classical, lw=0))
-        ax.text(
-            (ends + ready) / 2,
-            y + 0.06,
-            f"feedback {feedback}",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-            color=p.classical,
-        )
-        drive_base, drive_height = ys[drive_lane]
-        arrow = FancyArrowPatch(
-            (ready, y - 0.03),
-            (there, drive_base + drive_height * 0.62),
-            arrowstyle="-|>,head_length=3.6,head_width=2",
-            color=p.classical,
-            lw=1.1,
-            shrinkA=0,
-            shrinkB=0.5,
-        )
-        ax.add_patch(arrow)
-        ax.text(
-            there + 4,
-            (y + drive_base + drive_height) / 2,
-            f"peer {hop}",
-            ha="left",
-            va="center",
-            fontsize=8,
-            color=p.classical,
-        )
-        return fig
 
+def feedback(page) -> None:
+    timeline = Timeline.of(page["split"], names=NAMES)
     words = {}
     for pl in timeline.pulses:
         key = (pl.lane, round(pl.start_ns, 3))
-        if pl.kind == "readout":
-            words[key] = f"acquire {bit['name']}"
-        else:
-            words[key] = (f"flip if {bit['name']} = 1", "left")
-
-    desc = (
-        f"Timelines of the two toy controllers. Controller {bit['controller']} acquires "
-        f"qudit 0 from cycle 0 to {bit['ends_cycles']} into bit {bit['name']}. The bit "
-        f"takes {feedback} cycles of feedback latency and {hop} of peer latency, so "
-        f"controller {peer['controller']} branches on it at cycle {peer['ready_cycles']} "
-        f"and, only when it is 1, flips qudit 2 from {peer['ready_cycles']} to "
-        f"{round(gated.end_ns / to_ns)}. One cycle is {to_ns:g} ns."
+        words[key] = ("play if m0 is 1", "left") if pl.conditional else "acquire into m0"
+    forward = timeline.forwards[0]
+    readout_end = forward.source[1]
+    flip = forward.use[1]
+    alt = (
+        "Timeline of flip_other on two toy controllers, in nanoseconds of the 1 GHz clock. "
+        f"Controller 0 acquires q0 from 0 to {readout_end:g} ns into bit m0. The bit is ready "
+        f"on controller 0 {forward.feedback_ns:g} ns later, after its feedback latency, and "
+        f"on controller 1 another {forward.peer_ns:g} ns later, after the peer latency. "
+        f"Controller 1 plays the flip of q2 from {flip:g} ns, only when the bit is 1."
     )
-    save_themed(figure, "isa_feedback", title="A branch on another controller's readout", desc=desc)
+    save_themed(
+        lambda p: draw(timeline, p, pulse_labels=words, syncs="groups"),
+        "isa_feedback",
+        title="An outcome read on one controller and branched on by another",
+        desc=alt,
+    )
+
+
+def deadline(page) -> None:
+    timeline = Timeline.of(page["qec"], names=NAMES)
+    words = {}
+    for pl in timeline.pulses:
+        key = (pl.lane, round(pl.start_ns, 3))
+        words[key] = ("flip if needed", "right") if pl.conditional else "syndrome"
+    call = timeline.calls[0]
+    alt = (
+        "Timeline of one QEC round on the toy QPU: both syndromes are read at once on the "
+        f"feedline's two tones, and the request leaves for the decoder at {call.submit_ns:g} ns. "
+        f"The kernel waits for the answer with a {call.timeout_ns:g} ns timeout, plus the "
+        f"link's {call.link['feedback_ns']:g} ns back, so it is due at {call.due_ns:g} ns. "
+        "Two flips that play only on the shots that need them start there: the correction "
+        "and the fallback."
+    )
+    save_themed(
+        lambda p: draw(timeline, p, pulse_labels=words, breakdown=True),
+        "isa_deadline",
+        title="A QEC round with a decoder deadline, on the toy QPU",
+        desc=alt,
+    )
 
 
 def main() -> None:
     page = page_namespace(PAGE)
-    data = flow(page)
-    write_json("toy_flow.json", data)
+    write_json("toy_flow.json", flow(page))
     write_json("controller_memory.json", memory(page))
-    feedback_figure(page, data)
+    feedback(page)
+    deadline(page)
 
 
 if __name__ == "__main__":

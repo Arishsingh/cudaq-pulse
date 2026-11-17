@@ -7,32 +7,40 @@ Simulating on a GPU
 
 Every simulation in the earlier tutorials ran on the CPU, with the NumPy
 reference simulator. The same programs also run on an NVIDIA GPU, through
-NVIDIA cuDensityMat, with one argument changed. This tutorial installs GPU
-support, checks it, runs a pair of coupled transmons on both backends, and
-looks at the form the program takes on its way to the GPU.
+NVIDIA cuDensityMat, with one argument changed.
+
+What you'll learn:
+
+- how to install and check GPU support;
+- how to run a coupled pair on the CPU and then on the GPU;
+- what form the program takes on its way to the GPU.
 
 .. note::
 
-   GPU simulation is a research preview: see :doc:`../user_guide/gpu_execution`
-   for what it supports and what it doesn't yet. The GPU code on this page
-   needs Linux and an NVIDIA GPU, and the repository's tests run it only
-   there. Its CPU parts run anywhere.
+   GPU simulation is a research preview: see
+   :doc:`../user_guide/gpu_execution` for what it supports. The GPU code on
+   this page needs Linux and an NVIDIA GPU, and the tests run it only there.
+   Its CPU parts run anywhere.
 
 Install and check
 -----------------
 
 GPU support comes as an extra of the same package, for CUDA 12 or CUDA 13.
-The CUDA libraries come from PyPI too, so the NVIDIA driver is the only thing
-the machine needs:
+The CUDA libraries come from PyPI too, so the NVIDIA driver is the only
+thing the machine needs.
+
+Install the extra for your CUDA version, then run the doctor:
 
 .. code-block:: bash
 
-   pip install "cudaq-pulse[cu13]"   # or "cudaq-pulse[cu12]"
+   pip install "cudaq-pulse[cu13]"
    python -m cudaq_pulse.doctor
 
-The doctor reports the GPU runtime it loaded, the driver version and the
-number of GPUs, and exits with an error when GPU execution doesn't work. The
-same check from Python raises an error that says what is missing:
+Use ``cudaq-pulse[cu12]`` for CUDA 12. The doctor reports the GPU runtime
+it loaded, the driver version and the number of GPUs. It exits with an
+error when GPU execution doesn't work.
+
+The same check from Python raises an error that says what is missing:
 
 .. code-block:: python
    :class: gpu
@@ -45,8 +53,7 @@ A coupled pair on the CPU
 -------------------------
 
 The ancilla X1 and the data qubit D2 of ``transmon_surface17`` are coupled,
-about 2.1 GHz apart. Give X1 a π/2 pulse and D2 a π pulse, then let both idle
-for the slot their CZ gate would take:
+about 2.1 GHz apart:
 
 .. code-block:: python
 
@@ -54,29 +61,64 @@ for the slot their CZ gate would take:
 
    import cudaq_pulse as pulse
 
-   qs = pulse.quantum_system("transmon_surface17")
-   x1, d2 = qs.qudit("X1"), qs.qudit("D2")
-   cz_slot = qs.coupling(x1, d2).get_calibration(pulse.gates.CZ).duration_ns * pulse.ns
+   system = pulse.quantum_system("transmon_surface17")
+   x1 = system.qudit("X1")
+   d2 = system.qudit("D2")
 
+Their coupling carries its CZ calibration, whose duration sets the slot a
+CZ gate takes:
+
+.. code-block:: python
+
+   coupling = system.coupling(x1, d2)
+   cz = coupling.get_calibration(pulse.gates.CZ)
+   cz_slot = cz.duration_ns * pulse.ns
+
+The kernel gives X1 a π/2 pulse and D2 a π pulse, then idles both for the
+CZ's slot. Flux pulses aren't simulated yet, so the slot is a wait:
+
+.. code-block:: python
 
    @pulse.kernel
    def evolve_pair(a, b):
-       da, db = get_drive_line(a), get_drive_line(b)
-       drive(da, da.get_calibration(pulse.gates.X90))
-       drive(db, db.get_calibration(pulse.gates.X))
-       sync(da, db)
-       wait(da, cz_slot)   # the CZ's 98 ns slot; flux pulses aren't simulated yet
-       wait(db, cz_slot)
+       drive_a = get_drive_line(a)
+       drive_b = get_drive_line(b)
+       half_flip = drive_a.get_calibration(pulse.gates.X90)
+       flip = drive_b.get_calibration(pulse.gates.X)
 
+       drive(drive_a, half_flip)
+       drive(drive_b, flip)
+       sync(drive_a, drive_b)
+       wait(drive_a, cz_slot)
+       wait(drive_b, cz_slot)
+
+Simulate it on the CPU, with a step fine enough for the pair's detuning:
+
+.. code-block:: python
 
    cpu = pulse.simulate(evolve_pair, x1, d2, dt_ns=0.02)
-   print(cpu.dims)   # (3, 3)
-   print([round(cpu.level_populations(q)[1], 4) for q in (x1, d2)])   # [0.4945, 0.989]
+   print("dimensions:", cpu.dims)
 
-The simulation holds only X1 and D2, each with three levels, so the state is
-a 9 × 9 density matrix. X1 ends half excited and D2 nearly fully, less what
-decays in the program's 138 ns. The step, ``dt_ns=0.02``, resolves the coupling, which
-turns at the pair's 2.1 GHz detuning in their rotating frames.
+   for name, qudit in (("X1", x1), ("D2", d2)):
+       excited = cpu.level_populations(qudit)[1]
+       print(f"{name} excited: {excited:.4f}")
+
+.. code-block:: text
+   :class: output
+
+   dimensions: (3, 3)
+   X1 excited: 0.4945
+   D2 excited: 0.9890
+
+What to notice:
+
+- the simulation holds only X1 and D2, each with three levels, so the
+  state is a 9 × 9 density matrix;
+- X1 ends half excited and D2 nearly fully, less what decays in the
+  program's 138 ns.
+
+The step, ``dt_ns=0.02``, resolves the coupling, which turns at the pair's
+2.1 GHz detuning in their rotating frames.
 
 The same call on the GPU
 ------------------------
@@ -86,47 +128,79 @@ The same call on the GPU
 .. code-block:: python
    :class: gpu
 
-   gpu = pulse.simulate(evolve_pair, x1, d2, backend="gpu", dt_ns=0.02)
-   print([round(gpu.level_populations(q)[1], 4) for q in (x1, d2)])
-   print(np.abs(gpu.density_matrix - cpu.density_matrix).max())
+   gpu = pulse.simulate(
+       evolve_pair,
+       x1,
+       d2,
+       backend="gpu",
+       dt_ns=0.02,
+   )
+   for name, qudit in (("X1", x1), ("D2", d2)):
+       excited = gpu.level_populations(qudit)[1]
+       print(f"{name} excited: {excited:.4f}")
 
 The result has the same layout as the CPU's, so the two density matrices
-can be compared entry by entry, as the last line does. ``integrator`` picks
-the GPU's time-stepping scheme: fixed-step Runge-Kutta of order 1, 2 or 4
-(``"rk4"`` by default), a Magnus expansion, or Crank-Nicolson for stiff
-problems. Long stretches where nothing plays, such as the CZ slot here, are
+can be compared entry by entry:
+
+.. code-block:: python
+   :class: gpu
+
+   difference = np.abs(gpu.density_matrix - cpu.density_matrix)
+   print("largest difference:", difference.max())
+
+Choosing the integrator
+-----------------------
+
+``integrator`` picks the GPU's time-stepping scheme:
+
+- fixed-step Runge-Kutta of order 1, 2 or 4 (``"rk4"`` by default);
+- a Magnus expansion;
+- Crank-Nicolson, for stiff problems.
+
+Long stretches where nothing plays, such as the CZ slot here, are
 propagated exactly on the host instead of stepped.
 
 What runs on the GPU
 --------------------
 
 The compiler lowers the pulse program through an operator dialect, QOp,
-which writes the Hamiltonian and the Lindblad terms of the decay, to calls
-into the cuDensityMat runtime. You can see the last stage on any machine:
+which writes the Hamiltonian and the Lindblad terms of the decay. It ends
+as calls into the cuDensityMat runtime.
+
+You can see the last stage on any machine:
 
 .. code-block:: python
 
-   llvm = evolve_pair.lower(x1, d2).mlir("llvm")
-   print(llvm.count("llvm.call"))   # 182
+   scheduled = evolve_pair.lower(x1, d2)
+   llvm = scheduled.mlir("llvm")
+   print("calls into cuDensityMat:", llvm.count("llvm.call"))
 
-The pulse program you simulate on the GPU is the same one you would export
-to a control system; only the last steps of compilation differ.
+.. code-block:: text
+   :class: output
 
-.. figure:: figures/architecture.svg
-   :alt: CUDA-Q Pulse architecture: Python kernels go through Capture, Pulse MLIR, and Compile to three destinations: Simulate, Run on hardware, and Real-time classical.
-   :width: 95%
+   calls into cuDensityMat: 88
 
-   One compiled program, three destinations. GPU simulation is one of the
-   simulation paths.
+.. themed-figure:: figures/lowering.svg
+   :alt: The page's evolve_pair kernel at each level of its lowering for GPU simulation: Pulse MLIR, 21 operations; QOp, 82 operations; cuDensityMat, 122 operations; LLVM IR, 1641 operations, of them 88 calls into the cuDensityMat runtime. From the Pulse MLIR the same program also exports for a controller as 5 events.
+   :width: 100%
+
+   ``evolve_pair`` at each level of ``mlir()``, with the operations each
+   holds, counted from its text.
+
+What to notice: the program you simulate on the GPU is the same one you
+would export to a control system. Only the last steps of compilation
+differ.
 
 Where to go next
 ----------------
 
-- :example:`transmon/transmon_surface17_evolve_gpu.py` runs this pair on the
-  GPU and prints its final state (it needs an NVIDIA GPU).
-- :example:`transmon/transmon_surface17_full_pipeline.py` prints each stage of
-  the lowering: the scheduled Pulse MLIR, the QOp form and the LLVM IR.
+- :example:`transmon/transmon_surface17_evolve_gpu.py` runs this pair on
+  the GPU and prints its final state.
+- :example:`transmon/transmon_surface17_full_pipeline.py` prints each stage
+  of the lowering: the Pulse MLIR, the QOp form and the LLVM IR.
 
-:doc:`../user_guide/gpu_execution` lists the driver requirements, the GPU
-errors and what each means, and the features GPU simulation doesn't support
-yet; :doc:`../architecture/dialects` describes QOp and cuDensityMat.
+For the details:
+
+- :doc:`../user_guide/gpu_execution` lists the driver requirements, the GPU
+  errors, and what GPU simulation doesn't support yet;
+- :doc:`../architecture/dialects` describes QOp and cuDensityMat.

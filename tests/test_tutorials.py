@@ -12,9 +12,9 @@ prints as comment lines after its last line of code.
 
 A ``literalinclude`` of Python, cut by ``:start-after:`` and
 ``:end-before:``, runs like a code block, so code a page shows from an
-example file runs as the page shows it. One cut by ``:pyobject:``,
-``:start-at:``, ``:end-at:`` or ``:lines:`` shows a piece of an example
-module the page imports, and is not run. A block with ``:class: continues``
+example file runs as the page shows it. One cut any other way (such as by
+``:pyobject:``) must have ``:class: fragment``, and the page imports the
+example to run it. A block with ``:class: continues``
 runs joined to the next one, as a class shown a method at a time.
 
 Blocks with ``:class: fragment`` are not run. Blocks with ``:class: gpu``
@@ -40,7 +40,6 @@ _PAGES = sorted(p for p in _TUTORIALS.glob("*.rst") if p.name != "index.rst")
 _PRINT_WITH_VALUE = re.compile(r"^\s*print\(.*\)\s*#\s*(?P<value>.+)$")
 _EXAMPLES = _TUTORIALS.parents[1] / "examples"
 _EXAMPLE_LINK = re.compile(r":example:`(?P<path>[^`<>]+\.py)`")
-_PIECE = {"pyobject", "start-at", "end-at", "lines"}
 
 
 def included(page: Path, target: str, options: dict[str, str]) -> str:
@@ -81,10 +80,15 @@ def code_blocks(page: Path) -> list[tuple[frozenset[str], str, list[str] | None]
                     blocks[-1][2] = [line.rstrip() for line in shown]
                 continue
             if include:
-                # Cut any other way, it shows a piece of an example module
-                # the page imports; the module runs it, not the page.
-                if options.get("language") != "python" or _PIECE & options.keys():
+                if options.get("language") != "python":
                     continue
+                cut_by = {"pyobject", "lines", "start-at", "end-at"} & options.keys()
+                if cut_by and "fragment" not in classes:
+                    raise ValueError(
+                        f"{page.name}: a literalinclude cut by {sorted(cut_by)} can't be run "
+                        "as the page shows it; cut it with start-after and end-before, "
+                        "or give it the class fragment"
+                    )
                 body = [included(page, include[1], options)]
             blocks.append([classes, "\n".join(body), None])
         else:

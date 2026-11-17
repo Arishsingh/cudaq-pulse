@@ -39,7 +39,14 @@ This page uses the toy controllers and the lowering pass of
    qpu = toy_qpu()
    first, second = toy_control_system().controllers
    q0, q1, q2 = qpu.qudits
-   print(first.model, first.feedback_latency_cycles)   # toy.sequencer 80
+   print("model:           ", first.model)
+   print("feedback latency:", first.feedback_latency_cycles, "cycles")
+
+.. code-block:: text
+   :class: output
+
+   model:            toy.sequencer
+   feedback latency: 80 cycles
 
 The QPU has three qudits on two controllers:
 
@@ -102,12 +109,16 @@ have arrived. The compile refuses, and names the cycle and the fix:
        compiled.lower(q0, q2)
    except ControllerLimitError as error:
        show(error)
-   # controllers[1] (toy.sequencer): the drive on line 1 at 200
-   # branches on the readout of controllers[0] (toy.sequencer) ending
-   # at 200, whose outcome reaches it 120 cycles later, at 320 (120
-   # of feedback and peer latency, and 0 of the two controllers'
-   # start uncertainty); start it at 320 or later: schedule with rcp,
-   # which waits for it, or wait 120 cycles before it on its line
+
+.. code-block:: text
+   :class: output
+
+   controllers[1] (toy.sequencer): the drive on line 1 at 200
+   branches on the readout of controllers[0] (toy.sequencer) ending
+   at 200, whose outcome reaches it 120 cycles later, at 320 (120
+   of feedback and peer latency, and 0 of the two controllers'
+   start uncertainty); start it at 320 or later: schedule with rcp,
+   which waits for it, or wait 120 cycles before it on its line
 
 The rcp schedule places it
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -127,10 +138,14 @@ from its readout. Each controller's part then lowers on its own:
    part = split.export_to_controller(controller=0)
    for line in str(lower(part)).splitlines():
        print(line)
-   # .chan ch0.0 readout q0
-   # .wave w0 200
-   # set_freq ch0.0 5000000000
-   # acquire ch0.0 w0 0.05 m0
+
+.. code-block:: text
+   :class: output
+
+   .chan ch0.0 readout q0
+   .wave w0 200
+   set_freq ch0.0 5000000000
+   acquire ch0.0 w0 0.05 m0
 
 The first controller only acquires. The second waits for the bit, then
 branches on it:
@@ -140,21 +155,26 @@ branches on it:
    part = split.export_to_controller(controller=1)
    for line in str(lower(part)).splitlines():
        print(line)
-   # .chan ch0 drive q2
-   # .wave w0 40
-   # wait 80
-   # branch !m0 end0
-   # set_freq ch0 5600000000
-   # play ch0 w0 0.5
-   # end0:
+
+.. code-block:: text
+   :class: output
+
+   .chan ch0 drive q2
+   .wave w0 40
+   wait 80
+   branch !m0 end0
+   set_freq ch0 5600000000
+   play ch0 w0 0.5
+   end0:
 
 .. toy-flow:: figures/toy_flow.json
    :scene: flip_other
    :fallback: figures/isa_feedback.svg
-   :alt: Timelines of the two toy controllers. Controller 0 acquires qudit 0 from cycle 0 to 200 into bit m0. The bit takes 80 cycles of feedback latency and 40 of peer latency, so controller 1 branches on it at cycle 320 and, only when it is 1, flips qudit 2 from 320 to 360. One cycle is 1 ns.
+   :alt: Timeline of flip_other on two toy controllers, in nanoseconds of the 1 GHz clock. Controller 0 acquires q0 from 0 to 200 ns into bit m0. The bit is ready on controller 0 80 ns later, after its feedback latency, and on controller 1 another 40 ns later, after the peer latency. Controller 1 plays the flip of q2 from 320 ns, only when the bit is 1.
 
-   The two listings in time. Bit m0 is ready for the second controller
-   at cycle 320, where its ``wait 80`` ends.
+   The two listings in time, on the 1 GHz clock, so a nanosecond is a
+   cycle. Bit m0 is ready for the second controller at cycle 320, where
+   its ``wait 80`` ends.
 
 What to notice:
 
@@ -194,10 +214,14 @@ The refusal names the readout that needs it:
        compiled.lower(q0, q2)
    except ControllerLimitError as error:
        show(error)
-   # controllers[0] (toy.sequencer): the readout on line 0 (qudit 0)
-   # at cycle 0 needs 'forward_outcome', which the controller does
-   # not support; run that part of the program on a controller that
-   # supports it, or write it without 'forward_outcome'
+
+.. code-block:: text
+   :class: output
+
+   controllers[0] (toy.sequencer): the readout on line 0 (qudit 0)
+   at cycle 0 needs 'forward_outcome', which the controller does
+   not support; run that part of the program on a controller that
+   supports it, or write it without 'forward_outcome'
 
 Takeaway: describe the latencies once, and every branch is placed where
 its bit has arrived.
@@ -247,13 +271,17 @@ to within one of its cycles. The sync is refused, with both ways out:
        compiled.lower(q0, q2)
    except ControllerLimitError as error:
        show(error)
-   # controllers[0] (toy.sequencer): the sync at 40 lines up the
-   # drive on line 0 with the pulses of controllers[1]
-   # (toy.sequencer), but they land within 1 of its cycles of where
-   # they are meant to (1 without a shared reference_clock_ghz), more
-   # than its alignment_tolerance_cycles of 0; share a
-   # reference_clock_ghz between them, or raise its
-   # alignment_tolerance_cycles to 1
+
+.. code-block:: text
+   :class: output
+
+   controllers[0] (toy.sequencer): the sync at 40 lines up the
+   drive on line 0 with the pulses of controllers[1]
+   (toy.sequencer), but they land within 1 of its cycles of where
+   they are meant to (1 without a shared reference_clock_ghz), more
+   than its alignment_tolerance_cycles of 0; share a
+   reference_clock_ghz between them, or raise its
+   alignment_tolerance_cycles to 1
 
 With the QPU's clock
 ~~~~~~~~~~~~~~~~~~~~
@@ -271,13 +299,17 @@ index, at one cycle:
        for event in part["events"]:
            print(f"  {event['index']}  {event['kind']:<5} "
                  f"at {event['start_cycles']}")
-   # controller 0:
-   #   0  drive at 0
-   #   1  sync  at 40
-   #   2  drive at 40
-   # controller 1:
-   #   1  sync  at 40
-   #   3  drive at 40
+
+.. code-block:: text
+   :class: output
+
+   controller 0:
+     0  drive at 0
+     1  sync  at 40
+     2  drive at 40
+   controller 1:
+     1  sync  at 40
+     3  drive at 40
 
 Takeaway: both sequencers just wait until cycle 40. The ISA needs no
 handshake instruction.
@@ -296,8 +328,8 @@ Here is a train of 1,000 pulses:
 .. code-block:: python
 
    @pulse.kernel
-   def train(q):
-       drive_line = get_drive_line(q)
+   def train(qudit):
+       drive_line = get_drive_line(qudit)
        x90 = gaussian(duration=40, amplitude=0.25, sigma=10.0)
        for _ in range(1000):
            drive(drive_line, x90)
@@ -315,10 +347,14 @@ the train is refused, with the reason:
        pulse.compile(train, quantum_system=qpu).lower(q0)
    except ControllerLimitError as error:
        show(error)
-   # controllers[0] (toy.sequencer): 1000 drives and readouts; the
-   # controller plays at most 256. It does not support 'loop', so
-   # rolled loops are unrolled for it: the loop of 1000 iterations
-   # from cycle 0 plays 999 more
+
+.. code-block:: text
+   :class: output
+
+   controllers[0] (toy.sequencer): 1000 drives and readouts; the
+   controller plays at most 256. It does not support 'loop', so
+   rolled loops are unrolled for it: the loop of 1000 iterations
+   from cycle 0 plays 999 more
 
 On a controller with loops
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -338,7 +374,12 @@ Give the controller the ``loop`` capability, and the train compiles:
    rolled = compiled.lower(q0)
 
    flat = rolled.export_to_controller()
-   print(len(flat["events"]), "events")   # 2000 events
+   print(len(flat["events"]), "events")
+
+.. code-block:: text
+   :class: output
+
+   2000 events
 
 The default format, ``/1``, lists all 2,000 executions. The structured
 format keeps the train as one loop:
@@ -348,13 +389,19 @@ format keeps the train as one loop:
    structured = rolled.export_to_controller(version=2)
    loop = structured["events"][0]
 
-   print(loop["kind"], loop["trips"], "trips")   # loop 1000 trips
-   print(loop["period_cycles"], "cycles each")   # 48 cycles each
+   print(loop["kind"], loop["trips"], "trips")
+   print(loop["period_cycles"], "cycles each")
 
    for event in loop["body"]:
        print(" ", event["kind"])
-   #   play
-   #   wait
+
+.. code-block:: text
+   :class: output
+
+   loop 1000 trips
+   48 cycles each
+     play
+     wait
 
 Against the controller's instruction memory:
 
@@ -396,6 +443,7 @@ A QEC round reads two syndromes and asks the decoder. It waits at most
 60 ns for the answer:
 
 .. code-block:: python
+   :class: continues
 
    @pulse.kernel
    def qec_round(data, ancilla):
@@ -406,6 +454,10 @@ A QEC round reads two syndromes and asks the decoder. It waits at most
        syndrome_1 = readout(get_readout_line(ancilla), probe)
        request = decode.submit([syndrome_0, syndrome_1])
        in_time, fix = request.result(timeout=60 * pulse.ns)
+
+Then it applies the correction, or the fallback when the answer is late:
+
+.. code-block:: python
 
        if fix[0]:
            drive(get_drive_line(data), flip)
@@ -441,22 +493,26 @@ Both syndromes are read at once, on the two tones of the feedline:
 
    for line in listing.code:
        print(line)
-   # set_freq ch0.0 5000000000
-   # acquire ch0.0 w0 0.05 m0
-   # set_freq ch0.1 5300000000
-   # acquire ch0.1 w0 0.05 m1
-   # wait 70
-   # submit L0 m0 m1
-   # wait 18
-   # poll L0 a3
-   # branch !a3 end0
-   # set_freq ch1 5000000000
-   # play ch1 w1 0.5
-   # end0:
-   # branch a3.ok end1
-   # set_freq ch2 5300000000
-   # play ch2 w1 0.5
-   # end1:
+
+.. code-block:: text
+   :class: output
+
+   set_freq ch0.0 5000000000
+   acquire ch0.0 w0 0.05 m0
+   set_freq ch0.1 5300000000
+   acquire ch0.1 w0 0.05 m1
+   wait 70
+   submit L0 m0 m1
+   wait 18
+   poll L0 a3
+   branch !a3 end0
+   set_freq ch1 5000000000
+   play ch1 w1 0.5
+   end0:
+   branch a3.ok end1
+   set_freq ch2 5300000000
+   play ch2 w1 0.5
+   end1:
 
 What to notice:
 
@@ -465,6 +521,17 @@ What to notice:
   deadline, and the link's 8 ns back.
 - The branch on ``a3`` is the correction. The branch on ``a3.ok`` is the
   fallback.
+
+.. themed-figure:: figures/isa_deadline.svg
+   :alt: Timeline of one QEC round on the toy QPU: both syndromes are read at once on the feedline's two tones, and the request leaves for the decoder at 280 ns. The kernel waits for the answer with a 60 ns timeout, plus the link's 8 ns back, so it is due at 352 ns. Two flips that play only on the shots that need them start there: the correction and the fallback.
+   :width: 100%
+
+   The round in time, from the compiled program. The request leaves when
+   both bits are on the bus, and the answer is due after the 60 ns
+   deadline and the link's way back.
+
+What to notice: the 80 ns between the readouts and the request is the
+feedback latency, before the bits are on the bus.
 
 Each branch reads its own result of the answer. In the export, each
 condition says which one:
@@ -477,8 +544,12 @@ condition says which one:
            answer = condition["answers"][0]
            result = condition["result"]
            print(f"line {line}: answer {answer}, result {result}")
-   # line 2: answer 3, result 1
-   # line 3: answer 3, result 0
+
+.. code-block:: text
+   :class: output
+
+   line 2: answer 3, result 1
+   line 3: answer 3, result 0
 
 Result 0 is the in-time flag. Result 1 is the decoder's first value.
 
@@ -585,21 +656,25 @@ An amplitude sweep compiles once, with a ``float`` argument:
 .. code-block:: python
 
    @pulse.kernel
-   def rabi(q, amplitude: float):
+   def rabi(qudit, amplitude: float):
        shape = gaussian(
            duration=40,
            amplitude=amplitude,
            sigma=10.0,
        )
-       drive(get_drive_line(q), shape)
+       drive(get_drive_line(qudit), shape)
 
 
    sweep = pulse.compile(rabi, quantum_system=qpu)
    for amplitude in (0.2, 0.4):
        program = sweep.lower(q0, amplitude).export_to_controller()
        print(lower(program).code[-1])
-   # play ch0 w0 0.2
-   # play ch0 w0 0.4
+
+.. code-block:: text
+   :class: output
+
+   play ch0 w0 0.2
+   play ch0 w0 0.4
 
 Every value plays the same entry, ``w0``, at its own gain.
 
@@ -612,17 +687,20 @@ oscillator frequencies:
 .. code-block:: python
 
    @pulse.kernel
-   def widths(q):
-       drive_line = get_drive_line(q)
+   def widths(qudit):
+       drive_line = get_drive_line(qudit)
        for k in range(30):
            sigma = 4.0 + 0.5 * k
            shape = gaussian(duration=40, amplitude=0.25, sigma=sigma)
            drive(drive_line, shape)
 
+And three frequencies on one line:
+
+.. code-block:: python
 
    @pulse.kernel
-   def hops(q):
-       drive_line = get_drive_line(q)
+   def hops(qudit):
+       drive_line = get_drive_line(qudit)
        x90 = gaussian(duration=40, amplitude=0.25, sigma=10.0)
        for _ in range(3):
            drive(drive_line, x90)
@@ -637,10 +715,14 @@ Both are checked against the description when they compile:
            pulse.compile(kernel, quantum_system=qpu).lower(q0)
        except ControllerLimitError as error:
            show(error)
-   # controllers[0] (toy.sequencer): line 0: its waveforms take 1200
-   # samples; the controller's waveform memory holds 1024
-   # controllers[0] (toy.sequencer): line 0: 3 tone frequencies; the
-   # controller holds 2 per line
+
+.. code-block:: text
+   :class: output
+
+   controllers[0] (toy.sequencer): line 0: its waveforms take 1200
+   samples; the controller's waveform memory holds 1024
+   controllers[0] (toy.sequencer): line 0: 3 tone frequencies; the
+   controller holds 2 per line
 
 What to notice:
 

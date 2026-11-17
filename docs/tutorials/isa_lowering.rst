@@ -121,13 +121,25 @@ maker's. Both toy controllers are the same model, wired differently:
        readout_lines=[feedline],
        peer_latency_cycles=40,
    )
+
+The second controller is the same model, on qudit 2:
+
+.. code-block:: python
+
    second = pulse.controller(
        "toy_sequencer.toml",
        drive_lines=[2],
        readout_lines=[2],
        peer_latency_cycles=40,
    )
-   print(first.model, first.max_pulses)   # toy.sequencer 256
+   print("model:     ", first.model)
+   print("max pulses:", first.max_pulses)
+
+.. code-block:: text
+   :class: output
+
+   model:      toy.sequencer
+   max pulses: 256
 
 What to notice:
 
@@ -183,7 +195,14 @@ a file:
 
    saved = qpu.as_dict()
    controllers = saved["control_system"]["controllers"]
-   print(len(controllers), controllers[1]["drive_lines"])   # 2 [2]
+   print("controllers:", len(controllers))
+   print("second drives:", controllers[1]["drive_lines"])
+
+.. code-block:: text
+   :class: output
+
+   controllers: 2
+   second drives: [2]
 
 Every compile now checks a program against these two controllers.
 
@@ -195,17 +214,24 @@ This section shows what a backend receives: the scheduled program.
 A Ramsey sequence with a reset
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The kernel is a detuned Ramsey sequence, then an active reset:
+The kernel is a detuned Ramsey sequence, then an active reset. It starts
+with its lines and pulses:
 
 .. code-block:: python
+   :class: continues
 
    @pulse.kernel
-   def ramsey_then_reset(q):
-       drive_line = get_drive_line(q)
-       readout_line = get_readout_line(q)
+   def ramsey_then_reset(qudit):
+       drive_line = get_drive_line(qudit)
+       readout_line = get_readout_line(qudit)
        x90 = gaussian(duration=40, amplitude=0.25, sigma=10.0)
        x180 = gaussian(duration=40, amplitude=0.5, sigma=10.0)
        probe = square(duration=200, amplitude=0.05)
+
+First the Ramsey part, detuned by 2 MHz while it waits:
+
+.. code-block:: python
+   :class: continues
 
        drive(drive_line, x90)
        shift_frequency(drive_line.tone, 2.0e6)
@@ -214,14 +240,17 @@ The kernel is a detuned Ramsey sequence, then an active reset:
        drive(drive_line, x90)
        shift_frequency(drive_line.tone, -2.0e6)
 
+Then the readout, and a π pulse when it reads 1:
+
+.. code-block:: python
+
        sync(drive_line, readout_line)
        outcome = readout(readout_line, probe)
        sync(drive_line, readout_line)
        if outcome:
            drive(drive_line, x180)
 
-The sequence detunes the qudit by 2 MHz while it waits. The reset flips
-it back when it reads 1.
+What to notice: the reset flips the qudit back when it reads 1.
 
 The scheduled IR
 ~~~~~~~~~~~~~~~~
@@ -251,13 +280,17 @@ The scheduled pulse dialect gives each operation a place in time:
 
    for op, duration, start in timing.findall(scheduled.mlir()):
        print(f"{op:<23} start {start:>3}  length {duration:>3}")
-   # pulse.drive             start   0  length  40
-   # pulse.shift_frequency   start  40  length   0
-   # pulse.wait              start  40  length 100
-   # pulse.drive             start 140  length  40
-   # pulse.shift_frequency   start 180  length   0
-   # pulse.readout           start 180  length 200
-   # pulse.drive             start 460  length  40
+
+.. code-block:: text
+   :class: output
+
+   pulse.drive             start   0  length  40
+   pulse.shift_frequency   start  40  length   0
+   pulse.wait              start  40  length 100
+   pulse.drive             start 140  length  40
+   pulse.shift_frequency   start 180  length   0
+   pulse.readout           start 180  length 200
+   pulse.drive             start 460  length  40
 
 What to notice:
 
@@ -282,10 +315,14 @@ The export is the same program as versioned data. It is the one to read:
        phase = event["phase_rad"]
        print(f"{event['kind']:<7} at {start:>3}: "
              f"{gigahertz:.3f} GHz, {phase:.6f} rad")
-   # drive   at   0: 5.000 GHz, 0.000000 rad
-   # drive   at 140: 5.002 GHz, 2.827433 rad
-   # readout at 180: 5.000 GHz, 0.000000 rad
-   # drive   at 460: 5.000 GHz, 3.330088 rad
+
+.. code-block:: text
+   :class: output
+
+   drive   at   0: 5.000 GHz, 0.000000 rad
+   drive   at 140: 5.002 GHz, 2.827433 rad
+   readout at 180: 5.000 GHz, 0.000000 rad
+   drive   at 460: 5.000 GHz, 3.330088 rad
 
 Each pulse carries its absolute frame. So the sequencer never has to
 add up phase itself.
@@ -296,7 +333,14 @@ The reset's π pulse is conditional. Its event says on what:
 
    reset_pulse = program["events"][6]
    condition = reset_pulse["conditions"][0]
-   print(condition["test"], condition["readouts"])   # is_set [4]
+   print("test:", condition["test"])
+   print("on readouts:", condition["readouts"])
+
+.. code-block:: text
+   :class: output
+
+   test: is_set
+   on readouts: [4]
 
 It plays when the outcome of event 4, the readout, is set.
 
@@ -313,6 +357,7 @@ A ``ToyProgram`` starts from the program's clock grid, with empty state:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: ToyProgram.__init__
    :dedent: 4
 
@@ -327,6 +372,7 @@ qudits become tones of one channel:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: ToyProgram.wire
    :dedent: 4
 
@@ -334,6 +380,7 @@ An event on a shared line gives its tone in ``tone_slot``:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: ToyProgram.channel
    :dedent: 4
 
@@ -344,6 +391,7 @@ Time moves only by ``wait``, in timesteps of 4 cycles:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: ToyProgram.wait_until
    :dedent: 4
 
@@ -355,6 +403,7 @@ other way:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: refuse
 
 Frequency and phase
@@ -365,6 +414,7 @@ So the pass shifts by the difference from the frame it had:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: set_frame
 
 Waveforms
@@ -375,6 +425,7 @@ Waveforms that differ only in gain share a table entry, which
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: table_entry
 
 Play and acquire
@@ -385,6 +436,7 @@ bit named for its event index:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: play
 
 The event index is the same in every controller's part of a program. So
@@ -397,6 +449,7 @@ A call to the decoder becomes a ``submit`` of the bits it reads:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: submit
 
 Its answer becomes an ``answer``, or a ``poll`` when the call has a
@@ -404,12 +457,14 @@ deadline:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: answer
 
 Those are all the events the sequencer issues by itself:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :start-at: EMIT: dict
    :end-at: }
 
@@ -420,12 +475,14 @@ A branch spans events. First, the pass names the bit it tests:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: tested_bit
 
 Each arm becomes code that ends at the same cycle:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: arm
 
 Each arm also ends with the phases it started with. So what follows the
@@ -433,12 +490,14 @@ branch doesn't depend on the outcome:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: restore_phases
 
 The two arms then go behind one ``branch``:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: branch_code
 
 Putting it together
@@ -449,18 +508,21 @@ or a branch with the events of both its arms:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: units
 
 It refuses what the toy can't express, such as a branch inside a branch:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: check
 
 Last, ``lower`` issues the units in time order:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: lower
 
 The program after lowering
@@ -482,16 +544,20 @@ The head names the channels and the waveform table:
 
    for line in listing[:10]:
        print(line)
-   # .chan ch0 drive q0
-   # .chan ch1.0 readout q0
-   # .wave w0 40
-   # .wave w1 200
-   # set_freq ch0 5000000000
-   # play ch0 w0 0.25
-   # wait 35
-   # set_freq ch0 5002000000
-   # shift_phase ch0 2.827433
-   # play ch0 w0 0.25
+
+.. code-block:: text
+   :class: output
+
+   .chan ch0 drive q0
+   .chan ch1.0 readout q0
+   .wave w0 40
+   .wave w1 200
+   set_freq ch0 5000000000
+   play ch0 w0 0.25
+   wait 35
+   set_freq ch0 5002000000
+   shift_phase ch0 2.827433
+   play ch0 w0 0.25
 
 What to notice:
 
@@ -507,16 +573,20 @@ The rest of the listing reads the qudit out and resets it:
 
    for line in listing[10:]:
        print(line)
-   # wait 10
-   # set_freq ch1.0 5000000000
-   # acquire ch1.0 w1 0.05 m4
-   # wait 70
-   # branch !m4 end0
-   # set_freq ch0 5000000000
-   # shift_phase ch0 0.502655
-   # play ch0 w0 0.5
-   # shift_phase ch0 -0.502655
-   # end0:
+
+.. code-block:: text
+   :class: output
+
+   wait 10
+   set_freq ch1.0 5000000000
+   acquire ch1.0 w1 0.05 m4
+   wait 70
+   branch !m4 end0
+   set_freq ch0 5000000000
+   shift_phase ch0 0.502655
+   play ch0 w0 0.5
+   shift_phase ch0 -0.502655
+   end0:
 
 What to notice:
 
@@ -540,6 +610,7 @@ listing back into what it plays:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: events
 
 The backend
@@ -549,6 +620,7 @@ The backend wraps the pass and the read-back:
 
 .. literalinclude:: ../../examples/isa_lowering/toy_isa.py
    :language: python
+   :class: fragment
    :pyobject: ToyBackend
    :end-before: def run(
 
@@ -571,7 +643,12 @@ out feedback latency. So validate against a controller without it:
    )
    report = backends.validate(ToyBackend(), controller=no_latency)
    lines = str(report).splitlines()
-   print(lines[-1])   # backend 'toy': 15 passed, 2 skipped
+   print(lines[-1])
+
+.. code-block:: text
+   :class: output
+
+   backend 'toy': 15 passed, 2 skipped
 
 The test programs cover:
 
@@ -588,8 +665,12 @@ Two are skipped. Print them:
        if not result.startswith("PASS"):
            name = result.split(":")[0]
            print(name)
-   # SKIP runtime
-   # SKIP runtime_frequency
+
+.. code-block:: text
+   :class: output
+
+   SKIP runtime
+   SKIP runtime_frequency
 
 Both set a frame from a decoder's answer at run time. The toy
 description doesn't support that, so the compiler turns them away.
@@ -612,7 +693,12 @@ Check your own programs against their ``rcp`` schedule the same way:
        if event.kind != "wait":
            expected.append((event.kind, event.line, event.start_cycles))
 
-   print(sorted(played) == sorted(expected))   # True
+   print("plays as scheduled:", sorted(played) == sorted(expected))
+
+.. code-block:: text
+   :class: output
+
+   plays as scheduled: True
 
 Then pin each listing with a golden copy in your tests.
 

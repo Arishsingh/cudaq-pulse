@@ -12,8 +12,9 @@ changed schedule, value or label doesn't. Figures lay text out with DejaVu
 Sans, which comes with matplotlib, so they draw the same on every machine.
 To update a figure, run its script: ``python docs/tutorials/figures/<script>.py``.
 
-A ``themed-figure`` of a page has its ``-dark`` twin, both have a title and a
-description, and the page's ``:alt:`` is the description.
+A ``themed-figure`` of a page, or the fallback figure of a ``toy-flow``, has
+its ``-dark`` twin, both have a title and a description, and the page's
+``:alt:`` is the description.
 """
 
 from __future__ import annotations
@@ -69,19 +70,22 @@ def same_figure(a: str, b: str) -> bool:
 
 
 def _themed_figures(page: Path):
-    """(light file, alt text) of each ``themed-figure`` of *page*."""
+    """(light file, alt text) of each ``themed-figure`` of *page*, and of the
+    ``:fallback:`` figure of each ``toy-flow``."""
     lines = page.read_text().splitlines()
     for i, line in enumerate(lines):
-        m = re.match(r"\s*\.\. themed-figure:: (\S+)", line)
+        m = re.match(r"\s*\.\. (themed-figure|toy-flow):: (\S+)", line)
         if not m:
             continue
-        alt = None
+        options = {}
         for option in lines[i + 1 :]:
             if not option.strip().startswith(":"):
                 break
-            if option.strip().startswith(":alt:"):
-                alt = option.split(":alt:", 1)[1].strip()
-        yield page.parent / m[1], alt
+            key, _, value = option.strip()[1:].partition(":")
+            options[key] = value.strip()
+        light = m[2] if m[1] == "themed-figure" else options.get("fallback")
+        if light:
+            yield page.parent / light, options.get("alt")
 
 
 def _desc(svg: Path) -> tuple[str | None, str | None]:
@@ -105,6 +109,20 @@ def test_each_themed_figure_has_both_themes_and_its_page_says_what_it_shows():
                     f"{page.name}: the :alt: of {light.name} is not its description; "
                     "run its figure script and copy the description"
                 )
+
+
+def test_every_tutorial_figure_follows_the_theme_and_every_svg_is_used():
+    if not _DOCS.exists():
+        pytest.skip("needs the source tree")
+    used = set()
+    for page in sorted(_DOCS.glob("*.rst")):
+        text = page.read_text()
+        assert not re.search(r"^\s*\.\. (figure|image)::", text, re.M), (
+            f"{page.name} has a figure that isn't a themed-figure"
+        )
+        for light, _ in _themed_figures(page):
+            used |= {light.name, f"{light.stem}-dark{light.suffix}"}
+    assert sorted(p.name for p in _FIGURES.glob("*.svg") if p.name not in used) == []
 
 
 @pytest.mark.slow

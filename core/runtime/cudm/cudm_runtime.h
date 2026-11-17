@@ -71,6 +71,13 @@ CudmStatus cudm_elementary_op_create(CudmHandle handle,
                                      int64_t tensor_value_count,
                                      const int64_t *mode_extents,
                                      int32_t mode_count, int32_t data_type);
+// A single-mode operator stored by its diagonals: `tensor_data` holds one
+// vector of the mode's extent per offset (ascending; positive above the main
+// diagonal), element (r, r + offset) at index min(r, r + offset).
+CudmStatus cudm_elementary_op_create_multidiagonal(
+    CudmHandle handle, CudmElementaryOp *elem_op, const void *tensor_data,
+    int64_t tensor_value_count, const int64_t *mode_extents, int32_t mode_count,
+    int32_t data_type, int32_t diagonal_count, const int32_t *diagonal_offsets);
 CudmStatus cudm_elementary_op_destroy(CudmElementaryOp elem_op);
 
 // Operator term

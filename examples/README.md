@@ -45,6 +45,7 @@ the `cudaq-pulse-tools` wheel, which `cudaq-pulse` requires).
 | [`custom_passes/python_pass.py`](custom_passes/python_pass.py) | A schedule check written in Python | CPU |
 | [`custom_passes/cpp/`](custom_passes/cpp) | An MLIR pass plugin for `cudaq-pulse-opt --load-pass-plugin` | CPU (builds with CMake) |
 | [`controller_backend/toy_controller/__init__.py`](controller_backend/toy_controller/__init__.py) | A toy controller backend found by its entry point: limits, `emit` and `run` | CPU |
+| [`controller_backend/text_backend.py`](controller_backend/text_backend.py) | A small backend that plays a program as text, registered in the running process | CPU |
 | [`isa_lowering/toy_isa.py`](isa_lowering/toy_isa.py) | Lowering to a toy controller instruction set: timestep, waveform table, oscillators, a shared feedline, feedback across two controllers, a decoder call | CPU |
 | [`transmon/transmon_surface17_rabi.py`](transmon/transmon_surface17_rabi.py) | Rabi drive on the 17-qubit transmon quantum system | CPU |
 | [`transmon/transmon_surface17_full_pipeline.py`](transmon/transmon_surface17_full_pipeline.py) | Each stage of the lowering: Pulse, QOp and LLVM IR | CPU |

@@ -144,39 +144,58 @@ for start, initial in (("|0>", ground()), ("thermal", None)):
 
 # ── 3. Heralded repeat-until-success ──────────────────────────────────────
 
-control_system = pulse.ControlSystem(links={"controller": Link(fixed_ns=4, feedback_ns=8, slots=2)})
+controller_link = Link(fixed_ns=4, feedback_ns=8, slots=2)
+links = {"controller": controller_link}
+control_system = pulse.ControlSystem(links=links)
 
 
-@pulse.classical(min_latency_ns=20, nominal_latency_ns=30, max_latency_ns=40, link="controller")
+# [start herald]
+@pulse.classical(
+    min_latency_ns=20,
+    nominal_latency_ns=30,
+    max_latency_ns=40,
+    link="controller",
+)
 def herald(outcome: pulse.Bits) -> bool:
     """Accept the shot when the qubit read 0."""
     return outcome[0] == 0
 
 
+# [end herald]
+
+
+# [start heralded attempts]
 @pulse.kernel
-def heralded_t(q, attempts: int, axis: int):
-    d = get_drive_line(q)
-    r = get_readout_line(q)
-    x = d.get_calibration(pulse.gates.X)
-    ro = r.get_calibration(pulse.gates.READOUT)
-    # A fixed number of attempts: each is scheduled, and its answer gates the
-    # pi pulse that returns a qubit that read 1 to |0>.
+def heralded_t(qudit, attempts: int, axis: int):
+    drive_line = get_drive_line(qudit)
+    readout_line = get_readout_line(qudit)
+    flip = drive_line.get_calibration(pulse.gates.X)
+    measurement = readout_line.get_calibration(pulse.gates.READOUT)
+
     for _ in range(attempts):
-        m = readout(r, ro)
-        ok = herald.submit([m]).result()
-        sync(d, r)
-        if not ok:
-            drive(d, x)
-        sync(d, r)
-    drive(d, d.get_calibration(pulse.gates.Y90))
-    drive(d, d.get_calibration(pulse.gates.T))
+        outcome = readout(readout_line, measurement)
+        request = herald.submit([outcome])
+        accepted = request.result()
+        sync(drive_line, readout_line)
+        if not accepted:
+            drive(drive_line, flip)
+        sync(drive_line, readout_line)
+    # [end heralded attempts]
+    # [start heralded state]
+
+    # Prepare |T>, then turn the measured axis onto Z.
+    y90 = drive_line.get_calibration(pulse.gates.Y90)
+    t_gate = drive_line.get_calibration(pulse.gates.T)
+    x90 = drive_line.get_calibration(pulse.gates.X90)
+    drive(drive_line, y90)
+    drive(drive_line, t_gate)
     if axis == X_AXIS:
-        y90 = d.get_calibration(pulse.gates.Y90)
-        drive(d, y90.replace(amplitude=-y90.amplitude))
+        drive(drive_line, y90.replace(amplitude=-y90.amplitude))
     elif axis == Y_AXIS:
-        drive(d, d.get_calibration(pulse.gates.X90))
-    sync(d, r)
-    readout(r, ro)
+        drive(drive_line, x90)
+    sync(drive_line, readout_line)
+    readout(readout_line, measurement)
+    # [end heralded state]
 
 
 compiled_herald = pulse.compile(heralded_t, quantum_system=qs, control_system=control_system)

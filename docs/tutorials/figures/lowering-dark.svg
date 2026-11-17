@@ -1,0 +1,186 @@
+<!--
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
+-->
+<svg role="img" aria-labelledby="title desc" xmlns:xlink="http://www.w3.org/1999/xlink" width="407.52pt" height="166.53pt" viewBox="0 0 407.52 166.53" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <title id="title">One program, lowered for the GPU and exported</title>
+ <desc id="desc">The page's evolve_pair kernel at each level of its lowering for GPU simulation: Pulse MLIR, 21 operations; QOp, 82 operations; cuDensityMat, 122 operations; LLVM IR, 1641 operations, of them 88 calls into the cuDensityMat runtime. From the Pulse MLIR the same program also exports for a controller as 5 events.</desc>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 166.53
+L 407.52 166.53
+L 407.52 0
+L 0 0
+L 0 166.53
+z
+" style="fill: none"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 10.11 52.20
+L 90.06 52.20
+Q 93.27 52.20 93.27 49.28
+L 93.27 9.45
+Q 93.27 6.53 90.06 6.53
+L 10.11 6.53
+Q 6.89 6.53 6.89 9.45
+L 6.89 49.28
+Q 6.89 52.20 10.11 52.20
+z
+" clip-path="url(#p8b540db219)" style="fill: #111111; stroke: #76b900; stroke-width: 1.3; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 112.48 52.20
+L 192.43 52.20
+Q 195.64 52.20 195.64 49.28
+L 195.64 9.45
+Q 195.64 6.53 192.43 6.53
+L 112.48 6.53
+Q 109.26 6.53 109.26 9.45
+L 109.26 49.28
+Q 109.26 52.20 112.48 52.20
+z
+" clip-path="url(#p8b540db219)" style="fill: #111111; stroke: #8fb8e8; stroke-width: 1.3; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 94.35 29.18
+Q 100.40 29.18 105.39 29.18
+" clip-path="url(#p8b540db219)" style="fill: none; stroke: #5a6066; stroke-width: 1.1; stroke-linecap: round"/>
+    <path d="M 101.39 26.78
+L 105.39 29.18
+L 101.39 31.58
+z
+" clip-path="url(#p8b540db219)" style="fill: #5a6066; stroke: #5a6066; stroke-width: 1.1; stroke-linecap: round"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 214.84 52.20
+L 294.79 52.20
+Q 298.01 52.20 298.01 49.28
+L 298.01 9.45
+Q 298.01 6.53 294.79 6.53
+L 214.84 6.53
+Q 211.63 6.53 211.63 9.45
+L 211.63 49.28
+Q 211.63 52.20 214.84 52.20
+z
+" clip-path="url(#p8b540db219)" style="fill: #111111; stroke: #8fb8e8; stroke-width: 1.3; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 196.72 29.18
+Q 202.77 29.18 207.76 29.18
+" clip-path="url(#p8b540db219)" style="fill: none; stroke: #5a6066; stroke-width: 1.1; stroke-linecap: round"/>
+    <path d="M 203.76 26.78
+L 207.76 29.18
+L 203.76 31.58
+z
+" clip-path="url(#p8b540db219)" style="fill: #5a6066; stroke: #5a6066; stroke-width: 1.1; stroke-linecap: round"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 317.21 52.20
+L 397.16 52.20
+Q 400.38 52.20 400.38 49.28
+L 400.38 9.45
+Q 400.38 6.53 397.16 6.53
+L 317.21 6.53
+Q 314.00 6.53 314.00 9.45
+L 314.00 49.28
+Q 314.00 52.20 317.21 52.20
+z
+" clip-path="url(#p8b540db219)" style="fill: #111111; stroke: #8fb8e8; stroke-width: 1.3; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 299.09 29.18
+Q 305.14 29.18 310.12 29.18
+" clip-path="url(#p8b540db219)" style="fill: none; stroke: #5a6066; stroke-width: 1.1; stroke-linecap: round"/>
+    <path d="M 306.12 26.78
+L 310.12 29.18
+L 306.12 31.58
+z
+" clip-path="url(#p8b540db219)" style="fill: #5a6066; stroke: #5a6066; stroke-width: 1.1; stroke-linecap: round"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 10.11 156.34
+L 90.06 156.34
+Q 93.27 156.34 93.27 153.42
+L 93.27 113.59
+Q 93.27 110.67 90.06 110.67
+L 10.11 110.67
+Q 6.89 110.67 6.89 113.59
+L 6.89 153.42
+Q 6.89 156.34 10.11 156.34
+z
+" clip-path="url(#p8b540db219)" style="fill: #111111; stroke: #4dd0c4; stroke-width: 1.3; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 50.08 54.21
+Q 50.08 80.52 50.08 105.77
+" clip-path="url(#p8b540db219)" style="fill: none; stroke: #5a6066; stroke-width: 1.1; stroke-linecap: round"/>
+    <path d="M 52.48 101.77
+L 50.08 105.77
+L 47.68 101.77
+z
+" clip-path="url(#p8b540db219)" style="fill: #5a6066; stroke: #5a6066; stroke-width: 1.1; stroke-linecap: round"/>
+   </g>
+   <g id="text_1">
+    <text style="font-weight: 700; font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #76b900" x="11.71" y="19.56" transform="rotate(-0 11.71 19.56)">Pulse MLIR</text>
+   </g>
+   <g id="text_2">
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #eeeeee" x="11.71" y="31.26" transform="rotate(-0 11.71 31.26)">21 operations</text>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #b4bac1" x="11.71" y="42.71" transform="rotate(-0 11.71 42.71)">pulse 13  arith 7</text>
+   </g>
+   <g id="text_4">
+    <text style="font-weight: 700; font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #8fb8e8" x="114.08" y="19.56" transform="rotate(-0 114.08 19.56)">QOp</text>
+   </g>
+   <g id="text_5">
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #eeeeee" x="114.08" y="31.26" transform="rotate(-0 114.08 31.26)">82 operations</text>
+   </g>
+   <g id="text_6">
+    <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #b4bac1" x="114.08" y="42.71" transform="rotate(-0 114.08 42.71)">qop 61  arith 20</text>
+   </g>
+   <g id="text_7">
+    <text style="font-weight: 700; font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #8fb8e8" x="216.45" y="19.56" transform="rotate(-0 216.45 19.56)">cuDensityMat</text>
+   </g>
+   <g id="text_8">
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #eeeeee" x="216.45" y="31.26" transform="rotate(-0 216.45 31.26)">122 operations</text>
+   </g>
+   <g id="text_9">
+    <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #b4bac1" x="216.45" y="43.43" transform="rotate(-0 216.45 43.43)">cudm 87  arith 34</text>
+   </g>
+   <g id="text_10">
+    <text style="font-weight: 700; font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #8fb8e8" x="318.82" y="19.56" transform="rotate(-0 318.82 19.56)">LLVM IR</text>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #eeeeee" x="318.82" y="31.26" transform="rotate(-0 318.82 31.26)">88 llvm.call</text>
+   </g>
+   <g id="text_12">
+    <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #b4bac1" x="318.82" y="42.71" transform="rotate(-0 318.82 42.71)">1641 operations</text>
+   </g>
+   <g id="text_13">
+    <text style="font-weight: 700; font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #4dd0c4" x="11.71" y="123.70" transform="rotate(-0 11.71 123.70)">controller export</text>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #eeeeee" x="11.71" y="135.40" transform="rotate(-0 11.71 135.40)">5 events</text>
+   </g>
+   <g id="text_15">
+    <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #b4bac1" x="11.71" y="146.84" transform="rotate(-0 11.71 146.84)">drive 2  wait 2  sync 1</text>
+   </g>
+   <g id="text_16">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #b4bac1" transform="translate(105.32 128.04)">the program a control system plays,</text>
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #b4bac1" transform="translate(105.32 137.64)">from the same Pulse MLIR</text>
+   </g>
+   <g id="text_17">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #b4bac1" x="404.64" y="72.90" transform="rotate(-0 404.64 72.90)">what cuDensityMat runs on the GPU</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p8b540db219">
+   <rect x="2.88" y="2.88" width="401.76" height="160.77"/>
+  </clipPath>
+ </defs>
+</svg>
