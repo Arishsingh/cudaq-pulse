@@ -1121,8 +1121,9 @@ def test_values_from_answers_are_exported_as_expressions():
     }
     [shift] = first["frame_updates"]
     [phase] = second["frame_updates"]
-    # Each change is where its tone is free: the shot's start, then the end
-    # of the drive before it.
+    wait = next(e for e in events if e["kind"] == "wait")
+    # Each change is where the program makes it on its tone's line: the
+    # shot's start, then the end of the wait before it.
     assert shift == {
         "id": shift["id"],
         "op": "shift_frequency",
@@ -1133,7 +1134,7 @@ def test_values_from_answers_are_exported_as_expressions():
     assert phase == {
         "id": phase["id"],
         "op": "shift_phase",
-        "start_cycles": first["end_cycles"],
+        "start_cycles": wait["end_cycles"],
         "value": {"answer": answer, "result": 0},
         "conditions": [],
     }
@@ -1142,7 +1143,7 @@ def test_values_from_answers_are_exported_as_expressions():
     readout = next(e for e in events if e["kind"] == "readout")
     # The readout tone's frame does not depend on run time.
     assert first["tone"] == second["tone"] and "tone" not in readout
-    wait = next(e for e in events if e["kind"] == "wait")
+    assert wait["start_cycles"] == first["end_cycles"]
     assert (wait["min_cycles"], wait["max_cycles"]) == (8, 400)
 
     def answers(expr):
@@ -1174,24 +1175,25 @@ def retuned_by_answer(q):
 
 def retuned_by_answer_changes(events):
     """The places of the frame changes of `retuned_by_answer`'s export, checked
-    against its drives: each drive takes the change after the drive before
-    it, at that drive's end, and its own, at its start (a change before the
-    first pulse of an iteration on a tone the iteration before played is
+    against its drives and waits: each drive takes the change after the wait
+    before it, at that wait's end, and its own, at its start (a change before
+    the first pulse of an iteration on a tone the iteration before played is
     placed at the pulse); the last change is a frame update where the last
-    drive ends. Returns every change's (id, start_cycles)."""
+    wait ends. Returns every change's (id, start_cycles)."""
     drives = [e for e in events if e["kind"] == "drive"]
+    waits = [e for e in events if e["kind"] == "wait"]
     [kept] = (e for e in events if e["kind"] == "frame_update")
-    assert len(drives) == 3
+    assert len(drives) == len(waits) == 3
     places = []
     for k, drive in enumerate(drives):
         made = [u["start_cycles"] for u in drive["frame_updates"]]
         expected = [drive["start_cycles"]]
         if k:
-            expected.insert(0, drives[k - 1]["end_cycles"])
+            expected.insert(0, waits[k - 1]["end_cycles"])
         assert made == expected
         places += [(u["id"], u["start_cycles"]) for u in drive["frame_updates"]]
     [last] = kept["frame_updates"]
-    assert last["start_cycles"] == kept["start_cycles"] == drives[-1]["end_cycles"]
+    assert last["start_cycles"] == kept["start_cycles"] == waits[-1]["end_cycles"]
     return [*places, (last["id"], last["start_cycles"])]
 
 

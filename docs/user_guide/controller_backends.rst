@@ -147,7 +147,13 @@ program without such tones has no ``runtime_tones``.
 Every shot starts from the reset frame: each tone at its own frequency, with
 phase 0. A frame change (``shift_phase``, ``set_phase``, ``shift_frequency``,
 ``set_frequency``) is a point on the timeline: in the scheduled IR it has
-``start_cycles`` and a ``duration_cycles`` of 0. The next drive or readout on
+``start_cycles`` and a ``duration_cycles`` of 0. It is where the program
+makes it on its tone's line: after the waits, pulses and syncs before it
+there and after the readouts it depends on (in the arm of a branch on a
+measurement, or with a value computed from one); or, on a tone that next
+plays on another line earlier, where its previous drive or readout ends. A frequency shifted before a wait and back
+after it so runs shifted through the wait, and the drives after it have
+the phase gained. The next drive or readout on
 its tone takes it in its ``frequency_hz`` and ``phase_rad``; in a loop, the
 next iteration's do. In a loop whose iterations do not play its tone, a
 change is at the start of each iteration. A change takes no time: every

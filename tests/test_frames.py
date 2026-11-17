@@ -105,6 +105,19 @@ def trailing(q):
 
 
 @pulse.kernel
+def excursion(q):
+    d = get_drive_line(q)
+    drive(d, square(16, 0.1))
+    shift_frequency(d.tone, 1.0e6)
+    wait(d, 500)
+    shift_frequency(d.tone, -1.0e6)
+    drive(d, square(16, 0.1))
+    wait(d, 40)
+    set_frequency(d.tone, _FREQUENCY_HZ + 2.0e6)
+    drive(d, square(16, 0.1))
+
+
+@pulse.kernel
 def untrailed(q):
     d = get_drive_line(q)
     shift_frequency(d.tone, 3.0e6)
@@ -236,6 +249,7 @@ def _exported(program, outcome=-1):
 
 _EQUIVALENT = [
     pytest.param(straight, {}, id="straight"),
+    pytest.param(excursion, {}, id="excursion"),
     pytest.param(looped, {"unroll_threshold": 0}, id="rolled"),
     pytest.param(looped, {}, id="unrolled"),
     pytest.param(nested, {"unroll_threshold": 0}, id="nested_rolled"),
@@ -253,6 +267,32 @@ def test_the_simulator_plays_each_drive_with_the_frame_the_export_gives(kernel, 
         unroll(lowered.export_to_controller(version=2)),
     ):
         assert _exported(program) == _approx(simulated)
+
+
+def test_a_frequency_change_after_a_wait_is_made_at_its_end():
+    lowered = _compile(excursion)
+    # Shifted for the 500-cycle wait and back: a quarter turn at 1 MHz. Set
+    # after the second wait, the new frequency gains nothing during it.
+    gained = 2.0 * math.pi * 1.0e6 * 1.0e-9 * 500 / _CLOCK_GHZ
+    assert gained == pytest.approx(math.pi / 2)
+    want = [
+        (0, _FREQUENCY_HZ, 0.0),
+        (516, _FREQUENCY_HZ, gained),
+        (572, _FREQUENCY_HZ + 2.0e6, gained),
+    ]
+    for program in (
+        lowered.export_to_controller(),
+        unroll(lowered.export_to_controller(version=2)),
+    ):
+        drives = [e for e in program["events"] if e["kind"] == "drive"]
+        assert [(e["start_cycles"], e["frequency_hz"], e["phase_rad"]) for e in drives] == [
+            (start, frequency, pytest.approx(phase)) for start, frequency, phase in want
+        ]
+    assert re.findall(r"pulse\.(\w+_frequency) .*start_cycles = (\d+)", lowered.mlir()) == [
+        ("shift_frequency", "16"),
+        ("shift_frequency", "516"),
+        ("set_frequency", "572"),
+    ]
 
 
 @pytest.mark.parametrize("outcome", [0, 1])
@@ -305,17 +345,17 @@ def test_a_frame_change_no_operation_takes_is_kept_as_a_frame_update():
         assert re.search(rf"pulse\.{op} .*pulse\.unconsumed", text)
     flat = lowered.export_to_controller()
     kept = [e for e in flat["events"] if e["kind"] == "frame_update"]
-    # A change is placed where its tone's previous drive ends; a wait on the
-    # line does not move the tone. Each has the tone's frame after it.
+    # A change is made where the program reaches it on its tone's line: after
+    # the wait. Each has the tone's frame after it.
     _, [(_, _, frequency, phase, time_ns)] = lowered._concrete().drive_frames([])
-    assert time_ns == 16 / _CLOCK_GHZ
+    assert time_ns == 56 / _CLOCK_GHZ
     detuned = 2.0 * math.pi * 3.0e6 * 1.0e-9 * time_ns
     assert [
         (e["start_cycles"], e["duration_cycles"], e["op"], e["value"], e["frequency_hz"])
         for e in kept
     ] == [
-        (16, 0, "shift_phase", 0.4, _FREQUENCY_HZ + 3.0e6),
-        (16, 0, "set_frequency", 5.002e9, 5.002e9),
+        (56, 0, "shift_phase", 0.4, _FREQUENCY_HZ + 3.0e6),
+        (56, 0, "set_frequency", 5.002e9, 5.002e9),
     ]
     assert [e["phase_rad"] for e in kept] == [pytest.approx(detuned + 0.4)] * 2
     assert (kept[-1]["frequency_hz"], kept[-1]["phase_rad"]) == (frequency, pytest.approx(phase))
@@ -527,6 +567,7 @@ _TIMING_CORPUS = [
             branched,
             trailing,
             untrailed,
+            excursion,
             one_arm,
             other_arm,
             branched_loop,
