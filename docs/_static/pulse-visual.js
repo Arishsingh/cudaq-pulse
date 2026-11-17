@@ -445,7 +445,10 @@
             el("rect", { ...box, class: on ? `pv-fill pv-${s.role}` : "pv-ghost pv-cond" }, g);
             el("text", { x: box.x + 22, y: yy + 11, "text-anchor": "middle", class: `pv-tiny${on ? " pv-on-text" : ""}` }, g, s.label || s.role);
           });
-          if (row.weight === undefined) return;
+          if (row.weight === undefined) {
+            if (row.value) el("text", { x: barX, y: yy + 11, class: "pv-small" }, g, row.value);
+            return;
+          }
           el("rect", { x: barX, y: yy + 3, width: barW, height: ROW - 10, class: "pv-track" }, g);
           el("rect", { x: barX, y: yy + 3, width: Math.max(1, barW * row.weight), height: ROW - 10, class: "pv-share" }, g);
           el("text", { x: barX + barW + 6, y: yy + 11, class: "pv-small" }, g, row.value || pct(row.weight));
@@ -514,6 +517,51 @@
         }
       },
     },
+
+    // A curve that moves from one snapshot's values to the next, over the
+    // scene's own x axis, with a marked value; a still keeps the curves of
+    // the snapshots before it as dotted ghosts.
+    curve: {
+      build(ctx, y) {
+        const { el, scene } = ctx;
+        const c = scene.curve;
+        const g = el("g", { class: "pv-curve" }, ctx.svg);
+        const h = 130;
+        const lo = c.x[0];
+        const hi = c.x[c.x.length - 1];
+        const cx = (v) => LABEL_W + ((v - lo) / (hi - lo)) * (W - LABEL_W - PAD);
+        const cy = (v) => y + h - 24 - v * (h - 44);
+        el("path", { d: `M ${LABEL_W} ${cy(0)} H ${W - PAD}`, class: "pv-axis" }, g);
+        for (const t of c.ticks) {
+          el("path", { d: `M ${cx(t)} ${cy(0)} v 4`, class: "pv-axis" }, g);
+          el("text", { x: cx(t), y: cy(0) + 15, "text-anchor": "middle", class: "pv-small" }, g, String(t));
+        }
+        el("text", { x: LABEL_W - 16, y: cy(0) + 15, "text-anchor": "end", class: "pv-small" }, g, c.label);
+        el("text", { x: LABEL_W - 8, y: cy(0.5), "text-anchor": "end", class: "pv-lane" }, g, c.name);
+        ctx.curve = { cx, cy, layer: el("g", {}, g) };
+        return h;
+      },
+      draw(ctx, frame) {
+        const { el, scene } = ctx;
+        const { cx, cy, layer } = ctx.curve;
+        layer.replaceChildren();
+        const xs = scene.curve.x;
+        const line = (ys) => xs.map((v, i) => `${i ? "L" : "M"} ${cx(v)} ${cy(ys[i])}`).join(" ");
+        if (frame.f === 0) {
+          for (let k = 0; k < frame.step; k++) el("path", { d: line(scene.snapshots[k].curve.y), class: "pv-was-curve" }, layer);
+        }
+        const [from, to] = frame.f > 0 ? source(scene, frame) : [scene.snapshots[frame.step], scene.snapshots[frame.step]];
+        const f = ease(frame.f);
+        const ys = from.curve.y.map((v, i) => v + (to.curve.y[i] - v) * f);
+        const at = from.curve.at + (to.curve.at - from.curve.at) * f;
+        el("path", { d: `${line(ys)} L ${cx(xs[xs.length - 1])} ${cy(0)} L ${cx(xs[0])} ${cy(0)} Z`, class: "pv-area" }, layer);
+        el("path", { d: line(ys), class: "pv-line" }, layer);
+        el("path", { d: `M ${cx(at)} ${cy(0)} V ${cy(1.05)}`, class: "pv-mark" }, layer);
+        const text = (frame.f < 0.5 ? from : to).curve.text;
+        el("text", { x: cx(at) + 5, y: cy(1.05) + 4, class: "pv-node-text pv-halo" }, layer, text);
+      },
+    },
+
   };
 
   let serial = 0;

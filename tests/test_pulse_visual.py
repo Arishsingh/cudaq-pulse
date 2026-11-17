@@ -103,6 +103,17 @@ def test_the_t_state_scenes_say_what_the_t_state_page_prints():
     assert {n for n, node in tree.items() if "drop" in node} == {"h1", "h2"}
 
 
+def test_the_estimator_scene_says_what_the_adaptive_page_prints():
+    prior, read_1, read_0 = _scene("adaptive_calibration", "t1_belief")["snapshots"]
+    # "a first guess of T1 = 150 µs", and the likeliest branch's first shot,
+    # which reads 0 after the 50 µs wait: "127.7 µs  65.1 µs".
+    assert round(prior["curve"]["at"], 1) == 150.0
+    assert round(read_0["curve"]["at"], 1) == 127.7
+    assert "next wait would be 65.1 µs" in read_0["say"]
+    assert read_1["curve"]["at"] > prior["curve"]["at"] > read_0["curve"]["at"]
+    assert read_1["from"] == read_0["from"] == 0
+
+
 # ── The script, under Node ────────────────────────────────────────────
 
 # A scene the model checks run on even before a page has one: two cases that

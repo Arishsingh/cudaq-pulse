@@ -75,7 +75,9 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   built-in envelope.
 - **Animated tutorial figures.** T-State Injection plays its tomography
   axes one at a time, its heralded loop once per answer with a playhead,
-  and the branches post-selection keeps one readout at a time. Each plays
+  and the branches post-selection keeps one readout at a time. Adaptive
+  Calibration moves its estimator's distribution from the prior to where
+  a readout of 1, or of 0, takes it. Each plays
   once when scrolled into view, with Replay and step buttons, and its data
   comes from what the page compiles and simulates. Readers without
   JavaScript, or who ask for reduced motion, see the still frame.
