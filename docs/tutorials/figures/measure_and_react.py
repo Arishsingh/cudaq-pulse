@@ -4,14 +4,16 @@
 
 Usage: python docs/tutorials/figures/measure_and_react.py
 
-Needs matplotlib (the ``[viz]`` extra). Writes ``reset_timeline.svg`` and
-``reset_branches.svg``, each with its ``-dark`` twin, next to this file, from
-the active reset the page defines and simulates.
+Needs matplotlib (the ``[viz]`` extra). Writes ``superposition_shots.svg``,
+``reset_outcomes.svg``, ``reset_timeline.svg`` and ``reset_branches.svg``,
+each with its ``-dark`` twin, next to this file, from the kernels the page
+defines and simulates.
 """
 
 import cudaq_pulse as pulse
+import matplotlib.pyplot as plt
 import numpy as np
-from _style import page_namespace, plot_axes, save_themed
+from _style import end_label, page_namespace, plot_axes, save_themed
 from _timeline import Timeline, draw
 
 
@@ -112,8 +114,73 @@ def reset_branches(page) -> None:
     save_themed(figure, "reset_branches", title="Every outcome the simulator follows", desc=alt)
 
 
+def superposition_shots(page) -> None:
+    result = pulse.simulate(page["measure_superposition"], page["qubit"], shots_count=1000, seed=7)
+    outcomes = np.asarray(result.records)[:, 0]
+    columns = 100
+    rows = len(outcomes) // columns
+    ones = int(outcomes.sum())
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=1.05)
+        ax.axis("off")
+        ax.set_aspect("equal")
+        for k, value in enumerate(outcomes[: rows * columns]):
+            x, y = k % columns, -(k // columns)
+            color = p.readout if value else p.grid
+            ax.add_patch(plt.Rectangle((x, y), 0.82, 0.82, color=color, lw=0))
+        ax.set_xlim(-0.2, columns)
+        ax.set_ylim(-rows + 0.8, 1.9)
+        ax.text(0, 1.1, f"read 1: {ones} of {len(outcomes)}", color=p.readout, fontsize=8.5)
+        ax.text(
+            columns,
+            1.1,
+            "one square per shot, in order",
+            color=p.muted,
+            fontsize=8,
+            ha="right",
+        )
+        return fig
+
+    alt = (
+        f"The {len(outcomes)} shots of measure_superposition, one square per shot in the order "
+        f"they were taken, {columns} to a row. {ones} read 1 and {len(outcomes) - ones} read 0, "
+        "with no pattern in which do."
+    )
+    save_themed(figure, "superposition_shots", title="A thousand shots of a π/2 pulse", desc=alt)
+
+
+def reset_outcomes(page) -> None:
+    result = pulse.simulate(page["active_reset"], page["qubit"], shots_count=1000, seed=7)
+    first, second = np.asarray(result.records).mean(axis=0)
+    names = ("first readout", "second readout")
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=1.3)
+        ax.grid(axis="y", visible=False)
+        ax.grid(axis="x", color=p.grid)
+        y = np.array([0.0, -1.0])
+        ax.barh(y, [first, second], height=0.45, color=p.readout, alpha=0.85, lw=0)
+        for x, yy in zip((first, second), y, strict=True):
+            end_label(ax, x, yy, f"{x:.3f}", p.text, dx=5, fontsize=8)
+        ax.set_xlim(0, 1)
+        ax.set_yticks(y, names)
+        ax.xaxis.set_major_formatter(lambda v, _: f"{v:.0%}")
+        ax.set_xlabel("shots that read 1")
+        return fig
+
+    alt = (
+        f"The share of the active reset's 1000 shots that read 1: {first:.3f} at the first "
+        f"readout, after the pi/2 pulse, and {second:.3f} at the second, after the conditional "
+        "pi pulse."
+    )
+    save_themed(figure, "reset_outcomes", title="Before and after the reset", desc=alt)
+
+
 def main() -> None:
     page = page_namespace("measure_and_react.rst")
+    superposition_shots(page)
+    reset_outcomes(page)
     reset_timeline(page)
     reset_branches(page)
 

@@ -56,6 +56,16 @@ The decoder below answers with that table:
        # One correction bit per data qubit.
        return [s0 & (1 - s1), s0 & s1, s1 & (1 - s0)]
 
+.. themed-figure:: figures/repetition_syndromes.svg
+   :alt: Four small diagrams of the three data qubits with the two syndrome bits between them, one per syndrome, with what the page's lookup corrects: syndrome (0, 0), no flip; syndrome (1, 0), flip data qubit 0; syndrome (1, 1), flip data qubit 1; syndrome (0, 1), flip data qubit 2.
+   :width: 100%
+
+   What ``lookup`` corrects for each syndrome. Circles are data qubits,
+   squares the syndrome bits between them.
+
+What to notice: a lit syndrome bit points at the data qubit next to it. Two
+lit bits point at the one they share.
+
 A real decoder, such as the one in the last section, does the same job for
 codes whose table doesn't fit in the controller's memory.
 
@@ -245,11 +255,22 @@ The decoder's 62 µs answer is always late, so the table makes every
 correction. The rest of the population decays during the round.
 
 .. themed-figure:: figures/qec_round_timeline.svg
-   :alt: Timeline of one round of the distance-3 repetition code, with a lane for each data qubit's drive line, each ancilla's readout line and the GPU link. Both ancillas are read out for 400 ns, and their outcomes go to the decoder over the link. The kernel waits for the answer with a 1 microsecond timeout, plus 50 ns of feedback, so the answer is due at 1450.5 ns. A correction pulse on each data qubit, which plays only if the decoder's answer or the fallback table says so, starts at that moment.
+   :alt: Timeline of one round of the distance-3 repetition code, with a lane for each data qubit's drive line, each ancilla's readout line and the GPU link. Both ancillas are read out for 400 ns, and their outcomes go to the decoder over the link. The answer is due at 1450.5 ns, and a correction pulse on each data qubit, which plays only if the decoder's answer or the fallback table says so, starts at that moment.
    :width: 100%
 
-   The round with the 1 µs deadline. Below, the last 110 ns of the wait and
-   the dashed corrections.
+   The round with the 1 µs deadline. Dashed corrections play only when
+   flagged.
+
+What to notice: the round is mostly the wait between the syndrome and the
+corrections.
+
+Up close, the end of that wait:
+
+.. themed-figure:: figures/qec_round_deadline.svg
+   :alt: The last 110 ns of the round's wait. The kernel waits for the answer with a 1 microsecond timeout, plus 50 ns of feedback on the link, so the answer is due at 1450.5 ns. The dashed correction pulses on the data qubits start at that moment, whichever arm decides them.
+   :width: 100%
+
+   The last 110 ns of the wait, and the corrections.
 
 What to notice: every correction waits for the deadline, whichever arm
 decides it.
@@ -280,6 +301,12 @@ Declare the decoder again with a 500 ns budget, and compile again:
 
 A kernel reads the functions it calls when it compiles, so the new
 declaration is picked up.
+
+.. themed-figure:: figures/qec_budgets.svg
+   :alt: The round with a 1 microsecond deadline, for the decoder as first declared and with a 500 ns budget. The share of shots that use the decoder's answer is 0 and 1; the share whose data qubits end back in 000 is 0.883 and 0.883.
+   :width: 100%
+
+   The two runs with a 1 µs deadline, side by side.
 
 What to notice:
 

@@ -4,16 +4,25 @@
 
 Usage: python docs/tutorials/figures/realtime_decoding.py
 
-Needs matplotlib (the ``[viz]`` extra). Writes ``qec_round_timeline.svg`` and
-``qec_deadlines.svg``, each with its ``-dark`` twin, next to this file: the
-round the page compiles, with its 1 µs deadline, and the page's simulation of
-both arms over a range of deadlines. Both use the decoder as first declared,
-before the page gives it a budget that fits.
+Needs matplotlib (the ``[viz]`` extra). Writes, each with its ``-dark`` twin,
+next to this file:
+
+- ``repetition_syndromes.svg``, what the page's ``lookup`` corrects for each
+  syndrome;
+- ``qec_round_timeline.svg`` and ``qec_round_deadline.svg``, the round the
+  page compiles with its 1 µs deadline, whole and close up;
+- ``qec_budgets.svg``, the page's two runs with a 1 µs deadline, before and
+  after the decoder gets a budget that fits;
+- ``qec_deadlines.svg``, the page's simulation of both arms over a range of
+  deadlines.
+
+All but ``qec_budgets`` use the decoder as first declared.
 """
 
+import matplotlib.pyplot as plt
 import numpy as np
 from _style import end_label, page_namespace, plot_axes, save_themed
-from _timeline import Timeline, draw_zoomed
+from _timeline import Timeline, busy_lanes, draw
 
 # The page's second declaration of decode, which the figures leave out.
 _FAST = "max_latency_ns=500"
@@ -34,20 +43,38 @@ def round_timeline(page) -> None:
     window = (call.due_ns - 110, call.due_ns + 40)
 
     def figure(p):
-        return draw_zoomed(timeline, p, window, pulse_labels=words, breakdown=True, lane_in=0.4)
+        return draw(timeline, p, pulse_labels=words, lane_in=0.4)
 
     alt = (
         "Timeline of one round of the distance-3 repetition code, with a lane for each data "
         "qubit's drive line, each ancilla's readout line and the GPU link. Both ancillas are "
-        "read out for 400 ns, and their outcomes go to the decoder over the link. The kernel "
-        f"waits for the answer with a {deadline_ns / 1000:g} microsecond timeout, plus "
-        f"{call.link['feedback_ns']:g} ns of feedback, so the answer is due at "
-        f"{call.due_ns:g} ns. A correction pulse on each data qubit, which plays only if the "
-        "decoder's answer or the fallback table says so, starts at that moment."
+        "read out for 400 ns, and their outcomes go to the decoder over the link. The answer "
+        f"is due at {call.due_ns:g} ns, and a correction pulse on each data qubit, which plays "
+        "only if the decoder's answer or the fallback table says so, starts at that moment."
     )
     save_themed(
         figure, "qec_round_timeline", title="One QEC round with a decoder deadline", desc=alt
     )
+
+    def close_up(p):
+        return draw(
+            timeline,
+            p,
+            pulse_labels=words,
+            xlim=window,
+            breakdown=True,
+            only=busy_lanes(timeline, window),
+            lane_in=0.4,
+        )
+
+    alt = (
+        f"The last {call.due_ns - window[0]:g} ns of the round's wait. The kernel waits for the "
+        f"answer with a {deadline_ns / 1000:g} microsecond timeout, plus "
+        f"{call.link['feedback_ns']:g} ns of feedback on the link, so the answer is due at "
+        f"{call.due_ns:g} ns. The dashed correction pulses on the data qubits start at that "
+        "moment, whichever arm decides them."
+    )
+    save_themed(close_up, "qec_round_deadline", title="The end of the deadline", desc=alt)
 
 
 def deadlines(page) -> None:
@@ -99,9 +126,103 @@ def deadlines(page) -> None:
     save_themed(figure, "qec_deadlines", title="Waiting for the decoder against decay", desc=alt)
 
 
+def syndromes(page) -> None:
+    lookup = page["lookup"]
+    cases = [(0, 0), (1, 0), (1, 1), (0, 1)]
+    fixes = [lookup(list(case)) for case in cases]
+
+    def figure(p):
+        fig, axes = plt.subplots(1, len(cases), figsize=(7.2, 1.35))
+        for ax, case, fix in zip(axes, cases, fixes, strict=True):
+            ax.axis("off")
+            ax.set_xlim(-0.6, 4.6)
+            ax.set_ylim(-0.9, 1.3)
+            for i in range(3):
+                flipped = bool(fix[i])
+                ax.plot(
+                    [2 * i],
+                    [0],
+                    "o",
+                    ms=11,
+                    color=p.drive if flipped else p.surface,
+                    mec=p.drive if flipped else p.rule,
+                    mew=1.2,
+                )
+                ax.text(2 * i, -0.62, f"d{i}", ha="center", va="center", fontsize=8, color=p.muted)
+            for k, bit in enumerate(case):
+                x = 2 * k + 1
+                ax.plot(
+                    [x],
+                    [0],
+                    "s",
+                    ms=8,
+                    color=p.readout if bit else p.surface,
+                    mec=p.readout if bit else p.rule,
+                    mew=1.2,
+                )
+                ax.text(
+                    x, -0.62, f"s{k}={bit}", ha="center", va="center", fontsize=8, color=p.muted
+                )
+            flips = [f"d{i}" for i in range(3) if fix[i]]
+            word = f"flip {flips[0]}" if flips else "no flip"
+            ax.text(2, 1.0, word, ha="center", va="center", fontsize=8.5, color=p.text)
+        fig.subplots_adjust(left=0.01, right=0.99, wspace=0.12)
+        return fig
+
+    alt = (
+        "Four small diagrams of the three data qubits with the two syndrome bits between them, "
+        "one per syndrome, with what the page's lookup corrects: "
+        + "; ".join(
+            f"syndrome {case}, " + (f"flip data qubit {fix.index(1)}" if any(fix) else "no flip")
+            for case, fix in zip(cases, fixes, strict=True)
+        )
+        + "."
+    )
+    save_themed(figure, "repetition_syndromes", title="Each syndrome names one qubit", desc=alt)
+
+
+def budgets(page) -> None:
+    slow = page["run"](page["compiled"].lower(page["data"], page["ancillas"], 1_000))
+    full = page_namespace("realtime_decoding.rst", stop_before="cudaq_qec")
+    fast = full["run"](full["fast"].lower(full["data"], full["ancillas"], 1_000))
+    names = ("62 µs decoder", "500 ns decoder")
+
+    def figure(p):
+        fig, axes = plt.subplots(1, 2, figsize=(7.2, 1.5), sharey=True)
+        y = np.array([0.0, -1.0])
+        panels = (
+            ("decoder's answer used", 0, p.classical),
+            ("data back in 000", 1, p.q),
+        )
+        for ax, (word, k, color) in zip(axes, panels, strict=True):
+            values = [slow[k], fast[k]]
+            ax.barh(y, values, height=0.45, color=color, alpha=0.85, lw=0)
+            for x, yy in zip(values, y, strict=True):
+                end_label(ax, x, yy, f"{x:g}", p.text, dx=5, fontsize=8)
+            ax.set_xlim(0, 1.25)
+            ax.set_xticks([0, 0.5, 1])
+            ax.set_title(word, loc="left", fontsize=8.5, color=p.text)
+            ax.grid(axis="y", visible=False)
+            ax.grid(axis="x", color=p.grid)
+            ax.spines["bottom"].set_color(p.rule)
+        axes[0].set_yticks(y, names)
+        fig.subplots_adjust(wspace=0.12)
+        return fig
+
+    alt = (
+        "The round with a 1 microsecond deadline, for the decoder as first declared and with a "
+        f"500 ns budget. The share of shots that use the decoder's answer is {slow[0]:g} and "
+        f"{fast[0]:g}; the share whose data qubits end back in 000 is {slow[1]:g} and "
+        f"{fast[1]:g}."
+    )
+    save_themed(figure, "qec_budgets", title="Two arms, the same result", desc=alt)
+
+
 def main() -> None:
     page = page_namespace("realtime_decoding.rst", stop_before=_FAST)
+    syndromes(page)
     round_timeline(page)
+    budgets(page)
     deadlines(page)
 
 

@@ -4,10 +4,14 @@
 
 Usage: python docs/tutorials/figures/first_pulse_program.py
 
-Needs matplotlib (the ``[viz]`` extra). Writes ``rabi_sweep.svg``,
-``rabi_shots.svg`` and ``rabi_schedule.svg``, each with its ``-dark`` twin,
-next to this file, from the kernel, the sweep and the shots the tutorial
-runs.
+Needs matplotlib (the ``[viz]`` extra). Writes, each with its ``-dark`` twin,
+next to this file, from the quantum system, the kernel, the sweep and the
+shots the tutorial runs:
+
+- ``qudit_levels.svg``, the three levels the simulator keeps for qudit 0;
+- ``rabi_pulse.svg``, the kernel's drive pulse at amplitude 0.16;
+- ``rabi_levels.svg``, the population of each level after it;
+- ``rabi_sweep.svg``, ``rabi_shots.svg`` and ``rabi_schedule.svg``.
 """
 
 import cudaq_pulse as pulse
@@ -30,8 +34,97 @@ def fit_rabi(amplitudes: np.ndarray, p1: np.ndarray) -> tuple[float, np.ndarray]
     return float(a_pi), coef
 
 
+def qudit_levels(page) -> None:
+    qudit = page["system"].physical_qudits[0]
+    f01 = qudit.frequency_hz / 1e9
+    f12 = f01 + qudit.anharmonicity_hz / 1e9
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=1.9, width_in=4.2)
+        ax.axis("off")
+        energies = [0.0, f01, f01 + f12]
+        for level, e in enumerate(energies):
+            color = p.muted if level == 2 else p.text
+            ax.plot([0, 1], [e, e], color=color, lw=1.8)
+            ax.text(-0.08, e, f"level {level}", ha="right", va="center", fontsize=8.5, color=color)
+        for k, (lo, hi, word, color) in enumerate(
+            (
+                (energies[0], energies[1], f"0-1: {f01:.3f} GHz", p.drive),
+                (energies[1], energies[2], f"1-2: {f12:.3f} GHz", p.muted),
+            )
+        ):
+            x = 0.35 + 0.3 * k
+            ax.annotate(
+                "", (x, hi), (x, lo), arrowprops=dict(arrowstyle="<|-|>", color=color, lw=1.1)
+            )
+            ax.text(x + 0.05, (lo + hi) / 2, word, va="center", fontsize=8, color=color)
+        ax.set_xlim(-0.55, 1.45)
+        ax.set_ylim(-0.6, energies[-1] + 0.6)
+        return fig
+
+    alt = (
+        f"The three lowest levels of qudit 0, the levels the simulator keeps: the 0-1 "
+        f"transition at {f01:.3f} GHz, the one the drive is tuned to, and the 1-2 transition "
+        f"at {f12:.3f} GHz, {abs(f01 - f12) * 1000:.0f} MHz lower."
+    )
+    save_themed(figure, "qudit_levels", title="The three levels of a transmon", desc=alt)
+
+
+def rabi_pulse(page) -> None:
+    timeline = Timeline.of(page["rabi"].lower(page["qubit"], 0.16))
+    drive = next(pl for pl in timeline.pulses if pl.kind == "drive")
+    words = {(drive.lane, round(drive.start_ns, 3)): ("Gaussian, amplitude 0.16", "right")}
+
+    def figure(p):
+        return draw(
+            timeline,
+            p,
+            pulse_labels=words,
+            only={drive.lane},
+            xlim=(-2, drive.end_ns * 2.4),
+            lane_in=0.8,
+        )
+
+    alt = (
+        f"The drive pulse of the rabi kernel at amplitude 0.16: a Gaussian "
+        f"{drive.end_ns - drive.start_ns:g} ns long, climbing from zero to its peak in the middle "
+        "and back."
+    )
+    save_themed(figure, "rabi_pulse", title="The kernel's drive pulse", desc=alt)
+
+
+def rabi_levels(page) -> None:
+    levels = pulse.simulate(page["rabi"], page["qubit"], 0.16).level_populations(page["qubit"])
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=1.5)
+        ax.grid(axis="y", visible=False)
+        ax.grid(axis="x", color=p.grid)
+        y = -np.arange(len(levels))
+        colors = [p.muted, p.drive, p.readout]
+        ax.hlines(y, 1e-4, levels, color=p.grid, lw=2)
+        ax.scatter(levels, y, color=colors[: len(levels)], s=26, zorder=3, lw=0)
+        for x, yy in zip(levels, y, strict=True):
+            end_label(ax, x, yy, f"{x:.3f}", p.text, dx=6, fontsize=8)
+        ax.set_xscale("log")
+        ax.set_xlim(1e-4, 3)
+        ax.set_yticks(y, [f"level {k}" for k in range(len(levels))])
+        ax.set_xlabel("population after the pulse")
+        return fig
+
+    alt = (
+        "The population of each level of qudit 0 after the 0.16 pulse: "
+        + "; ".join(f"level {k}, {x:.3f}" for k, x in enumerate(levels))
+        + "."
+    )
+    save_themed(figure, "rabi_levels", title="Where the population ends", desc=alt)
+
+
 def main() -> None:
     page = page_namespace("first_pulse_program.rst")
+    qudit_levels(page)
+    rabi_pulse(page)
+    rabi_levels(page)
     rabi, q, amplitudes = page["rabi"], page["qubit"], page["amplitudes"]
     levels = np.array([pulse.simulate(rabi, q, a).level_populations(q) for a in amplitudes])
     a_pi, (b, a) = fit_rabi(amplitudes, levels[:, 1])
