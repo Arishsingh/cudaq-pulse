@@ -361,6 +361,10 @@ Where to go next
   above, as a script.
 - :example:`transmon/transmon_surface17_multiplexed_readout.py` reads four
   qudits through one feedline and shows each readout's tone in the export.
+- :doc:`isa_lowering` (experimental) lowers the export to a controller's own
+  instructions, and :doc:`isa_limits` shows what the compiler does about
+  feedback latency, clocks across controllers, instruction and waveform
+  memory, and decoder calls.
 
 For the details:
 

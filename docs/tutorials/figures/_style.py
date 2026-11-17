@@ -22,6 +22,7 @@ import importlib.util
 import io
 import os
 import re
+import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -151,6 +152,12 @@ def page_namespace(page: str, stop_before: str | None = None) -> dict:
     names; with *stop_before*, only the blocks before the first that contains it."""
     namespace: dict = {"__name__": "tutorial"}
     blocks = _page_blocks()(HERE.parent / page)
+    # A page may import the examples it links, as the tutorial test lets it.
+    examples = HERE.parents[2] / "examples"
+    for linked in re.findall(r":example:`([^`<>]+\.py)`", (HERE.parent / page).read_text()):
+        folder = str((examples / linked).parent)
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
     # Pages write files where they run, as the tutorial test lets them.
     with tempfile.TemporaryDirectory() as folder, contextlib.chdir(folder):
         for classes, code, _ in blocks:
