@@ -460,6 +460,60 @@
       },
     },
 
+    // A tree of branches that grows one readout at a time: a node shows from
+    // the snapshot its "step" names, and greys out from its "drop". Its edge
+    // is as wide as its probability.
+    tree: {
+      build(ctx, y) {
+        const { el, scene } = ctx;
+        const tree = scene.tree;
+        const g = el("g", { class: "pv-tree" }, ctx.svg);
+        const h = 44 + tree.height * 30;
+        const cols = Math.max(...tree.nodes.map((n) => n.col));
+        const colW = (W - LABEL_W - PAD - 200) / cols;
+        const at = {};
+        for (const n of tree.nodes) at[n.id] = [LABEL_W + n.col * colW, y + 40 + n.y * (h - 54)];
+        tree.columns.forEach((text, c) => {
+          el("text", { x: LABEL_W + c * colW, y: y + 12, class: "pv-small", "text-anchor": c ? "middle" : "end" }, g, text);
+        });
+        ctx.tree = { at, layer: el("g", {}, g) };
+        return h;
+      },
+      draw(ctx, frame) {
+        const { el, scene } = ctx;
+        const { at, layer } = ctx.tree;
+        layer.replaceChildren();
+        const base = frame.step;
+        const shown = snapshotIndex(scene, frame);
+        for (const n of scene.tree.nodes) {
+          const grow = n.step <= base ? 1 : n.step === base + 1 ? ease(frame.f) : 0;
+          if (grow <= 0) continue;
+          const dropped = n.drop !== undefined && n.drop <= shown;
+          const cls = dropped ? " pv-dropped" : "";
+          const [x1, y1] = at[n.id];
+          if (n.parent !== undefined) {
+            const [x0, y0] = at[n.parent];
+            const mid = (x0 + x1) / 2;
+            el("path", {
+              d: `M ${x0} ${y0} C ${mid} ${y0} ${mid} ${y1} ${x1} ${y1}`,
+              class: `pv-branch${cls}`,
+              "stroke-width": 1 + 10 * n.p,
+              pathLength: grow < 1 ? 1 : null,
+              "stroke-dasharray": grow < 1 ? `${grow} 1` : null,
+            }, layer);
+          }
+          if (grow < 1) continue;
+          el("circle", { cx: x1, cy: y1, r: 3.5, class: `pv-dot${cls}` }, layer);
+          // The root's label sits left of it, a node with branches of its
+          // own above it, and a leaf's right of it.
+          const root = n.parent === undefined;
+          const inner = !root && scene.tree.nodes.some((m) => m.parent === n.id);
+          const text = dropped ? `${n.text}, dropped` : n.text;
+          const where = root ? [x1 - 8, y1 + 4, "end"] : inner ? [x1, y1 - 12 - 5 * n.p, "middle"] : [x1 + 8, y1 + 4, "start"];
+          el("text", { x: where[0], y: where[1], "text-anchor": where[2], class: `${dropped ? "pv-small" : "pv-node-text"} pv-halo` }, layer, text);
+        }
+      },
+    },
   };
 
   let serial = 0;

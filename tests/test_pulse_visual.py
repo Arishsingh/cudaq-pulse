@@ -72,6 +72,37 @@ def test_every_scene_has_a_still_in_both_themes():
                 )
 
 
+# ── The pages' own numbers ────────────────────────────────────────────
+
+
+def test_the_t_state_scenes_say_what_the_t_state_page_prints():
+    tomography = _scene("t_state_injection", "tomography_axes")
+    # "fidelity with |T>: 1.00": the axes the steps read make the page's Bloch vector.
+    x, y, z = (2 * step["weight"] - 1 for step in tomography["snapshots"])
+    assert (round(x, 2), round(y, 2), round(z, 2)) == (0.71, 0.71, 0.01)
+    turns = [step["spans"]["turn"] for step in tomography["snapshots"]]
+    assert [turn is None for turn in turns] == [False, False, True]
+
+    loop = _scene("t_state_injection", "herald_loop")
+    # "herald  300.0  352.0  0": the answer is due 52 ns after the outcome is
+    # sent, and the pi pulse that reads it starts then.
+    first = loop["calls"][0]
+    assert (first["submit"], first["due"]) == (300.0, 352.0)
+    flips = [s for s in loop["spans"] if s.get("when")]
+    assert [s["a"] for s in flips] == [call["due"] for call in loop["calls"]]
+    # "1  0.972" and "2  0.999": the shots kept after one and two attempts.
+    once = sum(c["weight"] for c in loop["cases"] if c["given"]["accepted 1"])
+    twice = sum(c["weight"] for c in loop["cases"] if c["given"]["accepted 2"])
+    assert (round(once, 3), round(twice, 3)) == (0.972, 0.999)
+    assert sum(c["weight"] for c in loop["cases"]) == pytest.approx(1, abs=1e-6)
+
+    tree = {n["id"]: n for n in _scene("t_state_injection", "herald_branches")["tree"]["nodes"]}
+    # "shots kept: 0.972", split about equally by the Z readout.
+    assert round(tree["h0"]["p"], 3) == 0.972
+    assert tree["z0"]["p"] + tree["z1"]["p"] == pytest.approx(tree["h0"]["p"], abs=1e-3)
+    assert {n for n, node in tree.items() if "drop" in node} == {"h1", "h2"}
+
+
 # ── The script, under Node ────────────────────────────────────────────
 
 # A scene the model checks run on even before a page has one: two cases that

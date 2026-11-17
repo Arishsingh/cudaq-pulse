@@ -73,6 +73,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   without JavaScript see a static figure. The new example
   `29_waveform_envelopes.py` prints and plots the samples of every
   built-in envelope.
+- **Animated tutorial figures.** T-State Injection plays its tomography
+  axes one at a time, its heralded loop once per answer with a playhead,
+  and the branches post-selection keeps one readout at a time. Each plays
+  once when scrolled into view, with Replay and step buttons, and its data
+  comes from what the page compiles and simulates. Readers without
+  JavaScript, or who ask for reduced motion, see the still frame.
 
 ### Changed
 

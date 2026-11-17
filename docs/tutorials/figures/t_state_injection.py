@@ -8,14 +8,17 @@ Needs matplotlib (the ``[viz]`` extra). Writes, each with its ``-dark`` twin,
 next to this file and in the order the page shows them:
 
 - ``t_frame_change.svg``, the schedule of ``inject``;
-- ``tomography_axes.svg``, the three schedules of ``t_tomography``;
+- ``tomography_axes``, the three schedules of ``t_tomography``, animated;
 - ``t_bloch.svg``, the Bloch vector the tomography measures from ``|0>``;
 - ``thermal_start.svg``, the levels D5 starts in;
-- ``herald_loop.svg``, the heralded kernel with two attempts;
-- ``herald_branches.svg``, the branches one herald keeps;
+- ``herald_loop``, the heralded kernel with two attempts, animated;
+- ``herald_branches``, the branches one herald keeps, animated;
 - ``herald_infidelity.svg``, the error of each start;
 - ``herald_acceptance.svg``, the shots kept by each number of attempts;
 - ``herald_latency.svg``, what the first answer's wait is made of.
+
+The animated figures are scenes of ``t_state_injection.json``; their stills,
+``<scene>.svg``, are drawn from it by ``tools/render-pulse-visual.js``.
 """
 
 import math
@@ -24,7 +27,8 @@ import cudaq_pulse as pulse
 import matplotlib.pyplot as plt
 import numpy as np
 from _style import end_label, page_namespace, plot_axes, save_themed
-from _timeline import Timeline, busy_lanes, draw, draw_stack
+from _timeline import Timeline, busy_lanes, draw
+from _visual import Names, plays, program, write
 
 AXES = ("X", "Y", "Z")
 
@@ -46,36 +50,61 @@ def frame_change(page) -> None:
     save_themed(figure, "t_frame_change", title="The T gate is a frame shift", desc=alt)
 
 
-def tomography_axes(page) -> None:
-    q, kernel = page["qubit"], page["t_tomography"]
-    timelines = [Timeline.of(kernel.lower(q, axis)) for axis in range(3)]
-    turns = {
-        "X": "−Y90 turns +X onto Z",
-        "Y": "X90 turns +Y onto Z",
-        "Z": "no pulse: Z is read as it is",
+def tomography_axes(page) -> dict:
+    """One step per axis of ``t_tomography``: the pulse that turns the axis onto
+    Z changes, and the readout reads what the page's ``expectation`` gives."""
+    q, kernel, expectation = page["qubit"], page["t_tomography"], page["expectation"]
+    turns = {"X": ("−Y90", "turns +X onto Z"), "Y": ("X90", "turns +Y onto Z")}
+    steps, lanes, end = [], None, 0.0
+    for axis, name in enumerate(AXES):
+        compiled = program(kernel.lower(q, axis))
+        lanes = compiled["lanes"]
+        end = max(end, compiled["end"])
+        drives = [s for s in compiled["spans"] if s["role"] == "drive"]
+        (read,) = [s for s in compiled["spans"] if s["role"] == "readout"]
+        spans = {"prep": [drives[0]["a"], drives[0]["b"]], "read": [read["a"], read["b"]]}
+        spans["turn"] = [drives[1]["a"], drives[1]["b"]] if len(drives) > 1 else None
+        value = expectation(pulse.simulate(kernel, q, axis, initial_state=page["ground"]))
+        if name in turns:
+            word, does = turns[name]
+            label = f"{name} axis: {word} {does}"
+            say = f"{name} axis: {word} {does}."
+        else:
+            word = None
+            label = f"{name} axis: no pulse, Z is read as it is"
+            say = f"{name} axis: no pulse. The T gate shows as a {_t_mark(compiled)} frame shift."
+        steps.append(
+            {
+                "label": label,
+                "short": f"{name} axis",
+                "say": f"{say} The readout gives ⟨{name}⟩ = {value:.2f}.",
+                "spans": spans,
+                "labels": {"turn": word} if word else {},
+                "marks": [m for m in compiled["marks"] if m["role"] == "frame"],
+                "weight": round((1 + value) / 2, 4),
+                "value": f"⟨{name}⟩ = {value:.2f}",
+            }
+        )
+    drive_lane, readout_lane = lanes[0]["id"], lanes[1]["id"]
+    return {
+        "name": "tomography_axes",
+        "title": "One pulse picks the axis",
+        "end": end,
+        "lanes": lanes,
+        "spans": [
+            {"id": "prep", "lane": drive_lane, "role": "drive", "label": "Y90"},
+            {"id": "turn", "lane": drive_lane, "role": "drive"},
+            {"id": "read", "lane": readout_lane, "role": "readout", "label": "readout"},
+        ],
+        "snapshots": steps,
+        "share_label": "shots reading 0",
+        "panels": ["timeline", "cases"],
     }
-    labels = []
-    for name, timeline in zip(AXES, timelines, strict=True):
-        drives = [pl for pl in timeline.pulses if pl.kind == "drive"]
-        words = {(drives[0].lane, round(drives[0].start_ns, 3)): "Y90"}
-        if len(drives) > 1:
-            words[(drives[1].lane, round(drives[1].start_ns, 3))] = turns[name].split()[0]
-        for pl in timeline.pulses:
-            if pl.kind == "readout":
-                words[(pl.lane, round(pl.start_ns, 3))] = "readout"
-        labels.append(words)
-    titles = [f"{name} axis: {turns[name]}" for name in AXES]
 
-    def figure(p):
-        return draw_stack(timelines, titles, p, labels=labels, lane_in=0.34, syncs="none")
 
-    alt = (
-        "Three schedules of the tomography kernel, one per axis, on D5's drive and readout "
-        "lines. Each starts with the Y90 pulse and the T frame shift. For X, a minus Y90 pulse "
-        "turns plus X onto Z; for Y, an X90 pulse turns plus Y onto Z; for Z there is no pulse. "
-        "A readout then measures Z."
-    )
-    save_themed(figure, "tomography_axes", title="One pulse picks the axis", desc=alt)
+def _t_mark(compiled: dict) -> str:
+    (mark,) = [m for m in compiled["marks"] if m["role"] == "frame"]
+    return mark["label"]
 
 
 def bloch_vector(page) -> None:
@@ -183,27 +212,96 @@ def _herald_words(timeline) -> dict:
     return words
 
 
-def herald_loop(page) -> Timeline:
-    timeline = Timeline.of(page["compiled"].lower(page["qubit"], 2, 2))
-    words = _herald_words(timeline)
-    readouts = [pl for pl in timeline.pulses if pl.kind == "readout"]
+def _yes(value: int) -> str:
+    return "accepts" if value else "rejects"
 
-    def figure(p):
-        return draw(timeline, p, pulse_labels=words, call_labels={"herald": "herald"})
 
-    alt = (
-        "Timeline of the heralded T-state kernel with two attempts, on D5's drive and readout "
-        f"lines and the controller link. Each attempt reads D5 out for "
-        f"{readouts[0].end_ns - readouts[0].start_ns:g} ns, sends the outcome to the herald "
-        "function, and plays a pi pulse only if the qubit read 1. After the second attempt, a "
-        f"Y90 pulse and a pi/4 frame shift prepare the T state, and a last readout from "
-        f"{readouts[-1].start_ns:g} ns measures it."
+def _answers_text(key: tuple[int, ...]) -> str:
+    if len(set(key)) == 1:
+        return f"{_yes(key[0])} both attempts"
+    return " and ".join(f"{_yes(v)} attempt {k}" for k, v in enumerate(key, start=1))
+
+
+def herald_loop(page) -> dict:
+    """``heralded_t`` with two attempts, played once per answer the herald can
+    give, with the share of shots the page's simulation gives each."""
+    scheduled = page["compiled"].lower(page["qubit"], 2, 2)
+    scene = program(
+        scheduled,
+        names=Names(readouts=["outcome", "outcome", "Z readout"], answers={"herald": "accepted"}),
     )
-    save_themed(figure, "herald_loop", title="Two heralded attempts, then the T state", desc=alt)
-    return timeline
+    flips = [s for s in scene["spans"] if s.get("when")]
+    for k, span in enumerate(flips, start=1):
+        span["label"] = f"π {k}"
+    (y90,) = [s for s in scene["spans"] if s["role"] == "drive" and not s.get("when")]
+    y90["label"] = "Y90"
+    readouts = [s for s in scene["spans"] if s["role"] == "readout"]
+    (mark,) = [m for m in scene["marks"] if m["role"] == "frame"]
+    names = [call["answer"] for call in scene["calls"]]
+
+    shares: dict[tuple[int, ...], float] = {}
+    for branch in pulse.simulate(scheduled).branches:
+        key = tuple(int(a) for a in branch.answers("herald"))
+        shares[key] = shares.get(key, 0.0) + branch.probability
+    cases = []
+    for key, share in sorted(shares.items(), key=lambda item: -item[1]):
+        given = dict(zip(names, key, strict=True))
+        kept = page["herald_accepted"](_Answers(key))
+        flipped = [s["label"] for s in flips if s in plays(scene, given)]
+        if not flipped:
+            does = "no π pulse plays"
+        elif len(flipped) == 1:
+            does = f"{flipped[0]} plays"
+        else:
+            does = "both π pulses play"
+        moments = [[0.0, "Attempt 1 reads D5 out."]]
+        for k, (call, value) in enumerate(zip(scene["calls"], key, strict=True), start=1):
+            if k > 1:
+                moments.append([readouts[k - 1]["a"], f"Attempt {k} reads D5 out."])
+            moments.append([call["submit"], "The outcome goes to herald on the controller link."])
+            after = "no π pulse." if value else f"π {k} turns D5 back to |0⟩."
+            moments.append([call["due"], f"herald {_yes(value)} the shot: {after}"])
+        moments.append([y90["a"], f"Y90 and the T gate's {mark['label']} frame shift prepare |T⟩."])
+        moments.append(
+            [
+                readouts[-1]["a"],
+                "The last readout measures Z. Post-selection "
+                + ("keeps the shot." if kept else "drops the shot."),
+            ]
+        )
+        cases.append(
+            {
+                "label": f"If herald {_answers_text(key)}, {does}.",
+                "short": f"{', then '.join(_yes(v) for v in key)}: {'kept' if kept else 'dropped'}",
+                "given": given,
+                "weight": round(share, 6),
+                "value": _fmt(share),
+                "moments": moments,
+            }
+        )
+    scene.update(
+        name="herald_loop",
+        title="Two heralded attempts, then the T state",
+        cases=cases,
+        panels=["timeline", "cases"],
+    )
+    return scene
 
 
-def herald_branches(page) -> None:
+class _Answers:
+    """A branch as ``herald_accepted`` reads it: only its herald answers."""
+
+    def __init__(self, answers: tuple[int, ...]):
+        self._answers = [bool(a) for a in answers]
+
+    def answers(self, function: str) -> list[bool]:
+        assert function == "herald"
+        return self._answers
+
+
+def herald_branches(page) -> dict:
+    """The branches of one heralded attempt measured on Z, grown one readout at
+    a time: the herald's, post-selection, then the tomography's."""
     result = pulse.simulate(page["compiled"].lower(page["qubit"], 1, 2))
     herald: dict[int, float] = {}
     tomography = {0: 0.0, 1: 0.0}
@@ -216,59 +314,90 @@ def herald_branches(page) -> None:
             tomography[min(branch.levels[-1], 1)] += branch.probability
     firsts = sorted(herald)
 
-    def figure(p):
-        fig, ax = plot_axes(p, height_in=1.9)
-        ax.axis("off")
-        y_first = {0: 0.0, **{a: -0.9 * k - 0.6 for k, a in enumerate(firsts[1:], start=1)}}
-        y_leaf = {0: 0.45, 1: -0.45}
-        mid = float(np.mean(list(y_first.values())))
+    nodes = [{"id": "start", "col": 0, "p": 1.0, "text": "start", "step": 0}]
+    for a in firsts:
+        node = {"id": f"h{a}", "parent": "start", "col": 1, "p": round(herald[a], 6), "step": 1}
+        node["text"] = f"herald read {a}: {_fmt(herald[a])}"
+        if a != 0:
+            node["drop"] = 2
+        nodes.append(node)
+    for z, share in tomography.items():
+        word = "Z reads 0" if z == 0 else "Z reads 1 or 2"
+        nodes.append(
+            {
+                "id": f"z{z}",
+                "parent": "h0",
+                "col": 2,
+                "p": round(share, 6),
+                "step": 3,
+                "text": f"{word}: {_fmt(share)}",
+            }
+        )
+    height = _place(nodes)
+    reads = ", ".join(f"{a} on {_fmt(herald[a])}" for a in firsts)
+    steps = [
+        (
+            "start",
+            "Every shot starts in D5's thermal mixture",
+            "Every shot starts in D5's thermal mixture.",
+        ),
+        (
+            "herald readout",
+            "The herald reads D5 out",
+            f"The herald readout splits the shots: it reads {reads}.",
+        ),
+        (
+            "post-select",
+            "Post-selection keeps what herald accepts",
+            f"Post-selection keeps the branches herald accepts, the {_fmt(accepted)} that read 0. "
+            "The rest are dropped.",
+        ),
+        (
+            "Z readout",
+            "The tomography reads Z on the kept shots",
+            f"Of the kept shots, Z reads 0 on {_fmt(tomography[0])} and 1 or 2 on "
+            f"{_fmt(tomography[1])}, as |T⟩ gives.",
+        ),
+    ]
+    return {
+        "name": "herald_branches",
+        "title": "What post-selection keeps",
+        "tree": {
+            "columns": ["", "herald readout", "tomography, kept shots only"],
+            "nodes": nodes,
+            "height": height,
+        },
+        "snapshots": [
+            {"label": label, "short": short, "say": say, "spans": {}} for short, label, say in steps
+        ],
+        "panels": ["tree"],
+    }
 
-        def edge(x0, y0, x1, y1, prob, color):
-            xs = np.linspace(0, 1, 40)
-            ys = y0 + (y1 - y0) * (3 * xs**2 - 2 * xs**3)
-            ax.plot(
-                x0 + (x1 - x0) * xs,
-                ys,
-                color=color,
-                lw=0.6 + 7 * prob,
-                alpha=0.35 + 0.65 * min(1.0, prob * 2),
-                solid_capstyle="butt",
-            )
 
-        for a in firsts:
-            kept = a == 0
-            edge(0.0, mid, 1.0, y_first[a], herald[a], p.classical if kept else p.muted)
-            word = "kept" if kept else "dropped"
-            end_label(
-                ax,
-                1.0,
-                y_first[a],
-                f"herald read {a}: {_fmt(herald[a])}, {word}",
-                p.text if kept else p.muted,
-                dx=0 if kept else 6,
-                dy=7 if kept else 0,
-                ha="center" if kept else "left",
-                va="bottom" if kept else "center",
-            )
-        for z, share in tomography.items():
-            edge(1.0, y_first[0], 2.0, y_leaf[z], share, p.classical)
-            word = "Z reads 0" if z == 0 else "Z reads 1 or 2"
-            end_label(ax, 2.0, y_leaf[z], f"{word}: {_fmt(share)}", p.text, dx=6)
-        ax.text(-0.04, mid, "start", ha="right", va="center", fontsize=8.5, color=p.muted)
-        for x, word in ((1.0, "herald"), (2.0, "tomography, kept shots only")):
-            ax.text(x, 0.95, word, ha="center", va="bottom", fontsize=8, color=p.muted)
-        ax.set_xlim(-0.3, 2.75)
-        ax.set_ylim(min(y_first.values()) - 0.3, 1.2)
-        return fig
+def _place(nodes: list[dict]) -> int:
+    """Lay a tree out top to bottom: each leaf in a row of its own, in order,
+    and each parent at the middle of its children. Returns the rows."""
+    children: dict[str, list[dict]] = {}
+    for node in nodes:
+        if "parent" in node:
+            children.setdefault(node["parent"], []).append(node)
+    rows = 0
 
-    alt = (
-        "The branches of one heralded attempt measured on Z. "
-        + "; ".join(f"The herald reads {a} with probability {_fmt(herald[a])}" for a in firsts)
-        + f". Post-selection keeps only the branches whose herald read 0, {_fmt(accepted)} of "
-        f"the shots: of those, Z reads 0 in {_fmt(tomography[0])} and 1 or 2 in "
-        f"{_fmt(tomography[1])}, as the T state gives. The rest are dropped."
-    )
-    save_themed(figure, "herald_branches", title="What post-selection keeps", desc=alt)
+    def place(node: dict) -> float:
+        nonlocal rows
+        kids = children.get(node["id"], [])
+        if not kids:
+            node["y"] = float(rows)
+            rows += 1
+        else:
+            ys = [place(kid) for kid in kids]
+            node["y"] = (ys[0] + ys[-1]) / 2
+        return node["y"]
+
+    place(nodes[0])
+    for node in nodes:
+        node["y"] = round(node["y"] / max(1, rows - 1), 4)
+    return rows
 
 
 def _rows(page):
@@ -378,15 +507,17 @@ def herald_latency(timeline: Timeline) -> None:
 def main() -> None:
     page = page_namespace("t_state_injection.rst")
     frame_change(page)
-    tomography_axes(page)
     bloch_vector(page)
     thermal_start(page)
-    timeline = herald_loop(page)
-    herald_branches(page)
     starts, attempts = _rows(page)
     herald_infidelity(starts, attempts)
     herald_acceptance(attempts)
-    herald_latency(timeline)
+    herald_latency(Timeline.of(page["compiled"].lower(page["qubit"], 2, 2)))
+    write(
+        "t_state_injection",
+        "docs/tutorials/t_state_injection.rst",
+        [tomography_axes(page), herald_loop(page), herald_branches(page)],
+    )
     plt.close("all")
 
 

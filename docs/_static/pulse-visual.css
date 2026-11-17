@@ -100,6 +100,12 @@ html[data-theme="dark"] .pv-svg,
 .pv-pill rect { fill: var(--pv-classical); }
 .pv-svg .pv-pill text { fill: var(--pv-on-pill); font-size: 10.5px; }
 
+.pv-branch { fill: none; stroke: var(--pv-classical); stroke-linecap: butt; opacity: 0.85; }
+.pv-branch.pv-dropped { stroke: var(--pv-muted); stroke-dasharray: 3 2; opacity: 0.6; }
+.pv-dot { fill: var(--pv-classical); }
+.pv-dot.pv-dropped { fill: var(--pv-muted); }
+.pv-svg .pv-node-text { font-size: 10.5px; }
+
 .pv-track { fill: var(--pv-grid); }
 .pv-share { fill: var(--pv-classical); }
 .pv-case-band { fill: transparent; }
