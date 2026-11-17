@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import cudaq_pulse as pulse
 
 from ._device import Qudit
+from ._errors import InvalidValueError
 from ._system import Controller, ControlSystem, ReadoutLine
 from .backends import Backend, IncompatibleBackendError
 from .controller import (
@@ -54,6 +55,26 @@ _QUDITS = 2
 
 
 # ── Corpus ───────────────────────────────────────────────────────────────────
+
+
+def _branch(gap: int) -> Kernel[[Qudit, Qudit]]:
+    """The program with a branch: a pulse on a readout's outcome, *gap*
+    cycles after the readout ends."""
+
+    @pulse.kernel
+    def branches(q: Qudit, r: Qudit) -> None:
+        d = get_drive_line(q)
+        ro = get_readout_line(q)
+        drive(d, gaussian(32, 0.5, 8.0))
+        sync(d, ro)
+        m = readout(ro, square(80, 0.05))
+        sync(d, ro)
+        if gap:
+            wait(d, gap)
+        if m:
+            drive(d, gaussian(32, 0.5, 8.0))
+
+    return branches
 
 
 def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
@@ -123,17 +144,6 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
             sync(d, ro)
             readout(ro, square(40, 0.05))
             sync(d, ro)
-
-    @pulse.kernel
-    def branches(q: Qudit, r: Qudit) -> None:
-        d = get_drive_line(q)
-        ro = get_readout_line(q)
-        drive(d, gaussian(32, 0.5, 8.0))
-        sync(d, ro)
-        m = readout(ro, square(80, 0.05))
-        sync(d, ro)
-        if m:
-            drive(d, gaussian(32, 0.5, 8.0))
 
     @pulse.kernel
     def calls(q: Qudit, r: Qudit) -> None:
@@ -247,7 +257,7 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         Event.CALL: calls,
         Event.ANSWER: answers,
         Event.FRAME_UPDATE: frame_updates,
-        "branch": branches,
+        "branch": _branch(0),
         "answer_timeout": answer_timeout,
         "timeout_function": timeout_function,
         "runtime": runtime,
@@ -265,6 +275,15 @@ def _corpus() -> Mapping[str, Kernel[[Qudit, Qudit]]]:
     if not _built:
         _built.update(_build())
     return _built
+
+
+def _feedback_gap(backend: Backend, given: int | None) -> int:
+    """The cycles ``branch`` waits after its readout: *given*, else the
+    backend's ``feedback_gap_cycles``, else 0."""
+    gap = given if given is not None else getattr(backend, "feedback_gap_cycles", 0)
+    if isinstance(gap, bool) or not isinstance(gap, int) or gap < 0:
+        raise InvalidValueError(f"feedback_gap_cycles must be an int of at least 0, got {gap!r}")
+    return gap
 
 
 def _unsupported_event(program: dict[str, Any]) -> dict[str, Any]:
@@ -589,8 +608,10 @@ def validate(
     controller: Controller | None = None,
     shots_count: int = 1000,
     tolerance: float = 0.05,
+    feedback_gap_cycles: int | None = None,
 ) -> _Report:
     """See ``cudaq_pulse.backends.validate``."""
+    gap = _feedback_gap(backend, feedback_gap_cycles)
     report = _Report(backend.name)
     system = _control_system(backend, controller)
     dev = _device(system)
@@ -599,6 +620,8 @@ def validate(
     emitted = 0
     first: dict[str, Any] | None = None
     for kind, kernel in _corpus().items():
+        if kind == "branch" and gap:
+            kernel = _branch(gap)
         wired = _WIRED.get(kind)
         on = system if wired is None else wired(system)
         parts = len(on.controllers) > 1

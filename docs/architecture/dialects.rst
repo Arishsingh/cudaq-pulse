@@ -123,7 +123,10 @@ to op like a line.
   delay advances the frame. The carrier runs on through the wait: a tone off
   its qudit's frequency by a detuning is that detuning times the elapsed time
   further round in the qudit's frame, whether the time passed in a wait or in
-  pulses.
+  pulses. A frame change is made where the program reaches it on its tone's
+  line, after the waits before it there: ``pulse.shift_frequency`` by ``+d``
+  before a wait of ``T`` and by ``-d`` after it leave the frame ``2 pi d T``
+  further on, as a pulse of that length in place of the wait would.
 - A frame rotates through ``pulse.sync``: a change made before a sync
   applies to the next pulse on the tone after it, however long the sync holds
   the line.

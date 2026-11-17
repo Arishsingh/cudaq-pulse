@@ -178,6 +178,16 @@ def test_a_rolled_loop_reports_each_iteration_as_it_does_now():
     ]
 
 
+def test_a_rolled_loop_reports_each_short_pulse():
+    lowered = pulse.compile(close).lower(Q[0])
+    assert check(lowered, Controller(min_pulse_cycles=8)) == [
+        f"line 0 (drive of qudit 0): the drive at {13 * k} lasts 5 cycles; the controller "
+        "plays none shorter than 8 (Controller.min_pulse_cycles)"
+        for k in range(3000)
+    ]
+    assert check(lowered, Controller(min_pulse_cycles=5)) == []
+
+
 def test_a_rolled_loop_of_a_few_iterations_compiles_under_a_controller_in_a_child():
     assert _in_a_child("drives", 1000) == {"ops": 5}
 

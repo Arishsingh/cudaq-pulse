@@ -791,8 +791,9 @@ struct ControllerEventWalk : ControllerExpressions {
                  std::vector<int64_t>, std::string, std::string, double>;
 
   /// A tone's frame as the simulator tracks it (pulse::ToneState): `phase`
-  /// at `timeNs`, the end of its latest drive; a tone detuned from its
-  /// frame frequency gains phase from there on.
+  /// at `timeNs`, the end of its latest drive or the place of a later frame
+  /// change; a tone detuned from its frame frequency gains phase from there
+  /// on.
   struct Frame {
     double frequencyHz = 0.0;
     double frameFrequencyHz = 0.0;
@@ -804,6 +805,17 @@ struct ControllerEventWalk : ControllerExpressions {
       if (detuning == 0.0)
         return phase;
       return phase + detuning * (2.0 * M_PI) * 1.0e-9 * (timeNs - this->timeNs);
+    }
+    /// The frame at a frame change at `start` cycles, if that is later: it
+    /// runs at its old frequency until then.
+    void advanceTo(std::optional<int64_t> start, double clockGHz) {
+      if (!start)
+        return;
+      double changeNs = static_cast<double>(*start) / clockGHz;
+      if (changeNs > timeNs) {
+        phase = phaseAt(changeNs);
+        timeNs = changeNs;
+      }
     }
     /// Whether two arms leave the frame the same: without a detuning, the
     /// time of the last drive does not matter.
@@ -1471,6 +1483,7 @@ struct ControllerEventWalk : ControllerExpressions {
       if constexpr (RunTime)
         if (!tracked.empty())
           frameChange(op, name.drop_front(6));
+      frame.advanceTo(pulse::scheduledStart(op, iteration), clockGHz);
       if (name == "pulse.shift_phase")
         frame.phase += value;
       else if (name == "pulse.set_phase")
