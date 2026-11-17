@@ -782,22 +782,35 @@ def draw_stack(
     p: Palette,
     *,
     width_in: float = WIDTH_IN,
+    labels: list[dict] | None = None,
     **options,
 ):
     """Timelines one above the other on one time axis, each under its title, to
-    compare schedules of the same program."""
+    compare schedules of the same program, or to show the steps of one; *labels*
+    gives each its own *pulse_labels*."""
     sizes = {k: options.pop(k) for k in ("lane_in", "link_in") if k in options}
     lanes = [layout(t, **sizes) for t in timelines]
+    labels = labels or [options.pop("pulse_labels", None)] * len(timelines)
     gap, bottom = 0.42, 0.42
     height = sum(lane[2] + 0.12 for lane in lanes) + gap * len(lanes) + bottom - 0.1
     end = max(max([pl.end_ns for pl in t.pulses] + [1.0]) for t in timelines)
     fig = plt.figure(figsize=(width_in, height))
     left, y = 1.25 / width_in, height
-    for k, (timeline, lane, title) in enumerate(zip(timelines, lanes, titles, strict=True)):
+    rows = zip(timelines, lanes, titles, labels, strict=True)
+    for k, (timeline, lane, title, words) in enumerate(rows):
         y -= gap - (0.1 if k == 0 else 0) + lane[2] + 0.12
         ax = fig.add_axes((left, y / height, 0.985 - left, (lane[2] + 0.12) / height))
         last = k == len(timelines) - 1
-        draw_on(ax, timeline, p, lanes=lane, xlim=(0, end * 1.01), xlabel=last, **options)
+        draw_on(
+            ax,
+            timeline,
+            p,
+            lanes=lane,
+            xlim=(0, end * 1.01),
+            xlabel=last,
+            pulse_labels=words,
+            **options,
+        )
         ax.set_title(title, loc="left", fontsize=8.5, color=p.text, pad=4)
         if not last:
             ax.tick_params(axis="x", labelbottom=False)
@@ -812,9 +825,12 @@ def draw(timeline: Timeline, p: Palette, *, width_in: float = WIDTH_IN, **option
     function's latency (by default, its length); *pulse_labels* puts a word
     above the pulse that starts at a time on a lane; *xlim* zooms in;
     *breakdown* splits each call's latency into the link's, the function's
-    (or the timeout's) and the feedback's.
+    (or the timeout's) and the feedback's; *only* keeps those lanes, as
+    ``busy_lanes`` gives them for a zoomed window.
     """
-    lanes = layout(timeline, **{k: options.pop(k) for k in ("lane_in", "link_in") if k in options})
+    lanes = layout(
+        timeline, **{k: options.pop(k) for k in ("lane_in", "link_in", "only") if k in options}
+    )
     total = lanes[2]
     fig = plt.figure(figsize=(width_in, total + 0.55))
     left = 1.25 / width_in
