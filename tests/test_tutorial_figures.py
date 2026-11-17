@@ -107,6 +107,20 @@ def test_each_themed_figure_has_both_themes_and_its_page_says_what_it_shows():
                 )
 
 
+def test_every_tutorial_figure_follows_the_theme_and_every_svg_is_used():
+    if not _DOCS.exists():
+        pytest.skip("needs the source tree")
+    used = set()
+    for page in sorted(_DOCS.glob("*.rst")):
+        text = page.read_text()
+        assert not re.search(r"^\s*\.\. (figure|image)::", text, re.M), (
+            f"{page.name} has a figure that isn't a themed-figure"
+        )
+        for light, _ in _themed_figures(page):
+            used |= {light.name, f"{light.stem}-dark{light.suffix}"}
+    assert sorted(p.name for p in _FIGURES.glob("*.svg") if p.name not in used) == []
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(importlib.util.find_spec("matplotlib") is None, reason="needs matplotlib")
 @pytest.mark.parametrize("script", _SCRIPTS, ids=lambda p: p.stem)
