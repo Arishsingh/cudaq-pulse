@@ -1414,11 +1414,9 @@ struct ControllerEventWalk : ControllerExpressions {
     double timeoutNs = kUnknown;
     if (!submit) {
       latest[op] = static_cast<int64_t>(result.size());
-      mode = AttrNames::has(op, names.blocking) ? "blocking" : "bounded";
-      if (auto timeout = op->getAttrOfType<mlir::FloatAttr>("timeout_ns")) {
-        mode = "timeout";
-        timeoutNs = timeout.getValueAsDouble();
-      }
+      auto [wait, timeout] = waitMode(op);
+      mode = wait;
+      timeoutNs = timeout;
     }
     if constexpr (RunTime)
       if (auto request = mlir::dyn_cast<classical::SubmitOp>(op))

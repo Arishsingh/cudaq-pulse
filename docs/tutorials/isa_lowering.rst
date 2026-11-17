@@ -648,12 +648,13 @@ out feedback latency. So validate against a controller without it:
 .. code-block:: text
    :class: output
 
-   backend 'toy': 15 passed, 2 skipped
+   backend 'toy': 16 passed, 2 skipped
 
 The test programs cover:
 
 - one program per kind of event
-- a branch, and a branch on whether a decoder answered in time
+- a branch, and branches on whether a decoder answered in time, with the
+  call's timeout and with the function's own
 - values known only at run time
 - a shared line, and two controllers
 
