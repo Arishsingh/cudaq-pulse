@@ -232,7 +232,8 @@ def test_a_feedback_gap_runs_the_branch_on_a_controller_with_long_feedback_laten
     lines = str(spaced).splitlines()
     assert spaced.ok, str(spaced)
     assert "PASS branch (/1)" in lines and "PASS branch (/2)" in lines
-    assert lines[-1] == "backend 'toy': 30 passed"
+    # Spaced, it passes what a controller without the latency passes.
+    assert lines == str(backends.validate(ToyBackend())).splitlines()
     short = backends.validate(backend, feedback_gap_cycles=1999)
     assert "SKIP branch: exceeds the controller's limits" in str(short)
 
