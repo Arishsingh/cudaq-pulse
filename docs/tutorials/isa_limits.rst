@@ -148,9 +148,10 @@ branches on it:
    # play ch0 w0 0.5
    # end0:
 
-.. figure:: figures/isa_feedback.svg
-   :alt: Two controller timelines over 400 cycles. Controller 0 acquires qudit 0 from cycle 0 to 200 into bit m0. The bit takes 80 cycles of feedback latency and 40 of peer latency, so controller 1 branches on it at cycle 320 and, only when it is 1, plays the flip of qudit 2 from 320 to 360.
-   :width: 95%
+.. toy-flow:: figures/toy_flow.json
+   :scene: flip_other
+   :fallback: figures/isa_feedback.svg
+   :alt: Timelines of the two toy controllers. Controller 0 acquires qudit 0 from cycle 0 to 200 into bit m0. The bit takes 80 cycles of feedback latency and 40 of peer latency, so controller 1 branches on it at cycle 320 and, only when it is 1, flips qudit 2 from 320 to 360. One cycle is 1 ns.
 
    The two listings in time. Bit m0 is ready for the second controller
    at cycle 320, where its ``wait 80`` ends.
@@ -355,6 +356,12 @@ format keeps the train as one loop:
    #   play
    #   wait
 
+Against the controller's instruction memory:
+
+.. memory-gauge:: figures/controller_memory.json
+   :rows: train train_loop
+   :columns: pulses
+
 Takeaway: a sequencer with a loop counter lowers the body once.
 
 A decoder with a deadline
@@ -552,6 +559,15 @@ What to notice:
 - The second controller never branches on ``m0`` or ``m1``. It uses only
   the decoder's answer.
 
+Here is the round playing, once with the answer in time and once late:
+
+.. toy-flow:: figures/toy_flow.json
+   :scene: correct_across
+
+The shaded stretch on the link runs from the request's departure to its
+deadline. The decoder may answer at any point in it. The polls, 8 cycles
+after the deadline, take the answer if it came.
+
 Takeaway: the deadline is a number the compiler schedules around. Your
 sequencer only polls once, where the compiler put the poll.
 
@@ -631,6 +647,12 @@ What to notice:
 - Thirty widths overflow the channel's 1,024 samples.
 - Three frequencies overflow its two oscillator settings.
 - Both are compile errors, not a failed upload.
+
+Here are the three programs against the channel's memories:
+
+.. memory-gauge:: figures/controller_memory.json
+   :rows: rabi widths hops
+   :columns: samples frequencies
 
 Phase is cheaper still. The compiler folds constant phase shifts into
 the next pulse's frame, as it did with the Ramsey sequence's virtual Z.
