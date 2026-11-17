@@ -31,7 +31,16 @@ program uses, ``lines`` each line's index, ``role`` (``"drive"`` or
 ``"readout"``) and qudit (and, with line delays, its ``fine_delay_ns``;
 see below; on a shared line, the line's ``qudits`` and
 ``max_concurrent_tones``; see `Shared lines`_), and ``limits`` the controller limits it was
-checked against (``null`` without). ``events`` lists every drive, readout,
+checked against (``null`` without). Each line also has
+``native_frequency_hz``, the frequency of its own tone (``line.tone``):
+its qudit's 0-1 frequency on a drive line, and its readout's
+``frequency_hz`` (else the 0-1 frequency) on a readout line. Every shot
+starts that tone's frame at this frequency, and its ``phase_rad`` advances
+from it when the tone is retuned, so a backend that plays a line's other
+frequencies (another transition's tone, a shifted frequency) as offsets
+from one oscillator needs nothing from the quantum system. A kernel with
+qudit parameters gives it as the slot's symbols instead (``s0.f01``,
+``s0.f_ro``; see below) and its lines leave it out. ``events`` lists every drive, readout,
 wait, sync, classical call and frame update in program order, once per loop
 iteration and both arms of a branch. ``segments``, ``calls``, ``links`` and
 ``manifest`` are those of ``ScheduledKernel.export_to_emulator()`` (see
@@ -375,7 +384,9 @@ length; for one on its own clock, or with line delays, export
     Each line's ``qudits``, a list, in the order the program first uses the
     lines. A shared line (see `Shared lines`_) is listed once, with every
     qudit it reaches and its ``max_concurrent_tones``, which a dedicated line
-    does not have.
+    does not have. In place of ``native_frequency_hz``,
+    ``native_frequencies_hz``: the native frequency of each of its
+    ``qudits``, in the same order.
 Events on a shared line
     A play, readout, wait or frame update on a shared line has, after its
     ``line``, its ``tone_slot`` (0 to the line's ``max_concurrent_tones``
@@ -758,6 +769,13 @@ per distinct values, so a call that compiles also exports.
 ``cudaq_pulse.controller.check(compiled, limits)`` returns the violations
 without raising. A control system without controllers checks nothing
 more.
+
+Some instruments require a minimum pulse length.
+``Controller(min_pulse_cycles=16)`` makes every drive and readout shorter
+than 16 of the controller's cycles a violation naming its line, its start
+and its length; on a control system of several controllers, each checks
+its own lines. It is 0, no limit, by default, and the export lists it
+among the limits only when it is set.
 
 A controller that plays nothing while one of its classical calls is out
 declares ``Controller(blocks_on_calls=True)``. Each call then holds every

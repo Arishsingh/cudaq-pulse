@@ -585,6 +585,10 @@ class Controller:
     ``instruction_cycles + min_idle_cycles`` apart, because the controller
     issues one instruction per ``instruction_cycles`` and idles no less than
     ``min_idle_cycles``.
+    ``min_pulse_cycles``: the shortest drive or readout its lines play (0:
+    no limit), as some instruments require a minimum pulse length; a
+    shorter one is a violation naming its line. Exports list it among the
+    limits only when it is set.
     ``sample_rate_ghz``: the rate its lines play samples at (``None``: one
     per cycle of its clock). Its ratio to the clock may be a fraction, and
     every operation on its lines must start and last a whole number of
@@ -672,6 +676,7 @@ class Controller:
     cycles_per_timestep: int = 1
     instruction_cycles: int = 1
     min_idle_cycles: int = 0
+    min_pulse_cycles: int = 0
     sample_rate_ghz: float | None = None
     waveform_memory_samples: int | None = None
     max_frequencies_per_line: int | None = None
@@ -726,6 +731,11 @@ class Controller:
         for name in ("min_idle_cycles", "detector_recovery_cycles", "feedback_latency_cycles"):
             if getattr(self, name) < 0:
                 raise InvalidValueError(f"Controller.{name} cannot be negative")
+        least = self.min_pulse_cycles
+        if isinstance(least, bool) or not isinstance(least, int) or least < 0:
+            raise InvalidValueError(
+                f"Controller.min_pulse_cycles must be an int of at least 0, got {least!r}"
+            )
         object.__setattr__(self, "max_fine_delay_ns", as_nanoseconds(self.max_fine_delay_ns))
         if self.max_program_duration is not None:
             object.__setattr__(
@@ -855,6 +865,8 @@ class Controller:
         for name in ("max_amplitude", "max_instructions", "max_program_duration"):
             if data[name] is None:
                 del data[name]
+        if not self.min_pulse_cycles:
+            del data["min_pulse_cycles"]
         # Memory per line exports as it did before the key existed.
         if self.waveform_memory == "per_line":
             del data["waveform_memory"]

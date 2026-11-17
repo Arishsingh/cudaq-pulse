@@ -48,9 +48,9 @@ def test_export_lists_every_timed_operation_with_its_waveform_and_tone():
     assert program["format"] == FORMAT == "cudaq-pulse.controller/1"
     assert json.loads(json.dumps(program)) == program
     assert program["lines"] == [
-        {"line": 0, "role": "drive", "qudit": 0},
-        {"line": 1, "role": "readout", "qudit": 0},
-        {"line": 2, "role": "drive", "qudit": 1},
+        {"line": 0, "role": "drive", "qudit": 0, "native_frequency_hz": 5.0e9},
+        {"line": 1, "role": "readout", "qudit": 0, "native_frequency_hz": 5.0e9},
+        {"line": 2, "role": "drive", "qudit": 1, "native_frequency_hz": 5.1e9},
     ]
     kinds = [(e["kind"], e["line"], e["start_cycles"], e["end_cycles"]) for e in program["events"]]
     assert kinds == [
@@ -196,10 +196,42 @@ def idle_readout_line(q, r):
 
 def test_a_line_is_listed_with_its_role_even_when_it_only_waits():
     program = _program(idle_readout_line)
-    assert program["lines"] == [{"line": 0, "role": "readout", "qudit": 0}]
+    assert program["lines"] == [
+        {"line": 0, "role": "readout", "qudit": 0, "native_frequency_hz": 5.0e9}
+    ]
     (event,) = program["events"]
     assert event["kind"] == "wait" and event["end_cycles"] == 10
     assert "waveform" not in event
+
+
+@pulse.kernel
+def other_tones(q):
+    d = get_drive_line(q)
+    r = get_readout_line(q)
+    drive(d, square(16, 0.1), tone=d.tones[(1, 2)])
+    shift_frequency(d.tone, 2.0e6)
+    drive(d, square(16, 0.1))
+    sync(d, r)
+    readout(r, square(100, 0.05))
+
+
+def test_each_line_gives_the_frequency_of_its_own_tone():
+    qs = pulse.quantum_system("transmon_surface17", layout=[0])
+    physical = qs.physical_qudits[qs.layout[0]]
+    assert physical.readout is not None
+    lowered = pulse.compile(other_tones, quantum_system=qs).lower(qs.qudits[0])
+    flat = lowered.export_to_controller()
+    native = {line["role"]: line["native_frequency_hz"] for line in flat["lines"]}
+    assert native == {"drive": physical.frequency_hz, "readout": physical.readout.frequency_hz}
+    # No drive plays the line's own tone at its own frequency; the line gives it.
+    played = [e["frequency_hz"] for e in flat["events"] if e["kind"] == "drive"]
+    assert native["drive"] not in played
+    assert played[1] == pytest.approx(native["drive"] + 2.0e6)
+    structured = lowered.export_to_controller(version=2)
+    assert [line["native_frequencies_hz"] for line in structured["lines"]] == [
+        [native[line["role"]]] for line in structured["lines"]
+    ]
+    assert controller_module.unroll(structured)["lines"] == flat["lines"]
 
 
 def test_export_samples_envelopes_at_a_multiple_of_the_clock():
@@ -434,6 +466,65 @@ def test_only_the_controller_limits_the_amplitude():
     for wrong in (0, -1.0, math.inf, math.nan, True, "1"):
         with pytest.raises(pulse.InvalidValueError, match="max_amplitude must be a positive"):
             Controller(max_amplitude=wrong)  # type: ignore[arg-type]
+
+
+@pulse.kernel
+def short_pulses(q, r):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    drive(d, square(8, 0.1))
+    drive(d, gaussian(16, 0.3, 4.0))
+    drive(get_drive_line(r), square(8, 0.2))
+    sync(d, ro)
+    readout(ro, square(100, 0.05))
+
+
+def test_a_controller_may_require_a_minimum_pulse_length():
+    lowered = pulse.compile(short_pulses).lower(Q[0], Q[1])
+    assert check(lowered, Controller()) == check(lowered, Controller(min_pulse_cycles=8)) == []
+    assert check(lowered, Controller(min_pulse_cycles=16)) == [
+        "line 0 (drive of qudit 0): the drive at 0 lasts 8 cycles; the controller plays none "
+        "shorter than 16 (Controller.min_pulse_cycles)",
+        "line 2 (drive of qudit 1): the drive at 116 lasts 8 cycles; the controller plays none "
+        "shorter than 16 (Controller.min_pulse_cycles)",
+    ]
+    found = check(lowered, Controller(min_pulse_cycles=101))
+    assert [f.split(": the ")[1].split(" lasts")[0] for f in found] == [
+        "drive at 0",
+        "drive at 8",
+        "readout at 24",
+        "drive at 116",
+    ]
+    # In the controller's own cycles: 8 cycles of the 2 GHz program clock are 4 at 1 GHz.
+    own = check(lowered, Controller(clock_ghz=1.0, min_pulse_cycles=8))
+    assert [f.split(" lasts ")[1].split(";")[0] for f in own] == ["4 cycles", "4 cycles"]
+    machine = ControlSystem(controllers=[Controller(min_pulse_cycles=16)])
+    with pytest.raises(ControllerLimitError, match=r"lasts 8 cycles; .* shorter than 16 \("):
+        pulse.compile(short_pulses, control_system=machine).lower(Q[0], Q[1])
+    machine = ControlSystem(controllers=[Controller(min_pulse_cycles=8)])
+    program = pulse.compile(short_pulses, control_system=machine).lower(Q[0], Q[1])
+    assert program.export_to_controller()["limits"]["min_pulse_cycles"] == 8
+    assert program.export_to_controller(version=2)["controller"]["min_pulse_cycles"] == 8
+    assert "min_pulse_cycles" not in Controller().as_dict()
+    for wrong in (-1, 1.5, True, "8"):
+        with pytest.raises(pulse.InvalidValueError, match="min_pulse_cycles must be an int"):
+            Controller(min_pulse_cycles=wrong)  # type: ignore[arg-type]
+
+
+def test_each_controller_of_a_system_checks_its_own_minimum_pulse_length():
+    def system(first, second):
+        return ControlSystem(
+            controllers=[
+                Controller(drive_lines=[0], readout_lines=[0], min_pulse_cycles=first),
+                Controller(drive_lines=[1], readout_lines=[1], min_pulse_cycles=second),
+            ]
+        )
+
+    with pytest.raises(ControllerLimitError) as caught:
+        pulse.compile(short_pulses, control_system=system(16, 0)).lower(Q[0], Q[1])
+    (violation,) = caught.value.violations
+    assert "(drive of qudit 0): the drive at 0 lasts 8 cycles" in violation
+    pulse.compile(short_pulses, control_system=system(0, 8)).lower(Q[0], Q[1])
 
 
 def _after_a_loop(n: int) -> pulse.Kernel:
