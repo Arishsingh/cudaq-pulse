@@ -25,6 +25,7 @@ from .controller import (
     _peak_amplitude,
     _sample_rates,
     _samples_per_own_cycle,
+    _short_pulse,
     shape_key,
 )
 
@@ -739,6 +740,8 @@ def parts(
                     unresolved.append(f"line {line}: tone frequencies")
         if limits.max_amplitude is not None:
             found.extend(_amplitudes(lines[line], items, events, limits.max_amplitude, unresolved))
+        if limits.min_pulse_cycles:
+            found.extend(_short_pulses(lines[line], items, events, limits))
         if limits.waveform_memory_samples is not None:
             shapes = stored if shared else {}
             unknown_samples = 0
@@ -919,6 +922,25 @@ def _amplitudes(
         )
 
     return _each_event(items, over, (line["line"],))
+
+
+def _short_pulses(
+    line: Mapping[str, Any],
+    items: list[Any],
+    events: Sequence[Mapping[str, Any]],
+    limits: Controller,
+) -> list[Any]:
+    """``controller._short_pulse`` of the events of *items*."""
+
+    def short(i: int) -> _Text | None:
+        event = events[i]
+        duration = event["end_cycles"] - event["start_cycles"]
+        if duration >= limits.min_pulse_cycles:
+            return None
+        before, after = _short_pulse(line, event["kind"], duration, limits)
+        return _Text(before, event["start_cycles"], after)
+
+    return _each_event(items, short, (line["line"],))
 
 
 class _Feedback:

@@ -770,6 +770,13 @@ per distinct values, so a call that compiles also exports.
 without raising. A control system without controllers checks nothing
 more.
 
+Some instruments require a minimum pulse length.
+``Controller(min_pulse_cycles=16)`` makes every drive and readout shorter
+than 16 of the controller's cycles a violation naming its line, its start
+and its length; on a control system of several controllers, each checks
+its own lines. It is 0, no limit, by default, and the export lists it
+among the limits only when it is set.
+
 A controller that plays nothing while one of its classical calls is out
 declares ``Controller(blocks_on_calls=True)``. Each call then holds every
 line from its submission until its answer is due: the scheduler sends it

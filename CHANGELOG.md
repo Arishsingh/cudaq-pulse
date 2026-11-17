@@ -33,6 +33,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   units, `0`, `round_duration` counts and calibrated pulses are not
   warned. It is off by default, does not change the program, and a
   compilation without it checks nothing.
+- **Minimum pulse length.** `Controller(min_pulse_cycles=...)` states the
+  shortest drive or readout a controller plays, in its own cycles, as some
+  instruments require a minimum pulse length. Compiling checks it like the
+  other limits: a shorter pulse is a `ControllerLimitError` naming its line,
+  start and length, also in rolled loops and on each controller of a
+  control system. The default, 0, is no limit, and the export lists the key
+  among the limits only when it is set, so existing programs and exports
+  are unchanged.
 - **Reading calibrations.** `PhysicalQudit.calibrations` and
   `Coupling.calibrations` give the calibrations a qudit or coupling
   publishes, read-only and keyed as `calibrations=` takes them (by
