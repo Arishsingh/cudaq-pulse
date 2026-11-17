@@ -73,6 +73,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   without JavaScript see a static figure. The new example
   `29_waveform_envelopes.py` prints and plots the samples of every
   built-in envelope.
+- **Native line frequencies in the controller export.** Each line of
+  `export_to_controller()` now has `native_frequency_hz` (format `/1`) or
+  `native_frequencies_hz`, one per qudit (format `/2`): the frequency of
+  the line's own tone, at which every shot starts its frame and from which
+  a retuned tone's `phase_rad` advances. A backend whose line plays several
+  frequencies no longer needs the quantum system to find it. The key is new
+  within both formats, so the format names are unchanged; `unroll` carries
+  it, and a kernel with qudit parameters gives it as the slot's symbols
+  instead, as before.
 
 ### Changed
 
