@@ -2864,6 +2864,13 @@ class PulseIREmitter:
         # same value; a channel first acquired in the body was hoisted.
         aliases: list[tuple[_Chan, str]] = []
         originals = {id(obj): copy for obj, copy in containers}
+        # A list slot the body left on an old value of the channel it entered
+        # on (an op rebound a copy of it, as ``sync(*a, *b)`` does) names the
+        # channel's current value, as a name does (``_stale_names``).
+        for k, (obj, i, new) in enumerate(slot_changes):
+            chan = new.chan
+            if chan is not None and chan.value is not new and originals[id(obj)][i].chan is chan:
+                slot_changes[k] = (obj, i, chan.value)
         by_value: dict[int, str] | None = None
         for cell, before in entering:
             new = cell.value
