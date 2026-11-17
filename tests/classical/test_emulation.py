@@ -218,6 +218,44 @@ def test_a_decoder_not_ready_without_a_timeout_is_an_error():
         emulation.emulate(low, channel=_Status(inner, {"decode__1"}, 4))
 
 
+def test_in_process_repr_lists_all_handler_names_in_order():
+    def estimate(bits, *, history=None):
+        return bits
+
+    estimate.takes_history = True
+    channel = emulation.InProcess(
+        [],
+        {"update": next_wait.implementation, "estimate": estimate, "decode": decode.implementation},
+    )
+    expected = "<InProcess serving decode, estimate, update>"
+    assert repr(channel) == expected
+    channel.close()
+    assert repr(channel) == expected
+
+
+def test_in_process_repr_without_handlers():
+    assert repr(emulation.InProcess([], {})) == "<InProcess serving nothing>"
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, "UdpChannel(('127.0.0.1', 50123), slot_bytes=65536, timeout_s=2.0)"),
+        (
+            {"slot_bytes": 256, "timeout_s": 0.25},
+            "UdpChannel(('127.0.0.1', 50123), slot_bytes=256, timeout_s=0.25)",
+        ),
+    ],
+)
+def test_udp_channel_repr_includes_its_configuration_after_close(options, expected):
+    channel = emulation.UdpChannel(("127.0.0.1", 50123), **options)
+    try:
+        assert repr(channel) == expected
+    finally:
+        channel.close()
+    assert repr(channel) == expected
+
+
 def test_udp_gives_the_same_answers_as_in_process():
     low = pulse.compile(adaptive).lower(Q[0])
     functions = low.classical
