@@ -60,8 +60,16 @@ def pair_density(page) -> None:
         from matplotlib.colors import LinearSegmentedColormap
 
         fig, ax = plt.subplots(figsize=(3.4, 3.0))
-        cmap = LinearSegmentedColormap.from_list("theme", [p.surface, p.drive])
-        image = ax.imshow(rho, cmap=cmap, vmin=0, vmax=max(0.5, float(rho.max())))
+        cmap = LinearSegmentedColormap.from_list("theme", [p.surface, p.drive], N=64)
+        # Cells and colorbar as vector paths: an embedded PNG's bytes differ
+        # between platforms, so the figure would not compare equal on all.
+        edges = np.arange(len(labels) + 1) - 0.5
+        image = ax.pcolormesh(
+            edges, edges, rho, cmap=cmap, vmin=0, vmax=max(0.5, float(rho.max())), edgecolors="face"
+        )
+        ax.set_xlim(edges[0], edges[-1])
+        ax.set_ylim(edges[-1], edges[0])
+        ax.set_aspect("equal")
         ax.set_xticks(range(len(labels)), labels, fontsize=7.5)
         ax.set_yticks(range(len(labels)), labels, fontsize=7.5)
         ax.tick_params(length=0)
@@ -70,6 +78,8 @@ def pair_density(page) -> None:
             spine.set_visible(False)
         ax.set_xlabel("X1 D2 levels")
         bar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+        bar.solids.set_rasterized(False)
+        bar.solids.set_edgecolor("face")
         bar.outline.set_visible(False)
         bar.ax.tick_params(labelsize=7.5, length=0)
         bar.set_label("|ρ|", color=p.muted)
