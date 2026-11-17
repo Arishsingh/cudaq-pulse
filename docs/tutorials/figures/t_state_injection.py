@@ -15,7 +15,7 @@ from _timeline import Timeline, draw_zoomed
 
 def main() -> None:
     page = page_namespace("t_state_injection.rst")
-    timeline = Timeline.of(page["compiled"].lower(page["q"], 2, 2))
+    timeline = Timeline.of(page["compiled"].lower(page["qubit"], 2, 2))
 
     drives = [pl for pl in timeline.pulses if pl.kind == "drive"]
     words = {}
@@ -57,7 +57,7 @@ def error_budget(page) -> None:
     import numpy as np
 
     q, tomography, expectation, fidelity = (
-        page["q"],
+        page["qubit"],
         page["t_tomography"],
         page["expectation"],
         page["fidelity"],
