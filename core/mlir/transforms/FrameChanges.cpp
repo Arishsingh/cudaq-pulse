@@ -6,11 +6,18 @@
 // The four frame changes (shift_phase, set_phase, shift_frequency and
 // set_frequency) take no time. Once the program is scheduled each gets a
 // place on its tone's timeline, as `start_cycles`, `duration_cycles` = 0 and
-// `period_cycles` in loops: where its tone is free, the end of the latest
-// drive or readout on it, as the frame accrues phase from there. Where that
-// time is not one pattern over the iterations of a loop (a change before
-// the first pulse of an iteration on a tone the previous iteration played),
-// the change is placed at the start of the next drive or readout that plays
+// `period_cycles` in loops: where it is made, as the frame accrues phase at
+// its new frequency from there. That is where its tone is free, the end of
+// the latest drive or readout on it, or, when later, where the program
+// reaches it on the tone's line (its own line, else the line it last or
+// next plays on), after the waits, pulses and syncs before it there, and
+// after the readouts it depends on (in an arm of a branch on one, or with
+// a value computed from one); never later than the drive or readout that
+// plays with it. So a frequency changed before a wait and changed back
+// after it runs at the changed frequency through the wait. Where that time
+// is not one pattern over the iterations of a loop (a change before the
+// first pulse of an iteration on a tone the previous iteration played), the
+// change is placed at the start of the next drive or readout that plays
 // with it. In a loop whose iterations do not play its tone, a change is at
 // the start of each iteration. A change takes no time: no drive, readout,
 // loop or program starts, ends or lasts otherwise for it.
@@ -62,6 +69,7 @@
 #include "cudaq-pulse/Dialect/Classical/ClassicalOps.h.inc"
 
 #include "cudaq-pulse/Analysis/Execution.h"
+#include "cudaq-pulse/Analysis/LineTrace.h"
 #include "cudaq-pulse/Analysis/Timing.h"
 #include "cudaq-pulse/Transforms/Passes.h"
 
@@ -88,11 +96,120 @@ mlir::Value toneOf(mlir::Operation *pulse) {
   return mlir::cast<pulse::ReadoutOp>(pulse).getTone();
 }
 
+mlir::Value lineOf(mlir::Operation *pulse) {
+  if (auto drive = mlir::dyn_cast<pulse::DriveOp>(pulse))
+    return drive.getLine();
+  return mlir::cast<pulse::ReadoutOp>(pulse).getLine();
+}
+
+bool isLine(mlir::Value value) {
+  return mlir::isa<pulse::DriveLineType, pulse::ReadoutLineType>(
+      value.getType());
+}
+
 /// A time in every iteration of the enclosing loops: `base` plus k_l times
 /// `periods[l]`, outermost first.
 struct Time {
   int64_t base = 0;
   llvm::SmallVector<int64_t, 2> periods;
+};
+
+/// Whether `a` is at or after `b` in every iteration, both with a period
+/// for each of the same loops.
+bool notBefore(const Time &a, const Time &b) {
+  if (a.base < b.base)
+    return false;
+  for (auto [x, y] : llvm::zip_equal(a.periods, b.periods))
+    if (x < y)
+      return false;
+  return true;
+}
+
+/// Where the program makes each frame change on the line of its tone: the
+/// version of that line current there, after the ops before the change on
+/// it. The tone's line is its own, from `pulse.get_drive_line` or
+/// `pulse.get_readout_line`; for a tone of its own (`pulse.tone`) it is the
+/// line the tone last played on, else the one it next plays on.
+class LinesAtChanges {
+public:
+  explicit LinesAtChanges(mlir::func::FuncOp function) {
+    for (mlir::Block &block : function.getBody())
+      walk(block);
+  }
+
+  mlir::Value at(mlir::Operation *change) const { return lines.lookup(change); }
+
+private:
+  pulse::AllocationTracer trace;
+  /// The current version of each line, by its acquisition, and the earlier
+  /// ones replaced, undone when a region is left.
+  llvm::DenseMap<mlir::Operation *, mlir::Value> current;
+  llvm::SmallVector<std::pair<mlir::Operation *, mlir::Value>> replaced;
+  llvm::DenseMap<mlir::Operation *, mlir::Value> lines;
+
+  void note(mlir::Value value) {
+    if (!isLine(value))
+      return;
+    if (mlir::Operation *line = trace(value)) {
+      mlir::Value &version = current[line];
+      replaced.emplace_back(line, version);
+      version = value;
+    }
+  }
+
+  void walk(mlir::Block &block) {
+    for (mlir::BlockArgument argument : block.getArguments())
+      note(argument);
+    for (mlir::Operation &op : block) {
+      if (isFrameChange(&op)) {
+        if (mlir::Operation *line = lineOfTone(&op))
+          if (mlir::Value version = current.lookup(line))
+            lines[&op] = version;
+        continue;
+      }
+      for (mlir::Region &region : op.getRegions())
+        for (mlir::Block &inner : region) {
+          size_t mark = replaced.size();
+          walk(inner);
+          while (replaced.size() > mark) {
+            auto [line, version] = replaced.pop_back_val();
+            current[line] = version;
+          }
+        }
+      for (mlir::Value result : op.getResults())
+        note(result);
+    }
+  }
+
+  /// The acquisition of the line `change` is made on, or null.
+  mlir::Operation *lineOfTone(mlir::Operation *change) {
+    mlir::Value tone = change->getOperand(0);
+    if (mlir::Operation *line = trace(tone))
+      return line;
+    for (mlir::Value value = tone;;) {
+      mlir::Operation *def = value.getDefiningOp();
+      if (!def || !isFrameChange(def)) {
+        if (def && isPulse(def))
+          return trace(lineOf(def));
+        break;
+      }
+      value = def->getOperand(0);
+    }
+    if (mlir::Operation *next = nextPulse(change->getResult(0)))
+      return trace(lineOf(next));
+    return nullptr;
+  }
+
+  static mlir::Operation *nextPulse(mlir::Value tone) {
+    for (mlir::Operation *user : tone.getUsers()) {
+      if (isPulse(user) && toneOf(user) == tone)
+        return user;
+      if (isFrameChange(user))
+        if (mlir::Operation *next = nextPulse(user->getResult(0)))
+          return next;
+    }
+    return nullptr;
+  }
 };
 
 /// Whether iteration arg `index` of `loop` reaches the yield through frame
@@ -132,13 +249,37 @@ public:
       : i64(mlir::IntegerType::get(context, 64)), context(context),
         names(names) {}
 
-  void place(mlir::Operation *change) {
+  /// Places `change`, made where `line` (null if none) is the version of
+  /// its tone's line.
+  void place(mlir::Operation *change, mlir::Value line) {
     size_t depth = pulse::enclosingLoops(change).size();
     mlir::Operation *source = nullptr;
     std::optional<Time> time = freeAt(change->getOperand(0));
-    if (time)
+    if (time) {
       source = sourceOf(change->getOperand(0));
-    else if ((time = nextPulse(change->getResult(0), depth)))
+      time->periods.resize(depth, 0);
+      std::optional<Time> reached = line ? freeAt(line) : std::nullopt;
+      mlir::Operation *by = nullptr;
+      if (reached) {
+        reached->periods.resize(depth, 0);
+        by = sourceOf(line);
+      }
+      mlir::Operation *readout = nullptr;
+      if (std::optional<Time> known = measured(change, depth, readout);
+          known && later(*known, reached)) {
+        reached = std::move(known);
+        by = readout;
+      }
+      // Later than its tone is free, and no later than the drive or readout
+      // that plays with it (on another line, it can be earlier).
+      if (reached && later(*reached, time)) {
+        std::optional<Time> next = nextPulse(change->getResult(0), depth);
+        if (!next || notBefore(*next, *reached)) {
+          time = std::move(reached);
+          source = by;
+        }
+      }
+    } else if ((time = nextPulse(change->getResult(0), depth)))
       source = change;
     else
       time = Time{};
@@ -161,6 +302,48 @@ public:
   }
 
 private:
+  /// Whether `a` is later than `b` (none) in some iteration and not earlier
+  /// in any, both with periods for the same loops.
+  static bool later(const Time &a, const std::optional<Time> &b) {
+    return !b || (notBefore(a, *b) && !notBefore(*b, a));
+  }
+
+  /// Where the measurements end that `change` depends on directly, those
+  /// the branches around it test and those its value is computed from, and
+  /// the `readout` that ends last: a change the measurement chooses, in an
+  /// arm or by its value, is made once it is in, as if its line were synced
+  /// with the readout's.
+  std::optional<Time> measured(mlir::Operation *change, size_t depth,
+                               mlir::Operation *&readout) {
+    std::optional<Time> latest;
+    llvm::SmallVector<mlir::Value, 4> work{change->getOperand(1)};
+    for (mlir::Operation *op = change->getParentOp();
+         op && !mlir::isa<mlir::func::FuncOp>(op); op = op->getParentOp())
+      if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op))
+        work.push_back(branch.getCondition());
+    llvm::DenseSet<mlir::Value> seen;
+    while (!work.empty()) {
+      mlir::Value value = work.pop_back_val();
+      mlir::Operation *def = value.getDefiningOp();
+      if (!def || !seen.insert(value).second)
+        continue;
+      if (mlir::isa<pulse::ReadoutOp>(def)) {
+        if (!pulse::hasStart(def))
+          continue;
+        Time end = timeOf(def, pulse::scheduledDuration(def).value_or(0));
+        end.periods.resize(depth, 0);
+        if (later(end, latest)) {
+          latest = std::move(end);
+          readout = def;
+        }
+      } else if (def->getNumRegions() == 0 &&
+                 !mlir::isa<classical::ClassicalDialect>(def->getDialect())) {
+        llvm::append_range(work, def->getOperands());
+      }
+    }
+    return latest;
+  }
+
   Time timeOf(mlir::Operation *op, int64_t offset) const {
     Time time{*pulse::startCycles(op) + offset, {}};
     llvm::ArrayRef<int64_t> periods = pulse::periodCycles(op);
@@ -192,7 +375,7 @@ private:
 
   /// The op `freeAt(tone)` times: the drive, readout, loop or branch before
   /// the frame changes `tone` follows and the loops it passes through, or
-  /// none for the function's tone.
+  /// none for the function's tone. For a line, the op that made the version.
   static mlir::Operation *sourceOf(mlir::Value tone) {
     while (true) {
       if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(tone)) {
@@ -210,7 +393,8 @@ private:
     }
   }
 
-  /// When `tone` is free, as a pattern over the loops around its block.
+  /// When `tone` is free, as a pattern over the loops around its block; for
+  /// a line, when the ops before it on the line end.
   /// Each value's is found once: changes are placed in program order and a
   /// tone is free at what comes before it, so it does not change after.
   /// Else each change after a run of branches would look through them all.
@@ -270,6 +454,8 @@ private:
         return;
       reads.push_back(branch.thenYield().getOperand(index));
       reads.push_back(branch.elseYield().getOperand(index));
+    } else if (auto sync = mlir::dyn_cast<pulse::SyncOp>(def)) {
+      llvm::append_range(reads, sync.getLines());
     }
   }
 
@@ -294,7 +480,7 @@ private:
       return outside;
     }
     mlir::Operation *def = tone.getDefiningOp();
-    if (isPulse(def)) {
+    if (isPulse(def) || mlir::isa<pulse::WaitOp>(def)) {
       if (!pulse::hasStart(def))
         return std::nullopt;
       return timeOf(def, pulse::scheduledDuration(def).value_or(0));
@@ -338,6 +524,21 @@ private:
         return std::nullopt;
       then->base = std::max(then->base, otherwise->base);
       return then;
+    }
+    // A sync's lines are all free where the latest of them is.
+    if (auto sync = mlir::dyn_cast<pulse::SyncOp>(def)) {
+      std::optional<Time> latest;
+      for (mlir::Value line : sync.getLines()) {
+        std::optional<Time> time = freeAt(line);
+        if (!time)
+          return std::nullopt;
+        time->periods.resize(depth, 0);
+        if (latest && latest->periods != time->periods)
+          return std::nullopt;
+        if (!latest || time->base > latest->base)
+          latest = std::move(time);
+      }
+      return latest;
     }
     if (mlir::isa<pulse::GetDriveLineOp, pulse::GetReadoutLineOp,
                   pulse::ToneOp>(def))
@@ -645,6 +846,7 @@ struct PulseFrameChangesPass
     bool changed = false;
     for (auto function : module.getOps<mlir::func::FuncOp>()) {
       FramePlacement placement(context, names);
+      std::optional<LinesAtChanges> lines;
       bool changes = false;
       function.walk<mlir::WalkOrder::PreOrder>([&](mlir::Operation *op) {
         bool change = isFrameChange(op);
@@ -659,7 +861,9 @@ struct PulseFrameChangesPass
               }
         }
         if (change) {
-          placement.place(op);
+          if (!lines)
+            lines.emplace(function);
+          placement.place(op, lines->at(op));
           changes = true;
         }
       });

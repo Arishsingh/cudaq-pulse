@@ -278,6 +278,34 @@ half turn between them undoes the first:
 ``delta``: the export plays the tone at ``f + delta``, and a qudit that was
 at the tone is then ``delta`` below it (``D = -delta``).
 
+.. test: test_a_frequency_shifted_over_a_wait_and_back_leaves_the_phase_it_gained
+
+**Frequency excursions.** A frequency change is made where the program
+reaches it on the tone's line, after the waits before it there, and the
+frame phase runs on through it. ``shift_frequency(tone, +delta)``, a wait
+of ``T`` and ``shift_frequency(tone, -delta)`` leave the frame
+``2 pi delta T`` further on, which the pulses after them carry in
+``phase_rad``, as with a pulse of the same length in place of the wait. A
+change made after the wait does not act during it. Here 1 MHz over 250 ns
+is a quarter turn, so the second X90 turns about -Y and leaves the first's
+state as it was:
+
+.. code-block:: python
+
+   @pulse.kernel
+   def excursion(qudit, delta_hz: float):
+       d = get_drive_line(qudit)
+       drive(d, square(2 * pulse.ns, math.pi / 4))
+       shift_frequency(d.tone, delta_hz)
+       wait(d, 250 * pulse.ns)
+       shift_frequency(d.tone, -delta_hz)
+       drive(d, square(2 * pulse.ns, math.pi / 4))
+
+
+   print(round(drives(excursion, 1e6)[1]["phase_rad"], 4))   # 1.5708, 2 pi (1 MHz) (250 ns)
+   print(bloch(excursion, 1e6))   # [0.0, -1.0, 0.0], as after the first X90
+   print(bloch(excursion, 0.0))   # [0.0, 0.0, -1.0], an X without the excursion
+
 .. test: test_an_exported_frame_phase_multiplies_the_samples_by_exp_minus_i_phase
 
 **Export phase.** A drive event of ``export_to_controller()`` gives the

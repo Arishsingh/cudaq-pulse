@@ -455,7 +455,10 @@ def ShiftFrequencyOp : PulseOp<"shift_frequency", []> {
   let summary = "Apply a relative frequency shift to a tone";
   let description = [{
     Adds `frequency_hz` to the tone's carrier frequency. The frame phase
-    stays continuous. It takes no time.
+    stays continuous, and gains phase at the new frequency from where the
+    program makes the change, after the waits before it on the tone's line:
+    shifted by `+d` before a wait of `T` and by `-d` after it, the frame is
+    `2 pi d T` further on. It takes no time.
   }];
   let arguments = !con((ins ToneType:$tone, F64:$frequency_hz),
                        PulseTimingArgs);
@@ -500,7 +503,9 @@ def SetFrequencyOp : PulseOp<"set_frequency", []> {
   let summary = "Set absolute frequency of a tone";
   let description = [{
     Sets the tone's carrier frequency to `frequency_hz`. The frame phase
-    stays continuous. It takes no time.
+    stays continuous, and gains phase at the new frequency from where the
+    program makes the change, after the waits before it on the tone's line.
+    It takes no time.
   }];
   let arguments = !con((ins ToneType:$tone, F64:$frequency_hz),
                        PulseTimingArgs);

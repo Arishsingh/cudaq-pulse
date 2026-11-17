@@ -104,6 +104,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- A frame change made after a wait on its tone's line acted where the
+  tone's previous drive or readout ended, before the wait:
+  `shift_frequency(tone, +d)`, a wait of `T` and `shift_frequency(tone, -d)`
+  exported (formats /1 and /2) and simulated with no phase gained, where
+  the frame runs `2 pi d T` further on, as it did with a pulse in place of
+  the wait; and a frequency set after a wait gained phase during it. The
+  change was placed there, and the export and the simulator ran a tone at
+  its latest frequency from its latest drive, wherever the change was. A
+  change is now made where the program reaches it on the tone's line, after
+  the waits, pulses and syncs before it there, and after a readout it
+  depends on (in an arm of a branch on the measurement, or with a value
+  computed from it), as with a sync after the readout; never after the
+  pulse that plays with it. The frame runs at its old frequency until then.
+  Phase changes play as before; their frame updates' `start_cycles` move to
+  the end of such a wait or readout.
 - After a wait whose length a `float` argument sets, `classical_report()`
   and the `"calls"` of `export_to_controller()` (formats /1 and /2, and
   `unroll`) and of `export_to_emulator()` gave each call's times with the
