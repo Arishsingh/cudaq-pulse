@@ -110,6 +110,12 @@ List what the schedule plays:
 The schedule holds one pulse, the 40 ns Y90. The T gate played no pulse: it
 advanced the phase of the drive line's tone by π/4.
 
+.. themed-figure:: figures/t_frame_change.svg
+   :alt: Schedule of the inject kernel on D5's drive line: a Y90 pulse from 0 to 40 ns, then the T gate as a +π/4 frame shift at 40 ns, a point with no length and no pulse.
+   :width: 100%
+
+   The schedule of ``inject``. The diamond is the T gate.
+
 What to notice: the T gate takes no time and adds no error. What limits
 this ``|T>`` is the Y90 pulse, the qubit's decoherence, and the state it
 starts in.
@@ -192,6 +198,18 @@ After the state, one pulse picks the axis:
        sync(drive_line, readout_line)
        readout(readout_line, measurement)
 
+.. animation-candidate: a later animation may replace this step sequence,
+   turning each axis of the state onto Z in turn.
+
+.. themed-figure:: figures/tomography_axes.svg
+   :alt: Three schedules of the tomography kernel, one per axis, on D5's drive and readout lines. Each starts with the Y90 pulse and the T frame shift. For X, a minus Y90 pulse turns plus X onto Z; for Y, an X90 pulse turns plus Y onto Z; for Z there is no pulse. A readout then measures Z.
+   :width: 100%
+
+   The three schedules of ``t_tomography``, one per axis.
+
+What to notice: only the second pulse changes. Each one moves a different
+axis of the state onto Z, where the readout can see it.
+
 From readouts to fidelity
 -------------------------
 
@@ -248,6 +266,15 @@ Measure all three axes from ``|0>``:
 What to notice: from ``|0>``, the prepared state is within 1e-3 of
 ``|T>``, and that includes the tomography pulses' own errors.
 
+.. themed-figure:: figures/t_bloch.svg
+   :alt: The Bloch vector the tomography measures from the ground state, seen from above, in the X-Y plane: x 0.71, y 0.71, z 0.01. It points 45 degrees from plus X, where the plus state would point, and reaches the unit circle.
+   :width: 50%
+
+   The measured Bloch vector, seen from above.
+
+What to notice: the state points 45° from ``|+>``. That is the π/4 the
+frame shift added, even though no pulse played it.
+
 The thermal start
 -----------------
 
@@ -272,6 +299,16 @@ Leave out ``initial_state`` and the simulation starts there:
 
    excited at the start: 0.027
    fidelity with |T>:    0.97
+
+.. themed-figure:: figures/thermal_start.svg
+   :alt: The levels D5 starts in, as the first readout of the heralded kernel reads them: level 0, 97.2%; level 1, 2.7%; level 2, 7.5e-4. Everything not in level 0 is the error a herald removes.
+   :width: 100%
+
+   The levels D5 starts in, as the first herald readout of this page reads
+   them.
+
+What to notice: almost 3% of shots start outside level 0, nearly all of
+them in level 1.
 
 The excited part of the start ends up near the opposite state. So the
 infidelity is about the thermal population: 2.6e-2, about a thousand times
@@ -339,6 +376,19 @@ Compile it against the control system with the controller link:
        control_system=control_system,
    )
 
+.. animation-candidate: a later animation may play this schedule with a
+   moving playhead, one attempt at a time.
+
+.. themed-figure:: figures/herald_loop.svg
+   :alt: Timeline of the heralded T-state kernel with two attempts, on D5's drive and readout lines and the controller link. Each attempt reads D5 out for 300 ns, sends the outcome to the herald function, and plays a pi pulse only if the qubit read 1. After the second attempt, a Y90 pulse and a pi/4 frame shift prepare the T state, and a last readout from 824 ns measures it.
+   :width: 100%
+
+   ``heralded_t`` with two attempts. Dashed pulses play only on shots whose
+   herald said no.
+
+What to notice: each attempt is the same three steps. A readout, a call on
+the controller link, and a π pulse that waits for its answer.
+
 Post-select on the answer
 -------------------------
 
@@ -350,6 +400,18 @@ herald answer was true:
 
    def herald_accepted(branch):
        return branch.answers("herald")[-1]
+
+.. animation-candidate: a later animation may grow this tree one readout at
+   a time.
+
+.. themed-figure:: figures/herald_branches.svg
+   :alt: The branches of one heralded attempt measured on Z. The herald reads 0 with probability 97.2%; The herald reads 1 with probability 2.7%; The herald reads 2 with probability 7.5e-4. Post-selection keeps only the branches whose herald read 0, 97.2% of the shots: of those, Z reads 0 in 49.1% and 1 or 2 in 48.1%, as the T state gives. The rest are dropped.
+   :width: 100%
+
+   The branches of one attempt, measured on Z.
+
+What to notice: post-selection keeps the branches whose herald read 0.
+Among them, Z reads 0 and 1 about equally, as ``|T>`` should.
 
 The kept result holds their state, normalized, and ``acceptance``, the
 share of shots they are:
@@ -383,6 +445,12 @@ Try one attempt:
    fidelity with |T>: 1.00
    infidelity < 1e-3: True
 
+.. themed-figure:: figures/herald_infidelity.svg
+   :alt: Infidelity of the prepared state with the T state: start in |0⟩, 2.4e-05; thermal start, 2.6e-02; thermal, 1 herald, 2.4e-05. One herald brings the thermal start back to the error of the ground-state start.
+   :width: 100%
+
+   The error of each start, from this page's tomography.
+
 What to notice: one herald keeps the 97.2% of shots that didn't start
 excited, and their infidelity falls from 2.6e-2 to below 1e-3, close to the
 result from ``|0>``.
@@ -410,12 +478,11 @@ them as 0 and keeps them:
           2  0.999  True
           3  0.999  True
 
-.. themed-figure:: figures/t_error_budget.svg
-   :alt: Infidelity of the prepared state with the T state, and the share of shots kept: start in |0⟩, 2.4e-05 and 100.0%; thermal start, 2.6e-02 and 100.0%; 1 attempt, 2.4e-05 and 97.2%; 2 attempts, 2.4e-05 and 99.9%; 3 attempts, 2.4e-05 and 99.9%.
-   :width: 100%
+.. themed-figure:: figures/herald_acceptance.svg
+   :alt: The share of shots the herald keeps, by the number of attempts: 1, 97.2%; 2, 99.9%; 3, 99.9%. The second attempt recovers most of the shots the first dropped; a third adds almost nothing.
+   :width: 65%
 
-   The infidelity and the shots kept for each start, from this page's
-   tomography.
+   The shots kept, by the number of attempts.
 
 What to notice:
 
@@ -459,18 +526,16 @@ later:
 - at most 40 ns in the function;
 - 8 ns of feedback.
 
-The slack is 0 because the π pulse that depends on the answer is scheduled
-the moment it is due.
-
-.. themed-figure:: figures/herald_timeline.svg
-   :alt: Timeline of the heralded T-state kernel with two attempts, on D5's drive and readout lines and the controller link, with a closer look at the first answer below. Each attempt reads D5 out for 300 ns and sends the outcome to the herald function, whose answer is due 52 ns later: 4 ns on the link, at most 40 ns in the function and 8 ns of feedback. A pi pulse that plays only if the qubit read 1 starts the moment the answer is due. After the second attempt, a Y90 pulse and a pi/4 frame shift prepare the T state, and a last readout measures it.
+.. themed-figure:: figures/herald_latency.svg
+   :alt: A close look at the first herald answer. The readout ends and its outcome is sent to the herald function, whose answer is due 52 ns later: 4 ns on the link, at most 40 ns in the function and 8 ns of feedback. The pi pulse that plays only if the qubit read 1 starts the moment the answer is due.
    :width: 100%
 
-   Two attempts of ``heralded_t``. Dashed pulses play only on shots whose
-   herald said no; the blue dashes are each pulse's Q quadrature. Below,
-   the first answer's 52 ns.
+   The first answer of ``heralded_t``, close up.
 
-What to notice: waiting is where the time goes. On D5, each microsecond
+What to notice: the π pulse starts the moment the answer is due. That is
+why the slack is 0.
+
+Waiting is where the time goes. On D5, each microsecond
 spent waiting costs about 1e-2 of fidelity (from its 46 µs T2*), far more
 than the pulses.
 
