@@ -33,7 +33,8 @@ the answer was there.
 - ``lower`` turns one controller's ``export_to_controller()`` program
   into a ``ToyProgram``.
 - ``events`` reads a listing back into the pulses and calls it plays.
-- ``run`` executes listings on emulated toy controllers.
+- ``run`` executes listings on emulated toy controllers, and gives back
+  each instruction they issue, with its cycle.
 - ``ToyBackend`` is the lowering as a ``cudaq_pulse.backends`` backend.
 
 The tutorials "Lowering to Your Controller's Instruction Set" and
@@ -65,7 +66,7 @@ from cudaq_pulse.quantum_systems import PhysicalQudit
 __all__ = [
     "DESCRIPTION",
     "EMIT",
-    "Played",
+    "Issued",
     "ToyBackend",
     "ToyProgram",
     "events",
@@ -559,13 +560,26 @@ def events(toy: ToyProgram) -> list[dict[str, Any]]:
 
 
 @dataclass(frozen=True)
-class Played:
-    """A pulse a toy controller played: which controller, when, and
-    what."""
+class Issued:
+    """An instruction a toy controller issued: which controller, at what
+    cycle, its place in the listing, and the instruction."""
 
     controller: int
     start_cycles: int
+    counter: int
     instruction: str
+
+    @property
+    def op(self) -> str:
+        return self.instruction.split()[0]
+
+    def plays(self) -> bool:
+        """Whether it starts a pulse: a ``play`` or an ``acquire``."""
+        return self.op in PULSES
+
+    def __str__(self) -> str:
+        where = f"controller {self.controller} at {self.start_cycles:>3}"
+        return f"{where}: {self.instruction}"
 
 
 def peer_latency(program: ToyProgram, receiver: int) -> int:
@@ -613,14 +627,14 @@ def labels(program: ToyProgram) -> dict[str, int]:
 def run(
     programs: Sequence[ToyProgram],
     outcomes: Mapping[str, int],
-) -> list[Played]:
-    """The pulses toy controllers play when their acquisitions give
-    *outcomes*, by bit (``{"m4": 1}``; a bit not given is 0). A branch
-    on a bit before it can have reached the controller raises
-    ``RuntimeError``."""
+) -> list[Issued]:
+    """Every instruction toy controllers issue when their acquisitions
+    give *outcomes*, by bit (``{"m4": 1}``; a bit not given is 0), in
+    time order. A label is not an instruction. A branch on a bit before
+    it can have reached the controller raises ``RuntimeError``."""
     ready = ready_cycles(programs)
     by_number = {program.controller: program for program in programs}
-    played = []
+    issued = []
 
     for program in programs:
         targets = labels(program)
@@ -630,14 +644,13 @@ def run(
         while counter < len(program.code):
             instruction = program.code[counter]
             op, *args = instruction.split()
+            if not instruction.endswith(":"):
+                step = Issued(program.controller, now, counter, instruction)
+                issued.append(step)
             counter += 1
 
             if op == "wait":
                 now += int(args[0]) * program.timestep
-            elif op in ("play", "acquire"):
-                played.append(
-                    Played(program.controller, now, instruction),
-                )
             elif op == "jump":
                 counter = targets[args[0]]
             elif op == "branch":
@@ -660,8 +673,8 @@ def run(
                 if outcomes.get(bit, 0) == jump_on:
                     counter = targets[args[1]]
 
-    played.sort(key=lambda p: (p.start_cycles, p.controller))
-    return played
+    issued.sort(key=lambda step: (step.start_cycles, step.controller))
+    return issued
 
 
 # ── The backend ───────────────────────────────────────────────────────
@@ -711,9 +724,9 @@ class ToyBackend:
         artifact: ToyProgram,
         *,
         shots_count: int = 1,
-    ) -> list[list[Played]]:
-        """Each shot's pulses. Toy controllers have no qudits, so every
-        outcome is 0."""
+    ) -> list[list[Issued]]:
+        """Each shot's instructions, as issued. Toy controllers have no
+        qudits, so every outcome is 0."""
         return [run([artifact], {}) for _ in range(shots_count)]
 
 
@@ -778,8 +791,8 @@ if __name__ == "__main__":
         print(f"; controller {number}\n{program}")
         programs.append(program)
 
-    for played in run(programs, {"m0": 1}):
-        print(played)
+    for step in run(programs, {"m0": 1}):
+        print(step)
 
     no_latency = toy_controller(feedback_latency_cycles=0)
     report = backends.validate(backend, controller=no_latency)
