@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensing of files that can't carry a header of their own.
+version = 1
+
+# The data of the tutorials' animated figures, which their scripts in the same
+# folder write from what each page compiles and simulates. JSON has no comments.
+[[annotations]]
+path = "docs/tutorials/figures/*.json"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved."
+SPDX-License-Identifier = "Apache-2.0"
