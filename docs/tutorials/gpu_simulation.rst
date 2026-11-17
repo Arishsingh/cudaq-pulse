@@ -92,6 +92,15 @@ CZ's slot. Flux pulses aren't simulated yet, so the slot is a wait:
        wait(drive_a, cz_slot)
        wait(drive_b, cz_slot)
 
+.. themed-figure:: figures/pair_schedule.svg
+   :alt: Timeline of evolve_pair on the drive lines of X1 and D2: a pi/2 pulse on X1 and a pi pulse on D2, a sync, then the CZ's 98 ns slot as a wait on both lines, to 138 ns.
+   :width: 100%
+
+   ``evolve_pair`` on X1 and D2.
+
+What to notice: after the sync, nothing plays during the CZ slot. Only the
+coupling acts.
+
 Simulate it on the CPU, with a step fine enough for the pair's detuning:
 
 .. code-block:: python
@@ -116,6 +125,15 @@ What to notice:
   state is a 9 × 9 density matrix;
 - X1 ends half excited and D2 nearly fully, less what decays in the
   program's 138 ns.
+
+.. themed-figure:: figures/pair_density.svg
+   :alt: The magnitudes of the 9 by 9 density matrix of the pair after the CPU simulation, rows and columns labelled by the levels of X1 then D2. Almost all of it sits in 01 (0.50) and 11 (0.49), with the coherence between them off the diagonal; levels 2 stay empty.
+   :width: 55%
+
+   The magnitudes of the CPU result's density matrix.
+
+What to notice: almost everything sits in two corners of the matrix, X1's
+two levels with D2 excited. The off-diagonal pair is X1's superposition.
 
 The step, ``dt_ns=0.02``, resolves the coupling, which turns at the pair's
 2.1 GHz detuning in their rotating frames.
@@ -179,6 +197,9 @@ You can see the last stage on any machine:
    :class: output
 
    calls into cuDensityMat: 88
+
+.. animation-candidate: a later animation may step through these stages one
+   at a time, replacing the static pipeline.
 
 .. themed-figure:: figures/lowering.svg
    :alt: The page's evolve_pair kernel at each level of its lowering for GPU simulation: Pulse MLIR, 21 operations; QOp, 82 operations; cuDensityMat, 122 operations; LLVM IR, 1641 operations, of them 88 calls into the cuDensityMat runtime. From the Pulse MLIR the same program also exports for a controller as 5 events.
