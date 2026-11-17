@@ -541,7 +541,10 @@ program that plays the lines of more than one controller needs
 that plays no lines is exported by the controller that makes its calls.
 A controller the program does not use exports a valid empty program: no
 lines, events or calls. ``export_to_emulator(controller=k)`` gives the same
-part for an emulator.
+part for an emulator. Exporting every controller in turn walks the program
+and checks it against the whole control system once, not once per
+controller: the program keeps what its parts share until each one has been
+exported, and every export is a fresh copy, whatever the order.
 
 A link is shared by default: every controller it reaches sends its
 requests to one instance, which holds ``slots`` requests for all
