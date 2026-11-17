@@ -4,74 +4,145 @@
 
 Usage: python docs/tutorials/figures/first_pulse_program.py
 
-Needs matplotlib (the ``[viz]`` extra). Writes ``rabi_sweep.svg`` and
-``rabi_schedule.svg`` next to this file, from the kernel and the sweep the
-tutorial runs.
+Needs matplotlib (the ``[viz]`` extra). Writes ``rabi_sweep.svg``,
+``rabi_shots.svg`` and ``rabi_schedule.svg``, each with its ``-dark`` twin,
+next to this file, from the kernel, the sweep and the shots the tutorial
+runs.
 """
 
-import io
-from pathlib import Path
-
-import matplotlib
-
-matplotlib.use("Agg")
 import cudaq_pulse as pulse
-import matplotlib.pyplot as plt
 import numpy as np
-
-_HERE = Path(__file__).resolve().parent
-_BLUE = "#4a7fb5"
-_GREEN = "#76b900"
-_GREY = "#6b6b6b"
-
-plt.rcParams.update(
-    {
-        "font.family": "sans-serif",
-        "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
-        "font.size": 11,
-        "svg.fonttype": "none",
-        "svg.hashsalt": "cudaq-pulse",
-    }
-)
+from _style import end_label, page_namespace, plot_axes, save_themed
+from _timeline import Timeline, draw
 
 
-@pulse.kernel
-def rabi(qudit, amplitude: float):
-    d = get_drive_line(qudit)
-    r = get_readout_line(qudit)
-    x = gaussian(duration=32 * pulse.ns, amplitude=amplitude, sigma=8 * pulse.ns)
-    drive(d, x)
-    sync(d, r)
-    return readout(r, square(300 * pulse.ns, 0.05))
-
-
-def _save(fig, name: str) -> None:
-    svg = io.StringIO()
-    fig.savefig(svg, format="svg", metadata={"Date": None, "Creator": None}, bbox_inches="tight")
-    plt.close(fig)
-    # The repository's pre-commit hooks reject trailing whitespace.
-    text = "\n".join(line.rstrip() for line in svg.getvalue().splitlines()) + "\n"
-    (_HERE / name).write_text(text)
+def fit_rabi(amplitudes: np.ndarray, p1: np.ndarray) -> tuple[float, np.ndarray]:
+    """The π amplitude of ``B + A (1 - cos(π a / a_π)) / 2`` that fits *p1* best."""
+    best = None
+    for a_pi in np.arange(0.05, 0.4, 1e-4):
+        basis = np.column_stack(
+            [np.ones_like(amplitudes), (1 - np.cos(np.pi * amplitudes / a_pi)) / 2]
+        )
+        coef, residual, *_ = np.linalg.lstsq(basis, p1, rcond=None)
+        if best is None or residual[0] < best[0]:
+            best = (residual[0], a_pi, coef)
+    _, a_pi, coef = best
+    return float(a_pi), coef
 
 
 def main() -> None:
-    qs = pulse.quantum_system("transmon_surface17")
-    q = qs.qudits[0]
+    page = page_namespace("first_pulse_program.rst")
+    rabi, q, amplitudes = page["rabi"], page["qubit"], page["amplitudes"]
+    levels = np.array([pulse.simulate(rabi, q, a).level_populations(q) for a in amplitudes])
+    a_pi, (b, a) = fit_rabi(amplitudes, levels[:, 1])
+    fine = np.linspace(amplitudes[0], amplitudes[-1], 400)
+    model = b + a * (1 - np.cos(np.pi * fine / a_pi)) / 2
 
-    amplitudes = np.linspace(0, 0.4, 41)
-    populations = [pulse.simulate(rabi, q, a).level_population(1) for a in amplitudes]
-    fig, ax = plt.subplots(figsize=(6.4, 3.4))
-    ax.plot(amplitudes, populations, "o-", color=_BLUE, markersize=4, linewidth=1.5)
-    ax.axvline(0.16, color=_GREEN, linestyle="--", linewidth=1.2)
-    ax.annotate("π pulse", (0.16, 0.5), xytext=(6, 0), textcoords="offset points", color=_GREY)
-    ax.set_xlabel("drive amplitude")
-    ax.set_ylabel("excited-state population")
-    ax.set_ylim(0, 1.02)
-    ax.spines[["top", "right"]].set_visible(False)
-    _save(fig, "rabi_sweep.svg")
+    def sweep(p):
+        fig, ax = plot_axes(p, height_in=2.7)
+        ax.plot(fine, model, color=p.muted, lw=1.0, zorder=2)
+        ax.plot(amplitudes, levels[:, 1], "o", ms=3.6, color=p.drive, mec="none", zorder=3)
+        for x in (a_pi, 2 * a_pi):
+            ax.axvline(x, color=p.rule, lw=0.9, ls=(0, (1, 2)), zorder=1)
+        ax.annotate(
+            f"π pulse at {a_pi:.3f}",
+            (a_pi, 1.02),
+            xytext=(5, 0),
+            textcoords="offset points",
+            color=p.text,
+            fontsize=8.5,
+            va="top",
+        )
+        ax.annotate(
+            "full turn",
+            (2 * a_pi, 1.02),
+            xytext=(5, 0),
+            textcoords="offset points",
+            color=p.muted,
+            fontsize=8.5,
+            va="top",
+        )
+        end_label(ax, amplitudes[-1], levels[-1, 1], "simulated", p.drive, dy=7)
+        end_label(ax, fine[-1], model[-1], "cosine fit", p.muted, dy=-7)
+        ax.set_xlabel("drive amplitude")
+        ax.set_ylabel("excited-state population")
+        ax.set_ylim(0, 1.04)
+        ax.set_xlim(0, amplitudes[-1])
+        ax.set_yticks([0, 0.5, 1])
+        return fig
 
-    fig = rabi.lower(q, 0.16).timeline(figsize=(8, 2.2))
-    _save(fig, "rabi_schedule.svg")
+    sweep_alt = (
+        "Simulated excited-state population after the 32 ns Gaussian pulse, for drive "
+        f"amplitudes from 0 to {amplitudes[-1]:g}, with a cosine fit. The population rises "
+        f"from {levels[0, 1]:.2f} to {levels[:, 1].max():.2f}; the fit puts the pi pulse at "
+        f"amplitude {a_pi:.3f}, and the population falls back near {2 * a_pi:.2f}, a full turn."
+    )
+    save_themed(sweep, "rabi_sweep", title="Rabi oscillation of qudit 0", desc=sweep_alt)
+
+    shots(page, levels_at=pulse.simulate(rabi, q, 0.16).level_population(1))
+
+    timeline = Timeline.of(rabi.lower(q, 0.16))
+    words = {(pl.lane, round(pl.start_ns, 3)): pl.kind for pl in timeline.pulses}
+    schedule_alt = (
+        "Timeline of one call of the Rabi kernel on D1: a 32 ns Gaussian drive pulse, then, "
+        "where sync puts it, a 300 ns square readout pulse on the readout line."
+    )
+    save_themed(
+        lambda p: draw(timeline, p, pulse_labels=words),
+        "rabi_schedule",
+        title="The schedule of one Rabi call",
+        desc=schedule_alt,
+    )
+
+
+def shots(page, levels_at: float) -> None:
+    outcomes = np.asarray(page["outcomes"])[:, 0]
+    n = np.arange(1, len(outcomes) + 1)
+    running = np.cumsum(outcomes) / n
+    # On a log axis, about 300 points spaced evenly in log(n) draw the same curve.
+    keep = np.unique(np.geomspace(1, len(n), 300).astype(int)) - 1
+    n, running = n[keep], running[keep]
+    spread = 2 * np.sqrt(levels_at * (1 - levels_at) / n)
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=2.4)
+        ax.fill_between(
+            n,
+            levels_at - spread,
+            np.minimum(levels_at + spread, 1.0),
+            color=p.muted,
+            alpha=0.12,
+            lw=0,
+        )
+        ax.axhline(levels_at, color=p.muted, lw=1.0, ls=(0, (1, 2)))
+        ax.plot(n, running, color=p.drive, lw=1.4)
+        end_label(
+            ax,
+            n[-1],
+            running[-1],
+            f"mean of shots {running[-1]:.3f}",
+            p.drive,
+            dy=-9,
+            ha="right",
+            dx=0,
+        )
+        end_label(
+            ax, n[-1], levels_at, f"population {levels_at:.3f}", p.muted, dy=8, ha="right", dx=0
+        )
+        ax.set_xscale("log")
+        ax.set_xlim(1, n[-1])
+        ax.set_ylim(0.7, 1.02)
+        ax.set_xlabel("shots")
+        ax.set_ylabel("fraction that read 1")
+        return fig
+
+    alt = (
+        f"The fraction of the first n of {len(outcomes)} sampled shots that read 1, against n on "
+        f"a log scale. It wanders at first and settles at {running[-1]:.3f}, inside a band of two "
+        f"standard errors around the excited-state population of {levels_at:.3f}, which narrows "
+        "as the shots add up."
+    )
+    save_themed(figure, "rabi_shots", title="Shots converge on the population", desc=alt)
 
 
 if __name__ == "__main__":

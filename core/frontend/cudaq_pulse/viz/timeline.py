@@ -18,11 +18,20 @@ if TYPE_CHECKING:
 
     from ..compiler import ScheduledEvent, ScheduledKernel
 
-_DRIVE_COLOR = "#4C72B0"
-_READOUT_COLOR = "#DD8452"
-_WAIT_COLOR = "#CCCCCC"
-_SUBMIT_COLOR = "#55A868"
+# The colors of the documentation's figures: each kind of event has one, they
+# stay apart under the common color-vision deficiencies, and each is at least
+# 4:1 against white. Waits are a hatched neutral.
+_DRIVE_COLOR = "#5b8c00"
+_READOUT_COLOR = "#c2185b"
+_WAIT_COLOR = "#b8bdc2"
+_SUBMIT_COLOR = "#00796b"
+_TEXT_COLOR = "#5c636a"
+_GRID_COLOR = "#e8e8e8"
 _CLASSICAL_KINDS = ("submit", "answer")
+
+
+def _rgb(color: str) -> tuple[float, float, float]:
+    return tuple(int(color[i : i + 2], 16) / 255 for i in (1, 3, 5))  # type: ignore[return-value]
 
 
 def plot_schedule(
@@ -72,77 +81,78 @@ def plot_schedule(
 
     for kind, line, x, w in spans:
         y = line_to_row[line]
-        if kind == "drive":
-            rect = mpatches.FancyBboxPatch(
-                (x, y - 0.35),
-                w,
-                0.7,
-                boxstyle="round,pad=0.02",
-                facecolor=_DRIVE_COLOR,
-                edgecolor="black",
-                linewidth=0.5,
-                alpha=0.85,
+        if kind in ("drive", "readout"):
+            color = _DRIVE_COLOR if kind == "drive" else _READOUT_COLOR
+            ax.add_patch(
+                mpatches.Rectangle(
+                    (x, y - 0.3), w, 0.6, facecolor=color, edgecolor="none", alpha=0.9
+                )
             )
-            ax.add_patch(rect)
-        elif kind == "readout":
-            rect = mpatches.FancyBboxPatch(
-                (x, y - 0.35),
-                w,
-                0.7,
-                boxstyle="round,pad=0.02",
-                facecolor=_READOUT_COLOR,
-                edgecolor="black",
-                linewidth=0.5,
-                alpha=0.85,
-            )
-            ax.add_patch(rect)
         elif kind == "submit":
             ax.add_patch(
                 mpatches.Rectangle(
-                    (x, y - 0.35),
-                    max(w, 1),
-                    0.7,
-                    facecolor=_SUBMIT_COLOR,
-                    edgecolor="black",
-                    linewidth=0.5,
+                    (x, y - 0.3), max(w, 1), 0.6, facecolor=_SUBMIT_COLOR, edgecolor="none"
                 )
             )
         elif kind == "answer":
-            ax.plot([x], [y], marker="v", color=_SUBMIT_COLOR, markersize=7)
+            ax.plot([x], [y], marker="v", color=_SUBMIT_COLOR, markersize=7, markeredgewidth=0)
         elif kind == "wait" and w > 0:
-            wait_rect = mpatches.Rectangle(
-                (x, y - 0.3),
-                w,
-                0.6,
-                facecolor=_WAIT_COLOR,
-                edgecolor="gray",
-                linewidth=0.3,
-                alpha=0.5,
-                hatch="//",
+            ax.add_patch(
+                mpatches.Rectangle(
+                    (x, y - 0.22),
+                    w,
+                    0.44,
+                    facecolor=(*_rgb(_WAIT_COLOR), 0.3),
+                    edgecolor=_WAIT_COLOR,
+                    linewidth=0,
+                    hatch="////",
+                )
             )
-            ax.add_patch(wait_rect)
 
     ax.set_yticks(range(row_count))
     ax.set_yticklabels(
         [(f"link {link_label.get(n, n)}" if link else f"line {n}") for link, n in line_ids]
     )
-    ax.set_xlabel("Time (clock cycles)")
+    ax.set_xlabel("Time (clock cycles)", color=_TEXT_COLOR)
     ax.set_ylim(-0.5, row_count - 0.5)
+    ax.invert_yaxis()
 
     max_time = max((x + w for _, _, x, w in spans), default=100)
     ax.set_xlim(-max_time * 0.02, max_time * 1.05)
 
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(_WAIT_COLOR)
+    ax.tick_params(axis="y", length=0, labelcolor="#1a1a1a")
+    ax.tick_params(axis="x", color=_WAIT_COLOR, labelcolor=_TEXT_COLOR)
+    ax.set_axisbelow(True)
+    ax.grid(axis="x", color=_GRID_COLOR, linewidth=0.8)
+    for y in range(row_count):
+        ax.axhline(y + 0.5, color=_GRID_COLOR, linewidth=0.8, zorder=0)
+
     if title:
-        ax.set_title(title)
+        ax.set_title(title, color="#1a1a1a", pad=18)
 
     legend_handles = [
         mpatches.Patch(color=_DRIVE_COLOR, label="Drive"),
         mpatches.Patch(color=_READOUT_COLOR, label="Readout"),
-        mpatches.Patch(color=_WAIT_COLOR, label="Wait", hatch="//"),
+        mpatches.Patch(
+            facecolor=(*_rgb(_WAIT_COLOR), 0.3), edgecolor=_WAIT_COLOR, label="Wait", hatch="////"
+        ),
     ]
     if any(link for link, _ in line_ids):
         legend_handles.append(mpatches.Patch(color=_SUBMIT_COLOR, label="Classical call"))
-    ax.legend(handles=legend_handles, loc="upper right", fontsize=8)
+    ax.legend(
+        handles=legend_handles,
+        loc="lower right",
+        bbox_to_anchor=(1.0, 1.0),
+        ncol=len(legend_handles),
+        frameon=False,
+        fontsize=8,
+        labelcolor=_TEXT_COLOR,
+        handlelength=1.2,
+        columnspacing=1.2,
+    )
     fig.tight_layout()
     return fig
 

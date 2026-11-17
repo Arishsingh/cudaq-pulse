@@ -74,8 +74,31 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `29_waveform_envelopes.py` prints and plots the samples of every
   built-in envelope.
 
+### Changed
+
+- **Schedule plots look different.** `viz.plot_schedule`, `viz.save_schedule`
+  and `timeline()` draw in the style of the documentation's figures: drives
+  green, readouts rose, waits hatched grey and classical calls teal (colors
+  that stay apart under the common color-vision deficiencies), no box or
+  bar outlines, light gridlines, line 0 at the top, and the legend in one
+  row above the plot. The rows, bars, labels and axis limits, and the
+  functions' arguments, are as before, and matplotlib is still imported only
+  when a plot is drawn.
+
 ### Fixed
 
+- After a wait whose length a `float` argument sets, `classical_report()`
+  and the `"calls"` of `export_to_controller()` (formats /1 and /2, and
+  `unroll`) and of `export_to_emulator()` gave each call's times with the
+  wait at the lowest length its `bounds` allow, not at the length the
+  argument gives: a call the schedule and the export's `"events"` submit at
+  cycle 100340 was listed at 540. They now give the times of the program as
+  the call's arguments schedule it, the same as its events and `emulate`.
+  Waits set by an `int` argument or a literal were not affected.
+- `pulse.controller.sample_waveform` is annotated as returning
+  `npt.NDArray[np.complex128]`, not a bare `np.ndarray`, so editors and
+  type checkers accept `.real` and `.imag` of its samples with NumPy 2.5,
+  whose annotations allow them only on arrays of a known dtype.
 - `backends.validate` checks the order of a backend's classical calls and
   answers on their link, apart from the pulses of the line with the same
   number. A backend that gives its events back in time order, as a

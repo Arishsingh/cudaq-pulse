@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     from fractions import Fraction
 
     import numpy as np
+    import numpy.typing as npt
 
     from . import _clocks
     from ._classical_report import ClassicalCall
@@ -496,7 +497,7 @@ def _failed(what: str) -> ExecutionError:
 
 def sample_waveform(
     node: Mapping[str, Any], duration_cycles: int, samples_per_cycle: float = 1
-) -> np.ndarray:
+) -> npt.NDArray[np.complex128]:
     """The complex envelope of a waveform, ``samples_per_cycle`` per cycle.
 
     Sample ``k`` is the envelope at ``k / samples_per_cycle`` cycles from the
@@ -2728,7 +2729,7 @@ class ControllerNames(Protocol):
     ) -> dict[str, Any]: ...
     def sample_waveform(
         self, node: Mapping[str, Any], duration_cycles: int, samples_per_cycle: float = 1
-    ) -> np.ndarray: ...
+    ) -> npt.NDArray[np.complex128]: ...
     def shape_key(self, node: Mapping[str, Any] | None) -> tuple[Any, ...] | None: ...
     def unroll(self, program: Mapping[str, Any]) -> dict[str, Any]: ...
     def usage(self, lowered: ScheduledKernel) -> _Usage: ...

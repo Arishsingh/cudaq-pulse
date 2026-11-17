@@ -726,6 +726,83 @@ def test_export_carries_calls_with_their_measurements_and_waits():
     assert all(line["role"] in ("drive", "readout") for line in program["lines"])
 
 
+@pulse.kernel
+def settled_by_float(q, wait_ns: float):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    for _ in range(2):
+        drive(d, square(40, 0.1))
+        wait(d, wait_ns * pulse.ns, bounds=(100 * pulse.ns, 200 * pulse.us))
+        sync(d, ro)
+        if check_bit.submit([readout(ro, square(300, 0.05))]).result()[0]:
+            drive(d, square(40, 0.1))
+        sync(d, ro)
+
+
+@pulse.kernel
+def settled_by_int(q, wait_ns: int):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    for _ in range(2):
+        drive(d, square(40, 0.1))
+        wait(d, wait_ns * pulse.ns)
+        sync(d, ro)
+        if check_bit.submit([readout(ro, square(300, 0.05))]).result()[0]:
+            drive(d, square(40, 0.1))
+        sync(d, ro)
+
+
+@pulse.kernel
+def settled(q):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    for _ in range(2):
+        drive(d, square(40, 0.1))
+        wait(d, 50 * pulse.us)
+        sync(d, ro)
+        if check_bit.submit([readout(ro, square(300, 0.05))]).result()[0]:
+            drive(d, square(40, 0.1))
+        sync(d, ro)
+
+
+def _call_times(calls):
+    return [(c["submit_cycles"], c["taken_cycles"]) for c in calls]
+
+
+def _event_call_times(events):
+    submits = [e["start_cycles"] for e in events if e["kind"] == "submit"]
+    answers = [e["start_cycles"] for e in events if e["kind"] == "answer"]
+    return list(zip(submits, answers, strict=True))
+
+
+@pytest.mark.parametrize(
+    ("kernel", "arguments"),
+    [(settled_by_float, (50_000.0,)), (settled_by_int, (50_000,)), (settled, ())],
+    ids=["float", "int", "literal"],
+)
+def test_calls_are_timed_as_the_events_after_a_wait_an_argument_sets(kernel, arguments):
+    from cudaq_pulse.classical.emulation import emulate
+
+    lowered = pulse.compile(kernel).lower(Q[0], *arguments)
+    flat = lowered.export_to_controller()
+    structured = lowered.export_to_controller(version=2)
+    times = _event_call_times(flat["events"])
+    # Each shot's readout comes after the 50 us wait: 100,000 cycles at 2 GHz.
+    assert len(times) == 2 and times[0][0] > 100_000
+    assert _event_call_times(controller_module.unroll(structured)["events"]) == times
+    report = [(c.submit_cycles, c.taken_cycles) for c in lowered.classical_report()]
+    assert report == times
+    assert _call_times(flat["calls"]) == times
+    assert _call_times(structured["calls"]) == times
+    assert _call_times(controller_module.unroll(structured)["calls"]) == times
+    emulated = lowered.export_to_emulator()
+    assert _call_times(emulated["calls"]) == times
+    assert _event_call_times(emulated["events"]) == times
+    clock = lowered.quantum_system.clock_ghz
+    traces = emulate(lowered, seed=1).calls[0]
+    assert [round(t.submit_ns * clock) for t in traces] == [s for s, _ in times]
+
+
 @pulse.classical(max_latency_ns=400)
 def two_bits(bits: pulse.Bits) -> pulse.Length[pulse.Bits, 2]:
     return [bits[0], not bits[0]]
