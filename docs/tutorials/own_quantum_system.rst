@@ -6,26 +6,31 @@ Describe Your Own Quantum System
 ================================
 
 The tutorials so far ran on ``transmon_surface17``, a model of a published
-17-qubit processor. Yours has its own frequencies, coherence times
-and couplings. This tutorial describes a pair of transmons from those
-numbers, calibrates their π pulses, compiles one kernel for both qudits,
-follows a recalibration, and saves the description to a file.
+17-qubit processor. Yours has its own frequencies, coherence times and
+couplings.
+
+What you'll learn:
+
+- how to describe qudits and a coupling from measured numbers;
+- how calibrated π pulses get their amplitude;
+- how one compile can serve every qudit;
+- how to follow a recalibration and save the description to a file.
 
 .. themed-figure:: figures/transmon_surface17.svg
    :alt: The 17 qudits of transmon_surface17 and its 24 couplings: nine data qubits, D1 to D9, in a 3 by 3 grid, and the ancillas X1, X2, X3, X4, Z1, Z2, Z3, Z4, each coupled to the four data qubits around it or, at the edge, to two. Each qudit is labelled with its 0-1 frequency: the data qubits between 3.74 and 4.14 GHz, the ancillas between 5.88 and 6.33 GHz.
    :width: 90%
 
    The shipped ``transmon_surface17`` quantum system, after Krinner et al.,
-   Nature 605, 669 (2022), drawn from its ``physical_qudits`` and
-   ``couplings``. A quantum system of your own is described the same way,
-   qudit by qudit and coupling by coupling.
+   Nature 605, 669 (2022), drawn from its qudits and couplings.
+
+A quantum system of your own is described the same way, qudit by qudit and
+coupling by coupling.
 
 Qudits and a coupling
 ---------------------
 
 A quantum system is built from its qudits and the couplings between them.
-Each ``PhysicalQudit`` takes its index, its 0-1 frequency in Hz, and its T1
-and T2* in microseconds, then the rest by keyword:
+Start with the imports:
 
 .. code-block:: python
 
@@ -33,41 +38,93 @@ and T2* in microseconds, then the rest by keyword:
    from pathlib import Path
 
    import cudaq_pulse as pulse
-   from cudaq_pulse.quantum_systems import Coupling, DragPulse, PhysicalQudit
+   from cudaq_pulse.quantum_systems import (
+       Coupling,
+       DragPulse,
+       PhysicalQudit,
+   )
 
-The π pulse's shape is shared by both qudits; each gets its own amplitude:
+Each qudit takes its index, its 0-1 frequency in Hz, its T1 and T2* in
+microseconds, and the rest by keyword. Both share the shape of their π
+pulse:
 
 .. code-block:: python
 
    x_pulse = {pulse.gates.X: DragPulse(duration_ns=40.0, sigma_ns=10.0)}
+
+   qudit_0 = PhysicalQudit(
+       index=0,
+       frequency_hz=5.1e9,
+       t1_us=60.0,
+       t2_star_us=40.0,
+       anharmonicity_hz=-2.2e8,
+       calibrations=x_pulse,
+   )
+
+The second qudit sits 200 MHz higher, with shorter coherence times:
+
+.. code-block:: python
+
+   qudit_1 = PhysicalQudit(
+       index=1,
+       frequency_hz=5.3e9,
+       t1_us=45.0,
+       t2_star_us=30.0,
+       anharmonicity_hz=-2.1e8,
+       calibrations=x_pulse,
+   )
+
+Build the pair with a 3 MHz coupling between them:
+
+.. code-block:: python
+
    pair = pulse.quantum_system(
        name="my_pair",
-       qudits={
-           0: PhysicalQudit(0, 5.1e9, 60.0, 40.0, anharmonicity_hz=-2.2e8, calibrations=x_pulse),
-           1: PhysicalQudit(1, 5.3e9, 45.0, 30.0, anharmonicity_hz=-2.1e8, calibrations=x_pulse),
-       },
+       qudits={0: qudit_0, 1: qudit_1},
        couplings=[Coupling((0, 1), strength_hz=3.0e6)],
    )
-   print(pair)   # <QuantumSystem my_pair (2 qudits)>
-   print(pair.qudits[0].get_calibration(pulse.gates.X))   # DragPulse(duration_ns=40.0, sigma_ns=10.0, amplitude=0.1313058652516393)
+   print(pair)
 
-The anharmonicity, the shift of the 1-2 transition below the 0-1 one, is
-what makes a transmon a usable qubit, and simulating its third level needs
-it. The coupling's ``strength_hz`` is the exchange rate g / 2π.
+.. code-block:: text
+   :class: output
+
+   <QuantumSystem my_pair (2 qudits)>
+
+What the numbers mean:
+
+- the anharmonicity is the shift of the 1-2 transition below the 0-1 one.
+  It makes a transmon a usable qubit, and simulating its third level needs
+  it;
+- the coupling's ``strength_hz`` is the exchange rate g / 2π.
 
 .. themed-figure:: figures/pair_levels.svg
    :alt: The three lowest levels of each transmon of my_pair, qudit 0: 0-1 at 5.10 GHz and 1-2 at 4.88 GHz; qudit 1: 0-1 at 5.30 GHz and 1-2 at 5.09 GHz. The 1-2 transition sits below the 0-1 by the anharmonicity. The two are coupled with g / 2 pi = 3 MHz.
    :width: 80%
 
-   The three lowest levels of each qudit of ``pair``, from its
-   ``physical_qudits``. A drive at the 0-1 frequency stays off the 1-2 line,
-   hundreds of megahertz away.
+   The three lowest levels of each qudit of ``pair``.
 
-The calibration gives each qudit's π pulse a shape, a 40 ns DRAG pulse with
-a 10 ns width, but no amplitude. The quantum system works it out from the
-shape and the qudit's drive strength, so that the pulse turns the qubit by
-π. Its π/2 pulse, ``pulse.gates.X90``, is the same pulse at half the
-amplitude.
+What to notice: a drive at the 0-1 frequency stays off the 1-2 line,
+hundreds of megahertz away.
+
+Calibrated pulses
+-----------------
+
+The calibration gives each π pulse a shape, a 40 ns DRAG pulse with a
+10 ns width, but no amplitude. The quantum system works the amplitude out
+from the shape and the qudit's drive strength:
+
+.. code-block:: python
+
+   x_cal = pair.qudits[0].get_calibration(pulse.gates.X)
+   print(f"{x_cal.duration_ns} ns DRAG, amplitude {x_cal.amplitude:.4f}")
+
+.. code-block:: text
+   :class: output
+
+   40.0 ns DRAG, amplitude 0.1313
+
+That amplitude turns the qubit by π. Its π/2 pulse, ``pulse.gates.X90``, is
+the same pulse at half the amplitude.
 
 Run a kernel on it
 ------------------
@@ -79,92 +136,157 @@ other change:
 
    @pulse.kernel
    def excite(qudit):
-       d = get_drive_line(qudit)
-       r = get_readout_line(qudit)
-       drive(d, d.get_calibration(pulse.gates.X))
-       sync(d, r)
-       return readout(r, square(300 * pulse.ns, 0.05))
+       drive_line = get_drive_line(qudit)
+       readout_line = get_readout_line(qudit)
+       flip = drive_line.get_calibration(pulse.gates.X)
 
+       drive(drive_line, flip)
+       sync(drive_line, readout_line)
+       return readout(readout_line, square(300 * pulse.ns, 0.05))
 
-   for q in pair.qudits:
-       print(q, round(pulse.simulate(excite, q).level_populations(q)[1], 3))
-   # <Qudit 0 -> qudit 0 of my_pair> 0.993
-   # <Qudit 1 -> qudit 1 of my_pair> 0.991
-   print(excite.cache_info().compiled)   # 2
+Run it on each qudit of the pair:
 
-Both π pulses land within 1% of the excited state; what's missing is the
-decay during the 300 ns readout. The kernel compiled twice, once per qudit,
-because it reads each line's calibration while it compiles.
+.. code-block:: python
+
+   for qudit in pair.qudits:
+       result = pulse.simulate(excite, qudit)
+       excited = result.level_populations(qudit)[1]
+       print(f"qudit {qudit.index} excited: {excited:.3f}")
+
+   print("compilations:", excite.cache_info().compiled)
+
+.. code-block:: text
+   :class: output
+
+   qudit 0 excited: 0.993
+   qudit 1 excited: 0.991
+   compilations: 2
+
+What to notice:
+
+- both π pulses land within 1% of the excited state; what's missing is the
+  decay during the 300 ns readout;
+- the kernel compiled twice, once per qudit, because it reads each line's
+  calibration while it compiles.
 
 One compile for every qudit
 ---------------------------
 
-Annotate the qudit parameter with ``pulse.Qudit`` and the compiled program
-takes the qudit as an argument, so one compile serves every qudit. A
-calibration can't be read inside such a kernel, since the qudit is known only
-when it is called, so the host reads it and passes the amplitude in:
+Annotate the qudit parameter with ``pulse.Qudit``, and the compiled program
+takes the qudit as an argument. Then one compile serves every qudit.
+
+Such a kernel can't read a calibration, since the qudit is known only when
+it is called. So the host reads it and passes the amplitude in:
 
 .. code-block:: python
 
    @pulse.kernel
    def excite_any(qudit: pulse.Qudit, amplitude: float):
-       d = get_drive_line(qudit)
-       r = get_readout_line(qudit)
-       drive(d, gaussian(40 * pulse.ns, amplitude, 10 * pulse.ns))
-       sync(d, r)
-       return readout(r, square(300 * pulse.ns, 0.05))
+       drive_line = get_drive_line(qudit)
+       readout_line = get_readout_line(qudit)
+       flip = gaussian(
+           duration=40 * pulse.ns,
+           amplitude=amplitude,
+           sigma=10 * pulse.ns,
+       )
+       drive(drive_line, flip)
+       sync(drive_line, readout_line)
+       return readout(readout_line, square(300 * pulse.ns, 0.05))
 
+Run it on both qudits, each with its own calibrated amplitude:
 
-   for q in pair.qudits:
-       amplitude = q.get_calibration(pulse.gates.X).amplitude
-       print(round(pulse.simulate(excite_any, q, amplitude).level_populations(q)[1], 3))
-   # 0.993
-   # 0.991
-   print(excite_any.cache_info().compiled)   # 1
+.. code-block:: python
 
-The drive's frequency still follows each qudit, because a drive line plays at
-its own qudit's frequency unless the kernel says otherwise.
+   for qudit in pair.qudits:
+       amplitude = qudit.get_calibration(pulse.gates.X).amplitude
+       result = pulse.simulate(excite_any, qudit, amplitude)
+       excited = result.level_populations(qudit)[1]
+       print(f"qudit {qudit.index} excited: {excited:.3f}")
+
+   print("compilations:", excite_any.cache_info().compiled)
+
+.. code-block:: text
+   :class: output
+
+   qudit 0 excited: 0.993
+   qudit 1 excited: 0.991
+   compilations: 1
+
+What to notice: the drive's frequency still follows each qudit, because a
+drive line plays at its own qudit's frequency unless the kernel says
+otherwise.
 
 Follow a recalibration
 ----------------------
 
 Measured values drift. ``replace`` makes a new quantum system with some
-values changed and the rest kept, the way ``dataclasses.replace`` does, and
-the same program follows it:
+values changed and the rest kept, the way ``dataclasses.replace`` does.
+
+Move qudit 0 up by 2 MHz:
 
 .. code-block:: python
 
-   q0 = pair.physical_qudits[0]
-   recalibrated = pair.replace(
-       qudits={**pair.physical_qudits, 0: q0.replace(frequency_hz=5.102e9)}
-   )
+   old_qudit = pair.physical_qudits[0]
+   new_qudit = old_qudit.replace(frequency_hz=5.102e9)
+   qudits = {**pair.physical_qudits, 0: new_qudit}
+   recalibrated = pair.replace(qudits=qudits)
 
-   for system in (pair, recalibrated):
-       program = excite.lower(system.qudits[0]).export_to_controller()
-       drives = [e for e in program["events"] if e["kind"] == "drive"]
-       print(drives[0]["frequency_hz"])
-   # 5100000000.0
-   # 5102000000.0
+The same kernel follows it. Export it for both systems and compare the
+drive's frequency:
 
-The program for the recalibrated system plays its drive 2 MHz higher,
-without a change to the kernel. Quantum systems are read-only, so the
-original ``pair`` is unchanged and programs compiled for it stay valid.
+.. code-block:: python
+
+   systems = {"before": pair, "after": recalibrated}
+   for label, quantum_system in systems.items():
+       scheduled = excite.lower(quantum_system.qudits[0])
+       program = scheduled.export_to_controller()
+       for event in program["events"]:
+           if event["kind"] == "drive":
+               frequency_ghz = event["frequency_hz"] / 1e9
+               print(f"{label:6} drive at {frequency_ghz:.3f} GHz")
+
+.. code-block:: text
+   :class: output
+
+   before drive at 5.100 GHz
+   after  drive at 5.102 GHz
+
+The recalibrated program plays its drive 2 MHz higher, with no change to
+the kernel.
+
+What to notice: quantum systems are read-only, so the original ``pair`` is
+unchanged, and programs compiled for it stay valid.
 
 Save it to a file
 -----------------
 
 A quantum system is plain data. ``as_dict`` gives it as a dictionary that
-``json`` can write, and ``QuantumSystem.load`` reads the file back:
+JSON can hold, and ``QuantumSystem.load`` reads the file back:
 
 .. code-block:: python
 
    path = Path("my_pair.json")
-   path.write_text(json.dumps(pair.as_dict(), indent=2))
-   print(pulse.QuantumSystem.load(path) == pair)   # True
-   print(json.loads(path.read_text())["format"])   # cudaq-pulse.system/1
+   text = json.dumps(pair.as_dict(), indent=2)
+   path.write_text(text)
+
+   loaded = pulse.QuantumSystem.load(path)
+   print("same system:", loaded == pair)
+   print("format:", json.loads(text)["format"])
+
+.. code-block:: text
+   :class: output
+
+   same system: True
+   format: cudaq-pulse.system/1
+
+Mistakes, all at once
+---------------------
 
 When a description has mistakes, building it reports all of them at once,
-each with where it is:
+each with where it is.
+
+A ``layout`` picks which of a quantum system's qudits a program numbers 0,
+1, 2 and so on. Ask for one that doesn't exist:
 
 .. code-block:: python
 
@@ -172,26 +294,29 @@ each with where it is:
        pulse.quantum_system("transmon_surface17", layout=[0, 99, 99])
    except pulse.QuantumSystemDefinitionError as error:
        for problem in error.problems:
-           print(problem.path, "|", problem.message)
-   # layout[1] | carrier 99 is not in quantum system 'transmon_surface17' (it has 0..16)
-   # layout[2] | carrier 99 is not in quantum system 'transmon_surface17' (it has 0..16)
+           print(f"{problem.path}: {problem.message}")
 
-A ``layout`` picks which of a quantum system's qudits a program numbers 0, 1,
-2 and so on, which is how a program written for a few qubits is placed on a
-larger quantum system. A file with problems reports the line and column of each one.
+.. code-block:: text
+   :class: output
+
+   layout[1]: carrier 99 is not in quantum system 'transmon_surface17' (it has 0..16)
+   layout[2]: carrier 99 is not in quantum system 'transmon_surface17' (it has 0..16)
+
+A layout is how a program written for a few qubits is placed on a larger
+quantum system. A file with problems reports the line and column of each.
 
 Where to go next
 ----------------
 
-- :example:`23_define_a_qpu.py` adds the control system to a quantum system:
-  two controllers with their wiring, a feedback link between them, and the
-  whole QPU saved and loaded as one file.
-- :example:`22_runtime_qudits.py` compiles one kernel for every qudit of a
-  quantum system and passes the extra frequencies it needs as arguments.
+- :example:`23_define_a_qpu.py` adds the control system: two controllers
+  with their wiring, a feedback link between them, and the whole QPU saved
+  as one file.
+- :example:`22_runtime_qudits.py` compiles one kernel for every qudit and
+  passes the extra frequencies it needs as arguments.
 - :example:`transmon/transmon_surface17_rabi.py` uses the shipped system's
   published π pulse on qubit D5.
-- :example:`26_drift_following.py` recompiles when a drifting quantum system
-  changes and swaps programs between batches.
+- :example:`26_drift_following.py` recompiles when a drifting quantum
+  system changes.
 
-:doc:`../user_guide/quantum_systems` covers every field of a quantum system,
-residual ZZ, layouts and the shipped calibration with its sources.
+:doc:`../user_guide/quantum_systems` covers every field of a quantum
+system, residual ZZ, layouts and the shipped calibration with its sources.
