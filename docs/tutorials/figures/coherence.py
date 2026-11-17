@@ -4,14 +4,21 @@
 
 Usage: python docs/tutorials/figures/coherence.py
 
-Needs matplotlib (the ``[viz]`` extra). Writes ``t1_decay.svg`` and
-``ramsey_echo.svg``, each with its ``-dark`` twin, next to this file, from
-the kernels the page defines and the T1 fit it makes.
+Needs matplotlib (the ``[viz]`` extra). Writes, each with its ``-dark`` twin,
+next to this file, from the kernels the page defines and the T1 fit it
+makes:
+
+- ``t1_sequence.svg``, ``ramsey_sequence.svg`` and ``echo_sequence.svg``,
+  the schedule of each kernel with its wait cut short;
+- ``t1_decay.svg``, the T1 sweep and its fit;
+- ``ramsey_fringes.svg``, the Ramsey sweep alone;
+- ``ramsey_echo.svg``, the Ramsey sweep beside the echo.
 """
 
 import cudaq_pulse as pulse
 import numpy as np
 from _style import end_label, page_namespace, plot_axes, save_themed
+from _timeline import Timeline, compress, draw
 
 
 def t1_decay(page) -> None:
@@ -104,9 +111,87 @@ def ramsey_echo(page) -> None:
     save_themed(figure, "ramsey_echo", title="Ramsey fringes and their echo", desc=alt)
 
 
+def sequence(page, kernel: str, argument: float, title: str, what: str) -> None:
+    timeline, cuts = compress(Timeline.of(page[kernel].lower(page["qubit"], argument)), 250.0)
+    drives = sorted(
+        (pl for pl in timeline.pulses if pl.kind == "drive"), key=lambda pl: pl.start_ns
+    )
+    words = {}
+    for pl in timeline.pulses:
+        key = (pl.lane, round(pl.start_ns, 3))
+        if pl.kind == "readout":
+            words[key] = "readout"
+        elif kernel == "t1" or (kernel == "echo" and pl is drives[1]):
+            words[key] = "π"
+        else:
+            words[key] = "π/2"
+    alt = f"Timeline of the {kernel} kernel on D1's drive and readout lines: {what}"
+    save_themed(
+        lambda p: draw(timeline, p, pulse_labels=words, cuts=cuts, syncs="none"),
+        f"{kernel}_sequence",
+        title=title,
+        desc=alt,
+    )
+
+
+def ramsey_fringes(page) -> None:
+    taus, fringes, first = np.asarray(page["taus"]), np.asarray(page["fringes"]), page["first_peak"]
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=2.3)
+        ax.plot(taus / 1e3, fringes, "o-", color=p.drive, lw=1.3, ms=3)
+        ax.axvline(taus[first] / 1e3, color=p.rule, lw=0.8, ls=(0, (1, 2)))
+        end_label(
+            ax,
+            taus[first] / 1e3,
+            fringes[first],
+            f"first revival at {taus[first]:.0f} ns",
+            p.text,
+            dx=6,
+            dy=4,
+        )
+        ax.set_xlabel("wait (µs)")
+        ax.set_ylabel("excited-state population")
+        ax.set_ylim(0, 1.08)
+        ax.set_xlim(0, taus[-1] / 1e3)
+        return fig
+
+    alt = (
+        f"Excited-state population after the Ramsey sequence with a 1 MHz detuned drive, at the "
+        f"page's {len(taus)} waits from 0 to {taus[-1] / 1000:g} microseconds. It oscillates "
+        f"between {fringes.min():.2f} and {fringes.max():.2f}, with the first revival at "
+        f"{taus[first]:.0f} ns, once per microsecond."
+    )
+    save_themed(figure, "ramsey_fringes", title="Ramsey fringes of a detuned drive", desc=alt)
+
+
 def main() -> None:
     page = page_namespace("coherence.rst")
+    sequence(
+        page,
+        "t1",
+        10_000.0,
+        "The T1 sequence",
+        "a pi pulse, a 10 microsecond wait, cut short here, and the readout.",
+    )
     t1_decay(page)
+    sequence(
+        page,
+        "ramsey",
+        1_000.0,
+        "The Ramsey sequence",
+        "a +1 MHz shift of the drive's tone, which takes no time, a pi/2 pulse, a 1 "
+        "microsecond wait, a second pi/2 pulse and the readout.",
+    )
+    ramsey_fringes(page)
+    sequence(
+        page,
+        "echo",
+        1_000.0,
+        "The echo sequence",
+        "the same +1 MHz shift and pi/2 pulse, half the 1 microsecond wait, a pi pulse, the "
+        "other half, a second pi/2 pulse and the readout.",
+    )
     ramsey_echo(page)
 
 

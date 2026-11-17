@@ -81,6 +81,12 @@ the excitation has decayed:
        sync(drive_line, readout_line)
        return readout(readout_line, measurement)
 
+.. themed-figure:: figures/t1_sequence.svg
+   :alt: Timeline of the t1 kernel on D1's drive and readout lines: a pi pulse, a 10 microsecond wait, cut short here, and the readout.
+   :width: 100%
+
+   ``t1`` with a 10 µs wait, cut short.
+
 What to notice:
 
 - the π pulse and the readout come from the calibration, so the kernel
@@ -176,6 +182,15 @@ wait shows up as fringes. ``shift_frequency`` detunes the drive's tone by
 
 The detuning is a frame change on the drive's tone, so it costs no pulse.
 
+.. themed-figure:: figures/ramsey_sequence.svg
+   :alt: Timeline of the ramsey kernel on D1's drive and readout lines: a +1 MHz shift of the drive's tone, which takes no time, a pi/2 pulse, a 1 microsecond wait, a second pi/2 pulse and the readout.
+   :width: 100%
+
+   ``ramsey`` with a 1 µs wait, cut short.
+
+What to notice: the +1 MHz shift is a point on the drive line, before the
+first π/2 pulse.
+
 Sweep the wait and find the first maximum after the start:
 
 .. code-block:: python
@@ -197,6 +212,12 @@ Sweep the wait and find the first maximum after the start:
 
 The population returns to its maximum after 1 µs, the period of the 1 MHz
 detuning.
+
+.. themed-figure:: figures/ramsey_fringes.svg
+   :alt: Excited-state population after the Ramsey sequence with a 1 MHz detuned drive, at the page's 41 waits from 0 to 4 microseconds. It oscillates between 0.05 and 0.95, with the first revival at 1000 ns, once per microsecond.
+   :width: 100%
+
+   The page's Ramsey sweep, with its first revival marked.
 
 What to notice: over a few microseconds the fringes barely shrink, since
 T2* is 35 µs. Their slow loss of contrast over a longer sweep is what a
@@ -235,6 +256,15 @@ two:
        drive(drive_line, half_flip)
        sync(drive_line, readout_line)
        return readout(readout_line, measurement)
+
+.. themed-figure:: figures/echo_sequence.svg
+   :alt: Timeline of the echo kernel on D1's drive and readout lines: the same +1 MHz shift and pi/2 pulse, half the 1 microsecond wait, a pi pulse, the other half, a second pi/2 pulse and the readout.
+   :width: 100%
+
+   ``echo`` with a 1 µs wait, cut short in each half.
+
+What to notice: the π pulse sits exactly halfway, so each half of the wait
+is the same length.
 
 Run it at every fifth wait:
 
