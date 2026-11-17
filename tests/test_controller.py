@@ -926,6 +926,74 @@ def test_a_controller_without_timeouts_rejects_a_timed_wait():
         pulse.compile(timed_out, control_system=ControlSystem(controllers=[limits])).lower(Q[0])
 
 
+@pulse.classical(max_latency_ns=400, latency_mode="timeout", timeout_ns=250)
+def timed_bits(bits: pulse.Bits) -> pulse.Length[pulse.Bits, 2]:
+    return [bits[0], not bits[0]]
+
+
+def _answer_waits(program):
+    return [(e["wait"], e.get("timeout_ns")) for e in program["events"] if e["kind"] == "answer"]
+
+
+def test_a_function_declared_with_a_timeout_exports_a_timeout_wait():
+    # It exported "bounded" with no timeout, though result 0 is the flag.
+    @pulse.kernel
+    def k(q, r):
+        d = get_drive_line(q)
+        e = get_drive_line(r)
+        ro = get_readout_line(q)
+        m = readout(ro, square(100, 0.05))
+        ok, fix = timed_bits.submit([m]).result()
+        sync(d, e, ro)
+        if ok:
+            drive(d, square(20, 0.3))
+        if fix[1]:
+            drive(e, square(20, 0.3))
+
+    lowered = pulse.compile(k, schedule="rcp").lower(Q[0], Q[1])
+    flat = lowered.export_to_controller()
+    structured = lowered.export_to_controller(version=2)
+    unrolled = controller_module.unroll(structured)
+    expected = [(0, True, "answer", 0), (1, True, "answer", 2)]
+    for program in (flat, structured, unrolled):
+        assert _answer_waits(program) == [("timeout", pytest.approx(250))]
+        assert _answer_conditions(program) == expected
+    assert json.loads(json.dumps(structured)) == structured
+
+
+def test_a_timeout_at_the_call_outranks_the_functions():
+    @pulse.kernel
+    def k(q):
+        d = get_drive_line(q)
+        ro = get_readout_line(q)
+        m = readout(ro, square(100, 0.05))
+        ok, _ = timed_bits.submit([m]).result(timeout=150)
+        sync(d, ro)
+        if ok:
+            drive(d, square(20, 0.3))
+
+    lowered = pulse.compile(k, schedule="rcp").lower(Q[0])
+    structured = lowered.export_to_controller(version=2)
+    for program in (
+        lowered.export_to_controller(),
+        structured,
+        controller_module.unroll(structured),
+    ):
+        assert _answer_waits(program) == [("timeout", pytest.approx(150))]
+
+
+def test_a_function_without_a_timeout_still_exports_a_bounded_wait():
+    lowered = pulse.compile(decoded, schedule="rcp").lower(Q[0])
+    structured = lowered.export_to_controller(version=2)
+    for program in (
+        lowered.export_to_controller(),
+        structured,
+        controller_module.unroll(structured),
+    ):
+        assert _answer_waits(program) == [("bounded", None)]
+    assert "timeout_ns" not in next(e for e in structured["events"] if e["kind"] == "answer")
+
+
 # ── Values known at run time ────────────────────────────────────────────────
 
 

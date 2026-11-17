@@ -46,6 +46,29 @@ struct ControllerExpressions {
   // which an expression of its result refers to.
   llvm::DenseMap<mlir::Operation *, int64_t> latest;
 
+  /// How a classical wait takes its answer: "blocking", "timeout" with its
+  /// own timeout or, without one, its function's in timeout mode, else
+  /// "bounded"; and the timeout in ns (NaN for none).
+  std::pair<const char *, double> waitMode(mlir::Operation *op) {
+    if (op->hasAttr("classical.blocking"))
+      return {"blocking", kUnknown};
+    if (auto timeout = op->getAttrOfType<mlir::FloatAttr>("timeout_ns"))
+      return {"timeout", timeout.getValueAsDouble()};
+    auto callee = op->getAttrOfType<mlir::FlatSymbolRefAttr>("callee");
+    if (!callee)
+      return {"bounded", kUnknown};
+    auto [found, inserted] = callables.try_emplace(callee.getAttr());
+    if (inserted)
+      found->second =
+          mlir::SymbolTable::lookupNearestSymbolFrom<classical::CallableOp>(
+              op, callee);
+    classical::CallableOp callable = found->second;
+    if (callable && callable.getMode() == "timeout" && callable.getTimeoutNs())
+      return {"timeout", callable.getTimeoutNs()->convertToDouble()};
+    return {"bounded", kUnknown};
+  }
+  llvm::DenseMap<mlir::Attribute, classical::CallableOp> callables;
+
   /// How a value is computed at run time, children before their parent: a
   /// number (a frame change's value), a constant, the result of a readout
   /// or answer record, an op of the export's vocabulary (`name`) over the

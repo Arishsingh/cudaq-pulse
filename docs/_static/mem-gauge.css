@@ -1,0 +1,100 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The controller-memory gauges (mem-gauge.js), in the tutorial figures'
+ * palette (docs/tutorials/figures/_style.py): a program's use is drive green,
+ * and what runs past a limit is hatched and labelled, not only colored.
+ */
+
+.pulse-mem-gauge {
+  --mg-use: #5b8c00;
+  --mg-text: #1a1a1a;
+  --mg-muted: #5c636a;
+  --mg-track: #e8e8e8;
+  margin: 1rem 0 0.5rem;
+  text-align: left;
+}
+
+html[data-theme="dark"] .pulse-mem-gauge {
+  --mg-use: #76b900;
+  --mg-text: #eeeeee;
+  --mg-muted: #b4bac1;
+  --mg-track: #2c2f33;
+}
+
+.pulse-mem-gauge:empty,
+.pulse-data-figure .pulse-fallback[hidden] {
+  display: none;
+}
+
+.pulse-mem-gauge .mg-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.mg-svg text {
+  fill: var(--mg-text);
+  font-size: 12px;
+}
+
+.mg-svg .mg-head {
+  font-weight: 600;
+}
+
+.mg-svg .mg-small {
+  fill: var(--mg-muted);
+  font-size: 10.5px;
+}
+
+.mg-svg .mg-over,
+.mg-svg .mg-refused {
+  fill: var(--mg-text);
+  font-weight: 600;
+}
+
+.mg-track {
+  fill: var(--mg-track);
+}
+
+.mg-fill {
+  fill: var(--mg-use);
+}
+
+.mg-hatch {
+  fill: var(--mg-text);
+}
+
+.mg-limit,
+.mg-break {
+  stroke: var(--mg-text);
+  stroke-width: 1.5;
+}
+
+.mg-seam {
+  stroke: var(--mg-track);
+}
+
+.pulse-mem-gauge .mg-button {
+  color: var(--pst-color-text-base, inherit);
+  background: var(--pst-color-surface, transparent);
+  border: 1px solid var(--pst-color-border, #c8c8c8);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.pulse-mem-gauge .mg-button:focus-visible {
+  outline: 2px solid var(--pst-color-primary, var(--mg-use));
+  outline-offset: 2px;
+}
+
+.mg-table {
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.mg-table td {
+  text-align: right;
+}

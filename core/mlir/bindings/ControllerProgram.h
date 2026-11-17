@@ -1107,11 +1107,9 @@ struct ControllerWalk : ControllerExpressions {
     double timeoutNs = kUnknown;
     if (!submit) {
       latest[op] = static_cast<int64_t>(result.size());
-      mode = op->hasAttr("classical.blocking") ? "blocking" : "bounded";
-      if (auto timeout = op->getAttrOfType<mlir::FloatAttr>("timeout_ns")) {
-        mode = "timeout";
-        timeoutNs = timeout.getValueAsDouble();
-      }
+      auto [wait, timeout] = waitMode(op);
+      mode = wait;
+      timeoutNs = timeout;
     }
     int32_t knownIndex = -1;
     if (runTime)

@@ -14,9 +14,9 @@ To update a figure, run its script: ``python docs/tutorials/figures/<script>.py`
 The data a script writes for an animated figure (``<script>.json``) must match
 the committed file too, every number to within 1e-3.
 
-A ``themed-figure`` of a page, and the still of a ``pulse-visual``, has its
-``-dark`` twin, both have a title and a description, and the page's ``:alt:``
-is the description.
+A ``themed-figure`` of a page, the fallback figure of a ``toy-flow`` and
+the still of a ``pulse-visual`` each have a ``-dark`` twin, both have a
+title and a description, and the page's ``:alt:`` is the description.
 """
 
 from __future__ import annotations
@@ -73,11 +73,12 @@ def same_figure(a: str, b: str) -> bool:
 
 
 def _themed_figures(page: Path):
-    """(light file, alt text) of each ``themed-figure`` of *page*, and of each
-    ``pulse-visual``'s still, ``<scene>.svg`` next to its JSON."""
+    """(light file, alt text) of each ``themed-figure`` of *page*, of the
+    ``:fallback:`` figure of each ``toy-flow``, and of each ``pulse-visual``'s
+    still, ``<scene>.svg`` next to its JSON."""
     lines = page.read_text().splitlines()
     for i, line in enumerate(lines):
-        m = re.match(r"\s*\.\. (themed-figure|pulse-visual):: (\S+)", line)
+        m = re.match(r"\s*\.\. (themed-figure|toy-flow|pulse-visual):: (\S+)", line)
         if not m:
             continue
         options = {}
@@ -86,10 +87,14 @@ def _themed_figures(page: Path):
                 break
             key, _, value = option.strip()[1:].partition(":")
             options[key] = value.strip()
-        light = page.parent / m[2]
-        if m[1] == "pulse-visual":
-            light = light.with_name(f"{options.get('scene')}.svg")
-        yield light, options.get("alt")
+        if m[1] == "themed-figure":
+            light = m[2]
+        elif m[1] == "toy-flow":
+            light = options.get("fallback")
+        else:
+            light = str(Path(m[2]).with_name(f"{options.get('scene')}.svg"))
+        if light:
+            yield page.parent / light, options.get("alt")
 
 
 def _desc(svg: Path) -> tuple[str | None, str | None]:
@@ -133,7 +138,12 @@ def test_every_tutorial_figure_follows_the_theme_and_every_svg_is_used():
 @pytest.mark.skipif(importlib.util.find_spec("matplotlib") is None, reason="needs matplotlib")
 @pytest.mark.parametrize("script", _SCRIPTS, ids=lambda p: p.stem)
 def test_each_figure_is_what_its_script_draws(script, tmp_path):
-    env = {**os.environ, "PULSE_FIGURES_DIR": str(tmp_path), "MPLBACKEND": "Agg"}
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(p for p in sys.path if p),
+        "PULSE_FIGURES_DIR": str(tmp_path),
+        "MPLBACKEND": "Agg",
+    }
     env.setdefault("MPLCONFIGDIR", str(tmp_path / "mpl"))
     env.pop("CUDAQ_PULSE_QUANTUM_SYSTEM", None)
     result = subprocess.run(
