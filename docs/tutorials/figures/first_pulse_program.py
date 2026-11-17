@@ -32,7 +32,7 @@ def fit_rabi(amplitudes: np.ndarray, p1: np.ndarray) -> tuple[float, np.ndarray]
 
 def main() -> None:
     page = page_namespace("first_pulse_program.rst")
-    rabi, q, amplitudes = page["rabi"], page["q"], page["amplitudes"]
+    rabi, q, amplitudes = page["rabi"], page["qubit"], page["amplitudes"]
     levels = np.array([pulse.simulate(rabi, q, a).level_populations(q) for a in amplitudes])
     a_pi, (b, a) = fit_rabi(amplitudes, levels[:, 1])
     fine = np.linspace(amplitudes[0], amplitudes[-1], 400)

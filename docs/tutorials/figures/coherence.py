@@ -15,7 +15,7 @@ from _style import end_label, page_namespace, plot_axes, save_themed
 
 
 def t1_decay(page) -> None:
-    q, d1 = page["q"], page["d1"]
+    q, d1 = page["qubit"], page["d1"]
     waits = np.linspace(0, 60_000, 25)
     p1 = np.array([pulse.simulate(page["t1"], q, w).level_population(1) for w in waits])
     p_th = d1.thermal_population
@@ -76,7 +76,7 @@ def t1_decay(page) -> None:
 
 
 def ramsey_echo(page) -> None:
-    q = page["q"]
+    q = page["qubit"]
     taus = np.linspace(0, 4_000, 161)
     ramsey = np.array([pulse.simulate(page["ramsey"], q, t).level_population(1) for t in taus])
     echo_taus = taus[::4]
