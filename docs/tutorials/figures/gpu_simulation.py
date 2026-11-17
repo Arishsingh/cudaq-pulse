@@ -4,24 +4,89 @@
 
 Usage: python docs/tutorials/figures/gpu_simulation.py
 
-Needs matplotlib (the ``[viz]`` extra). Writes ``lowering.svg`` and
-``lowering-dark.svg`` next to this file: the page's ``evolve_pair`` at each
-level the compiler lowers it to, with the operations of each, and its export
-for a controller. Runs on any machine; nothing here needs a GPU.
+Needs matplotlib (the ``[viz]`` extra). Writes, each with its ``-dark`` twin,
+next to this file:
+
+- ``pair_schedule.svg``, the schedule of the page's ``evolve_pair``;
+- ``pair_density.svg``, the density matrix of its CPU simulation;
+- ``lowering.svg``, the kernel at each level the compiler lowers it to, with
+  the operations of each, and its export for a controller.
+
+Runs on any machine; nothing here needs a GPU.
 """
 
 import re
 from collections import Counter
 
+import numpy as np
 from _style import page_namespace, plot_axes, save_themed
+from _timeline import Timeline, draw
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 _OP = re.compile(r"^\s*(?:%[^=]+=\s*)?\"?([a-z_]+)\.([a-z_.]+)", re.M)
 _LEVELS = (("pulse", "Pulse MLIR"), ("qop", "QOp"), ("cudm", "cuDensityMat"), ("llvm", "LLVM IR"))
 
 
+def pair_schedule(page) -> None:
+    names = {page["x1"].index: "X1", page["d2"].index: "D2"}
+    timeline = Timeline.of(page["evolve_pair"].lower(page["x1"], page["d2"]), names=names)
+    drives = sorted(timeline.pulses, key=lambda pl: pl.end_ns - pl.start_ns)
+    words = {(drives[0].lane, round(drives[0].start_ns, 3)): "π/2"}
+    words |= {(pl.lane, round(pl.start_ns, 3)): "π" for pl in drives[1:]}
+    slot = next(w for w in timeline.waits)
+    alt = (
+        "Timeline of evolve_pair on the drive lines of X1 and D2: a pi/2 pulse on X1 and a pi "
+        f"pulse on D2, a sync, then the CZ's {slot.length_ns:g} ns slot as a wait on both lines, "
+        f"to {slot.end_ns:g} ns."
+    )
+    save_themed(
+        lambda p: draw(timeline, p, pulse_labels=words, syncs="all", xlim=(0, slot.end_ns * 1.02)),
+        "pair_schedule",
+        title="The coupled pair's program",
+        desc=alt,
+    )
+
+
+def pair_density(page) -> None:
+    rho = np.abs(np.asarray(page["cpu"].density_matrix))
+    dims = page["cpu"].dims
+    labels = [f"{a}{b}" for a in range(dims[0]) for b in range(dims[1])]
+    big = [(labels[k], rho[k, k]) for k in range(len(labels)) if rho[k, k] > 0.05]
+
+    def figure(p):
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import LinearSegmentedColormap
+
+        fig, ax = plt.subplots(figsize=(3.4, 3.0))
+        cmap = LinearSegmentedColormap.from_list("theme", [p.surface, p.drive])
+        image = ax.imshow(rho, cmap=cmap, vmin=0, vmax=max(0.5, float(rho.max())))
+        ax.set_xticks(range(len(labels)), labels, fontsize=7.5)
+        ax.set_yticks(range(len(labels)), labels, fontsize=7.5)
+        ax.tick_params(length=0)
+        ax.grid(False)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.set_xlabel("X1 D2 levels")
+        bar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+        bar.outline.set_visible(False)
+        bar.ax.tick_params(labelsize=7.5, length=0)
+        bar.set_label("|ρ|", color=p.muted)
+        return fig
+
+    alt = (
+        f"The magnitudes of the {len(labels)} by {len(labels)} density matrix of the pair after "
+        "the CPU simulation, rows and columns labelled by the levels of X1 then D2. Almost all "
+        "of it sits in "
+        + " and ".join(f"{name} ({value:.2f})" for name, value in big)
+        + ", with the coherence between them off the diagonal; levels 2 stay empty."
+    )
+    save_themed(figure, "pair_density", title="The pair's 9 × 9 density matrix", desc=alt)
+
+
 def main() -> None:
     page = page_namespace("gpu_simulation.rst")
+    pair_schedule(page)
+    pair_density(page)
     scheduled = page["evolve_pair"].lower(page["x1"], page["d2"])
     stages = []
     for level, name in _LEVELS:
