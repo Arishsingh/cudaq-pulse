@@ -75,6 +75,7 @@ __all__ = [
     "DriveLine",
     "Processor",
     "ReadoutLine",
+    "UpdateBus",
 ]
 
 SYSTEM_FORMAT = "cudaq-pulse.system/1"
@@ -249,6 +250,112 @@ class ReadoutLine(_Line):
 
     __slots__ = ()
     _role = "readout"
+
+
+@_dataclass_when_used(frozen=True)
+class UpdateBus:
+    """A bus that carries the updates of a group of a controller's lines
+    (``Controller.update_buses``) one at a time, each holding it for the
+    ``cycles_per_update`` of the controller's cycles before the update takes
+    effect: ``UpdateBus(drive_lines=[0, 1], cycles_per_update=8)``.
+    ``drive_lines`` and ``readout_lines`` name its lines by carrier index,
+    as the controller's own do. An update is a frame update, or a drive or
+    readout whose tone's frequency, or whose phase other than as the tone
+    runs on, differs from the drive or readout before it on its line; see
+    "Update buses" in the controller backends guide."""
+
+    drive_lines: Sequence[int] = ()
+    readout_lines: Sequence[int] = ()
+    cycles_per_update: int = 1
+
+    def __post_init__(self) -> None:
+        for name in ("drive_lines", "readout_lines"):
+            given = getattr(self, name)
+            if isinstance(given, (str, bytes)) or not isinstance(given, Iterable):
+                raise InvalidTypeError(
+                    f"UpdateBus.{name} is a sequence of carrier indices, got {given!r}"
+                )
+            qudits = tuple(given)
+            if any(isinstance(q, bool) or not isinstance(q, int) or q < 0 for q in qudits):
+                raise InvalidValueError(
+                    f"UpdateBus.{name} holds carrier indices (ints >= 0), got {list(qudits)}"
+                )
+            if len(set(qudits)) != len(qudits):
+                raise InvalidValueError(f"UpdateBus.{name} lists a carrier twice: {list(qudits)}")
+            object.__setattr__(self, name, qudits)
+        if not self.drive_lines and not self.readout_lines:
+            raise InvalidValueError("UpdateBus lists no lines")
+        cycles = self.cycles_per_update
+        if isinstance(cycles, bool) or not isinstance(cycles, int) or cycles < 1:
+            raise InvalidValueError(
+                f"UpdateBus.cycles_per_update must be an int of at least 1, got {cycles!r}"
+            )
+
+    def __hash__(self) -> int:
+        return hash((self.drive_lines, self.readout_lines, self.cycles_per_update))
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        from ._pickling import frozen_reduce
+
+        return frozen_reduce(self)
+
+    def as_dict(self) -> dict[str, Any]:
+        """The bus as JSON-serializable data, as a system file holds it."""
+        return {
+            "drive_lines": list(self.drive_lines),
+            "readout_lines": list(self.readout_lines),
+            "cycles_per_update": self.cycles_per_update,
+        }
+
+    @property
+    def _lines(self) -> tuple[tuple[str, int], ...]:
+        """Its lines as (role, carrier index)."""
+        return (
+            *(("drive", q) for q in self.drive_lines),
+            *(("readout", q) for q in self.readout_lines),
+        )
+
+    def _named(self) -> str:
+        """Its lines, as a violation names them."""
+        parts = []
+        for role, qudits in (("drive", self.drive_lines), ("readout", self.readout_lines)):
+            if qudits:
+                s = "s" if len(qudits) > 1 else ""
+                parts.append(f"{role} line{s} of qudit{s} {', '.join(map(str, qudits))}")
+        return " and ".join(parts)
+
+
+def _update_buses(value: Any) -> tuple[UpdateBus, ...]:
+    """*value*, ``Controller.update_buses``, as buses (a mapping, as a system
+    file states one, is read as ``UpdateBus(**mapping)``), each line on at
+    most one. A line the controller does not play has no updates."""
+    if isinstance(value, (str, bytes, Mapping, UpdateBus)) or not isinstance(value, Iterable):
+        raise InvalidTypeError(
+            f"Controller.update_buses is a list of cudaq_pulse.controller.UpdateBus, got {value!r}"
+        )
+    buses = []
+    for index, item in enumerate(value):
+        if isinstance(item, Mapping):
+            try:
+                item = UpdateBus(**item)
+            except TypeError as error:
+                raise InvalidValueError(f"Controller.update_buses[{index}]: {error}") from None
+        elif not isinstance(item, UpdateBus):
+            raise InvalidTypeError(
+                f"Controller.update_buses[{index}] is not a cudaq_pulse.controller.UpdateBus: "
+                f"{item!r}"
+            )
+        buses.append(item)
+    seen: set[tuple[str, int]] = set()
+    for index, bus in enumerate(buses):
+        for role, qudit in bus._lines:
+            if (role, qudit) in seen:
+                raise InvalidValueError(
+                    f"Controller.update_buses[{index}]: the {role} line of qudit {qudit} is on "
+                    "another bus already; a line is on at most one"
+                )
+            seen.add((role, qudit))
+    return tuple(buses)
 
 
 _QUDIT: Callable[[Any], int] = itemgetter(0)
@@ -659,6 +766,15 @@ class Controller:
     lists none plays every line. A line may reach several qudits
     (``ReadoutLine([0, 1, 2, 3], max_concurrent_tones=4)``, a shared line);
     each qudit is reached by at most one line of each kind.
+    ``update_buses``: the groups of its lines whose updates share one bus
+    (``UpdateBus``), which carries one update at a time; updates on one bus
+    must start ``cycles_per_update`` apart, else the program is a violation
+    naming the bus, the lines and the times (none by default: no limit).
+    Exports list it among the limits only when it is set.
+    ``space_updates``: whether compiling spaces the updates on its update
+    buses, holding each back as little as it must, instead of refusing them
+    (see "Update buses" in the controller backends guide). Off by default;
+    exports list it only when it is set.
     ``peer_latency_cycles`` is the time an outcome this controller reads
     takes to reach another controller, in this controller's own cycles: one
     number for every receiver, or a mapping from the receiving controller's
@@ -695,6 +811,8 @@ class Controller:
     blocks_on_calls: bool = False
     drive_lines: Sequence[DriveLine | int] = ()
     readout_lines: Sequence[ReadoutLine | int] = ()
+    update_buses: Sequence[UpdateBus] = ()
+    space_updates: bool = False
     peer_latency_cycles: int | Mapping[int, int] = 0
     clock_skew_cycles: int = 0
     supports: Sequence[Capability | str] | None = None
@@ -704,7 +822,7 @@ class Controller:
     processors: Sequence[Processor] = ()
 
     def __post_init__(self) -> None:
-        for name in ("persistent_frames", "blocks_on_calls"):
+        for name in ("persistent_frames", "blocks_on_calls", "space_updates"):
             if not isinstance(getattr(self, name), bool):
                 raise InvalidValueError(
                     f"Controller.{name} must be a bool, got {getattr(self, name)!r}"
@@ -784,6 +902,7 @@ class Controller:
         object.__setattr__(
             self, "readout_lines", _lines(self.readout_lines, "readout_lines", ReadoutLine)
         )
+        object.__setattr__(self, "update_buses", _update_buses(self.update_buses))
         peers = self.peer_latency_cycles
         if isinstance(peers, Mapping):
             object.__setattr__(
@@ -882,6 +1001,12 @@ class Controller:
         else:
             data["drive_lines"] = []
             data["readout_lines"] = []
+        if self.update_buses:
+            data["update_buses"] = [bus.as_dict() for bus in self.update_buses]
+        else:
+            del data["update_buses"]
+        if not self.space_updates:
+            del data["space_updates"]
         peers = self.peer_latency_cycles
         if not isinstance(peers, int):
             data["peer_latency_cycles"] = {str(k): v for k, v in sorted(peers.items())}
@@ -2259,6 +2384,7 @@ _WIRING = (
     "peer_latency_cycles",
     "clock_skew_cycles",
     "alignment_tolerance_cycles",
+    "update_buses",
 )
 _NOTICED: set[tuple[str, str, str]] = set()
 

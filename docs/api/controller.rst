@@ -23,6 +23,9 @@ Export and limits
 .. autoclass:: cudaq_pulse.controller.ReadoutLine
    :members: qudits, qudit, delay_ns, max_concurrent_tones
 
+.. autoclass:: cudaq_pulse.controller.UpdateBus
+   :members: as_dict
+
 .. autoclass:: cudaq_pulse.controller.WaveformMemoryScope
    :members:
    :undoc-members:

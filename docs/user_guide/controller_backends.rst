@@ -798,6 +798,79 @@ over a shared link, every controller that plays), reads a measurement the
 call sends or plays a pulse that uses its answer (branches on it, or
 computes with it); the lines of the others play on while it is out.
 
+Update buses
+~~~~~~~~~~~~
+
+Some instruments retune a group of lines over one shared bus that carries
+one update at a time. ``Controller(update_buses=[...])`` lists such
+groups, each a ``cudaq_pulse.controller.UpdateBus``: its lines by carrier
+index, as the controller's own are given, and the cycles of the
+controller's clock one update holds the bus for::
+
+    from cudaq_pulse.controller import UpdateBus
+
+    box = pulse.Controller(
+        drive_lines=[0, 1, 2, 3],
+        readout_lines=[0, 1, 2, 3],
+        update_buses=[UpdateBus(drive_lines=[0, 1, 2, 3], cycles_per_update=8)],
+    )
+
+An update is what changes the tone a line plays, read from the program
+alone:
+
+- each frame update (a frame change no later drive or readout takes, see
+  `Exporting a program`_);
+- each drive or readout whose ``frequency_hz`` differs from that of the
+  drive or readout before it on its line, or whose ``phase_rad`` differs
+  other than as the tone runs on: a tone at its frame's frequency keeps
+  its phase, and one retuned from the line's own frequency gains phase at
+  its detuning, so neither is an update by itself. A frequency or phase
+  known only at run time is an update.
+
+The first drive or readout on a line is not an update, its tone being set
+before the shot, and neither is a pulse that changes only its envelope or
+amplitude. An update holds the bus for the ``cycles_per_update`` before it
+takes effect, so updates on one bus must start at least that far apart;
+two in the two arms of one branch never meet. A program that has them
+closer is a ``ControllerLimitError`` naming the bus, its lines, both
+updates and their times. A line is on at most one bus, and a bus reaches
+only lines its controller plays. In a system file each bus is
+``{"drive_lines": [0, 1], "readout_lines": [], "cycles_per_update": 8}``;
+like the lines, the buses are wiring, given when a description is loaded
+(``pulse.controller(name, ..., update_buses=[...])``), and the export lists
+them among the limits only when there are any.
+
+By default the scheduler does not place updates for the bus, and timing
+never changes: space them with waits or syncs. A controller that asks for
+it, ``Controller(update_buses=[...], space_updates=True)``, has compiling
+space them instead. After scheduling, it takes the updates of each bus in
+time order and holds the first that clashes back on its line by the
+fewest cycles that put it ``cycles_per_update`` after the one before it,
+and schedules the program again: what follows it on its line moves, and
+syncs carry the move to their other lines, as the scheduler places them,
+on the controller's grid. A delay can change which later pulses are
+updates (a tone retuned across a wait gains phase over it), so it checks
+the whole program again, and repeats until no update clashes, at most 256
+times, else ``CompilationError``. An op is held back in every execution:
+in a rolled loop, in every iteration. Updates in the two arms of a branch
+stay independent. The export, the simulator and the controller checks all
+read the spaced program, so feedback latency, syncs and every other limit
+hold on it; a program with nothing to space keeps its schedule. Spacing
+works on the program as compiled, so a kernel whose waits a call's
+``float`` values set keeps the holds its compile found, and each call is
+checked; one with runtime qudits is checked when a call binds them.
+
+The check of a rolled loop does not play every iteration. Whether a pulse
+is an update depends only on the pulse before it on its line, and a clash
+only on the update before it on its bus; from a loop's iteration 1 on,
+both are those of the iteration before, a period later and a phase step
+on. On one clock the check plays each loop it keeps rolled at iterations
+0 (the entry), 1 and 2 (every later iteration clashes as these do) and
+its last two (which what follows the loop follows), and lists violations,
+when there are any, from a walk of every execution. A program on
+controllers with their own clocks, or on several controllers, is checked
+on every execution.
+
 A minimal backend
 -----------------
 
