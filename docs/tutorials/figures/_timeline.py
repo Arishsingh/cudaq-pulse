@@ -74,6 +74,19 @@ class Sync:
 
 
 @dataclass(frozen=True)
+class Forward:
+    """A readout's outcome on its way to a pulse that branches on it: ready
+    on its own controller *feedback_ns* after the readout ends, and on
+    another controller *peer_ns* later still."""
+
+    lane: LaneKey
+    source: tuple[LaneKey, float]
+    use: tuple[LaneKey, float]
+    feedback_ns: float
+    peer_ns: float
+
+
+@dataclass(frozen=True)
 class Wait:
     """A wait on a lane: *length_ns* as scheduled, and for a wait whose length
     comes from a classical answer, the bounds the scheduler was given."""
@@ -106,6 +119,7 @@ class Timeline:
     calls: tuple[Call, ...]
     syncs: tuple[Sync, ...]
     waits: tuple[Wait, ...] = ()
+    forwards: tuple[Forward, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -238,6 +252,10 @@ class Timeline:
                 )
             )
         lanes += call_lanes.values()
+
+        forwards = _forwards(events, controllers, exports, clock)
+        if forwards:
+            lanes.append(Lane(_BUS, "outcome bus", "bus"))
         return cls(
             clock,
             tuple(lanes),
@@ -246,7 +264,51 @@ class Timeline:
             tuple(calls),
             tuple(sorted(syncs.values(), key=lambda s: s.t_ns)),
             tuple(waits),
+            tuple(forwards),
         )
+
+
+_BUS: LaneKey = ("bus", 0)
+
+
+def _forwards(events, controllers, exports, clock: float) -> list[Forward]:
+    """The outcomes pulses branch on, from the controllers' latencies: a
+    pulse whose condition tests a readout gets one forward from that readout,
+    the first such pulse on each lane. Only for a control system that lists
+    its controllers, which state the latencies."""
+    if not controllers:
+        return []
+    owner = {}
+    for number, (_, program) in enumerate(exports):
+        for line in program["lines"]:
+            owner[line["line"]] = number if len(exports) > 1 else 0
+    by_index = {e["index"]: (e, ghz) for e, ghz in events}
+    forwards, seen = [], set()
+    for event, ghz in events:
+        for condition in event.get("conditions", []):
+            for index in condition.get("readouts", []):
+                readout, readout_ghz = by_index[index]
+                key = (index, event["line"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                sender = controllers[owner[readout["line"]]]
+                receiver = owner[event["line"]]
+                sender_ghz = sender.clock_ghz or clock
+                feedback = sender.feedback_latency_cycles / sender_ghz
+                peer = 0.0
+                if receiver != owner[readout["line"]]:
+                    peer = sender.peer_latency_cycles / sender_ghz
+                forwards.append(
+                    Forward(
+                        _BUS,
+                        (("line", readout["line"]), readout["end_cycles"] / readout_ghz),
+                        (("line", event["line"]), event["start_cycles"] / ghz),
+                        feedback,
+                        peer,
+                    )
+                )
+    return forwards
 
 
 def _answers_read(expression: Any) -> set[int]:
@@ -326,6 +388,16 @@ def compress(timeline: Timeline, longest_ns: float) -> tuple[Timeline, tuple[Cut
             Wait(w.lane, at(w.start_ns), at(w.end_ns), w.length_ns, w.min_ns, w.max_ns)
             for w in timeline.waits
         ),
+        tuple(
+            Forward(
+                f.lane,
+                (f.source[0], at(f.source[1])),
+                (f.use[0], at(f.use[1])),
+                f.feedback_ns,
+                f.peer_ns,
+            )
+            for f in timeline.forwards
+        ),
     )
     return squeezed, tuple(Cut(a, b, at(a), longest_ns) for a, b in cuts)
 
@@ -379,12 +451,17 @@ def _fmt_ns(ns: float) -> str:
     return f"{ns:.3g} ns"
 
 
+# Lanes that sit between the controllers' groups, not in one.
+_BETWEEN = ("link", "bus")
+
+
 def busy_lanes(timeline: Timeline, window: tuple[float, float]) -> set[LaneKey]:
     """The lanes with a pulse, mark or call in *window* (ns)."""
     a, b = window
     keys = {pl.lane for pl in timeline.pulses if pl.end_ns >= a and pl.start_ns <= b}
     keys |= {mk.lane for mk in timeline.marks if a <= mk.t_ns <= b}
     keys |= {c.lane for c in timeline.calls if c.due_ns >= a and c.submit_ns <= b}
+    keys |= {f.lane for f in timeline.forwards if f.use[1] >= a and f.source[1] <= b}
     return keys
 
 
@@ -403,21 +480,21 @@ def layout(
     with several, the links sit between the first group and the rest.
     """
     shown = [ln for ln in timeline.lanes if only is None or ln.key in only]
-    groups = list(dict.fromkeys(ln.group for ln in shown if ln.role != "link"))
-    links = [ln for ln in shown if ln.role == "link"]
+    groups = list(dict.fromkeys(ln.group for ln in shown if ln.role not in _BETWEEN))
+    links = [ln for ln in shown if ln.role in _BETWEEN]
     order: list[Lane] = []
     for i, g in enumerate(groups):
-        order += [ln for ln in shown if ln.role != "link" and ln.group == g]
+        order += [ln for ln in shown if ln.role not in _BETWEEN and ln.group == g]
         if i == 0 and len(groups) > 1:
             order += links
     if len(groups) <= 1:
         order += links
     y, ys = 0.0, {}
     for k, ln in enumerate(order):
-        if k and len(groups) > 1 and ln.role != "link" and ln.group != order[k - 1].group:
+        if k and len(groups) > 1 and ln.role not in _BETWEEN and ln.group != order[k - 1].group:
             y -= gap_in
-        y -= link_in if ln.role == "link" else lane_in
-        ys[ln.key] = (y, link_in if ln.role == "link" else lane_in)
+        y -= link_in if ln.role in _BETWEEN else lane_in
+        ys[ln.key] = (y, link_in if ln.role in _BETWEEN else lane_in)
     return order, ys, -y
 
 
@@ -471,12 +548,12 @@ def draw_on(
         return a + w / 2
 
     group_of = {ln.key: ln.group for ln in timeline.lanes}
-    groups = list(dict.fromkeys(ln.group for ln in order if ln.role != "link"))
+    groups = list(dict.fromkeys(ln.group for ln in order if ln.role not in _BETWEEN))
     for ln in order:
         base, h = ys[ln.key]
         ax.axhline(base, color=p.grid, lw=0.8, zorder=0)
         if lane_labels:
-            color = p.classical if ln.role == "link" else p.text
+            color = {"link": p.classical, "bus": p.readout}.get(ln.role, p.text)
             ax.text(
                 -0.015,
                 base + h * 0.3,
@@ -667,6 +744,39 @@ def draw_on(
             ub, _ = ys[c.use[0]]
             start = base + h * 0.74 if ub > base else lo
             ax.add_patch(FancyArrowPatch((c.due_ns, start), (c.use[1], ub), **arrow))
+
+    # Forwarded outcomes: the readout down to the bus, its latencies, then up
+    # (or down) to the pulse that branches on it.
+    bus_arrow = {**arrow, "color": p.readout}
+    for f in timeline.forwards:
+        if f.lane not in ys or not visible(f.source[1], f.use[1]):
+            continue
+        base, h = ys[f.lane]
+        lo, hi = base + h * 0.18, base + h * 0.62
+        mid = (lo + hi) / 2
+        ready = f.source[1] + f.feedback_ns
+        parts = [(f.source[1], ready, f"feedback {_fmt_ns(f.feedback_ns)}", 1.0)]
+        if f.peer_ns:
+            parts.append((ready, ready + f.peer_ns, f"peer {_fmt_ns(f.peer_ns)}", 0.45))
+        for a, b, text, alpha in parts:
+            ax.add_patch(Rectangle((a, lo), b - a, hi - lo, color=p.readout, alpha=alpha, lw=0))
+            width = len(text) * 8 * 0.56 * ns_per_pt
+            if b - a > width + 4 * ns_per_pt:
+                ax.text(
+                    (a + b) / 2, mid, text, ha="center", va="center", fontsize=8, color=p.surface
+                )
+            else:
+                ax.text(
+                    (a + b) / 2, lo - 0.03, text, ha="center", va="top", fontsize=8, color=p.readout
+                )
+        if f.source[0] in ys:
+            sb, _ = ys[f.source[0]]
+            ax.add_patch(FancyArrowPatch((f.source[1], sb), (f.source[1], hi), **bus_arrow))
+        if f.use[0] in ys:
+            ub, _ = ys[f.use[0]]
+            start = base + h * 0.74 if ub > base else lo
+            ax.plot([f.use[1], f.use[1]], [lo, hi], color=p.readout, lw=1.3)
+            ax.add_patch(FancyArrowPatch((f.use[1], start), (f.use[1], ub), **bus_arrow))
     return ax
 
 
