@@ -187,10 +187,12 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         a = get_readout_line(q)
         b = get_readout_line(r)
         m = readout(a, square(80, 0.05))
+        # result() gives (in_time, bits) for a function declared with a
+        # timeout, which its type, the function's answer, does not say.
         in_time, bits = timed_echo.submit([m]).result()
         if in_time:
             drive(e, gaussian(32, 0.5, 8.0))
-        if bits[0]:
+        if bits[0]:  # type: ignore[index]
             drive(d, gaussian(32, 0.5, 8.0))
         sync(d, e, a, b)
         readout(a, square(80, 0.05))
