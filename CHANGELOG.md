@@ -70,6 +70,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   probabilities divided by the kept total, which is the new result's
   `acceptance`, and the shots that took them in `records`. Every other
   result has an `acceptance` of 1.0.
+- **Validating branches on slow feedback.**
+  `backends.validate(..., feedback_gap_cycles=n)` waits `n` cycles of the
+  controller's clock between the readout of the corpus's `branch` program
+  and the pulse on its outcome, so a controller with long feedback latency
+  (`feedback_latency_cycles`) runs `branch` instead of skipping it. A
+  backend may declare its own `feedback_gap_cycles` attribute, which the
+  argument overrides. The default, 0, runs the corpus as before.
 
 - **Waveform explorer.** The operations guide has an interactive plot of
   the built-in waveforms next to its waveform table: sliders for each

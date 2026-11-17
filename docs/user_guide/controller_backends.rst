@@ -939,6 +939,22 @@ A backend that accepted the unknown event would instead report ``FAIL
 unsupported_event: emit() accepted 'forward_outcome'; it should raise
 IncompatibleBackendError``.
 
+``branch`` plays its pulse on the readout's outcome as soon as the readout
+ends, so on a controller with a ``feedback_latency_cycles`` it is skipped.
+``feedback_gap_cycles=`` waits that many cycles of the controller's clock
+before that pulse; set it to the feedback latency, or more, to check
+branches on controllers with long feedback latency. A backend may declare
+its own ``feedback_gap_cycles`` attribute, which the argument overrides;
+without either it is 0, and the other programs are the same for any gap.
+
+.. code-block:: python
+
+   slow = Controller(clock_ghz=1.0, feedback_latency_cycles=2000)  # 2 us
+   backends.validate(backend, controller=slow)
+   # SKIP branch: exceeds the controller's limits: ... 2000 cycles of feedback latency ...
+   backends.validate(backend, controller=slow, feedback_gap_cycles=2000)
+   # PASS branch
+
 Two optional methods make the checks stronger. With ``events(artifact)``,
 which gives the emitted programs back, one list of events per controller
 (each with its ``kind``, ``line``, ``start_cycles`` and optionally
