@@ -4,15 +4,23 @@
 
 Usage: python docs/tutorials/figures/own_quantum_system.py
 
-Needs matplotlib (the ``[viz]`` extra). Writes ``transmon_surface17.svg`` and
-``pair_levels.svg``, each with its ``-dark`` twin, next to this file: the
-shipped 17-qubit system drawn from its qudits and couplings, and the levels of
-the pair the page describes.
+Needs matplotlib (the ``[viz]`` extra). Writes, each with its ``-dark`` twin,
+next to this file:
+
+- ``transmon_surface17.svg``, the shipped 17-qubit system drawn from its
+  qudits and couplings;
+- ``pair_levels.svg``, the levels of the pair the page describes;
+- ``calibrated_x.svg``, the π pulse its calibration gives qudit 0;
+- ``one_compile.svg``, how many programs each of its two kernels compiles;
+- ``recalibration.svg``, the drive's frequency before and after it moves
+  qudit 0.
 """
 
 import cudaq_pulse as pulse
 import numpy as np
-from _style import page_namespace, plot_axes, save_themed
+from _style import end_label, page_namespace, plot_axes, save_themed
+from _timeline import Timeline, draw
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 
 def surface17() -> None:
@@ -179,9 +187,143 @@ def pair_levels(page) -> None:
     save_themed(figure, "pair_levels", title="The levels of the pair", desc=alt)
 
 
+def calibrated_x(page) -> None:
+    timeline = Timeline.of(page["excite"].lower(page["pair"].qudits[0]))
+    drive = next(pl for pl in timeline.pulses if pl.kind == "drive")
+    amplitude = page["x_cal"].amplitude
+    words = {(drive.lane, round(drive.start_ns, 3)): ("DRAG π pulse", "right")}
+
+    def figure(p):
+        return draw(
+            timeline,
+            p,
+            pulse_labels=words,
+            only={drive.lane},
+            xlim=(-2, drive.end_ns * 2.2),
+            lane_in=0.8,
+        )
+
+    alt = (
+        "The calibrated pi pulse of qudit 0 on its drive line: a "
+        f"{drive.end_ns - drive.start_ns:g} ns DRAG pulse of amplitude {amplitude:.4f}, one "
+        "smooth bump that starts and ends at zero."
+    )
+    save_themed(figure, "calibrated_x", title="The calibrated π pulse", desc=alt)
+
+
+def one_compile() -> None:
+    # The counts the page prints, before its recalibration lowers excite again.
+    page = page_namespace("own_quantum_system.rst", stop_before="old_qudit")
+    counts = {
+        "excite": page["excite"].cache_info().compiled,
+        "excite_any": page["excite_any"].cache_info().compiled,
+    }
+    qudits = [q.index for q in page["pair"].qudits]
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=1.7)
+        ax.axis("off")
+
+        def box(x, y, text, color):
+            ax.add_patch(
+                FancyBboxPatch(
+                    (x - 0.62, y - 0.2),
+                    1.24,
+                    0.4,
+                    boxstyle="round,pad=0.02,rounding_size=0.06",
+                    fc="none",
+                    ec=color,
+                    lw=1.1,
+                )
+            )
+            ax.text(x, y, text, ha="center", va="center", fontsize=8, color=p.text)
+
+        def arrow(a, b):
+            ax.add_patch(
+                FancyArrowPatch(
+                    a, b, arrowstyle="-|>,head_length=3,head_width=1.8", color=p.rule, lw=0.9
+                )
+            )
+
+        for x0, name in ((0.1, "excite"), (3.6, "excite_any")):
+            box(x0 + 0.5, 0.0, name, p.text)
+            n = counts[name]
+            ys = np.linspace(0.45, -0.45, n) if n > 1 else [0.0]
+            for k, y in enumerate(ys):
+                word = f"program for qudit {qudits[k]}" if n > 1 else "one program"
+                box(x0 + 2.0, y, word, p.drive)
+                arrow((x0 + 1.12, 0.0), (x0 + 1.38, y))
+            ax.text(
+                x0 + 1.3,
+                -0.95,
+                f"{n} compilation{'s' if n > 1 else ''}",
+                ha="center",
+                fontsize=8.5,
+                color=p.drive,
+            )
+        ax.set_xlim(-0.6, 6.3)
+        ax.set_ylim(-1.15, 0.8)
+        return fig
+
+    alt = (
+        f"The kernel excite, run on both qudits of the pair, compiles {counts['excite']} "
+        f"programs, one per qudit. excite_any, which takes the qudit as an argument, compiles "
+        f"{counts['excite_any']}, which serves both."
+    )
+    save_themed(figure, "one_compile", title="One compile per qudit, or one for all", desc=alt)
+
+
+def recalibration(page) -> None:
+    frequencies = {}
+    for label, system in page["systems"].items():
+        program = page["excite"].lower(system.qudits[0]).export_to_controller()
+        drive = next(e for e in program["events"] if e["kind"] == "drive")
+        frequencies[label] = drive["frequency_hz"] / 1e6
+    before, after = frequencies["before"], frequencies["after"]
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=1.25)
+        ax.grid(False)
+        ax.set_yticks([])
+        for x, word, color in ((before, "before", p.muted), (after, "after", p.drive)):
+            ax.plot([x, x], [0, 1], color=color, lw=2.2)
+            end_label(
+                ax,
+                x,
+                1.05,
+                f"{word}: {x:.0f} MHz",
+                color,
+                dx=0,
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+        ax.annotate(
+            "",
+            (after, 0.45),
+            (before, 0.45),
+            arrowprops=dict(arrowstyle="-|>", color=p.text, lw=1.0),
+        )
+        ax.set_xlim(before - 2, after + 2)
+        ax.set_ylim(0, 1.5)
+        ax.set_xlabel("drive frequency in the export (MHz)")
+        return fig
+
+    alt = (
+        f"The frequency of excite's drive in its export for qudit 0: {before:.0f} MHz before the "
+        f"recalibration and {after:.0f} MHz after, {after - before:.0f} MHz higher, with the "
+        "same kernel."
+    )
+    save_themed(figure, "recalibration", title="The drive follows the recalibration", desc=alt)
+
+
 def main() -> None:
     surface17()
-    pair_levels(page_namespace("own_quantum_system.rst"))
+    page = page_namespace("own_quantum_system.rst")
+    pair_levels(page)
+    calibrated_x(page)
+    one_compile()
+    recalibration(page)
 
 
 if __name__ == "__main__":
