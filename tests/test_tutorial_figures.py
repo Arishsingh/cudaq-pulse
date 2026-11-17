@@ -9,7 +9,8 @@ numbers in their attributes rounded to one decimal and compared to within a
 fraction of a pixel, and matplotlib's ids and metadata left out. A
 matplotlib upgrade that moves a point by a hundredth still matches; a
 changed schedule, value or label doesn't. Figures lay text out with DejaVu
-Sans, which comes with matplotlib, so they draw the same on every machine.
+Sans, which comes with matplotlib, so they draw the same on every machine;
+they draw in vector only, as an embedded image's bytes differ by platform.
 To update a figure, run its script: ``python docs/tutorials/figures/<script>.py``.
 The data a script writes for an animated figure (``<script>.json``) must match
 the committed file too, every number to within 1e-3.
@@ -132,6 +133,15 @@ def test_every_tutorial_figure_follows_the_theme_and_every_svg_is_used():
         for light, _ in _themed_figures(page):
             used |= {light.name, f"{light.stem}-dark{light.suffix}"}
     assert sorted(p.name for p in _FIGURES.glob("*.svg") if p.name not in used) == []
+
+
+def test_no_figure_embeds_an_image():
+    if not _DOCS.exists():
+        pytest.skip("needs the source tree")
+    # matplotlib's PNG of an imshow or a colorbar comes out with other bytes
+    # on Linux than on macOS, so its figure would match on one only.
+    embedded = [p.name for p in sorted(_FIGURES.glob("*.svg")) if "<image" in p.read_text()]
+    assert embedded == [], "draw these in vector (pcolormesh, solids.set_rasterized(False))"
 
 
 @pytest.mark.slow
