@@ -55,6 +55,7 @@ import copy
 import math
 import os
 import sys
+import threading
 import types
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from enum import StrEnum
@@ -1719,34 +1720,234 @@ def _part(
     lines, events, frames, _, _ = _walk(lowered, slots=None)
     owners, _ = system._owners(lines)
     parts = system._parts(events, owners)
-    count = len(system.controllers)
+    index = _part_index(
+        controller,
+        len(system.controllers),
+        _known_owners(owners),
+        lambda: sorted({c for part in parts for c in part}),
+    )
+    return lines, events, owners, parts, index, frames
+
+
+def _known_owners(owners: Sequence[int | None]) -> list[int]:
+    return sorted({o for o in owners if o is not None})
+
+
+def _part_index(
+    controller: int | None, count: int, used: list[int], calling: Callable[[], list[int]]
+) -> int:
+    """The controller of *count* whose part is wanted: *controller*, else
+    the only one that plays a line (of *used*), else the only one that makes
+    a call (*calling* gives them)."""
     if controller is not None:
-        index = _controller_index(controller, count)
-    else:
-        used = sorted({o for o in owners if o is not None})
+        return _controller_index(controller, count)
+    if len(used) > 1:
+        raise InvalidValueError(
+            f"the program plays lines of {len(used)} controllers ("
+            + ", ".join(f"controllers[{i}]" for i in used)
+            + f"); pass controller= (0 to {count - 1}) to export one controller's program"
+        )
+    if not used:
+        # Without lines, the program is its calls.
+        used = calling()
         if len(used) > 1:
             raise InvalidValueError(
-                f"the program plays lines of {len(used)} controllers ("
+                f"the program's calls are made on {len(used)} controllers ("
                 + ", ".join(f"controllers[{i}]" for i in used)
-                + f"); pass controller= (0 to {count - 1}) to export one controller's program"
+                + f"); pass controller= (0 to {count - 1}) to export one controller's "
+                "program"
             )
-        if not used:
-            # Without lines, the program is its calls.
-            used = sorted({c for part in parts for c in part})
-            if len(used) > 1:
-                raise InvalidValueError(
-                    f"the program's calls are made on {len(used)} controllers ("
-                    + ", ".join(f"controllers[{i}]" for i in used)
-                    + f"); pass controller= (0 to {count - 1}) to export one controller's "
-                    "program"
-                )
-        index = used[0] if used else 0
-    return lines, events, owners, parts, index, frames
+    return used[0] if used else 0
 
 
 # The nested values of an event that converting it to its controller's cycles
 # rewrites (``_clocks.off_grid``).
 _CONVERTED = ("frame_updates", "waveform")
+
+
+class _Parts:
+    """What the exports of each controller's part of one program share: the
+    program walked in program cycles and checked against the whole control
+    system, once. A program keeps it (``ScheduledKernel._export_parts``)
+    until every controller's part has been exported, and each export copies
+    the events it takes, so that what it returns shares nothing with the
+    next. Once the check fails, only the violations and what chooses the
+    controller are kept."""
+
+    __slots__ = (
+        "key",
+        "lines",
+        "events",
+        "frames",
+        "owners",
+        "parts",
+        "used",
+        "calling",
+        "violations",
+        "tone_slots",
+        "plan",
+        "slot_names",
+        "members",
+        "played",
+        "synced",
+        "exported",
+        "lock",
+    )
+
+    def __init__(self, lowered: ScheduledKernel, system: Any) -> None:
+        self.key = _parts_key(lowered)
+        self.lines, self.events, self.frames, _, _ = _walk(lowered, slots=None)
+        self.owners, _ = system._owners(self.lines)
+        self.parts: list[list[int]] | None = system._parts(self.events, self.owners)
+        self.used = _known_owners(self.owners)
+        self.calling: list[int] | None = None
+        self.violations: list[str] | None = None
+        self.tone_slots: Mapping[int, int] | None = None
+        self.plan: _ExportPlan | None = None
+        self.slot_names: dict[int, str] | None = None
+        self.members: list[list[int]] = []
+        self.played: list[list[dict[str, Any]]] = []
+        self.synced: dict[int, dict[int, list[int]]] = {}
+        self.exported: set[int] = set()
+        self.lock = threading.Lock()
+
+    def calls(self) -> list[int]:
+        """The controllers that take part in the program's calls."""
+        if self.calling is None:
+            assert self.parts is not None
+            self.calling = sorted({c for part in self.parts for c in part})
+        return self.calling
+
+    def check(self, lowered: ScheduledKernel, system: Any, clocks: Any) -> list[str]:
+        """The violations of the whole control system, found once; then what
+        every part needs of the whole program."""
+        with self.lock:
+            if self.violations is None:
+                self.violations = self._checked(lowered, system, clocks)
+            return self.violations
+
+    def _checked(self, lowered: ScheduledKernel, system: Any, clocks: Any) -> list[str]:
+        events = self.events
+        # The checks count each controller's events in its cycles, in place (a
+        # controller on another clock, or timing in steps what is computed at
+        # run time): each event's times and its frame updates' and waveform's.
+        checked = events
+        if clocks is not None and any(
+            c.ratio != 1 or (c.grid > 1 and _computes_at_run_time(lowered))
+            for c in clocks.controllers
+        ):
+            memo: dict[int, Any] = {}
+            checked = [
+                {**e, **{k: copy.deepcopy(e[k], memo) for k in _CONVERTED if k in e}}
+                for e in events
+            ]
+        violations: list[str] = system._violations(
+            lowered, self.lines, checked, clocks, (), (), True, None, None
+        )
+        if violations:
+            self.calls()
+            self.lines, self.events, self.frames, self.owners, self.parts = [], [], {}, [], []
+            return violations
+        if system._shares:
+            from ._shared_lines import flat
+
+            # From the whole program, in program cycles: a shared line is one
+            # controller's, and its slots are those of every export of the
+            # program.
+            self.tone_slots = flat(system, self.lines, events)
+        role = lowered._role
+        if role is not None:
+            plan = role.export_plan
+            if plan is None or len(plan[1]) != len(events):
+                slots: list[int] = []
+                walked = _walk(lowered, slots=slots)[0]
+                plan = _export_plan(lowered, role, slots, walked, events)
+            self.plan = plan
+        count = len(system.controllers)
+        self.members = [[] for _ in range(count)]
+        assert self.parts is not None
+        for position, part in enumerate(self.parts):
+            for c in part:
+                self.members[c].append(position)
+        self.played = [[] for _ in range(count)]
+        for line, owner in zip(self.lines, self.owners, strict=True):
+            if owner is not None:
+                self.played[owner].append(line)
+        owners = self.owners
+        for position, event in enumerate(events):
+            if event["kind"] == "sync":
+                synced: dict[int, list[int]] = {}
+                for line in event["lines"]:
+                    owner = owners[line]
+                    if owner is not None:
+                        synced.setdefault(owner, []).append(line)
+                self.synced[position] = synced
+        return violations
+
+    def names(self, role: Any) -> dict[int, str]:
+        """``_slot_names`` of the program's events with their symbols."""
+        if self.slot_names is None:
+            names: dict[int, str] = {}
+            if role is not None and self.plan is not None:
+                for event, template in zip(self.events, self.plan[1], strict=True):
+                    if template is not None and "qudit" in template[0]:
+                        names[event["line"]] = template[0]["qudit"]
+            self.slot_names = names
+        return self.slot_names
+
+
+def _parts_key(lowered: ScheduledKernel) -> tuple[Any, ...]:
+    """What a program's walk depends on that a program keeps, compared by
+    identity: none of it is replaced once the program is made."""
+    return (lowered.options, lowered.quantum_system, lowered.arguments, lowered.carriers)
+
+
+_parts_lock = threading.Lock()
+
+
+def _shared_parts(lowered: ScheduledKernel, system: Any) -> _Parts:
+    """The ``_Parts`` of *lowered*: the one it keeps for its key, else new,
+    kept when its control system has more than one controller."""
+    with _parts_lock:
+        kept: _Parts | None = getattr(lowered, "_export_parts", None)
+    if kept is not None:
+        key = _parts_key(lowered)
+        if all(a is b for a, b in zip(kept.key, key, strict=True)):
+            return kept
+    shared = _Parts(lowered, system)
+    if len(system.controllers) > 1:
+        with _parts_lock:
+            lowered._export_parts = shared
+    return shared
+
+
+def _exported(lowered: ScheduledKernel, shared: _Parts, index: int, count: int) -> None:
+    """Note that the part of controller *index* of *count* is exported: once
+    every part is, *lowered* keeps *shared* no longer."""
+    with _parts_lock:
+        shared.exported.add(index)
+        if len(shared.exported) == count and getattr(lowered, "_export_parts", None) is shared:
+            del lowered._export_parts
+
+
+def _copied(value: Any, memo: dict[int, Any]) -> Any:
+    """*value*, export data, with its dicts and lists copied; one shared by
+    two values in *memo*'s copy stays shared."""
+    cls = value.__class__
+    if cls is dict:
+        found = memo.get(id(value))
+        if found is None:
+            found = memo[id(value)] = {}
+            for key, item in value.items():
+                found[key] = _copied(item, memo)
+        return found
+    if cls is list:
+        found = memo.get(id(value))
+        if found is None:
+            found = memo[id(value)] = []
+            found.extend([_copied(item, memo) for item in value])
+        return found
+    return value
 
 
 def _export_part(
@@ -1757,55 +1958,46 @@ def _export_part(
     takes part in (see ``ControlSystem._parts``); a sync lists its lines
     alone. Line and event ids are the program's, so an event names one
     another controller plays (a readout whose outcome it is sent) by the id
-    that controller's program gives it."""
-    import copy
-
+    that controller's program gives it. The walk and the check of the whole
+    system are shared by the exports of every controller (``_Parts``)."""
     from .classical.wire import _export as emulation
 
     machine = lowered.options.machine
     system = machine._system
     assert system is not None
     clocks = (lowered._generic or lowered).clocks
-    lines, events, owners, parts, index, frames = _part(lowered, controller)
-    # The checks count each controller's events in its cycles, in place (a
-    # controller on another clock, or timing in steps what is computed at run
-    # time): each event's times and its frame updates' and waveform's.
-    checked = events
-    if clocks is not None and any(
-        c.ratio != 1 or (c.grid > 1 and _computes_at_run_time(lowered)) for c in clocks.controllers
-    ):
-        memo: dict[int, Any] = {}
-        checked = [
-            {**e, **{k: copy.deepcopy(e[k], memo) for k in _CONVERTED if k in e}} for e in events
-        ]
-    violations = system._violations(lowered, lines, checked, clocks, (), (), True, None, None)
+    count = len(system.controllers)
+    shared = _shared_parts(lowered, system)
+    index = _part_index(controller, count, shared.used, shared.calls)
+    violations = shared.check(lowered, system, clocks)
     if violations:
+        _exported(lowered, shared, index, count)
         raise _limit_error(lowered, violations)
-    if system._shares:
-        from ._shared_lines import flat
-
-        # From the whole program, in program cycles: a shared line is one
-        # controller's, and its slots are those of every export of the program.
-        tone_slots = flat(system, lines, events)
     role = lowered._role
-    plan: _ExportPlan | None = None if role is None else role.export_plan
-    if role is not None:
-        if plan is None or len(plan[1]) != len(events):
-            slots: list[int] = []
-            walked = _walk(lowered, slots=slots)[0]
-            plan = _export_plan(lowered, role, slots, walked, events)
-        for event, template in zip(events, plan[1], strict=True):
+    plan = shared.plan
+    events = shared.events
+    memo: dict[int, Any] = {}
+    mine: list[dict[str, Any]] = []
+    for position in shared.members[index]:
+        source = events[position]
+        if source["kind"] == "sync":
+            # A sync lists its lines alone.
+            synced = shared.synced[position].get(index, ())
+            event: dict[str, Any] = {
+                key: list(synced) if key == "lines" else _copied(value, memo)
+                for key, value in source.items()
+            }
+        else:
+            event = _copied(source, memo)
+        if plan is not None:
+            template = plan[1][position]
             if template is not None:
                 symbols = template[0].copy()
                 for key in template[1]:
                     symbols[key] = symbols[key][:]
                 event["symbols"] = symbols
-    mine = []
-    for event, part in zip(events, parts, strict=True):
-        if index in part:
-            if event["kind"] == "sync":
-                event["lines"] = [line for line in event["lines"] if owners[line] == index]
-            mine.append(event)
+        mine.append(event)
+    played = [_copied(line, memo) for line in shared.played[index]]
     own = None
     keys: dict[str, float] = {}
     if clocks is not None:
@@ -1815,13 +2007,14 @@ def _export_part(
         keys = _clocks.clock_keys(clocks, own)
         if own.ratio != 1 or own.grid > 1:
             alone = _clocks.ClockPlan(clocks.program_ghz, (own,), clocks.reference_clock_ghz)
-            _clocks.off_grid(alone, lines, mine, True, True, _computes_at_run_time(lowered))
+            _clocks.off_grid(alone, shared.lines, mine, True, True, _computes_at_run_time(lowered))
     clock = lowered.quantum_system.clock_ghz if own is None else own.clock_ghz
     if sample_rate_ghz is not None:
         _add_samples(mine, sample_rate_ghz, clock)
-    functions = frozenset(e["function"] for e in mine if e["kind"] in ("submit", "answer"))
+    functions: frozenset[str] = frozenset(
+        e["function"] for e in mine if e["kind"] in ("submit", "answer")
+    )
     base = emulation(lowered, False, (index, own, functions, ()))
-    played = [line for line, owner in zip(lines, owners, strict=True) if owner == index]
     exported = {
         "format": FORMAT,
         "quantum_system": lowered.quantum_system.name,
@@ -1843,13 +2036,16 @@ def _export_part(
         assert plan is not None
         exported["program_id"] = role.program_id
         exported["symbols"] = _symbols(lowered, plan[0])
+    frames = shared.frames
     if "runtime_tones" in frames:
         # A controller's part has the run-time tones of its lines, and no
         # frame_state.
-        tones = {"runtime_tones": frames["runtime_tones"]}
-        exported = _with_frames(exported, tones, _slot_names(events, role))
+        tones = {"runtime_tones": _copied(frames["runtime_tones"], memo)}
+        exported = _with_frames(exported, tones, shared.names(role))
         if system._shares:
-            _framed_slots(exported, tone_slots)
+            assert shared.tone_slots is not None
+            _framed_slots(exported, shared.tone_slots)
+    _exported(lowered, shared, index, count)
     return exported
 
 
@@ -2206,6 +2402,8 @@ def _violations(
     natives: Sequence[int] | None = None,
     *,
     held: bool = True,
+    timed: Sequence[Mapping[str, Any]] | None = None,
+    answers: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """The limits *events* exceed. With *clocks*, the events are in the
     controller's own cycles: the native walk's, with *off* its line events
@@ -2218,7 +2416,9 @@ def _violations(
     *unresolved* instead, to be checked with them. *natives* has, by event
     index, the qudit argument whose native frequency the event plays, or -1.
     *held* false leaves the lines held by calls to the caller, which knows
-    the controller each call holds."""
+    the controller each call holds. *timed* and *answers*, when the caller
+    has them, are the timed drives and readouts of *events* and its answers,
+    in order; then only the update-bus check reads all of *events*."""
     if clocks is None:
         found = []
     else:
@@ -2231,9 +2431,10 @@ def _violations(
             found = _clocks.off_grid(
                 clocks, lines, events, True, waveforms, _computes_at_run_time(lowered)
             )
-    timed: list[Mapping[str, Any]] = [
-        e for e in events if e["kind"] in _PLAYED and e["end_cycles"] is not None
-    ]
+    if timed is None:
+        timed = [e for e in events if e["kind"] in _PLAYED and e["end_cycles"] is not None]
+    if answers is None:
+        answers = () if limits.supports_timeouts else [e for e in events if e["kind"] == "answer"]
     if limits.max_pulses is not None and len(timed) > limits.max_pulses:
         found.extend(_event_count(timed, limits.max_pulses, limits._runs_loops))
     by_line: dict[int, list[Mapping[str, Any]]] = {}
@@ -2244,6 +2445,7 @@ def _violations(
     shared = limits.waveform_memory is WaveformMemoryScope.SHARED
     stored: dict[Any, int] = {}
     unknown_stored = 0
+    peaks: dict[str, float | None] = {}
     for line, items in sorted(by_line.items()):
         for previous, event in _pairs(items):
             distance = event["start_cycles"] - previous["start_cycles"]
@@ -2273,7 +2475,9 @@ def _violations(
                 if len(tones) + count > limits.max_frequencies_per_line:
                     unresolved.append(f"line {line}: tone frequencies")
         if limits.max_amplitude is not None:
-            found.extend(_over_amplitude(lines[line], items, limits.max_amplitude, unresolved))
+            found.extend(
+                _over_amplitude(lines[line], items, limits.max_amplitude, unresolved, peaks)
+            )
         if limits.min_pulse_cycles:
             for e in items:
                 duration = e["end_cycles"] - e["start_cycles"]
@@ -2345,9 +2549,7 @@ def _violations(
                         )
     if not limits.supports_timeouts:
         functions = {fn.name: fn for fn in lowered.classical}
-        for event in events:
-            if event["kind"] != "answer":
-                continue
+        for event in answers:
             fn = functions.get(event["function"])
             if event["wait"] == "timeout" or (fn is not None and fn.latency_mode == "timeout"):
                 found.append(
@@ -2654,12 +2856,15 @@ def _over_amplitude(
     events: Sequence[Mapping[str, Any]],
     most: float,
     unresolved: list[str] | None = None,
+    peaks: dict[str, float | None] | None = None,
 ) -> list[str]:
     """The events of *line* whose envelope peaks above *most*. With
     *unresolved*, an envelope whose peak needs the call's values is noted
-    there, to be checked with them. Each distinct envelope is sampled once."""
+    there, to be checked with them. Each distinct envelope is sampled once,
+    once for all the lines that share *peaks*."""
     found = []
-    peaks: dict[str, float | None] = {}
+    if peaks is None:
+        peaks = {}
     for event in events:
         tree = event.get("waveform")
         key = repr(tree)

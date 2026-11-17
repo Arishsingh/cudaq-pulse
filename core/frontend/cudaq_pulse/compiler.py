@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from ._system import Controller, ControlSystem
     from ._waits import _WaitLengths
     from .classical import Link
-    from .controller import UsageReport
+    from .controller import UsageReport, _Parts
     from .kernel._kernel import CompiledKernel, Kernel
 
     type _Kernel = ScheduledKernel
@@ -678,6 +678,9 @@ class ScheduledKernel:
         "classical",
         "runtime_selects",
         "_arity",
+        # What exporting each controller's part shares, until every part is
+        # exported (``controller._Parts``); unset until the first export.
+        "_export_parts",
     )
 
     # Its controllers' clocks, when one is not the program clock or they
@@ -688,6 +691,7 @@ class ScheduledKernel:
     fine_delays: Mapping[tuple[str, int], float] | None = None
     # How many values bind takes: set by a generic module's first bind.
     _arity: int
+    _export_parts: _Parts
     # A module with list or qudit parameters is a _Placed: what its calls
     # share, and the carrier of each runtime qudit of a call, in slot order.
     _role: _Role | None = None
@@ -1005,7 +1009,9 @@ class ScheduledKernel:
         (see ``cudaq_pulse.controller``); with *sample_rate_ghz*, each
         envelope's samples too. On a control system of several controllers,
         the program of the one *controller* indexes, in its own cycles (a
-        program that plays the lines of more than one needs it).
+        program that plays the lines of more than one needs it). Exporting
+        each controller in turn walks and checks the whole program once:
+        the program keeps that until every controller's part is exported.
         ``version=2`` gives the structured format, which keeps loops
         rolled."""
         from .controller import export

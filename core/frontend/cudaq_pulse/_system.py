@@ -28,7 +28,7 @@ import math
 import os
 import re
 import warnings
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from functools import partial
 from itertools import repeat
@@ -1079,6 +1079,60 @@ def _known(owners: Iterable[int | None]) -> list[int]:
     return sorted({o for o in owners if o is not None})
 
 
+class _SeenBy(Sequence[dict[str, Any]]):
+    """*events* as the controller *index* sees them: another controller's
+    drives and readouts untimed, made as each is read."""
+
+    __slots__ = ("_events", "_index", "_owners")
+
+    def __init__(
+        self, events: Sequence[dict[str, Any]], owners: Sequence[int | None], index: int
+    ) -> None:
+        self._events = events
+        self._owners = owners
+        self._index = index
+
+    def __len__(self) -> int:
+        return len(self._events)
+
+    def __getitem__(self, k: Any) -> Any:
+        return self._seen(self._events[k])
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        return map(self._seen, self._events)
+
+    def _seen(self, e: dict[str, Any]) -> dict[str, Any]:
+        if e["kind"] not in _PLAYED or self._owners[e["line"]] == self._index:
+            return e
+        return {**e, "end_cycles": None}
+
+
+def _timed_by_controller(
+    events: Sequence[dict[str, Any]], owners: Sequence[int | None], count: int
+) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
+    """For each of *count* controllers, the timed drives, readouts and plays
+    of *events* it sees (``_SeenBy``), in order; and the answers."""
+    from .controller import _PLAYED as TIMED
+
+    timed: list[list[dict[str, Any]]] = [[] for _ in range(count)]
+    answers = []
+    for e in events:
+        kind = e["kind"]
+        if kind in TIMED:
+            if e["end_cycles"] is None:
+                continue
+            if kind in _PLAYED:
+                owner = owners[e["line"]]
+                if owner is not None:
+                    timed[owner].append(e)
+            else:
+                for mine in timed:
+                    mine.append(e)
+        elif kind == "answer":
+            answers.append(e)
+    return timed, answers
+
+
 def _cycles_text(cycles: Fraction) -> str:
     return str(cycles.numerator) if cycles.denominator == 1 else f"{float(cycles):g}"
 
@@ -1811,20 +1865,14 @@ class ControlSystem:
                         clocks, lines, events, True, waveforms, _computes_at_run_time(lowered)
                     )
                 )
+            timed, answers = _timed_by_controller(events, owners, len(self.controllers))
             for index, controller in enumerate(self.controllers):
                 label = _label(index, controller)
-                # Every controller sees the others' pulses as untimed.
-                mine = [
-                    e
-                    if e["kind"] not in _PLAYED or owners[e["line"]] == index
-                    else {**e, "end_cycles": None}
-                    for e in events
-                ]
                 found.extend(
                     f"{label}: {v}"
                     for v in _violations(
                         lowered,
-                        mine,
+                        _SeenBy(events, owners, index),
                         controller,
                         lines,
                         None,
@@ -1834,6 +1882,8 @@ class ControlSystem:
                         unresolved,
                         natives,
                         held=False,
+                        timed=timed[index],
+                        answers=answers,
                     )
                 )
             found.extend(needs)
