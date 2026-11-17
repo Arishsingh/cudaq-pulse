@@ -16,6 +16,7 @@ release = PACKAGE_VERSION
 sys.path.insert(0, str(Path(__file__).parent / "_ext"))
 
 extensions = [
+    "code_style",
     "themed_figure",
     "pulse_visual",
     "data_figures",
