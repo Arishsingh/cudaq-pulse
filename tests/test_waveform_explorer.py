@@ -32,6 +32,7 @@ from cudaq_pulse.controller import sample_waveform
 _DOCS = Path(__file__).resolve().parents[1] / "docs"
 _SCRIPT = _DOCS / "_static" / "waveform-explorer.js"
 _FIGURE = _DOCS / "user_guide" / "figures" / "waveform_envelopes.svg"
+_OPERATIONS = _DOCS / "user_guide" / "operations.rst"
 
 _DUMP = """
 const w = require(process.argv[1]);
@@ -154,8 +155,9 @@ def test_its_suggested_beta_is_the_one_drag_documents(explorer):
         assert beta == pytest.approx(-1 / alpha, rel=1e-15)
 
 
+@pytest.mark.skipif(not _OPERATIONS.is_file(), reason="needs the source tree's docs/")
 def test_the_modulated_drive_is_the_documented_frame_convention():
-    text = " ".join((_DOCS / "user_guide" / "operations.rst").read_text().split())
+    text = " ".join(_OPERATIONS.read_text().split())
     assert "``E(t) = envelope(t) exp(-i theta(t))``" in text
     assert "``theta(t) = theta_0 + (w_tone - w_q) t``" in text
 

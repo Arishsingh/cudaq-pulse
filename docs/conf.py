@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Sphinx configuration for the CUDA-Q Pulse documentation."""
 
+import sys
+from pathlib import Path
+
 from cudaq_pulse._build_config import PACKAGE_VERSION
 from pygments.lexers.special import TextLexer
 
@@ -10,7 +13,10 @@ copyright = "2026, NVIDIA CORPORATION & AFFILIATES"
 author = "NVIDIA Corporation"
 release = PACKAGE_VERSION
 
+sys.path.insert(0, str(Path(__file__).parent / "_ext"))
+
 extensions = [
+    "themed_figure",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
@@ -32,6 +38,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "nvidia_sphinx_theme"
 html_static_path = ["_static"]
+html_css_files = ["tutorial-output.css"]
 html_favicon = "_static/favicon.svg"
 
 html_theme_options = {

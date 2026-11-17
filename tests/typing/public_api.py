@@ -14,6 +14,7 @@ from typing import Any, assert_type
 import cudaq_pulse as pulse
 import cudaq_pulse.controller as controller_module
 import numpy as np
+import numpy.typing as npt
 from cudaq_pulse import Controller
 from cudaq_pulse.classical import Bits, ClassicalFunction, Pending
 from cudaq_pulse.compiler import CompileMetrics, ScheduledEvent
@@ -202,7 +203,10 @@ assert_type(pulse.controller.FORMAT, str)
 assert_type(ExpressionTerm("select"), ExpressionTerm)
 assert_type(pulse.controller.evaluate_expression({"const": 1.0}), float | int | bool)
 assert_type(pulse.controller.unroll({"format": "cudaq-pulse.controller/2"}), dict[str, Any])
-assert_type(pulse.controller.sample_waveform({}, 40, samples_per_cycle=2.5), np.ndarray)
+assert_type(
+    pulse.controller.sample_waveform({}, 40, samples_per_cycle=2.5), npt.NDArray[np.complex128]
+)
+assert_type(pulse.controller.sample_waveform({}, 40).real, npt.NDArray[np.float64])
 assert_type(pulse.controller.export(lowered, version=2), dict[str, Any])
 assert_type(pulse.controller.WaveformMemoryScope("program"), WaveformMemoryScope)
 pulse.controller.sample_waveform({}, 40, samples_per_cycles=2)  # type: ignore[call-arg]
