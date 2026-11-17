@@ -1,0 +1,204 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The waveform explorer of the operations guide (waveform-explorer.js). Colors
+ * follow the theme's light and dark modes; Q is dashed as well as colored.
+ * Muted text is at least 7:1 against the page in both modes (WCAG AA is 4.5:1).
+ */
+
+.pulse-waveform-explorer {
+  --pwe-i: #5b8c00;
+  --pwe-q: #3d6fa3;
+  --pwe-muted: #4f565d;
+  --pwe-env: #5f666d;
+  border: 1px solid var(--pst-color-border, #c8c8c8);
+  border-radius: 0.25rem;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.pulse-waveform-explorer:empty {
+  display: none;
+}
+
+html[data-theme="dark"] .pulse-waveform-explorer {
+  --pwe-i: #76b900;
+  --pwe-q: #8fb8e8;
+  --pwe-muted: #c4c9d0;
+  --pwe-env: #d2d6dc;
+}
+
+.pulse-waveform-explorer [hidden] {
+  display: none !important;
+}
+
+/* Every control is a cell of one grid, which fills two even columns (one on
+   narrow screens); a cell is its label, the control, and its value. */
+.pulse-waveform-explorer .pwe-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  gap: 0.35rem 1.5rem;
+  align-items: center;
+}
+
+.pulse-waveform-explorer .pwe-group {
+  display: contents;
+}
+
+.pulse-waveform-explorer .pwe-field {
+  display: grid;
+  grid-template-columns: 7rem minmax(6rem, 1fr) 8.25rem;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2rem;
+}
+
+.pulse-waveform-explorer .pwe-field > :first-child {
+  margin: 0;
+  line-height: 1.2;
+}
+
+.pulse-waveform-explorer input[type="range"],
+.pulse-waveform-explorer select,
+.pulse-waveform-explorer .pwe-field .pwe-button {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+.pulse-waveform-explorer input[type="range"] {
+  accent-color: var(--pwe-i);
+}
+
+.pulse-waveform-explorer input[type="checkbox"] {
+  justify-self: start;
+  margin: 0;
+}
+
+.pulse-waveform-explorer output,
+.pulse-waveform-explorer .pwe-value {
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.pulse-waveform-explorer .pwe-value {
+  color: var(--pwe-muted);
+}
+
+.pulse-waveform-explorer select,
+.pulse-waveform-explorer .pwe-button {
+  color: var(--pst-color-text-base, inherit);
+  background: var(--pst-color-surface, transparent);
+  border: 1px solid var(--pst-color-border, #c8c8c8);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.4rem;
+}
+
+.pulse-waveform-explorer input:focus-visible,
+.pulse-waveform-explorer select:focus-visible,
+.pulse-waveform-explorer .pwe-button:focus-visible {
+  outline: 2px solid var(--pst-color-primary, var(--pwe-i));
+  outline-offset: 2px;
+}
+
+.pulse-waveform-explorer .pwe-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.pulse-waveform-explorer svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 0.75rem;
+  color: var(--pst-color-text-base, currentColor);
+}
+
+.pulse-waveform-explorer svg text {
+  fill: currentColor;
+  font-size: 12px;
+}
+
+.pulse-waveform-explorer .pwe-axes line {
+  stroke: currentColor;
+  stroke-opacity: 0.6;
+}
+
+.pulse-waveform-explorer .pwe-axes .pwe-zero {
+  stroke-opacity: 0.35;
+}
+
+.pulse-waveform-explorer .pwe-axes .pwe-gridline {
+  stroke-opacity: 0.12;
+}
+
+.pulse-waveform-explorer polyline {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.pulse-waveform-explorer polyline.pwe-i {
+  stroke: var(--pwe-i);
+}
+
+.pulse-waveform-explorer polyline.pwe-q {
+  stroke: var(--pwe-q);
+  stroke-dasharray: 6 4;
+}
+
+.pulse-waveform-explorer polyline.pwe-env {
+  stroke: var(--pwe-env);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+}
+
+.pulse-waveform-explorer .pwe-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+}
+
+.pulse-waveform-explorer .pwe-key::before {
+  content: "";
+  display: inline-block;
+  width: 1.75rem;
+  margin-right: 0.4rem;
+  vertical-align: middle;
+  border-top: 2px solid var(--pwe-i);
+}
+
+.pulse-waveform-explorer .pwe-key-q::before {
+  border-top: 2px dashed var(--pwe-q);
+}
+
+.pulse-waveform-explorer .pwe-key-env::before {
+  border-top: 2px dotted var(--pwe-env);
+}
+
+.pulse-waveform-explorer .pwe-code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.pulse-waveform-explorer .pwe-code pre {
+  flex: 1 1 20rem;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.pulse-waveform-explorer .pwe-note {
+  color: var(--pwe-muted);
+  font-size: 0.9em;
+  margin: 0.25rem 0 0;
+}

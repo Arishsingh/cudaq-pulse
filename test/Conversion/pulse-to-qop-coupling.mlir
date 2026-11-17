@@ -8,9 +8,9 @@
 // The qudit frequencies are the quantum system's, not those of the undriven
 // qudit's drive line, which standard passes erase.
 // RUN: cudaq-pulse-opt --split-input-file --pulse-to-qop %s | FileCheck %s
-// RUN: cudaq-pulse-opt --split-input-file --pulse-to-qop --qop-to-cudm %s | FileCheck %s --check-prefix=CUDM
+// RUN: cudaq-pulse-opt --split-input-file --pulse-to-qop --qop-to-cudm=operators=dense %s | FileCheck %s --check-prefix=CUDM
 // RUN: cudaq-pulse-opt --split-input-file --canonicalize --pulse-to-qop %s | FileCheck %s
-// RUN: cudaq-pulse-opt --split-input-file --cse --pulse-to-qop --qop-to-cudm %s | FileCheck %s --check-prefix=CUDM
+// RUN: cudaq-pulse-opt --split-input-file --cse --pulse-to-qop --qop-to-cudm=operators=dense %s | FileCheck %s --check-prefix=CUDM
 
 // CHECK-LABEL: module
 // CHECK: qop.callback_scalar @coupling_0_0 {cudm.callback_kind = 1 : i32, cudm.callback_params = array<f64: 0.000000e+00, 1.7976931348623157E+308, 0.031415926535897934, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, {{-0.6283185307179[0-9]*}}>}

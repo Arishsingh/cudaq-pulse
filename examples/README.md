@@ -41,9 +41,12 @@ the `cudaq-pulse-tools` wheel, which `cudaq-pulse` requires).
 | [`26_drift_following.py`](26_drift_following.py) | A background process recompiles on drift, by quantum system fingerprint; programs are swapped in between batches | CPU, simulates |
 | [`27_realtime_decoding.py`](27_realtime_decoding.py) | Real-time QEC decoding with a deadline and a fallback table: a CUDA-Q QEC decoder called with CUDA-Q QEC's own functions | CUDA-Q QEC (Linux) and an NVIDIA GPU for its decoder, simulates |
 | [`28_t_state_injection.py`](28_t_state_injection.py) | T-state injection with the virtual-Z `pulse.gates.T`, tomography, and a heralded repeat-until-success loop post-selected on a classical call's answer | CPU, simulates |
+| [`29_waveform_envelopes.py`](29_waveform_envelopes.py) | The samples each built-in envelope plays, from `sample_waveform`, printed and plotted | CPU |
 | [`custom_passes/python_pass.py`](custom_passes/python_pass.py) | A schedule check written in Python | CPU |
 | [`custom_passes/cpp/`](custom_passes/cpp) | An MLIR pass plugin for `cudaq-pulse-opt --load-pass-plugin` | CPU (builds with CMake) |
 | [`controller_backend/toy_controller/__init__.py`](controller_backend/toy_controller/__init__.py) | A toy controller backend found by its entry point: limits, `emit` and `run` | CPU |
+| [`controller_backend/text_backend.py`](controller_backend/text_backend.py) | A small backend that plays a program as text, registered in the running process | CPU |
+| [`isa_lowering/toy_isa.py`](isa_lowering/toy_isa.py) | Lowering to a toy controller instruction set: timestep, waveform table, oscillators, a shared feedline, feedback across two controllers, a decoder call | CPU |
 | [`transmon/transmon_surface17_rabi.py`](transmon/transmon_surface17_rabi.py) | Rabi drive on the 17-qubit transmon quantum system | CPU |
 | [`transmon/transmon_surface17_full_pipeline.py`](transmon/transmon_surface17_full_pipeline.py) | Each stage of the lowering: Pulse, QOp and LLVM IR | CPU |
 | [`transmon/transmon_surface17_surface_code_cycle.py`](transmon/transmon_surface17_surface_code_cycle.py) | The timeline of one surface-code cycle | CPU |

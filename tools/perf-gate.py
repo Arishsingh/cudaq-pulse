@@ -36,7 +36,7 @@ environment CI measured in (``environment``: the MLIR toolchain, Python,
 compiler, libc and Valgrind) and the run it was taken from (``source``).
 Counts measured in another environment fail the gate even when they are
 within the limits, so a change of pin is followed by a new baseline, taken
-on staging (``--help``, "taking a baseline"); ``git log
+on its pull request's branch (``--help``, "taking a baseline"); ``git log
 benchmarks/baselines/perf_gate.json`` lists the earlier ones, and
 ``--baseline`` compares with any of them.
 
@@ -858,25 +858,25 @@ taking a baseline:
   purpose or for a new toolchain pin, whose counts fail the gate until
   then:
 
-  1. Once the change is on staging, run only the perf gate there, with 5
-     identical Callgrind runs, and find the run:
-       gh workflow run ci.yml --ref staging -f perf_baseline=true
-       gh run list -w ci.yml -b staging -e workflow_dispatch -L 1
-     (staging's push run of the change will do too, with 2).
+  1. Once the change is on its pull request's branch in this repository,
+     run only the perf gate there, with 5 identical Callgrind runs, and
+     find the run:
+       gh workflow run ci.yml --ref BRANCH -f perf_baseline=true
+       gh run list -w ci.yml -b BRANCH -e workflow_dispatch -L 1
   2. In the run's job summary, check that the counts are valid (no "not
      valid" banner) and that no case's identical runs differed by more
      than its tolerance allows (the spread column; no "Identical runs
      differed" banner).
   3. Take its measurements as the baseline and commit them, with no other
-     change, on top of staging, which must still be the commit the run
-     measured (the file's source.commit; if staging has moved, take the
+     change, on top of the branch, which must still be the commit the run
+     measured (the file's source.commit; if the branch has moved, take the
      baseline again):
        gh run download RUN -R OWNER/REPO -n perf-gate-baseline \\
          -D benchmarks/baselines
      The file then records the run, its environment (with the MLIR
      toolchain), the cases' tolerances and their Python work (format 2),
      and has no "bootstrap" field.
-  4. Staging's push run of that commit must pass the gate.
+  4. The pull request's run of that commit must pass the gate.
 
 regressions, gains and "layout only":
   Every failure on instructions fails the gate, and says its kind; the

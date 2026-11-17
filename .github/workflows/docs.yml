@@ -41,6 +41,18 @@ jobs:
           uv run --no-sync cmake --preset docs
           uv run --no-sync cmake --build --preset docs
 
+      # The in-page scripts run under Node, which the runner has: every line
+      # the operations guide's waveform explorer prints must compile and play
+      # its plot, and the ISA tutorial's animation and gauges must place what
+      # their data says.
+      - name: The in-page scripts match the library
+        env:
+          PYTHONPATH: build/docs/python
+          CUDAQ_PULSE_REQUIRE_NODE: "1"
+        run: >-
+          uv run --no-sync python -m pytest tests/test_waveform_explorer.py tests/test_toy_flow.py
+          -q -p no:cacheprovider
+
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: build/docs/docs/html

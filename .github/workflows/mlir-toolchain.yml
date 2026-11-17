@@ -5,9 +5,9 @@ name: mlir-toolchain
 
 # Builds the pinned MLIR toolchain and publishes it as release assets under the
 # tag named in tools/mlir-toolchain.lock.json. Publishing happens when that tag
-# is pushed, which also commits the checksums to the lock file on staging, or
-# on a manual run with `publish` set, after which you commit the printed lock
-# file yourself. Pushing the tag is the only way to run this from a branch
+# is pushed, which also opens a pull request to main with the checksums in the
+# lock file, or on a manual run with `publish` set, after which you commit the
+# printed lock file yourself. Pushing the tag is the only way to run this from a branch
 # other than the default one.
 
 on:
@@ -72,11 +72,12 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+      pull-requests: write
     steps:
-      # A tag push commits the checksums to staging, so start from its tip.
+      # A tag push proposes the checksums to main, so start from its tip.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.ref_type == 'tag' && 'staging' || github.ref }}
+          ref: ${{ github.ref_type == 'tag' && 'main' || github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -126,25 +127,72 @@ jobs:
               --notes "Prebuilt MLIR toolchain used to build cudaq-pulse." --prerelease
           # Write-once: released sdists build against these exact archives, so
           # an existing asset is never replaced (gh refuses without --clobber).
-          gh release upload "$tag" dist/*.tar.xz dist/*.sha256
+          # A re-run skips the assets already there that match byte for byte.
+          existing="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+          upload=()
+          for file in dist/*.tar.xz dist/*.sha256; do
+            name="$(basename "$file")"
+            if grep -qxF "$name" <<<"$existing"; then
+              gh release download "$tag" --pattern "$name" --output "$RUNNER_TEMP/$name"
+              if ! cmp -s "$file" "$RUNNER_TEMP/$name"; then
+                echo "error: $name on release $tag differs from this run's archive" >&2
+                exit 1
+              fi
+              echo "$name is already on $tag."
+            else
+              upload+=("$file")
+            fi
+          done
+          if (( ${#upload[@]} )); then
+            gh release upload "$tag" "${upload[@]}"
+          fi
           echo "Published $tag with these checksums:"
           cat "$RUNNER_TEMP/mlir-toolchain.lock.json"
 
-      # Pushes made with GITHUB_TOKEN start no workflows; the next push to
-      # staging builds the wheels against these checksums.
-      - name: Commit checksums to staging
+      # Main takes changes through pull requests only, so the checksums go to
+      # a toolchain-checksums/<tag> branch and a pull request to main. Pushes
+      # and pull requests made with GITHUB_TOKEN start no workflows: re-run
+      # CI on the pull request before merging it.
+      - name: Open a pull request with the checksums
         if: startsWith(github.ref, 'refs/tags/mlir-toolchain-')
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
           cp "$RUNNER_TEMP/mlir-toolchain.lock.json" tools/mlir-toolchain.lock.json
           if git diff --quiet -- tools/mlir-toolchain.lock.json; then
-            echo "tools/mlir-toolchain.lock.json already pins these checksums."
+            echo "main already pins these checksums."
             exit 0
           fi
+          branch="toolchain-checksums/$TAG"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           version="$(jq -r .llvm_version tools/mlir-toolchain.lock.json)"
           git config user.name "github-actions[bot]"
           git config user.email "41898729+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
           git add tools/mlir-toolchain.lock.json
-          git commit -m "Pin MLIR toolchain $version checksums"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:staging
+          git commit -s -m "Pin MLIR toolchain $version checksums" \
+            -m "Records the checksums of the $TAG release assets in the lock file."
+          # A re-run finds the branch already pushed; it is never overwritten.
+          if git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null; then
+            git fetch --quiet "$remote" "refs/heads/$branch"
+            if ! git diff --quiet HEAD FETCH_HEAD -- tools/mlir-toolchain.lock.json; then
+              echo "error: branch $branch exists with other checksums; delete it or merge it first" >&2
+              exit 1
+            fi
+            echo "Branch $branch already holds these checksums."
+          else
+            git push "$remote" "HEAD:refs/heads/$branch"
+          fi
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --base main \
+            --state open --json url --jq '.[0].url // empty')"
+          if [[ -n "$pr" ]]; then
+            echo "Pull request already open: $pr"
+            exit 0
+          fi
+          if ! gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
+            --title "Pin MLIR toolchain $version checksums" \
+            --body "The mlir-toolchain workflow published the $TAG release assets; this records their checksums in tools/mlir-toolchain.lock.json. Pull requests opened by the workflow start no CI: re-run the checks, or push a commit to this branch, before merging."; then
+            echo "error: could not open the pull request; open one from $branch to main by hand" >&2
+            exit 1
+          fi

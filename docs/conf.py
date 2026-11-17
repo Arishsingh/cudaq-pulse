@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Sphinx configuration for the CUDA-Q Pulse documentation."""
 
+import sys
+from pathlib import Path
+
 from cudaq_pulse._build_config import PACKAGE_VERSION
 from pygments.lexers.special import TextLexer
 
@@ -10,7 +13,11 @@ copyright = "2026, NVIDIA CORPORATION & AFFILIATES"
 author = "NVIDIA Corporation"
 release = PACKAGE_VERSION
 
+sys.path.insert(0, str(Path(__file__).parent / "_ext"))
+
 extensions = [
+    "themed_figure",
+    "data_figures",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
@@ -32,6 +39,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "nvidia_sphinx_theme"
 html_static_path = ["_static"]
+html_css_files = ["tutorial-output.css"]
 html_favicon = "_static/favicon.svg"
 
 html_theme_options = {
@@ -59,8 +67,16 @@ def _own_docstrings_only(app, what, name, obj, options, lines):
         lines.clear()
 
 
+def _waveform_explorer(app, pagename, templatename, context, doctree):
+    # Files added here load on this page only: Sphinx resets them per page.
+    if pagename == "user_guide/operations":
+        app.add_css_file("waveform-explorer.css")
+        app.add_js_file("waveform-explorer.js", defer="defer")
+
+
 def setup(app):
     # The generated dialect reference fences its examples as ```mlir, which
     # Pygments has no lexer for.
     app.add_lexer("mlir", TextLexer)
     app.connect("autodoc-process-docstring", _own_docstrings_only)
+    app.connect("html-page-context", _waveform_explorer)

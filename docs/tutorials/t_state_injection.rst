@@ -5,44 +5,57 @@
 T-State Injection and a Heralded Repeat-Until-Success Loop
 ==========================================================
 
-This tutorial prepares the magic state ``|T>`` on one transmon qubit, measures
-how good it is, and then makes it better with a herald: a readout, a decision
-on the controller and a correcting pulse, repeated until the qubit starts
-where it should. At the end you have a T state whose infidelity drops from
-about 3e-2 to below 1e-3, and you know where the rest of the error comes from.
+This tutorial prepares the magic state ``|T>`` on one transmon, measures how
+good it is, and makes it better with a herald: a readout, a decision on the
+controller and a correcting pulse, repeated until the qubit starts where it
+should.
 
-Every number on this page is simulated with ``pulse.simulate`` on the
-``transmon_surface17`` model, except the run times, which are measured on a
-laptop CPU. The whole page runs in a few seconds (measured). It builds on
-:doc:`measure_and_react` and :doc:`classical_calls`.
+Its infidelity drops from about 3e-2 to below 1e-3.
+
+What you'll learn:
+
+- why the T gate costs no pulse on a transmon;
+- how to measure a state with tomography;
+- how to herald on the controller and post-select in simulation;
+- where the time and the error go.
+
+Every number here is simulated on the 17-qubit transmon model, in a few
+seconds on a laptop CPU.
+
+The page builds on :doc:`measure_and_react` and :doc:`classical_calls`.
 
 Why T states
 ------------
 
-A fault-tolerant quantum computer gets its Clifford gates (H, S, CNOT) cheaply
-from its error-correcting code, but it also needs one non-Clifford gate, and
-the usual choice is :math:`T = \mathrm{diag}(1, e^{i\pi/4})`. It makes T
-gates by consuming magic states,
+A fault-tolerant quantum computer gets its Clifford gates (H, S, CNOT)
+cheaply from its error-correcting code. It also needs one non-Clifford
+gate, usually :math:`T = \mathrm{diag}(1, e^{i\pi/4})`.
+
+It makes T gates by consuming magic states:
 
 .. math::
 
-   |T\rangle = T|+\rangle = \frac{|0\rangle + e^{i\pi/4}|1\rangle}{\sqrt 2},
+   |T\rangle = T|+\rangle = \frac{|0\rangle + e^{i\pi/4}|1\rangle}{\sqrt 2}
 
-which it prepares on a physical qubit, injects into the code, and then purifies
-by distillation (Bravyi and Kitaev, PRA 71, 022316 (2005); Litinski,
-Quantum 3, 205 (2019)) or cultivation (Gidney, Shutty and Jones,
-arXiv:2409.17595 (2024)). The cost of those steps grows quickly with the
-error of the state they start from, so a better physical ``|T>`` makes
-everything after it cheaper.
+The state is prepared on a physical qubit, injected into the code, and then
+purified:
+
+- by distillation (Bravyi and Kitaev, PRA 71, 022316 (2005); Litinski,
+  Quantum 3, 205 (2019));
+- or by cultivation (Gidney, Shutty and Jones, arXiv:2409.17595 (2024)).
+
+The cost of those steps grows quickly with the error of the starting state,
+so a better physical ``|T>`` makes everything after it cheaper.
 
 The T gate is a frame change
 ----------------------------
 
 On a transmon, a Z rotation needs no pulse. Shifting the phase of the drive
-tone's frame turns every later pulse about a rotated axis, which is the same
-as rotating the qubit about Z. CUDA-Q Pulse gives the phase gates ``Z``,
-``S`` and ``T`` as these virtual Z rotations. This tutorial uses qubit D5,
-the middle data qubit of the 17-qubit model:
+tone's frame turns every later pulse about a rotated axis, which is the
+same as rotating the qubit about Z.
+
+CUDA-Q Pulse gives the phase gates Z, S and T as these virtual Z rotations.
+This tutorial uses D5, the middle data qubit of the 17-qubit model:
 
 .. code-block:: python
 
@@ -52,267 +65,499 @@ the middle data qubit of the 17-qubit model:
 
    import cudaq_pulse as pulse
 
-   qs = pulse.quantum_system("transmon_surface17")
-   q = qs.qudit("D5")
+   system = pulse.quantum_system("transmon_surface17")
+   qubit = system.qudit("D5")
 
-   t = q.get_calibration(pulse.gates.T)
-   print(t)   # VirtualZ(phase_rad=0.7853981633974483)
+   t_gate = qubit.get_calibration(pulse.gates.T)
+   print(t_gate)
 
-Preparing ``|T>`` takes a π/2 pulse about Y, which turns ``|0>`` into
-``|+>``, and then the T gate:
+.. code-block:: text
+   :class: output
+
+   VirtualZ(phase_rad=0.7853981633974483)
+
+Preparing ``|T>`` takes a π/2 pulse about Y, which turns the ground state
+into ``|+>``, and then the T gate:
 
 .. code-block:: python
 
    @pulse.kernel
    def inject(qudit):
-       d = get_drive_line(qudit)
-       drive(d, d.get_calibration(pulse.gates.Y90))   # |0> to |+>
-       drive(d, d.get_calibration(pulse.gates.T))     # |+> to |T>
+       drive_line = get_drive_line(qudit)
+       y90 = drive_line.get_calibration(pulse.gates.Y90)
+       t_gate = drive_line.get_calibration(pulse.gates.T)
 
-   for event in inject.lower(q).schedule:
-       print(event.kind, event.start_cycles, event.duration_cycles)
-   # drive 0 80
+       # |0> to |+>, then |+> to |T>.
+       drive(drive_line, y90)
+       drive(drive_line, t_gate)
 
-The schedule holds one pulse, the 40 ns Y90 (80 cycles of the 2 GHz clock).
-``drive(d, t)`` played no pulse: it advanced the phase of ``d.tone`` by π/4.
-The T gate takes no time and adds no error, so everything that limits this
-``|T>`` comes from the Y90 pulse, the qubit's decoherence, and the state the
-qubit starts in.
+List what the schedule plays:
+
+.. code-block:: python
+
+   print(f"{'kind':8} {'start':>6} {'length':>6}")
+   for event in inject.lower(qubit).schedule:
+       start = event.start_cycles
+       length = event.duration_cycles
+       print(f"{event.kind:8} {start:>6} {length:>6}")
+
+.. code-block:: text
+   :class: output
+
+   kind      start length
+   drive         0     80
+
+The schedule holds one pulse, the 40 ns Y90. The T gate played no pulse: it
+advanced the phase of the drive line's tone by π/4.
+
+.. themed-figure:: figures/t_frame_change.svg
+   :alt: Schedule of the inject kernel on D5's drive line: a Y90 pulse from 0 to 40 ns, then the T gate as a +π/4 frame shift at 40 ns, a point with no length and no pulse.
+   :width: 100%
+
+   The schedule of ``inject``. The diamond is the T gate.
+
+What to notice: the T gate takes no time and adds no error. What limits
+this ``|T>`` is the Y90 pulse, the qubit's decoherence, and the state it
+starts in.
 
 Reading the state in the frame
 ------------------------------
 
-The frame lives on the control side. It changes what later pulses do, never
-the qubit's state itself, so the state that ``pulse.simulate`` returns is the
-same with and without the T gate:
+The frame lives on the control side. It changes what later pulses do,
+never the qubit's state itself.
+
+So the state that ``pulse.simulate`` returns is the same with and without
+the T gate. Compare it with a kernel that stops at ``|+>``:
 
 .. code-block:: python
 
    @pulse.kernel
    def plus(qudit):
-       d = get_drive_line(qudit)
-       drive(d, d.get_calibration(pulse.gates.Y90))
+       drive_line = get_drive_line(qudit)
+       y90 = drive_line.get_calibration(pulse.gates.Y90)
+       drive(drive_line, y90)
 
-   ground = [1.0, 0.0, 0.0]   # |0>, in the three levels simulated per transmon
-   with_t = pulse.simulate(inject, q, initial_state=ground).density_matrix
-   without_t = pulse.simulate(plus, q, initial_state=ground).density_matrix
-   print(np.allclose(with_t, without_t))   # True
-
-A readout straight after the T gate cannot see it either, since a Z rotation
-does not change the populations a readout measures. What does see it is the
-next pulse. State tomography uses that: a pulse after the state turns the X,
-Y or Z axis onto Z, and a readout measures it. This kernel prepares ``|T>``
-and measures one axis:
+Simulate both from ``|0>``, in the three levels simulated per transmon:
 
 .. code-block:: python
 
+   ground = [1.0, 0.0, 0.0]
+
+   with_t = pulse.simulate(inject, qubit, initial_state=ground)
+   without_t = pulse.simulate(plus, qubit, initial_state=ground)
+
+   same = np.allclose(with_t.density_matrix, without_t.density_matrix)
+   print("same state with and without T:", same)
+
+.. code-block:: text
+   :class: output
+
+   same state with and without T: True
+
+Tomography
+----------
+
+A readout right after the T gate can't see it either, since a Z rotation
+doesn't change the populations a readout measures. What does see it is the
+next pulse.
+
+State tomography uses that: a pulse turns the X, Y or Z axis onto Z, and a
+readout measures it. This kernel prepares ``|T>`` and measures one axis:
+
+.. code-block:: python
+   :class: continues
+
+   X_AXIS, Y_AXIS, Z_AXIS = 0, 1, 2
+
+
    @pulse.kernel
    def t_tomography(qudit, axis: int):
-       d = get_drive_line(qudit)
-       r = get_readout_line(qudit)
-       drive(d, d.get_calibration(pulse.gates.Y90))
-       drive(d, d.get_calibration(pulse.gates.T))
-       if axis == 0:     # a -90 degree Y rotation turns +X onto +Z
-           y90 = d.get_calibration(pulse.gates.Y90)
-           drive(d, y90.replace(amplitude=-y90.amplitude))
-       elif axis == 1:   # a +90 degree X rotation turns +Y onto +Z
-           drive(d, d.get_calibration(pulse.gates.X90))
-       sync(d, r)
-       readout(r, r.get_calibration(pulse.gates.READOUT))
+       drive_line = get_drive_line(qudit)
+       readout_line = get_readout_line(qudit)
+       y90 = drive_line.get_calibration(pulse.gates.Y90)
+       t_gate = drive_line.get_calibration(pulse.gates.T)
+       x90 = drive_line.get_calibration(pulse.gates.X90)
+       measurement = readout_line.get_calibration(pulse.gates.READOUT)
 
-Each simulation is exact: its ``branches`` hold every outcome of the readout
-with its probability. The axis reads ``<Z> = 1 - 2 P(nonzero)``, and the
-fidelity with ``|T>`` follows from the three axes, the Bloch vector:
+After the state, one pulse picks the axis:
+
+- a -90 degree Y rotation turns +X onto +Z;
+- a +90 degree X rotation turns +Y onto +Z;
+- Z needs no pulse.
+
+.. code-block:: python
+
+       drive(drive_line, y90)
+       drive(drive_line, t_gate)
+
+       if axis == X_AXIS:
+           drive(drive_line, y90.replace(amplitude=-y90.amplitude))
+       elif axis == Y_AXIS:
+           drive(drive_line, x90)
+
+       sync(drive_line, readout_line)
+       readout(readout_line, measurement)
+
+.. animation-candidate: a later animation may replace this step sequence,
+   turning each axis of the state onto Z in turn.
+
+.. themed-figure:: figures/tomography_axes.svg
+   :alt: Three schedules of the tomography kernel, one per axis, on D5's drive and readout lines. Each starts with the Y90 pulse and the T frame shift. For X, a minus Y90 pulse turns plus X onto Z; for Y, an X90 pulse turns plus Y onto Z; for Z there is no pulse. A readout then measures Z.
+   :width: 100%
+
+   The three schedules of ``t_tomography``, one per axis.
+
+What to notice: only the second pulse changes. Each one moves a different
+axis of the state onto Z, where the readout can see it.
+
+From readouts to fidelity
+-------------------------
+
+Each simulation is exact: its branches hold every outcome of the readout
+with its probability. An axis reads ⟨Z⟩ = 1 - 2 P(nonzero):
+
+.. code-block:: python
+
+   def expectation(result):
+       """<Z> of the last readout, from its outcomes' probabilities."""
+       excited = 0.0
+       for branch in result.branches:
+           if branch.levels[-1] > 0:
+               excited += branch.probability
+       return 1 - 2 * excited
+
+The three axes make the Bloch vector, and its overlap with ``|T>``'s gives
+the fidelity:
 
 .. code-block:: python
 
    T_BLOCH = np.array([1.0, 1.0, 0.0]) / math.sqrt(2)
 
-   def expectation(result):
-       """<Z> of the last readout, from the probabilities of its outcomes."""
-       return 1 - 2 * sum(b.probability for b in result.branches if b.levels[-1] > 0)
 
    def fidelity(bloch):
-       """<T|rho|T> for the Bloch vector, shortened to length 1 if it is longer."""
-       bloch = bloch / max(1.0, float(np.linalg.norm(bloch)))
-       return (1 + float(bloch @ T_BLOCH)) / 2
+       """<T|rho|T> for the Bloch vector, at most length 1."""
+       length = max(1.0, float(np.linalg.norm(bloch)))
+       unit = bloch / length
+       return (1 + float(unit @ T_BLOCH)) / 2
 
-   bloch = np.array([
-       expectation(pulse.simulate(t_tomography, q, axis, initial_state=ground))
-       for axis in range(3)
-   ])
-   print(f"{fidelity(bloch):.2f}")    # 1.00, simulated
-   print(1 - fidelity(bloch) < 1e-3)   # True
+Measure all three axes from ``|0>``:
 
-From ``|0>``, the prepared state is within 1e-3 of ``|T>`` (simulated), and
-the tomography pulses' own errors are part of that.
+.. code-block:: python
+
+   bloch = np.zeros(3)
+   for axis in (X_AXIS, Y_AXIS, Z_AXIS):
+       result = pulse.simulate(
+           t_tomography,
+           qubit,
+           axis,
+           initial_state=ground,
+       )
+       bloch[axis] = expectation(result)
+
+   print(f"fidelity with |T>: {fidelity(bloch):.2f}")
+   print(f"infidelity < 1e-3: {1 - fidelity(bloch) < 1e-3}")
+
+.. code-block:: text
+   :class: output
+
+   fidelity with |T>: 1.00
+   infidelity < 1e-3: True
+
+What to notice: from ``|0>``, the prepared state is within 1e-3 of
+``|T>``, and that includes the tomography pulses' own errors.
+
+.. themed-figure:: figures/t_bloch.svg
+   :alt: The Bloch vector the tomography measures from the ground state, seen from above, in the X-Y plane: x 0.71, y 0.71, z 0.01. It points 45 degrees from plus X, where the plus state would point, and reaches the unit circle.
+   :width: 50%
+
+   The measured Bloch vector, seen from above.
+
+What to notice: the state points 45° from ``|+>``. That is the π/4 the
+frame shift added, even though no pulse played it.
 
 The thermal start
 -----------------
 
-A real transmon does not start in ``|0>``. It sits in a thermal mixture, and
-the model starts D5 with 2.7% of its population already excited, the value
-its quantum system gives. Leave out ``initial_state`` and the simulation
-starts there:
+A real transmon doesn't start in ``|0>``. It sits in a thermal mixture,
+and the model starts D5 with part of its population already excited.
+
+Leave out ``initial_state`` and the simulation starts there:
 
 .. code-block:: python
 
-   print(f"{qs.thermal_populations[q.index]:.3f}")   # 0.027
+   excited = system.thermal_populations[qubit.index]
+   print(f"excited at the start: {excited:.3f}")
 
-   bloch = np.array([expectation(pulse.simulate(t_tomography, q, axis)) for axis in range(3)])
-   print(f"{fidelity(bloch):.2f}")   # 0.97, simulated
+   bloch = np.zeros(3)
+   for axis in (X_AXIS, Y_AXIS, Z_AXIS):
+       result = pulse.simulate(t_tomography, qubit, axis)
+       bloch[axis] = expectation(result)
+   print(f"fidelity with |T>:    {fidelity(bloch):.2f}")
 
-The excited part of the start ends up near the opposite state, so the
-infidelity is about the thermal population: 2.7e-2 (simulated), dozens of
-times the error of the pulses. That is the error to remove.
+.. code-block:: text
+   :class: output
+
+   excited at the start: 0.027
+   fidelity with |T>:    0.97
+
+.. themed-figure:: figures/thermal_start.svg
+   :alt: The levels D5 starts in, as the first readout of the heralded kernel reads them: level 0, 97.2%; level 1, 2.7%; level 2, 7.5e-4. Everything not in level 0 is the error a herald removes.
+   :width: 100%
+
+   The levels D5 starts in, as the first herald readout of this page reads
+   them.
+
+What to notice: almost 3% of shots start outside level 0, nearly all of
+them in level 1.
+
+The excited part of the start ends up near the opposite state. So the
+infidelity is about the thermal population: 2.6e-2, about a thousand times
+the error of the pulses.
+
+That is the error to remove.
 
 A herald on the controller
 --------------------------
 
 A herald measures the qubit before the state is prepared and keeps only the
-shots that read 0. Here the decision runs on the controller as a classical
-function, a ``@pulse.classical`` function called from the kernel while it
-runs. The function needs a link to the hardware it runs on; this one is the
-controller's own logic, with a few nanoseconds of fixed and feedback cost:
+shots that read 0.
+
+Here the decision runs on the controller, as a classical function the
+kernel calls while it runs. Its link is the controller's own logic, with a
+few nanoseconds of fixed and feedback cost:
 
 .. code-block:: python
 
    from cudaq_pulse.classical import Link
 
-   control_system = pulse.ControlSystem(
-       links={"controller": Link(fixed_ns=4, feedback_ns=8, slots=2)}
-   )
+   controller_link = Link(fixed_ns=4, feedback_ns=8, slots=2)
+   links = {"controller": controller_link}
+   control_system = pulse.ControlSystem(links=links)
 
-   @pulse.classical(min_latency_ns=20, nominal_latency_ns=30, max_latency_ns=40,
-                    link="controller")
-   def herald(outcome: pulse.Bits) -> bool:
-       """Accept the shot if the qubit read 0."""
-       return outcome[0] == 0
+The herald itself is one comparison, with a budget of tens of nanoseconds.
+The code from here on comes from :example:`28_t_state_injection.py`:
 
-The kernel measures, submits the outcome, and plays a π pulse when the answer
-says the qubit read 1, which returns it to ``|0>`` for the next attempt. The
-number of attempts is fixed when the kernel compiles, so every attempt is
-scheduled, and each answer gates only its own pulse:
+.. literalinclude:: ../../examples/28_t_state_injection.py
+   :language: python
+   :start-after: # [start herald]
+   :end-before: # [end herald]
+
+The kernel
+----------
+
+Each attempt measures the qubit, submits the outcome, and plays a π pulse
+when the answer says the qubit read 1. That returns it to ``|0>`` for the
+next attempt.
+
+The number of attempts is fixed when the kernel compiles, so every attempt
+is scheduled:
+
+.. literalinclude:: ../../examples/28_t_state_injection.py
+   :language: python
+   :class: continues
+   :start-after: # [start heralded attempts]
+   :end-before: # [end heralded attempts]
+
+After the attempts, the kernel prepares ``|T>`` and measures one axis, as
+``t_tomography`` does:
+
+.. literalinclude:: ../../examples/28_t_state_injection.py
+   :language: python
+   :start-after: # [start heralded state]
+   :end-before: # [end heralded state]
+
+Compile it against the control system with the controller link:
 
 .. code-block:: python
 
-   @pulse.kernel
-   def heralded_t(qudit, attempts: int, axis: int):
-       d = get_drive_line(qudit)
-       r = get_readout_line(qudit)
-       x = d.get_calibration(pulse.gates.X)
-       ro = r.get_calibration(pulse.gates.READOUT)
-       for _ in range(attempts):
-           m = readout(r, ro)
-           ok = herald.submit([m]).result()
-           sync(d, r)
-           if not ok:
-               drive(d, x)   # read 1: flip back to |0> and look again
-           sync(d, r)
-       drive(d, d.get_calibration(pulse.gates.Y90))
-       drive(d, d.get_calibration(pulse.gates.T))
-       if axis == 0:
-           y90 = d.get_calibration(pulse.gates.Y90)
-           drive(d, y90.replace(amplitude=-y90.amplitude))
-       elif axis == 1:
-           drive(d, d.get_calibration(pulse.gates.X90))
-       sync(d, r)
-       readout(r, ro)
+   compiled = pulse.compile(
+       heralded_t,
+       quantum_system=system,
+       control_system=control_system,
+   )
 
-   compiled = pulse.compile(heralded_t, quantum_system=qs, control_system=control_system)
+.. animation-candidate: a later animation may play this schedule with a
+   moving playhead, one attempt at a time.
+
+.. themed-figure:: figures/herald_loop.svg
+   :alt: Timeline of the heralded T-state kernel with two attempts, on D5's drive and readout lines and the controller link. Each attempt reads D5 out for 300 ns, sends the outcome to the herald function, and plays a pi pulse only if the qubit read 1. After the second attempt, a Y90 pulse and a pi/4 frame shift prepare the T state, and a last readout from 824 ns measures it.
+   :width: 100%
+
+   ``heralded_t`` with two attempts. Dashed pulses play only on shots whose
+   herald said no.
+
+What to notice: each attempt is the same three steps. A readout, a call on
+the controller link, and a π pulse that waits for its answer.
 
 Post-select on the answer
 -------------------------
 
-A simulation follows every outcome of every readout. Each of its branches
-records the classical calls it made, and ``result.postselect`` keeps the
-branches a test accepts: here, those whose last herald answer was true. The
-kept result holds their state, normalized, and ``acceptance``, the fraction
-of shots they are:
+Each branch of a simulation records the classical calls it made.
+``postselect`` keeps the branches a test accepts, here those whose last
+herald answer was true:
+
+.. code-block:: python
+
+   def herald_accepted(branch):
+       return branch.answers("herald")[-1]
+
+.. animation-candidate: a later animation may grow this tree one readout at
+   a time.
+
+.. themed-figure:: figures/herald_branches.svg
+   :alt: The branches of one heralded attempt measured on Z. The herald reads 0 with probability 97.2%; The herald reads 1 with probability 2.7%; The herald reads 2 with probability 7.5e-4. Post-selection keeps only the branches whose herald read 0, 97.2% of the shots: of those, Z reads 0 in 49.1% and 1 or 2 in 48.1%, as the T state gives. The rest are dropped.
+   :width: 100%
+
+   The branches of one attempt, measured on Z.
+
+What to notice: post-selection keeps the branches whose herald read 0.
+Among them, Z reads 0 and 1 about equally, as ``|T>`` should.
+
+The kept result holds their state, normalized, and ``acceptance``, the
+share of shots they are:
 
 .. code-block:: python
 
    def heralded_fidelity(attempts):
-       bloch, acceptance = np.zeros(3), 1.0
-       for axis in range(3):
-           result = pulse.simulate(compiled.lower(q, attempts, axis))
-           kept = result.postselect(lambda b: b.answers("herald")[-1])
-           bloch[axis], acceptance = expectation(kept), kept.acceptance
+       bloch = np.zeros(3)
+       acceptance = 1.0
+       for axis in (X_AXIS, Y_AXIS, Z_AXIS):
+           program = compiled.lower(qubit, attempts, axis)
+           result = pulse.simulate(program)
+           kept = result.postselect(herald_accepted)
+           bloch[axis] = expectation(kept)
+           acceptance = kept.acceptance
        return fidelity(bloch), acceptance
 
-   f, acceptance = heralded_fidelity(1)
-   print(f"{acceptance:.3f}")   # 0.972, simulated
-   print(f"{f:.2f}")            # 1.00, simulated
-   print(1 - f < 1e-3)          # True
+Try one attempt:
 
-One herald keeps 97.2% of the shots (simulated), the ones that did not start
-excited, and the infidelity of the kept shots falls from 2.7e-2 to below
-1e-3 (simulated), close to the result from ``|0>``.
+.. code-block:: python
+
+   heralded, acceptance = heralded_fidelity(1)
+   print(f"shots kept:        {acceptance:.3f}")
+   print(f"fidelity with |T>: {heralded:.2f}")
+   print(f"infidelity < 1e-3: {1 - heralded < 1e-3}")
+
+.. code-block:: text
+   :class: output
+
+   shots kept:        0.972
+   fidelity with |T>: 1.00
+   infidelity < 1e-3: True
+
+.. themed-figure:: figures/herald_infidelity.svg
+   :alt: Infidelity of the prepared state with the T state: start in |0⟩, 2.4e-05; thermal start, 2.6e-02; thermal, 1 herald, 2.4e-05. One herald brings the thermal start back to the error of the ground-state start.
+   :width: 100%
+
+   The error of each start, from this page's tomography.
+
+What to notice: one herald keeps the 97.2% of shots that didn't start
+excited, and their infidelity falls from 2.6e-2 to below 1e-3, close to the
+result from ``|0>``.
 
 Repeat until success
 --------------------
 
-The 2.8% of shots that did not read 0 need not all be lost. The kernel
-already flipped them back to ``|0>``, so a second attempt reads most of them
-as 0 and keeps them:
+The 2.8% of shots that didn't read 0 need not all be lost. The kernel
+already flipped them back to ``|0>``, so a second attempt reads most of
+them as 0 and keeps them:
 
 .. code-block:: python
 
+   print("attempts   kept  infidelity < 1e-3")
    for attempts in (1, 2, 3):
-       f, acceptance = heralded_fidelity(attempts)
-       print(attempts, f"{acceptance:.3f}", 1 - f < 1e-3)
-   # 1 0.972 True
-   # 2 0.999 True
-   # 3 0.999 True
+       heralded, acceptance = heralded_fidelity(attempts)
+       good = 1 - heralded < 1e-3
+       print(f"{attempts:8}  {acceptance:.3f}  {good}")
 
-Two attempts keep 99.9% of the shots (simulated) at the same fidelity. A third
-gains almost nothing: about 1e-3 of the shots are never accepted, and most of
-those start in level 2 (about 8e-4 of the thermal start, from the model's
-Boltzmann ratio), which reads nonzero on every attempt because the loop's π
-pulse drives only the 0-1 transition. A π pulse at the 1-2 tone after a
-readout of 2 would bring them back.
+.. code-block:: text
+   :class: output
+
+   attempts   kept  infidelity < 1e-3
+          1  0.972  True
+          2  0.999  True
+          3  0.999  True
+
+.. themed-figure:: figures/herald_acceptance.svg
+   :alt: The share of shots the herald keeps, by the number of attempts: 1, 97.2%; 2, 99.9%; 3, 99.9%. The second attempt recovers most of the shots the first dropped; a third adds almost nothing.
+   :width: 65%
+
+   The shots kept, by the number of attempts.
+
+What to notice:
+
+- two attempts keep 99.9% of the shots at the same fidelity;
+- a third gains almost nothing: about 1e-3 of the shots are never
+  accepted.
+
+Most of those start in level 2, about 8e-4 of the thermal start from the
+model's Boltzmann ratio. They read nonzero on every attempt, because the
+loop's π pulse drives only the 0-1 transition. A π pulse at the 1-2 tone
+after a readout of 2 would bring them back.
 
 When the answers are due
 ------------------------
 
 Every attempt waits for its answer before its pulse can play, and a qubit
 that waits decoheres. The compiler places each call and reports when its
-answer is due:
+answer is due, here in nanoseconds:
 
 .. code-block:: python
 
-   program = compiled.lower(q, 1, 2)
+   program = compiled.lower(qubit, 1, Z_AXIS)
+
+   print("function  sent (ns)  due (ns)  slack")
    for call in program.classical_report():
-       print(call.function, call.submit_cycles / qs.clock_ghz,
-             call.due_cycles / qs.clock_ghz, call.slack_cycles)
-   # herald 300.0 352.0 0
+       sent_ns = call.submit_cycles / system.clock_ghz
+       due_ns = call.due_cycles / system.clock_ghz
+       slack = call.slack_cycles
+       print(f"{call.function:8}  {sent_ns:9}  {due_ns:8}  {slack:5}")
 
-Times are in nanoseconds from the start of the program, from the compiled
-schedule. The outcome is submitted when the 300 ns readout ends, and the
-answer is due 52 ns later: the link's 4 ns, the function's 40 ns worst case
-and the 8 ns feedback. ``slack_cycles`` is 0 because the π pulse that depends
-on the answer is scheduled at the moment it is due.
+.. code-block:: text
+   :class: output
 
-Waiting is where the time goes: on D5 each microsecond the state spends
-waiting costs about 1e-2 of fidelity (simulated, from its 46 us T2*), far more
-than the pulses. A herald whose answer comes late, or a decoder that answers
-in microseconds instead of nanoseconds, costs more than every other effect on
+   function  sent (ns)  due (ns)  slack
+   herald        300.0     352.0      0
+
+The outcome is sent when the 300 ns readout ends. The answer is due 52 ns
+later:
+
+- 4 ns on the link;
+- at most 40 ns in the function;
+- 8 ns of feedback.
+
+.. themed-figure:: figures/herald_latency.svg
+   :alt: A close look at the first herald answer. The readout ends and its outcome is sent to the herald function, whose answer is due 52 ns later: 4 ns on the link, at most 40 ns in the function and 8 ns of feedback. The pi pulse that plays only if the qubit read 1 starts the moment the answer is due.
+   :width: 100%
+
+   The first answer of ``heralded_t``, close up.
+
+What to notice: the π pulse starts the moment the answer is due. That is
+why the slack is 0.
+
+Waiting is where the time goes. On D5, each microsecond
+spent waiting costs about 1e-2 of fidelity (from its 46 µs T2*), far more
+than the pulses.
+
+A herald whose answer comes late, or a decoder that answers in
+microseconds instead of nanoseconds, costs more than every other effect on
 this page.
 
 Where to go next
 ----------------
 
 - :example:`28_t_state_injection.py` is this page as one script. It also
-  checks that one X90 about the axis at 3π/4 makes the same ``|T>`` as Y90
-  and T, measures the tomography with sampled shots through the readout
-  model, and prints the herald's timing for two attempts.
-- :example:`19_classical_calls.py` sends readouts to classical functions and
-  branches on their answers, the mechanism the herald uses.
-- :example:`08_readout_and_branching.py` shows the active reset that each
+  makes the same ``|T>`` with one X90 about the axis at 3π/4, and measures
+  the tomography with sampled shots.
+- :example:`19_classical_calls.py` sends readouts to classical functions
+  and branches on their answers, the mechanism the herald uses.
+- :example:`08_readout_and_branching.py` shows the active reset each
   attempt's correcting pulse is built from.
 
-:ref:`virtual-z` gives the phase gates' sign convention and how a simulated
-state relates to its frame, :doc:`../user_guide/classical_calls` covers
-classical functions, links and their timing reports, and
-:doc:`../user_guide/gpu_execution` how simulations follow measurement
-branches and post-select on them.
+For the details:
+
+- :ref:`virtual-z` gives the phase gates' sign convention;
+- :doc:`../user_guide/classical_calls` covers classical functions, links
+  and their timing reports;
+- :doc:`../user_guide/gpu_execution` covers how simulations follow
+  measurement branches and post-select on them.

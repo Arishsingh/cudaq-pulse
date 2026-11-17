@@ -406,6 +406,16 @@ def _program_lines(program: Mapping[str, Any], flat: Mapping[str, Any]) -> dict[
     }
 
 
+def _place(kind: Any, line: Any) -> Any:
+    """Where an event's order is checked: a call or answer on its link, whose
+    number may also be a line's."""
+    return ("link", line) if kind in (Event.CALL, Event.ANSWER) else line
+
+
+def _named(place: Any) -> str:
+    return f"link {place[1]}" if isinstance(place, tuple) else f"line {place}"
+
+
 def _expected(program: Mapping[str, Any]) -> tuple[int, dict[Any, list[tuple[Any, ...]]]]:
     """The programs *program* is for, and its timed events by line, each
     ``(kind, start_cycles, duration_cycles)`` in program order."""
@@ -418,7 +428,7 @@ def _expected(program: Mapping[str, Any]) -> tuple[int, dict[Any, list[tuple[Any
             line = event["line"]
             if kind in (Event.PLAY, Event.READOUT):
                 line = line_of.get(line, line)
-            by_line.setdefault(line, []).append(
+            by_line.setdefault(_place(kind, line), []).append(
                 (kind, event["start_cycles"], event["duration_cycles"])
             )
     return max(1, len(program.get("programs") or ())), by_line
@@ -430,7 +440,7 @@ def _emitted(programs: Sequence[Iterable[Mapping[str, Any]]]) -> dict[Any, list[
         for event in events:
             kind = _KINDS.get(str(event["kind"]), str(event["kind"]))
             if kind in _TIMED:
-                by_line.setdefault(event["line"], []).append(
+                by_line.setdefault(_place(kind, event["line"]), []).append(
                     (kind, event["start_cycles"], event.get("duration_cycles"))
                 )
     return by_line
@@ -446,11 +456,13 @@ def _timing(
             same = a[0] == b[0] and a[1] == b[1] and (b[2] is None or a[2] == b[2])
             if not same:
                 return (
-                    f"line {line}: event {k} is a {b[0]} at {b[1]} cycles; "
+                    f"{_named(line)}: event {k} is a {b[0]} at {b[1]} cycles; "
                     f"the controller program has a {a[0]} at {a[1]}"
                 )
         if len(want) != len(got):
-            return f"line {line}: emitted {len(got)} events, the controller program has {len(want)}"
+            return (
+                f"{_named(line)}: emitted {len(got)} events, the controller program has {len(want)}"
+            )
     return None
 
 
