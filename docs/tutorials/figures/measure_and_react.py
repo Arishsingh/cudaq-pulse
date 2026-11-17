@@ -16,7 +16,7 @@ from _timeline import Timeline, draw
 
 
 def reset_timeline(page) -> None:
-    timeline = Timeline.of(page["active_reset"].lower(page["q"]))
+    timeline = Timeline.of(page["active_reset"].lower(page["qubit"]))
     drives = [pl for pl in timeline.pulses if pl.kind == "drive"]
     readouts = [pl for pl in timeline.pulses if pl.kind == "readout"]
     words = {(pl.lane, round(pl.start_ns, 3)): "π/2" for pl in drives[:1]}
@@ -41,7 +41,7 @@ def reset_timeline(page) -> None:
 
 
 def reset_branches(page) -> None:
-    result = pulse.simulate(page["active_reset"], page["q"], shots_count=1000, seed=7)
+    result = pulse.simulate(page["active_reset"], page["qubit"], shots_count=1000, seed=7)
     first: dict[int, float] = {}
     both: dict[tuple[int, int], float] = {}
     for b in result.branches:
