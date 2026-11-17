@@ -75,6 +75,15 @@ CUDA-Q Pulse calls it a qudit because a transmon has more than two levels.
 The simulator keeps the lowest three, so a pulse that drives too hard shows
 up as population in level 2.
 
+.. themed-figure:: figures/qudit_levels.svg
+   :alt: The three lowest levels of qudit 0, the levels the simulator keeps: the 0-1 transition at 3.885 GHz, the one the drive is tuned to, and the 1-2 transition at 3.701 GHz, 184 MHz lower.
+   :width: 60%
+
+   The three levels the simulator keeps for this qubit.
+
+What to notice: the 1-2 transition sits a little below the 0-1 one. A drive
+tuned to 0-1 mostly leaves level 2 alone.
+
 Write a pulse kernel
 --------------------
 
@@ -111,6 +120,15 @@ What the kernel does:
   drive pulse ends;
 - the kernel returns the readout's outcome.
 
+.. themed-figure:: figures/rabi_pulse.svg
+   :alt: The drive pulse of the rabi kernel at amplitude 0.16: a Gaussian 32 ns long, climbing from zero to its peak in the middle and back.
+   :width: 100%
+
+   The drive pulse at amplitude 0.16, as the drive line plays it.
+
+What to notice: the pulse starts and ends at zero. Its smooth edges keep
+its spectrum narrow.
+
 Inside a kernel, the operations are used by their bare names. Editors that
 use Pylance or pyright complete and check them with no setup (see
 :doc:`../user_guide/editors`).
@@ -138,6 +156,15 @@ evolves it on the CPU, with the qubit's relaxation and dephasing included:
    level 0: 0.036
    level 1: 0.963
    level 2: 0.001
+
+.. themed-figure:: figures/rabi_levels.svg
+   :alt: The population of each level of qudit 0 after the 0.16 pulse: level 0, 0.036; level 1, 0.963; level 2, 0.001.
+   :width: 100%
+
+   The population of each level after the pulse, on a log scale.
+
+What to notice: level 2 holds a thousandth of the population, so this
+pulse barely leaks out of the qubit.
 
 At amplitude 0.16 the pulse is close to a π pulse (the sweep below puts it
 at 0.165), and 96% of the population ends up excited.
