@@ -98,9 +98,12 @@ def CUDM_CreateElementaryOpOp
     : CuDensityMatOp<"create_elementary_op", [MemoryEffects<[MemWrite]>]> {
   let summary = "Create an elementary tensor operator";
   let description = [{
-    A dense elementary operator on modes of `mode_extents` levels, from
-    `tensor_data` (column-major, interleaved real and imaginary parts, as
-    `qop.matrix_leaf` holds it), copied to the device.
+    An elementary operator on modes of `mode_extents` levels, copied to the
+    device. Dense, `tensor_data` is its matrix (column-major, interleaved
+    real and imaginary parts, as `qop.matrix_leaf` holds it). Multi-diagonal,
+    it acts on one mode and `tensor_data` holds one vector of the mode's
+    extent per entry of `diagonal_offsets` (ascending; positive above the
+    main diagonal), element (r, r + offset) at index min(r, r + offset).
   }];
   let arguments = (ins
     CUDM_HandleType:$handle,
@@ -108,7 +111,8 @@ def CUDM_CreateElementaryOpOp
     CUDM_SparsityAttr:$sparsity,
     CUDM_ComputeTypeAttr:$data_type,
     DenseI64ArrayAttr:$mode_extents,
-    OptionalAttr<FlatSymbolRefAttr>:$callback
+    OptionalAttr<FlatSymbolRefAttr>:$callback,
+    OptionalAttr<DenseI32ArrayAttr>:$diagonal_offsets
   );
   let results = (outs CUDM_ElementaryOpType:$elem_op);
   let assemblyFormat = "$handle `,` $tensor_data attr-dict `:` type($handle) `,` type($tensor_data) `->` type($elem_op)";
@@ -143,9 +147,11 @@ def CUDM_AppendElementaryProductOp
   let summary = "Append a product of elementary operators to a term";
   let description = [{
     Appends to a term the product of `elem_ops` on the modes
-    `modes_acted_on`, weighted by `coeff_real + i coeff_imag`. Each
-    `duality` entry says whether its operator acts on the ket (0) or the
-    bra (1) side of its mode. With `callback`,
+    `modes_acted_on`, weighted by `coeff_real + i coeff_imag`. An operator
+    on several modes takes that many consecutive entries of
+    `modes_acted_on`; a mode may appear twice in one operator, once on each
+    side. Each `duality` entry says whether its operator acts on the ket (0)
+    or the bra (1) side of that mode. With `callback`,
     the weight is also multiplied by that drive envelope at each time;
     the lowering carries the envelope's kind and parameters as
     attributes.
