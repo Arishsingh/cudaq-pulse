@@ -60,6 +60,12 @@ when each pulse plays:
    drive      1      0
    drive      2      0
 
+.. themed-figure:: figures/register_parallel.svg
+   :alt: Timeline of flip_all on 3 drive lines, D1 drive, D2 drive, D3 drive. Each plays its own calibrated pi pulse, all from 0 to 40 ns.
+   :width: 100%
+
+   ``flip_all`` on D1, D2 and D3.
+
 What to notice: each qubit has its own drive line, so the three π pulses
 play at the same time.
 
@@ -188,6 +194,15 @@ Because of the coupling, D1's frequency depends slightly on whether X2 is
 excited, by about 6 kHz. This is the residual ZZ interaction, an error
 source for every gate played next to a busy neighbour.
 
+.. themed-figure:: figures/zz_shift.svg
+   :alt: D1's 0-1 frequency with its neighbour X2 in its ground state and excited. Through their 5.69 MHz coupling, exciting X2 moves D1 by -5.94 kHz, the residual ZZ shift.
+   :width: 80%
+
+   D1's frequency with X2 in each state.
+
+What to notice: the shift is a few kilohertz, a millionth of D1's
+frequency, yet it adds up over a long wait.
+
 A Ramsey sequence sees it
 -------------------------
 
@@ -223,6 +238,15 @@ sequence around the wait:
 
 The ``excite`` argument is an integer, so the kernel compiles once for each
 value, and the ``if`` is decided while compiling, not during the shot.
+
+.. themed-figure:: figures/ramsey_neighbour.svg
+   :alt: Timeline of the Ramsey kernel on D1 next to X2, with X2 excited and a 10 microsecond wait cut short. X2's pi pulse plays first; then D1 plays a pi/2 pulse, waits, plays a second pi/2 pulse and is read out.
+   :width: 100%
+
+   The kernel with X2 excited and a 10 µs wait, cut short.
+
+What to notice: X2's π pulse comes first, so D1's wait happens next to an
+excited neighbour.
 
 Compare the two cases after 10 µs:
 

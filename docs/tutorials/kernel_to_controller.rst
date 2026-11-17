@@ -86,6 +86,12 @@ Export one call and list its events:
    sync     None     40      0
    readout     1     40    200
 
+.. themed-figure:: figures/exported_program.svg
+   :alt: Timeline of the exported drive_and_measure on qudit 0's drive and readout lines, in cycles of the 1 GHz clock: a 40-cycle drive from cycle 0, a sync at cycle 40 that ties both lines, and a 200-cycle readout from there.
+   :width: 100%
+
+   The same three events on their lines, one cycle per nanosecond.
+
 What to notice:
 
 - the 40 ns drive pulse is 40 cycles;
@@ -147,6 +153,15 @@ Try it on four π pulses:
    (cycle, drives at once): [(0, 3), (0, 4)]
 
 All four π pulses start at cycle 0, two more than the limit.
+
+.. themed-figure:: figures/drive_count.svg
+   :alt: The number of flip_four's drives playing at once, as late as possible: 4 from 0 to 40 ns, then none. The limit of 2 is drawn across it.
+   :width: 70%
+
+   The running count of drives at once, against the limit.
+
+What to notice: the count jumps straight to four, and the check reports
+each step above two.
 
 Let the compiler keep the limit
 -------------------------------
@@ -303,6 +318,15 @@ What the text backend does with the corpus:
 - it plays drives, readouts, waits, syncs and loops;
 - it refuses classical calls, frame updates, branches and values known
   only at run time.
+
+.. themed-figure:: figures/validation_corpus.svg
+   :alt: The 17 programs of the validation corpus and what the text backend does with each: play, passed; readout, passed; wait, passed; sync, passed; loop, passed; call, refused; answer, refused; frame_update, refused; branch, refused; answer_timeout, refused; runtime, refused; runtime_frequency, refused; shared_line, passed; several_controllers[0], passed; several_controllers[1], passed; unsupported_event, passed; newer_format, passed. 10 pass and 7 are refused cleanly; none fail.
+   :width: 100%
+
+   Each program of the corpus, and what the text backend did with it.
+
+What to notice: there is no third mark. Every program either passes or is
+refused, and a program the backend can't read passes by being turned away.
 
 Refusing is a pass. What fails validation is a backend that emits a program
 it can't play faithfully, or reads a format it doesn't know.

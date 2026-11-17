@@ -123,6 +123,15 @@ from the shape and the qudit's drive strength:
 
    40.0 ns DRAG, amplitude 0.1313
 
+.. themed-figure:: figures/calibrated_x.svg
+   :alt: The calibrated pi pulse of qudit 0 on its drive line: a 40 ns DRAG pulse of amplitude 0.1313, one smooth bump that starts and ends at zero.
+   :width: 100%
+
+   Qudit 0's calibrated π pulse, as its drive line plays it.
+
+What to notice: the pulse is one smooth bump. Its height is the amplitude
+the quantum system worked out.
+
 That amplitude turns the qubit by π. Its π/2 pulse, ``pulse.gates.X90``, is
 the same pulse at half the amplitude.
 
@@ -212,6 +221,12 @@ Run it on both qudits, each with its own calibrated amplitude:
    qudit 1 excited: 0.991
    compilations: 1
 
+.. themed-figure:: figures/one_compile.svg
+   :alt: The kernel excite, run on both qudits of the pair, compiles 2 programs, one per qudit. excite_any, which takes the qudit as an argument, compiles 1, which serves both.
+   :width: 100%
+
+   The programs each kernel compiled for the two qudits.
+
 What to notice: the drive's frequency still follows each qudit, because a
 drive line plays at its own qudit's frequency unless the kernel says
 otherwise.
@@ -253,6 +268,12 @@ drive's frequency:
 
 The recalibrated program plays its drive 2 MHz higher, with no change to
 the kernel.
+
+.. themed-figure:: figures/recalibration.svg
+   :alt: The frequency of excite's drive in its export for qudit 0: 5100 MHz before the recalibration and 5102 MHz after, 2 MHz higher, with the same kernel.
+   :width: 80%
+
+   The drive's frequency in each export.
 
 What to notice: quantum systems are read-only, so the original ``pair`` is
 unchanged, and programs compiled for it stay valid.
