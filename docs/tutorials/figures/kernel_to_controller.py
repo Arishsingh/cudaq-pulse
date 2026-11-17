@@ -4,11 +4,16 @@
 
 Usage: python docs/tutorials/figures/kernel_to_controller.py
 
-Needs matplotlib (the ``[viz]`` extra). Writes ``concurrent_drives.svg`` and
-``two_controllers.svg``, each with its ``-dark`` twin, next to this file: the
-page's four pi pulses under two schedules, and the program of
-``examples/23_define_a_qpu.py``, a readout on one controller and the
-correction it decides on the other.
+Needs matplotlib (the ``[viz]`` extra). Writes, each with its ``-dark`` twin,
+next to this file:
+
+- ``exported_program.svg``, the export of the page's first kernel;
+- ``drive_count.svg``, how many of the page's four pi pulses play at once;
+- ``concurrent_drives.svg``, those pulses under two schedules;
+- ``validation_corpus.svg``, what the text backend does with each program of
+  the validation corpus;
+- ``two_controllers.svg``, the program of ``examples/23_define_a_qpu.py``, a
+  readout on one controller and the correction it decides on the other.
 """
 
 import contextlib
@@ -16,12 +21,110 @@ import io
 import runpy
 
 import cudaq_pulse as pulse
-from _style import HERE, page_namespace, save_themed
+import numpy as np
+from _style import HERE, end_label, page_namespace, plot_axes, save_themed
 from _timeline import Timeline, draw, draw_stack
 
 
-def concurrent_drives() -> None:
-    page = page_namespace("kernel_to_controller.rst")
+def exported_program(page) -> None:
+    timeline = Timeline.of(page["scheduled"])
+    words = {
+        (pl.lane, round(pl.start_ns, 3)): ("drive" if pl.kind == "drive" else "readout")
+        for pl in timeline.pulses
+    }
+    (sync,) = timeline.syncs
+    alt = (
+        "Timeline of the exported drive_and_measure on qudit 0's drive and readout lines, in "
+        "cycles of the 1 GHz clock: a 40-cycle drive from cycle 0, a sync at cycle "
+        f"{sync.t_ns:g} that ties both lines, and a 200-cycle readout from there."
+    )
+    save_themed(
+        lambda p: draw(timeline, p, pulse_labels=words, syncs="all"),
+        "exported_program",
+        title="The exported program",
+        desc=alt,
+    )
+
+
+def drive_count(page) -> None:
+    scheduled = page["flip_four"].lower(page["four"])
+    edges = []
+    for event in scheduled.schedule:
+        if event.kind == "drive" and event.duration_cycles:
+            edges += [(event.start, 1), (event.end, -1)]
+    times, counts, active = [0], [0], 0
+    for time, step in sorted(edges):
+        active += step
+        times.append(time)
+        counts.append(active)
+    clock = scheduled.quantum_system.clock_ghz
+    end_ns = times[-1] / clock
+    limit = 2
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=1.7, width_in=5.0)
+        ns = np.array(times) / clock
+        ax.step(
+            np.append(ns, end_ns * 1.5), np.append(counts, 0), where="post", color=p.drive, lw=1.6
+        )
+        ax.axhline(limit, color=p.readout, lw=1.0, ls=(0, (3, 2)))
+        end_label(
+            ax,
+            end_ns * 1.5,
+            limit,
+            f"limit {limit}",
+            p.readout,
+            dx=-2,
+            dy=6,
+            ha="right",
+            va="bottom",
+        )
+        ax.set_xlim(-2, end_ns * 1.5)
+        ax.set_ylim(0, 4.6)
+        ax.set_yticks([0, 1, 2, 3, 4])
+        ax.set_xlabel("time (ns)")
+        ax.set_ylabel("drives at once")
+        return fig
+
+    alt = (
+        f"The number of flip_four's drives playing at once, as late as possible: {max(counts)} "
+        f"from 0 to {end_ns:g} ns, then none. The limit of {limit} is drawn across it."
+    )
+    save_themed(figure, "drive_count", title="Four drives against a limit of two", desc=alt)
+
+
+def validation_corpus(page) -> None:
+    lines = page["report"].lines
+    statuses = ("PASS", "REFUSED")
+
+    def figure(p):
+        fig, ax = plot_axes(p, height_in=0.32 * len(lines) / 2 + 0.6)
+        ax.axis("off")
+        half = (len(lines) + 1) // 2
+        for k, (status, name, _) in enumerate(lines):
+            column, row = divmod(k, half)
+            x, y = column * 1.0, -row
+            color = p.classical if status == "PASS" else p.muted
+            ax.plot([x], [y], "o" if status == "PASS" else "s", ms=6, color=color, mec="none")
+            word = "passed" if status == "PASS" else "refused"
+            ax.text(x + 0.04, y, f"{name}: {word}", va="center", fontsize=8, color=p.text)
+        ax.set_xlim(-0.05, 2.0)
+        ax.set_ylim(-half + 0.4, 0.6)
+        return fig
+
+    tally = {s: sum(1 for status, _, _ in lines if status == s) for s in statuses}
+    alt = (
+        f"The {len(lines)} programs of the validation corpus and what the text backend does "
+        "with each: "
+        + "; ".join(
+            f"{name}, {'passed' if status == 'PASS' else 'refused'}" for status, name, _ in lines
+        )
+        + f". {tally['PASS']} pass and {tally['REFUSED']} are refused cleanly; none fail."
+    )
+    save_themed(figure, "validation_corpus", title="The validation corpus", desc=alt)
+
+
+def concurrent_drives(page) -> None:
     four, limited = page["four"], page["limited"]
     late = Timeline.of(page["flip_four"].lower(four))
     rcp = Timeline.of(
@@ -78,7 +181,11 @@ def two_controllers() -> None:
 
 
 def main() -> None:
-    concurrent_drives()
+    page = page_namespace("kernel_to_controller.rst")
+    exported_program(page)
+    drive_count(page)
+    concurrent_drives(page)
+    validation_corpus(page)
     two_controllers()
 
 
