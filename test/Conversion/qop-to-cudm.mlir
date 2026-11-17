@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// RUN: cudaq-pulse-opt --qop-to-cudm %s | FileCheck %s
+// RUN: cudaq-pulse-opt --qop-to-cudm=operators=dense %s | FileCheck %s
 
 module @qop_to_cudm_test attributes {qop.qudit_count = 1 : i64, qop.t_start = 0.0 : f64, qop.t_end = 100.0 : f64, qop.step_count = 100 : i64} {
 

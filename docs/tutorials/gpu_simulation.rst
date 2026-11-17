@@ -178,10 +178,10 @@ You can see the last stage on any machine:
 .. code-block:: text
    :class: output
 
-   calls into cuDensityMat: 182
+   calls into cuDensityMat: 88
 
 .. themed-figure:: figures/lowering.svg
-   :alt: The page's evolve_pair kernel at each level of its lowering for GPU simulation: Pulse MLIR, 21 operations; QOp, 82 operations; cuDensityMat, 226 operations; LLVM IR, 1845 operations, of them 182 calls into the cuDensityMat runtime. From the Pulse MLIR the same program also exports for a controller as 5 events.
+   :alt: The page's evolve_pair kernel at each level of its lowering for GPU simulation: Pulse MLIR, 21 operations; QOp, 82 operations; cuDensityMat, 122 operations; LLVM IR, 1641 operations, of them 88 calls into the cuDensityMat runtime. From the Pulse MLIR the same program also exports for a controller as 5 events.
    :width: 100%
 
    ``evolve_pair`` at each level of ``mlir()``, with the operations each
