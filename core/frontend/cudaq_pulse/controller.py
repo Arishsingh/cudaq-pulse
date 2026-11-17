@@ -1741,6 +1741,11 @@ def _part(
     return lines, events, owners, parts, index, frames
 
 
+# The nested values of an event that converting it to its controller's cycles
+# rewrites (``_clocks.off_grid``).
+_CONVERTED = ("frame_updates", "waveform")
+
+
 def _export_part(
     lowered: ScheduledKernel, sample_rate_ghz: float | None, controller: int | None
 ) -> dict[str, Any]:
@@ -1759,8 +1764,17 @@ def _export_part(
     assert system is not None
     clocks = (lowered._generic or lowered).clocks
     lines, events, owners, parts, index, frames = _part(lowered, controller)
-    # The checks count each controller's events in its cycles, in place.
-    checked = events if clocks is None else copy.deepcopy(events)
+    # The checks count each controller's events in its cycles, in place (a
+    # controller on another clock, or timing in steps what is computed at run
+    # time): each event's times and its frame updates' and waveform's.
+    checked = events
+    if clocks is not None and any(
+        c.ratio != 1 or (c.grid > 1 and _computes_at_run_time(lowered)) for c in clocks.controllers
+    ):
+        memo: dict[int, Any] = {}
+        checked = [
+            {**e, **{k: copy.deepcopy(e[k], memo) for k in _CONVERTED if k in e}} for e in events
+        ]
     violations = system._violations(lowered, lines, checked, clocks, (), (), True, None, None)
     if violations:
         raise _limit_error(lowered, violations)
@@ -2385,11 +2399,15 @@ def _over_amplitude(
 ) -> list[str]:
     """The events of *line* whose envelope peaks above *most*. With
     *unresolved*, an envelope whose peak needs the call's values is noted
-    there, to be checked with them."""
+    there, to be checked with them. Each distinct envelope is sampled once."""
     found = []
+    peaks: dict[str, float | None] = {}
     for event in events:
         tree = event.get("waveform")
-        peak = _peak_amplitude(tree)
+        key = repr(tree)
+        if key not in peaks:
+            peaks[key] = _peak_amplitude(tree)
+        peak = peaks[key]
         if peak is None and tree is not None and unresolved is not None:
             unresolved.append(f"line {line['line']}: amplitude")
             unresolved = None
