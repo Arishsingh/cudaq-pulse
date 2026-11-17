@@ -74,6 +74,15 @@ Take 1000 shots. The ``seed`` makes them repeatable:
 What to notice: ``records`` has one row per shot and one column per readout,
 and about half of the shots read 1, as a π/2 pulse should give.
 
+.. themed-figure:: figures/superposition_shots.svg
+   :alt: The 1000 shots of measure_superposition, one square per shot in the order they were taken, 100 to a row. 496 read 1 and 504 read 0, with no pattern in which do.
+   :width: 100%
+
+   The same 1000 shots, one square each. Rose squares read 1.
+
+What to notice: each shot is a coin toss. Only the share that read 1 is
+fixed by the pulse.
+
 Branch on the outcome
 ---------------------
 
@@ -137,6 +146,12 @@ Run it and average each readout over the shots:
    first readout read 1:  0.496
    second readout read 1: 0.002
    ground state at the end: 0.999
+
+.. themed-figure:: figures/reset_outcomes.svg
+   :alt: The share of the active reset's 1000 shots that read 1: 0.496 at the first readout, after the pi/2 pulse, and 0.002 at the second, after the conditional pi pulse.
+   :width: 100%
+
+   The shots that read 1, before and after the reset.
 
 What to notice:
 

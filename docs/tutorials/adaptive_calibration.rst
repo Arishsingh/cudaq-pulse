@@ -72,6 +72,19 @@ What the arguments mean:
 - the next wait is kept between 100 ns and 200 µs;
 - the estimator has 500 ns to answer, a budget for code on the controller.
 
+.. animation-candidate: a later animation may replace these panels with one
+   distribution that moves after each readout.
+
+.. themed-figure:: figures/t1_belief.svg
+   :alt: Three small plots of the estimator's distribution over T1, with its estimate marked: before any shot, 150 microseconds; after reading 1 at 50 µs, 163 microseconds; after reading 0 at 50 µs, 128 microseconds. A qubit still excited after the wait pushes the estimate up, one that decayed pulls it down.
+   :width: 100%
+
+   The prior this page uses, and where one readout after a 50 µs wait moves
+   it, from ``cal.adaptive_t1_update``.
+
+What to notice: a qubit still excited after the wait raises the estimate.
+One that decayed lowers it.
+
 The tracking kernel
 -------------------
 
@@ -234,6 +247,16 @@ each shot:
 Along this branch, each readout found the qubit decayed. The estimate falls
 from the first guess of 150 µs toward the model qubit's 29 µs, and the next
 wait shortens with it.
+
+.. themed-figure:: figures/adaptive_branches.svg
+   :alt: The T1 estimate after each of three shots, along each of the 8 branches of the simulation, from the first guess of 150 microseconds. After three shots the branches end between 98 and 207 microseconds. The likeliest branch, with probability 0.60, ends at 98.1.
+   :width: 100%
+
+   The estimate along all eight branches. Line widths follow the
+   probabilities.
+
+What to notice: each branch has its own readouts, so each ends at its own
+estimate.
 
 Over many shots
 ---------------

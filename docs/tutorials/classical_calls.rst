@@ -47,6 +47,15 @@ What the declaration says:
 - it answers in 3.8 µs typically, never sooner than 2.9 µs and never later
   than 4.5 µs, a spread like that of measured GPU round trips.
 
+.. themed-figure:: figures/decode_declared.svg
+   :alt: The latency decode declares, on a line from 0: never sooner than 2.9 microseconds, typically 3.8 and never later than 4.5.
+   :width: 100%
+
+   The latency ``decode`` declares.
+
+What to notice: the answer can come any time in a 1.6 µs window. A
+deadline inside it, as the next section sets, means some answers are late.
+
 In simulation, the Python body gives the answer. On hardware, the control
 system's service implements the same declaration.
 
@@ -184,6 +193,15 @@ Add up the branches whose answer arrived in time:
 
    answers in time:    0.777
    ground state after: 0.933
+
+.. themed-figure:: figures/call_arms.svg
+   :alt: The branches of the simulation, by the readout and then by whether decode's answer arrived in time: read 0 and in time, 0.392; read 0 and late, 0.113; read 1 or more and in time, 0.385; read 1 or more and late, 0.111. Each readout outcome splits the same way.
+   :width: 100%
+
+   The branches of the simulation, by outcome and by when the answer came.
+
+What to notice: each outcome splits into an answer in time and a late one,
+in the same proportion.
 
 With latencies from 2.9 to 4.5 µs, 77.7% of the answers beat the 4 µs
 timeout. The other shots take the fallback.
