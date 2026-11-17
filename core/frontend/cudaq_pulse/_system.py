@@ -964,6 +964,8 @@ def _takers(
     """The controllers that take each answer: those playing a line event
     that tests it or computes a value from it at run time."""
     takers: dict[int, set[int]] = {}
+    if not any(event["kind"] == "answer" for event in events):
+        return takers
     for event in events:
         if event["kind"] not in _NEEDS:
             continue
@@ -1404,12 +1406,14 @@ class ControlSystem:
         events: Sequence[Mapping[str, Any]],
         owners: Sequence[int | None],
         clocks: _clocks.ClockPlan | None,
+        run_time: bool,
     ) -> list[str]:
         """The pulses that branch on, or compute with, a readout of another
         controller before its outcome can reach them: the reader's feedback
         latency, its ``peer_latency_cycles`` to the user, and both
         controllers' start uncertainty, each in its own cycles (events in
-        program cycles)."""
+        program cycles). Only a program that computes at run time
+        (*run_time*) computes with a readout."""
         from fractions import Fraction
 
         found: list[str] = []
@@ -1425,7 +1429,7 @@ class ControlSystem:
                 for condition in event["conditions"]
                 for ref in condition["readouts"]
             ]
-            stack = [value for key, value in event.items() if key != "conditions"]
+            stack = [v for k, v in event.items() if k != "conditions"] if run_time else []
             while stack:
                 value = stack.pop()
                 if isinstance(value, dict):
@@ -1669,7 +1673,7 @@ class ControlSystem:
             found.extend(self._needs(lowered, events, owners, unresolved))
         else:
             needs = self._needs(lowered, events, owners, unresolved)
-            needs.extend(self._forwarding(events, owners, clocks))
+            needs.extend(self._forwarding(events, owners, clocks, _computes_at_run_time(lowered)))
             needs.extend(
                 self._alignment(lines, events, owners, clocks, lowered.quantum_system.clock_ghz)
             )
@@ -1874,7 +1878,7 @@ class ControlSystem:
                 )
             )
         else:
-            if self._forwarding(events, owners, clocks):
+            if self._forwarding(events, owners, clocks, run_time):
                 return None
             for index, controller in enumerate(self.controllers):
                 mine = [

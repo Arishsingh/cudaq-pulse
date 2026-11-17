@@ -694,6 +694,56 @@ def test_a_one_controller_device_exports_as_before():
         lowered.export_to_controller(controller=1)
 
 
+@pulse.kernel(unroll_threshold=10**6)
+def rounds_on_both(a, b):
+    da = get_drive_line(a)
+    db = get_drive_line(b)
+    ra = get_readout_line(a)
+    for _ in range(3):
+        drive(da, gaussian(40, 0.1, 10.0))
+        drive(db, drag(40, 0.2, 10.0, 2.0))
+        sync(da, db, ra)
+        readout(ra, square(40, 0.05))
+        sync(da, db, ra)
+
+
+@pytest.mark.parametrize("clocks", [(2.0, 2.0), (1.0, 0.5)])
+def test_checking_each_controllers_export_leaves_it_as_exported_unchecked(clocks, monkeypatch):
+    qpu = _device(system=_system(*clocks, tolerance=1), clock_ghz=2.0)
+    lowered = pulse.compile(rounds_on_both, quantum_system=qpu).lower(qpu.qudits[0], qpu.qudits[2])
+    checked = [lowered.export_to_controller(controller=k) for k in (0, 1)]
+    assert all(len(program["events"]) > 6 for program in checked)
+    monkeypatch.setattr(pulse.ControlSystem, "_violations", lambda *args: [])
+    assert [lowered.export_to_controller(controller=k) for k in (0, 1)] == checked
+
+
+def test_the_amplitude_check_samples_each_envelope_once_and_reports_every_pulse(monkeypatch):
+    from cudaq_pulse import controller
+
+    line = {"line": 0, "role": "drive", "qudit": 0}
+    # One shape at two amplitudes, alternating, each event with its own tree.
+    events = [
+        {
+            "kind": "drive",
+            "start_cycles": 40 * k,
+            "waveform": {
+                "shape": "square",
+                "params": {"duration": 40.0, "amplitude": a, "amplitude_imag": 0.0},
+            },
+        }
+        for k, a in enumerate([0.9, 0.3] * 3)
+    ]
+    sampled = []
+    peak = controller._peak_amplitude
+    monkeypatch.setattr(
+        controller, "_peak_amplitude", lambda tree: sampled.append(tree) or peak(tree)
+    )
+    found = controller._over_amplitude(line, events, 0.5)
+    assert len(sampled) == 2
+    assert [v.split(" peaks")[0].rsplit(" ", 1)[1] for v in found] == ["0", "80", "160"]
+    assert all("amplitude 0.9;" in v for v in found)
+
+
 # ── Budgets between controllers ──────────────────────────────────────────────
 #
 # Without a shared reference clock, each controller's start is known to one
