@@ -20,7 +20,7 @@ from _timeline import Timeline, compress, draw
 
 def adaptive_shots(page) -> None:
     shots, first_wait_ns = 3, 50_000.0
-    scheduled = page["compiled"].lower(page["q"], shots, 3.0, 450_000.0, first_wait_ns)
+    scheduled = page["compiled"].lower(page["qubit"], shots, 3.0, 450_000.0, first_wait_ns)
     timeline, cuts = compress(Timeline.of(scheduled), 400.0)
     words = {}
     for pl in timeline.pulses:
