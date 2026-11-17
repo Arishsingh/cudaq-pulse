@@ -814,7 +814,9 @@ struct QOpToCuDensityMatPass
       // whose modes are a strict subset of another's folded into it.
       auto groupByModes = [](ArrayRef<Modes> pieces) {
         SmallVector<Group> groups;
-        for (auto [i, modes] : llvm::enumerate(pieces)) {
+        for (auto piece : llvm::enumerate(pieces)) {
+          const size_t i = piece.index();
+          const Modes &modes = piece.value();
           auto group = llvm::find_if(
               groups, [&](const Group &g) { return g.modes == modes; });
           if (group != groups.end()) {
@@ -829,11 +831,13 @@ struct QOpToCuDensityMatPass
                                sub.end());
         };
         SmallVector<size_t> targets;
-        for (auto [i, group] : llvm::enumerate(groups))
+        for (auto candidate : llvm::enumerate(groups)) {
+          const Group &group = candidate.value();
           if (llvm::none_of(groups, [&](const Group &other) {
                 return strictSubset(group.modes, other.modes);
               }))
-            targets.push_back(i);
+            targets.push_back(candidate.index());
+        }
         for (Group &group : groups)
           for (size_t target : targets)
             if (strictSubset(group.modes, groups[target].modes)) {
