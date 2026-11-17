@@ -1,0 +1,30 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * What a tutorial's code block prints (``.. code-block:: text`` with
+ * ``:class: output``), set right under the code and apart from it: no box,
+ * a rule on the left, and an "Output" label. Colors follow the theme.
+ */
+
+div.output.highlight-text {
+  margin-top: -0.75rem;
+}
+
+div.output.highlight-text::before {
+  content: "Output";
+  display: block;
+  margin: 0 0 0.15rem 0.95rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  color: var(--pst-color-text-muted);
+}
+
+div.output.highlight-text pre {
+  background: transparent;
+  border: none;
+  border-left: 3px solid var(--pst-color-border);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.35rem 0.9rem;
+}

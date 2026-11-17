@@ -22,6 +22,9 @@ add_custom_target(pulse-docs
   COMMAND ${CMAKE_COMMAND} -E rm -rf ${_cudaq_pulse_docs_source}
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           ${CUDAQ_PULSE_SOURCE_DIR}/docs ${_cudaq_pulse_docs_source}
+  # Tutorials include code from the examples, as ../../examples from a page.
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          ${CUDAQ_PULSE_SOURCE_DIR}/examples ${CUDAQ_PULSE_BINARY_DIR}/docs/examples
   COMMAND ${CMAKE_COMMAND}
           -DGENERATED_DIR=${CUDAQ_PULSE_BINARY_DIR}/core/mlir/include/cudaq-pulse/Dialect
           -DOUTPUT_DIR=${_cudaq_pulse_docs_source}/architecture/dialects
