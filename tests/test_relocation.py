@@ -63,9 +63,13 @@ def runtime_k(q: Qudit, r: Register, amps: list[float], f12: float):
 
 
 def _plain(export):
-    """An export without the symbols only a runtime compile records."""
+    """An export without the symbols only a runtime compile records, and the
+    native frequencies its symbols give in their place."""
     export = {k: v for k, v in export.items() if k not in ("program_id", "symbols")}
     export["events"] = [{k: v for k, v in e.items() if k != "symbols"} for e in export["events"]]
+    export["lines"] = [
+        {k: v for k, v in line.items() if k != "native_frequency_hz"} for line in export["lines"]
+    ]
     return json.dumps(export, sort_keys=True)
 
 
@@ -209,6 +213,22 @@ def test_static_qudit_exports_have_no_symbols():
     export = pulse.kernel(k).lower(H[3], 0.1).export_to_controller()
     assert "symbols" not in export and "program_id" not in export
     assert all("symbols" not in e for e in export["events"])
+
+
+def test_only_exports_without_runtime_qudits_give_their_lines_native_frequencies():
+    args = (H[3], H[[5]], [0.2, 0.4], _f12(H[3]))
+    static = static_k.lower(*args).export_to_controller()
+    readout = DEV.physical_qudits[DEV.layout[3]].readout
+    assert readout is not None
+    assert [line["native_frequency_hz"] for line in static["lines"]] == [
+        DEV.frequencies[DEV.layout[3]],
+        DEV.frequencies[DEV.layout[5]],
+        readout.frequency_hz,
+    ]
+    runtime = runtime_k.lower(*args)
+    for version in (1, 2):
+        lines = runtime.export_to_controller(version=version)["lines"]
+        assert not any(key.startswith("native_") for line in lines for key in line)
 
 
 def test_duplicate_qudits_are_rejected():

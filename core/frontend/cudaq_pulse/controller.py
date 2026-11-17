@@ -849,8 +849,43 @@ def export(
     controller are exceeded. On a control system of several
     controllers, the program of the one *controller* indexes (see
     ``_export_part``); without it, a program on more than one is a
-    ``ValueError``.
+    ``ValueError``. Without runtime qudits, each line has the frequency of
+    its own tone (``_native_frequencies``).
     """
+    program = _export(lowered, sample_rate_ghz, controller, version)
+    if lowered._role is None or lowered._role.slots == 0:
+        _native_frequencies(program, lowered.quantum_system)
+    return program
+
+
+def _native_frequencies(program: dict[str, Any], quantum_system: Any) -> None:
+    """Give each line of *program* the frequency of its own tone, at which
+    every shot starts its frame: its qudit's 0-1 frequency on a drive line,
+    its readout's frequency (else the 0-1 frequency) on a readout line, as
+    the compiled module records them; in place. Format /1 gives its qudit's
+    (``native_frequency_hz``), format /2 one for each of its ``qudits``
+    (``native_frequencies_hz``)."""
+    lines = program["lines"]
+    structured = program["format"] == _STRUCTURED
+    reached = [q for line in lines for q in (line["qudits"] if structured else (line["qudit"],))]
+    if not reached:
+        return
+    _, drive, readout = quantum_system._frequency_tables(max(reached) + 1)
+    for line in lines:
+        table = drive if line["role"] == "drive" else readout
+        if structured:
+            line["native_frequencies_hz"] = [table[q] for q in line["qudits"]]
+        else:
+            line["native_frequency_hz"] = table[line["qudit"]]
+
+
+def _export(
+    lowered: ScheduledKernel,
+    sample_rate_ghz: float | None,
+    controller: int | None,
+    version: int,
+) -> dict[str, Any]:
+    """``export`` without the lines' native frequencies."""
     from .classical.wire import _export as emulation
 
     machine = lowered.options.machine
@@ -1508,6 +1543,9 @@ def _handles(
             {"line": line["line"], "role": line["role"], "qudit": line["qudits"][0]}
             for line in program["lines"]
         ]
+        for handle, line in zip(same, program["lines"], strict=True):
+            if "native_frequencies_hz" in line:
+                handle["native_frequency_hz"] = line["native_frequencies_hz"][0]
         return same, {(line["line"], line["qudit"]): line["line"] for line in same}, None
     played: set[tuple[int, int]] = set()
     stack = [program["events"]]
@@ -1534,6 +1572,9 @@ def _handles(
             if shared:
                 entry["qudits"] = list(line["qudits"])
                 entry["max_concurrent_tones"] = line["max_concurrent_tones"]
+            if "native_frequencies_hz" in line:
+                at = line["qudits"].index(qudit)
+                entry["native_frequency_hz"] = line["native_frequencies_hz"][at]
             handle_of[(line["line"], qudit)] = len(lines)
             mine.append(len(lines))
             lines.append(entry)

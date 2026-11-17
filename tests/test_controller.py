@@ -48,9 +48,9 @@ def test_export_lists_every_timed_operation_with_its_waveform_and_tone():
     assert program["format"] == FORMAT == "cudaq-pulse.controller/1"
     assert json.loads(json.dumps(program)) == program
     assert program["lines"] == [
-        {"line": 0, "role": "drive", "qudit": 0},
-        {"line": 1, "role": "readout", "qudit": 0},
-        {"line": 2, "role": "drive", "qudit": 1},
+        {"line": 0, "role": "drive", "qudit": 0, "native_frequency_hz": 5.0e9},
+        {"line": 1, "role": "readout", "qudit": 0, "native_frequency_hz": 5.0e9},
+        {"line": 2, "role": "drive", "qudit": 1, "native_frequency_hz": 5.1e9},
     ]
     kinds = [(e["kind"], e["line"], e["start_cycles"], e["end_cycles"]) for e in program["events"]]
     assert kinds == [
@@ -196,10 +196,42 @@ def idle_readout_line(q, r):
 
 def test_a_line_is_listed_with_its_role_even_when_it_only_waits():
     program = _program(idle_readout_line)
-    assert program["lines"] == [{"line": 0, "role": "readout", "qudit": 0}]
+    assert program["lines"] == [
+        {"line": 0, "role": "readout", "qudit": 0, "native_frequency_hz": 5.0e9}
+    ]
     (event,) = program["events"]
     assert event["kind"] == "wait" and event["end_cycles"] == 10
     assert "waveform" not in event
+
+
+@pulse.kernel
+def other_tones(q):
+    d = get_drive_line(q)
+    r = get_readout_line(q)
+    drive(d, square(16, 0.1), tone=d.tones[(1, 2)])
+    shift_frequency(d.tone, 2.0e6)
+    drive(d, square(16, 0.1))
+    sync(d, r)
+    readout(r, square(100, 0.05))
+
+
+def test_each_line_gives_the_frequency_of_its_own_tone():
+    qs = pulse.quantum_system("transmon_surface17", layout=[0])
+    physical = qs.physical_qudits[qs.layout[0]]
+    assert physical.readout is not None
+    lowered = pulse.compile(other_tones, quantum_system=qs).lower(qs.qudits[0])
+    flat = lowered.export_to_controller()
+    native = {line["role"]: line["native_frequency_hz"] for line in flat["lines"]}
+    assert native == {"drive": physical.frequency_hz, "readout": physical.readout.frequency_hz}
+    # No drive plays the line's own tone at its own frequency; the line gives it.
+    played = [e["frequency_hz"] for e in flat["events"] if e["kind"] == "drive"]
+    assert native["drive"] not in played
+    assert played[1] == pytest.approx(native["drive"] + 2.0e6)
+    structured = lowered.export_to_controller(version=2)
+    assert [line["native_frequencies_hz"] for line in structured["lines"]] == [
+        [native[line["role"]]] for line in structured["lines"]
+    ]
+    assert controller_module.unroll(structured)["lines"] == flat["lines"]
 
 
 def test_export_samples_envelopes_at_a_multiple_of_the_clock():
