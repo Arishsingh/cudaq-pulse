@@ -2788,9 +2788,10 @@ class PulseIREmitter:
         try:
             self._loop(prog, for_idx + 1, for_idx, exit_idx, for_idx)
             slot_changes = _slot_changes(containers)
+            rebound = self._rebound(saved_locals, var)
             ok = (
                 len(stack) == len(saved_stack)
-                and self._python_state_unchanged(saved_locals, var)
+                and rebound is not None
                 and slot_changes is not None
                 and (not mutated or _only_containers(mutated, containers))
             )
@@ -2807,8 +2808,9 @@ class PulseIREmitter:
             if ok:
                 delta = self._ir_delta(snap)
                 stale, crossing = _stale_names(delta, saved_locals, count)
-                fixed, rebound = _qudit_names(delta, saved_locals, count)
-                crossing += rebound
+                fixed, moved = _qudit_names(delta, saved_locals, count)
+                assert rebound is not None
+                crossing += moved + rebound
                 if crossing:
                     # Traced again with them unbound, to learn whether the
                     # body reads them before rebinding them.
@@ -2849,8 +2851,8 @@ class PulseIREmitter:
                     self._emit_pulse_call(fname, [q])
                 return self._roll(loop, prog, for_idx, exit_idx, True, unbound)
             if crossing:
-                moved = {n: saved_locals[n] for n in crossing}
-                return self._roll(loop, prog, for_idx, exit_idx, hoisted, moved)
+                unbound = {**(unbound or {}), **{n: saved_locals[n] for n in crossing}}
+                return self._roll(loop, prog, for_idx, exit_idx, hoisted, unbound)
             return False
 
         assert slot_changes is not None
@@ -2970,6 +2972,11 @@ class PulseIREmitter:
                 self.locals[n] = saved_locals[n]
             else:
                 del self.locals[n]
+        if not count and unbound:
+            # A loop that never runs rebinds no Python value.
+            for n, value in unbound.items():
+                if not isinstance(value, IRValue):
+                    self.locals[n] = value
 
         if count:
             self.locals[var] = rng[-1]
@@ -3056,27 +3063,33 @@ class PulseIREmitter:
         name = next((n for n, v in self.locals.items() if v is obj), "")
         return f"{name}[{index}]"
 
-    def _python_state_unchanged(self, before: dict[str, StackVal], var: str) -> bool:
-        """Whether a traced loop iteration left the locals *before* it as it
-        found them. The loop variable *var* is exempt: the header binds it
-        and the body never reads it, so what it held before the loop (an
-        earlier loop's last value) is not state the iterations depend on."""
+    def _rebound(self, before: dict[str, StackVal], var: str) -> list[str] | None:
+        """The locals *before* a traced loop iteration that it rebound to
+        other Python values or IR values of another type (an inner loop's
+        variable, say), or ``None`` when it deleted one. The loop variable
+        *var* is exempt: the header binds it and the body never reads it, so
+        what it held before the loop (an earlier loop's last value) is not
+        state the iterations depend on; nor is a rebound name if the body
+        binds it before reading it, which tracing the body again with it
+        unbound tells."""
         after = self.locals
+        rebound = []
         for name, old in before.items():
+            if name == var:
+                continue
             if isinstance(old, IRValue):
-                if name in after and not isinstance(after[name], IRValue) and name != var:
-                    return False
+                new = after.get(name, old)
+                if not isinstance(new, IRValue) or new.vtype != old.vtype:
+                    rebound.append(name)
                 continue
             if name not in after:
-                return False
+                return None
             new = after[name]
-            if (
-                new is not old
-                and not (type(new) is type(old) and isinstance(old, _SCALARS) and new == old)
-                and name != var
+            if new is not old and not (
+                type(new) is type(old) and isinstance(old, _SCALARS) and new == old
             ):
-                return False
-        return True
+                rebound.append(name)
+        return rebound
 
     # ── Global / closure resolution ──────────────────────────────────
 
