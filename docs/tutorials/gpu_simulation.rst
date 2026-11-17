@@ -198,15 +198,12 @@ You can see the last stage on any machine:
 
    calls into cuDensityMat: 88
 
-.. animation-candidate: a later animation may step through these stages one
-   at a time, replacing the static pipeline.
+.. pulse-visual:: figures/gpu_simulation.json
+   :scene: lowering
+   :alt: One program, lowered for the GPU and exported. The kernel as written: pulses, waits and syncs on its lines. It holds 21 operations. QOp writes the pair's Hamiltonian and the Lindblad terms of its decay. It holds 82 operations. The cuDensityMat dialect is the cuDensityMat API as IR. It holds 122 operations. LLVM IR turns each of its operations into a call into the cuDensityMat runtime. It holds 1641 operations, 88 of them calls into cuDensityMat. From the same Pulse MLIR, the program exports for a controller as 5 events. Only the last steps differ.
 
-.. themed-figure:: figures/lowering.svg
-   :alt: The page's evolve_pair kernel at each level of its lowering for GPU simulation: Pulse MLIR, 21 operations; QOp, 82 operations; cuDensityMat, 122 operations; LLVM IR, 1641 operations, of them 88 calls into the cuDensityMat runtime. From the Pulse MLIR the same program also exports for a controller as 5 events.
-   :width: 100%
-
-   ``evolve_pair`` at each level of ``mlir()``, with the operations each
-   holds, counted from its text.
+   ``evolve_pair`` at each level of ``mlir()``, one stage at a time, with
+   the operations each holds, counted from its text.
 
 What to notice: the program you simulate on the GPU is the same one you
 would export to a control system. Only the last steps of compilation

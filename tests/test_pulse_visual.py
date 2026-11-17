@@ -114,6 +114,17 @@ def test_the_estimator_scene_says_what_the_adaptive_page_prints():
     assert read_1["from"] == read_0["from"] == 0
 
 
+def test_the_lowering_scene_says_what_the_gpu_page_prints():
+    scene = _scene("gpu_simulation", "lowering")
+    titles = [stage["title"] for stage in scene["stages"]]
+    assert titles == ["Pulse MLIR", "QOp", "cuDensityMat", "LLVM IR", "controller export"]
+    # "calls into cuDensityMat: 88"
+    assert scene["stages"][3]["count"] == "88 llvm.call"
+    # Each stage shows at its own step, and the export comes from the Pulse MLIR.
+    assert [stage["step"] for stage in scene["stages"]] == list(range(len(scene["snapshots"])))
+    assert scene["stages"][-1]["from"] == 0
+
+
 # ── The script, under Node ────────────────────────────────────────────
 
 # A scene the model checks run on even before a page has one: two cases that

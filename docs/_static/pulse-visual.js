@@ -562,6 +562,59 @@
       },
     },
 
+    // Stages a program passes through, left to right, with a stage that
+    // branches off below the one it comes from. Each shows from the snapshot
+    // its "step" names; a token rides to it while it appears.
+    stages: {
+      build(ctx, y) {
+        const { el, scene } = ctx;
+        const g = el("g", { class: "pv-stages" }, ctx.svg);
+        const row = scene.stages.filter((s) => !s.row);
+        const gap = 26;
+        const w = (W - 2 * PAD - gap * (row.length - 1)) / row.length;
+        const bh = 74;
+        const col = (s) => (s.row ? col(scene.stages[s.from]) : row.indexOf(s));
+        const at = scene.stages.map((s) => [PAD + col(s) * (w + gap), y + 6 + (s.row || 0) * (bh + 40)]);
+        scene.stages.forEach((s, k) => {
+          if (s.from === undefined) return;
+          const [x0, y0] = at[s.from];
+          const [x1, y1] = at[k];
+          const d = s.row ? `M ${x0 + w / 2} ${y0 + bh} V ${y1}` : `M ${x0 + w} ${y0 + bh / 2} H ${x1}`;
+          el("path", { d, class: "pv-flow" }, g);
+        });
+        ctx.stages = { at, w, bh, layer: el("g", {}, g) };
+        return 12 + bh + Math.max(...scene.stages.map((s) => s.row || 0)) * (bh + 40);
+      },
+      draw(ctx, frame) {
+        const { el, scene } = ctx;
+        const { at, w, bh, layer } = ctx.stages;
+        layer.replaceChildren();
+        const shown = snapshotIndex(scene, frame);
+        scene.stages.forEach((s, k) => {
+          const [x, y] = at[k];
+          const on = s.step <= shown;
+          const cls = on ? `pv-stage pv-stage-${s.role}${s.step === shown ? " pv-current" : ""}` : "pv-ghost pv-cond";
+          el("rect", { x, y, width: w, height: bh, rx: 5, class: cls }, layer);
+          el("text", { x: x + 9, y: y + 17, class: on ? `pv-title pv-${s.role}-text` : "pv-small" }, layer, s.title);
+          if (!on) return;
+          el("text", { x: x + 9, y: y + 32, class: "pv-tiny pv-code" }, layer, s.sub);
+          el("text", { x: x + 9, y: y + 50, class: "pv-node-text" }, layer, s.count);
+          el("text", { x: x + 9, y: y + 65, class: "pv-tiny" }, layer, s.detail);
+          if (s.note) el("text", { x: x + w + 12, y: y + bh / 2 + 4, class: "pv-small" }, layer, s.note);
+        });
+        // The token rides from the stage before to the one appearing.
+        const next = scene.stages.findIndex((s) => s.step === frame.step + 1);
+        if (frame.f > 0 && next >= 0 && scene.stages[next].from !== undefined) {
+          const s = scene.stages[next];
+          const [x0, y0] = at[s.from];
+          const [x1, y1] = at[next];
+          const f = ease(frame.f);
+          const [ax, ay] = s.row ? [x0 + w / 2, y0 + bh] : [x0 + w, y0 + bh / 2];
+          const [bx, by] = s.row ? [x1 + w / 2, y1] : [x1, y1 + bh / 2];
+          pill(el, layer, ax + (bx - ax) * f, ay + (by - ay) * f, s.verb || "lower", "");
+        }
+      },
+    },
   };
 
   let serial = 0;
