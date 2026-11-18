@@ -307,13 +307,18 @@ state as it was:
    print(bloch(excursion, 0.0))   # [0.0, 0.0, -1.0], an X without the excursion
 
 .. test: test_an_exported_frame_phase_multiplies_the_samples_by_exp_minus_i_phase
+.. test: test_an_exported_frame_phase_counts_the_detuning_from_the_line_frequency
 
 **Export phase.** A drive event of ``export_to_controller()`` gives the
-tone's ``frequency_hz``, its frame phase ``phase_rad`` (the sum of the
-``shift_phase`` and ``set_phase`` before it) and the waveform's
-``amplitude`` as written. The complex samples it plays in the tone's frame
-are ``amplitude * envelope(t) * exp(-i phase_rad)``: a backend that renders
-samples multiplies by ``exp(-1j * phase_rad)``, not ``exp(+1j * phase_rad)``.
+tone's ``frequency_hz``, its frame phase ``phase_rad`` and the waveform's
+``amplitude`` as written. ``phase_rad`` is the tone's phase as the event
+starts, in the frame that turns at the line's own frequency
+(``native_frequency_hz``) from the start of the shot: the ``shift_phase``
+and ``set_phase`` before it, plus the phase the tone gained while its
+frequency differed from the line's, as in the excursion above. The complex
+samples it plays in the tone's frame are ``amplitude * envelope(t) *
+exp(-i phase_rad)``: a backend that renders samples multiplies by
+``exp(-1j * phase_rad)``, not ``exp(+1j * phase_rad)``.
 
 .. code-block:: python
 
