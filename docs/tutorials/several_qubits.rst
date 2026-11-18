@@ -16,6 +16,9 @@ What you'll learn:
 - how two scheduling policies place the same pulses;
 - how a coupled neighbour shifts a qubit's frequency.
 
+All the code on this page is also one Python script,
+:download:`several_qubits.py <scripts/several_qubits.py>`.
+
 A register of qubits
 --------------------
 

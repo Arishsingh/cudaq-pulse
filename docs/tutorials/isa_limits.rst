@@ -20,6 +20,9 @@ What you'll learn:
 - how loops, decoder deadlines and waveform memory reach your ISA
 - which limits are checked when a program compiles, not on the hardware
 
+All the code on this page is also one Python script,
+:download:`isa_limits.py <scripts/isa_limits.py>`.
+
 Set up
 ------
 

@@ -26,6 +26,9 @@ What you'll learn:
 A quantum system of your own is described the same way, qudit by qudit and
 coupling by coupling.
 
+All the code on this page is also one Python script,
+:download:`own_quantum_system.py <scripts/own_quantum_system.py>`.
+
 Qudits and a coupling
 ---------------------
 

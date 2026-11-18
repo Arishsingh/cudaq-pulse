@@ -19,6 +19,9 @@ What you'll learn:
 - how to read the timing the compiler works out;
 - how to simulate the loop, late answers included.
 
+All the code on this page is also one Python script,
+:download:`classical_calls.py <scripts/classical_calls.py>`.
+
 Declare the function
 --------------------
 

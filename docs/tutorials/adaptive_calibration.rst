@@ -19,6 +19,9 @@ What you'll learn:
 - how to compile a whole adaptive run as one program;
 - how to follow its branches in simulation.
 
+All the code on this page is also one Python script,
+:download:`adaptive_calibration.py <scripts/adaptive_calibration.py>`.
+
 The estimator
 -------------
 

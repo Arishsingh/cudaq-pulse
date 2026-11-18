@@ -16,6 +16,9 @@ What you'll learn:
 - how a Ramsey sequence records a detuning;
 - how a spin echo cancels it.
 
+All the code on this page is also one Python script,
+:download:`coherence.py <scripts/coherence.py>`.
+
 What the model knows
 --------------------
 

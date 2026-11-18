@@ -25,6 +25,9 @@ What you'll learn:
 The full code is in :example:`isa_lowering/toy_isa.py`. Save it beside
 your own code: this page shows it piece by piece and imports it.
 
+All the code on this page is also one Python script,
+:download:`isa_lowering.py <scripts/isa_lowering.py>`.
+
 A toy instruction set
 ---------------------
 
