@@ -171,4 +171,4 @@ def test_weak_coupling_lowers_the_dressed_ground_state(level_count):
     pair = ChargeCoupledPair(CIRCUITS["D4"], CIRCUITS["X2"], g_c_hz=1e6, level_count=level_count)
     spectrum = pair.dressed_spectrum(0.5, 0.0)
     assert len(spectrum) == level_count**2
-    assert spectrum[0, 0] < 0
+    assert -1e3 < spectrum[0, 0] < 0
