@@ -1,0 +1,115 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Accessibility: focus that shows against the page in both themes, targets of
+ * at least 24 by 24 px, text of at least 14 px, and a legible shortcut hint.
+ */
+
+:root {
+  /* 6.6:1 on white; the theme's green is 2.4:1 there. */
+  --a11y-focus: #0b5cad;
+}
+
+html[data-theme="dark"] {
+  /* #76b900 is 7.8:1 on the dark background. */
+  --a11y-focus: #76b900;
+}
+
+:where(a, button, summary, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid var(--a11y-focus) !important;
+  outline-offset: 2px;
+  box-shadow: none !important;
+}
+
+.bd-sidebar-primary li.has-children > details > summary:focus-visible > .toctree-toggle {
+  outline: 3px solid var(--a11y-focus) !important;
+  outline-offset: -3px;
+}
+
+/* The Ctrl+K hint: the theme draws it in the border color (1.5:1). */
+.bd-search .search-button__kbd-shortcut {
+  color: var(--pst-color-text-muted);
+}
+
+/* Targets of at least 24 by 24 px. */
+a.headerlink {
+  display: inline-block;
+  min-width: 24px;
+  min-height: 24px;
+  line-height: 24px;
+  text-align: center;
+  font-size: max(0.875rem, 0.8em);
+}
+
+.bd-breadcrumbs a,
+.breadcrumb-item a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+}
+
+.bd-footer a {
+  display: inline-block;
+  min-height: 24px;
+  padding-block: 3px;
+}
+
+.footer-brand {
+  display: inline-block;
+  min-height: 24px;
+  padding: 3px 0;
+}
+
+.sig-params .sig-param-line {
+  margin-left: 30px;
+}
+
+a[href="#main-content"] {
+  display: inline-block;
+}
+
+a[href="#main-content"],
+#pst-back-to-top {
+  min-height: 24px;
+  padding-block: 3px;
+}
+
+/* Text of at least 14 px. */
+code,
+pre,
+code .pre,
+pre .pre,
+.sig span.pre {
+  font-size: max(0.875rem, 14px);
+}
+
+sup,
+sub,
+span.ellipsis,
+.search-button-field .kbd-shortcut__modifier {
+  font-size: max(0.875em, 14px);
+}
+
+/* A figure's full description, under it, for reading and for screen readers. */
+details.figure-description {
+  margin: 0.25rem 0 1.25rem;
+  font-size: 0.95rem;
+}
+
+details.figure-description summary {
+  cursor: pointer;
+  color: var(--pst-color-text-muted);
+}
+
+details.figure-description p {
+  margin: 0.5rem 0 0;
+}
+
+/* Figures open full size from their image. */
+a.figure-zoom {
+  display: block;
+  cursor: zoom-in;
+}
