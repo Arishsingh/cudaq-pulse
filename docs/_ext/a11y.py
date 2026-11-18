@@ -10,8 +10,8 @@
   first sentence) and the full text as a "Figure description" disclosure
   under it, which also serves readers who see the figure but cannot read
   its small text.
-* Every figure image that is not already a link links to the file itself, to open
-  full size and zoom.
+* Images are not links: Sphinx wraps a scaled image in a link to its file, and
+  clicking a figure should not navigate away or open a new tab.
 * ``404.html`` resolves its links and styles from the site root.
 """
 
@@ -31,8 +31,9 @@ _TOGGLE = re.compile(
 _SIG_DL = re.compile(
     r"<dl>\s*(<dd><em class=\"sig-param\".*?)</dl>(\s*<span class=\"sig-paren\">)", re.S
 )
-_FIGURE = re.compile(r"<figure\b.*?</figure>", re.S)
-_IMG = re.compile(r"(<a\b[^>]*>\s*)?(<img\b[^>]*?\bsrc=\"([^\"]+)\"[^>]*>)")
+_IMAGE_LINK = re.compile(
+    r'<a class="[^"]*\bimage-reference\b[^"]*" href="[^"]*">\s*(<img\b[^>]*>)\s*</a>'
+)
 
 
 def _sig_lines(m: re.Match[str]) -> str:
@@ -105,18 +106,7 @@ def _page_context(app, pagename, templatename, context, doctree):
     if body:
         body = _SIG_DL.sub(_sig_lines, body)
 
-        def zoom(figure: re.Match[str]) -> str:
-            def wrap(img: re.Match[str]) -> str:
-                if img.group(1):  # already a link; a link cannot hold a link
-                    return img.group(0)
-                return (
-                    f'<a class="figure-zoom" href="{img.group(3)}" '
-                    f'title="Open the figure full size">{img.group(2)}</a>'
-                )
-
-            return _IMG.sub(wrap, figure.group(0))
-
-        context["body"] = _FIGURE.sub(zoom, body)
+        context["body"] = _IMAGE_LINK.sub(lambda m: m.group(1), body)
     if pagename == "404":
         context["metatags"] = context.get("metatags", "") + f'<base href="{SITE_ROOT}">'
 

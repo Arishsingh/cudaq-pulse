@@ -107,9 +107,3 @@ details.figure-description summary {
 details.figure-description p {
   margin: 0.5rem 0 0;
 }
-
-/* Figures open full size from their image. */
-a.figure-zoom {
-  display: block;
-  cursor: zoom-in;
-}
