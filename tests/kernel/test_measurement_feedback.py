@@ -386,6 +386,32 @@ def test_branches_beside_a_growing_container_of_outcomes_trace_in_linear_work(ke
     assert all(work[200][count] <= 4 * work[50][count] for count in work[50]), work
 
 
+def _reset_each(n):
+    @pulse.kernel
+    def reset_each(qudits):
+        lines = [get_drive_line(q) for q in qudits]
+        probes = [get_readout_line(q) for q in qudits]
+        bits = []
+        for k in range(n):
+            sync(lines[k], probes[k])
+            bits.append(readout(probes[k], square(40, 0.05)))
+        for k in range(n):
+            if bits[k]:
+                drive(lines[k], square(16, 0.1))
+
+    return reset_each
+
+
+@pytest.mark.slow
+def test_a_branch_on_each_of_many_qudits_traces_in_linear_work():
+    # Each arm drives one of the lines a list holds: a branch saves, restores
+    # and merges what its arms change, not every line and tone, nor the list.
+    work = {
+        n: python_work(lambda n=n: pulse.compile(_reset_each(n)).lower(Q[0:n])) for n in (32, 256)
+    }
+    assert all(work[256][count] <= 8 * work[32][count] for count in work[32]), work
+
+
 # A container of each kind, and a change of it that keeps its length or
 # adds to it in place.
 _CHANGED = {

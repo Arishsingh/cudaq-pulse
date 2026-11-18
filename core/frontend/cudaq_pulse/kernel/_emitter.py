@@ -28,6 +28,7 @@ import collections
 import dis
 import functools
 import inspect
+import itertools
 import linecache
 import math
 import numbers
@@ -1239,9 +1240,19 @@ class _Held:
     records the channel in ``IRValue.chan``.
     """
 
-    __slots__ = ("cells", "key")
+    __slots__ = ("cells", "key", "lines", "seq")
 
-    def __init__(self, values: tuple[IRValue, ...], key: tuple[Any, ...]) -> None:
+    def __init__(
+        self,
+        values: tuple[IRValue, ...],
+        key: tuple[Any, ...],
+        lines: _Lines | None = None,
+        seq: int = 0,
+    ) -> None:
+        # The trace's channels, whose journal a write is noted in, and this
+        # channel's place among them: ``_Lines.held`` is in ``seq`` order.
+        self.lines = lines
+        self.seq = seq
         try:
             line, tone = values
         except ValueError:
@@ -1255,6 +1266,8 @@ class _Held:
 
     def __setitem__(self, index: int, value: IRValue) -> None:
         cell = self.cells[index]
+        if self.lines is not None and self.lines.journal is not None:
+            self.lines.note(cell)
         cell.value = value
         value.chan = cell
 
@@ -1292,7 +1305,9 @@ class _Lines:
     # the containers it copies when they first change. ``plain``, set by the
     # first such if: id -> (list, length) for lists whose first `length`
     # entries hold no line or tone. Both are read with getattr.
-    __slots__ = ("held", "shared", "log", "watched", "plain")
+    # ``journal``, set while a measurement-conditioned if is traced: each
+    # channel cell written since the if began, with its value then.
+    __slots__ = ("held", "shared", "log", "watched", "plain", "journal")
 
     if TYPE_CHECKING:
         watched: tuple[tuple[dict[int, tuple[Any, Any]], tuple[Any, ...]], ...]
@@ -1305,9 +1320,19 @@ class _Lines:
         # Line acquisitions, in order: those a rolled loop body makes are
         # hoisted before the loop.
         self.log: list[tuple[str, IRValue]] = []
+        self.journal: dict[_Chan, IRValue] | None = None
 
     def add(self, key: tuple[Any, ...], values: tuple[IRValue, ...]) -> None:
-        self.held[key] = _Held(values, key)
+        # A channel's seq is its place in ``held``, which only ever loses its
+        # newest entries; one acquired again keeps its place.
+        held = self.held
+        held[key] = _Held(values, key, self, held[key].seq if key in held else len(held))
+
+    def note(self, cell: _Chan) -> None:
+        """Note in the journal, if any, that *cell* is about to be written."""
+        journal = self.journal
+        if journal is not None and cell not in journal:
+            journal[cell] = cell.value
 
     def share(self, held: _Held) -> None:
         for cell in held.cells:
@@ -2285,7 +2310,37 @@ class PulseIREmitter:
         Pulse resources rebound by either arm become results of the region;
         any other value must end up the same in both arms. Returns the
         instruction index where tracing continues.
+
+        The channels the arms change are noted in a journal as they are
+        written, each with its value entering the if, so an if costs what
+        its arms do rather than the number of channels.
         """
+        lines = self._lines
+        limit = len(lines.held)
+        outer = lines.journal
+        journal: dict[_Chan, IRValue] = {}
+        lines.journal = journal
+        try:
+            return self._branch(prog, index, cond, jump_if_true, journal, limit)
+        finally:
+            lines.journal = outer
+            if outer is not None:
+                # The channels held before this if, for the if around it.
+                for cell, before in journal.items():
+                    if cell.held.seq < limit and cell not in outer:
+                        outer[cell] = before
+
+    def _branch(
+        self,
+        prog: bc.DecodedCode,
+        index: int,
+        cond: Any,
+        jump_if_true: bool,
+        journal: dict[_Chan, IRValue],
+        limit: int,
+    ) -> int:
+        """``_runtime_branch`` with *journal* noting the channels written, the
+        first *limit* of which (by ``_Held.seq``) are held entering the if."""
         negated = isinstance(cond, _NotMeasurement)
         value = cond.value if negated else cond
         if value.vtype not in ("measurement", "i1"):
@@ -2315,7 +2370,7 @@ class PulseIREmitter:
         if containers:
             found = containers
             containers = []
-            rebound = {id(slot[0]) for slot in self._slots.values()}
+            rebound = set(map(id, map(_FIRST, self._slots.values())))
             # id -> (list, n): the list's first n entries hold no line or
             # tone, looked at once each while they stay in it, unless a call
             # the trace does not follow ran. A line or tone a traced change
@@ -2350,10 +2405,9 @@ class PulseIREmitter:
                     plain.pop(id(v), None)
                 containers.append((v, list(v)))
 
-        # Each channel value entering the branch, as (cell, value).
-        held = self._lines.held
+        lines = self._lines
+        held = lines.held
         held_count = len(held)
-        entering = _channel_values(held) if held_count else ()
 
         first = builder._next_id  # the first id made in the if
         builder.emit("scf.if", (value,), ())
@@ -2361,7 +2415,7 @@ class PulseIREmitter:
             view, index, join, then_start, (containers, lazy)
         )
         then_stack = list(stack)
-        then_held = [cell.value for cell, _ in entering]
+        then_held = {cell: cell.value for cell in journal}
         stack[:] = saved_stack
         self.locals.clear()
         self.locals.update(saved_locals)
@@ -2370,7 +2424,11 @@ class PulseIREmitter:
         if then_copies:
             for obj, copy in then_copies:
                 self._restore_container(obj, copy)
-        _restore_channels(held, held_count, entering)
+        _restore_channels(held, held_count, ())
+        for cell, before in journal.items():
+            if cell.held.seq < limit:
+                cell.value = before
+                before.chan = cell
         else_index = builder.mark()
         builder.emit("scf.else", (), ())
         else_locals, else_slots, else_copies = self._trace_arm(
@@ -2420,7 +2478,12 @@ class PulseIREmitter:
         # carries the same pair of values.
         aliases: list[tuple[_Chan, str]] = []
         by_pair: dict[tuple[int, int], str] | None = None
-        for (cell, before), a in zip(entering, then_held, strict=False):
+        changed = [cell for cell in journal if cell.held.seq < limit]
+        if len(changed) > 1:
+            changed.sort(key=_CELL_ORDER)
+        for cell in changed:
+            before = journal[cell]
+            a = then_held.get(cell, before)
             b = cell.value
             if a is before and b is before:
                 continue
@@ -2527,6 +2590,8 @@ class PulseIREmitter:
                     merged[chose] = chosen_value(self, value, a, b, chose, line, scope)
         for cell, alias in aliases:
             out = merged[alias]
+            if cell not in journal:
+                journal[cell] = cell.value
             cell.value = out
             out.chan = cell
         # A channel first acquired in one arm is not held after the if.
@@ -2968,6 +3033,8 @@ class PulseIREmitter:
             self.b.emit("scf.for_end", (), ())
         for cell, alias in aliases:
             result = self.locals[alias]
+            if lines.journal is not None:
+                lines.note(cell)
             cell.value = result
             result.chan = cell
         for n, chan in stale:
@@ -3973,6 +4040,8 @@ class PulseIREmitter:
                 continue
             name, op_val, slot, chan = unclaimed[res.vtype].pop()
             if chan is not None and chan.value is op_val:
+                if self._lines.journal is not None:
+                    self._lines.note(chan)
                 chan.value = res
                 res.chan = chan
                 if chan.shared:
@@ -4008,7 +4077,15 @@ class PulseIREmitter:
     def _track_slots(self, items: list[Any], start: int) -> None:
         """Remember the list slots from *start* on that hold lines or tones."""
         slots = self._slots
-        for i in range(start, len(items)):
+        count = len(items)
+        if start == 0 and count > 8 and set(map(type, items)) == _JUST_IRVALUES:
+            # A list of lines or tones only, as a measurement-conditioned if
+            # restores one: every slot at once.
+            if LINEAR_TYPES.issuperset(map(_VTYPE, items)):
+                entries = zip(itertools.repeat(items), range(count), items, strict=False)
+                slots.update(zip(map(id, items), entries, strict=True))
+                return
+        for i in range(start, count):
             v = items[i]
             if v.__class__ is IRValue and v.vtype in LINEAR_TYPES:
                 slots[id(v)] = (items, i, v)
@@ -4018,6 +4095,8 @@ class PulseIREmitter:
         *old* and made it its channel's current value."""
         chan = old.chan
         if chan is not None:
+            if self._lines.journal is not None:
+                self._lines.note(chan)
             chan.value = new
             new.chan = chan
             if chan.shared:
@@ -4042,6 +4121,12 @@ class PulseIREmitter:
             self._rebind_one(old2, new2)
             return
         name, name2 = (_identity_keys or _load_identity_keys())(self.locals, old, old2)
+        if self._lines.journal is not None:
+            journal = self._lines.journal
+            if chan is not None and chan not in journal:
+                journal[chan] = chan.value
+            if chan2 is not None and chan2 not in journal:
+                journal[chan2] = chan2.value
         if chan is not None:
             chan.value = new
             new.chan = chan
@@ -4108,9 +4193,9 @@ def _slot_changes(
             if not _container_unchanged(obj, copy):
                 return None
             continue
-        for i, (new, old) in enumerate(zip(obj, copy, strict=False)):
-            if new is old:
-                continue
+        for i in itertools.compress(itertools.count(), map(operator.is_not, obj, copy)):
+            new = obj[i]
+            old = copy[i]
             if not (
                 isinstance(new, IRValue)
                 and isinstance(old, IRValue)
@@ -4171,6 +4256,15 @@ def _qudit_names(
         if v.vtype == "qref":
             (moved if count and n in before else fixed).append(n)
     return fixed, moved
+
+
+_FIRST = operator.itemgetter(0)
+_VTYPE = operator.attrgetter("vtype")
+_JUST_IRVALUES = frozenset({IRValue})
+
+
+# Where a cell is in ``_channel_values``: its channel's place, then its own.
+_CELL_ORDER = operator.attrgetter("held.seq", "index")
 
 
 def _channel_values(held: dict[tuple[int, str], _Held]) -> list[tuple[_Chan, IRValue]]:
