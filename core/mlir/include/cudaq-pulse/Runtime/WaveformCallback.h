@@ -12,6 +12,8 @@
 // kTrainFlag) the number of levels L and (period ns, count, phase step) per
 // level, outermost first, then any samples. A train plays the pulse at
 // start + sum_l k_l * period_l with phase advanced by sum_l k_l * step_l.
+// A sum (kind kSumKind) adds waveforms: the number of them, then for each
+// its kind, its parameter count and its parameters.
 
 #pragma once
 
@@ -23,6 +25,7 @@
 namespace cudaq_pulse {
 
 constexpr int32_t kTrainFlag = 0x100;
+constexpr int32_t kSumKind = 0x200;
 constexpr size_t kWaveformHeader = 10;
 
 /// The complex envelope at `localTime` from the start of a pulse of `kind`
@@ -132,6 +135,34 @@ inline int32_t evaluateWaveform(int32_t kind, const double *p, size_t size,
   // H_control = (Re(envelope) X + Im(envelope) Y) / 2.
   value = 0.5 * (p[8] == 0.0 ? rotatedReal : rotatedImaginary);
   return 0;
+}
+
+/// The coefficient of a cuDensityMat envelope callback at `time`: a
+/// waveform's, or for kSumKind the sum of its waveforms'.
+inline int32_t evaluateCallback(int32_t kind, const double *p, size_t size,
+                                double time, double &value) {
+  if (kind != kSumKind)
+    return evaluateWaveform(kind, p, size, time, value);
+  value = 0.0;
+  if (size < 1 || !(p[0] >= 0.0))
+    return 2;
+  size_t at = 1;
+  for (double member = 0.0; member < p[0]; ++member) {
+    if (size - at < 2 || !(p[at + 1] >= 0.0))
+      return 2;
+    const auto memberKind = static_cast<int32_t>(p[at]);
+    const auto memberSize = static_cast<size_t>(p[at + 1]);
+    at += 2;
+    if (memberKind == kSumKind || size - at < memberSize)
+      return 2;
+    double memberValue = 0.0;
+    if (int32_t status =
+            evaluateWaveform(memberKind, p + at, memberSize, time, memberValue))
+      return status;
+    value += memberValue;
+    at += memberSize;
+  }
+  return at == size ? 0 : 2;
 }
 
 } // namespace cudaq_pulse

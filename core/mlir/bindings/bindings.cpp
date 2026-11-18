@@ -7584,7 +7584,7 @@ NB_MODULE(_cudaq_pulse_native, m) {
         values.reserve(times.size());
         for (double time : times) {
           double value = 0.0;
-          if (cudaq_pulse::evaluateWaveform(kind, params.data(), params.size(),
+          if (cudaq_pulse::evaluateCallback(kind, params.data(), params.size(),
                                             time, value))
             throw std::invalid_argument("invalid waveform callback");
           values.push_back(value);

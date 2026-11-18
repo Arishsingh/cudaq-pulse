@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The constant Hamiltonian terms and the dissipators on few enough levels
-// become a few dense blocks; time-dependent terms stay one term each.
+// become a few dense blocks; time-dependent terms of one operator become one
+// term whose callback sums theirs.
 // RUN: cudaq-pulse-opt --split-input-file --qop-to-cudm %s | FileCheck %s
 // RUN: cudaq-pulse-opt --split-input-file --qop-to-cudm=max-fused-dimension=64 %s | FileCheck %s --check-prefix=WIDE
 // RUN: cudaq-pulse-opt --split-input-file --qop-to-cudm=max-fused-dimension=0 %s | FileCheck %s --check-prefix=NONE
@@ -125,6 +126,102 @@ func.func @main() {
   %p01 = qop.make_product(%k, %n0, %n1) : !qop.product
   %h = qop.make_sum(%p0, %p1, %p01) : !qop.op
   %l = qop.lindblad(%h, ) : !qop.super_op
+  qop.evolve %l : !qop.super_op
+  return
+}
+}
+
+// -----
+
+// Two pulses of one drive act through equal X operators: one term whose
+// callback (kind 512) sums their envelopes. The Y quadrature keeps its own
+// term. With nothing fused, each pulse is its own term.
+// CHECK-LABEL: module @two_pulses
+// CHECK-NOT: @pulse_1_x
+// CHECK: cudm.append_elementary_product %{{.*}}, %[[XT:.*]], %{{.*}} {coeff_imag = 0.000000e+00 : f64, coeff_real = 1.000000e+00 : f64, cudm.callback_kind = 512 : i32, cudm.callback_params = array<f64: 2.000000e+00, 1.000000e+00, 1.000000e+01, 0.000000e+00, 4.000000e+00, 5.000000e-01, 0.000000e+00, 1.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 1.000000e+00, 1.000000e+01, 1.000000e+01, 4.000000e+00, 2.500000e-01, 0.000000e+00, 1.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00>, duality = array<i32: 0>, modes_acted_on = array<i32: 0>}
+// CHECK-NOT: @pulse_1_x
+// CHECK: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[XT]] {{.*}}duality = 0 : i32}
+// CHECK-NOT: @pulse_1_x
+// CHECK: cudm.append_elementary_product %{{.*}}, %[[YT:.*]], %{{.*}} {callback = @pulse_0_y, {{.*}}cudm.callback_kind = 1 : i32
+// CHECK-NOT: @pulse_1_x
+// CHECK: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[YT]] {{.*}}duality = 0 : i32}
+// CHECK-NOT: @pulse_1_x
+// CHECK: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[XT]] {{.*}}duality = 1 : i32}
+// CHECK-NOT: @pulse_1_x
+// CHECK: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[YT]] {{.*}}duality = 1 : i32}
+// CHECK-NOT: @pulse_1_x
+// CHECK-NOT: cudm.callback_kind
+// CHECK-NOT: cudm.operator_append_term
+// CHECK: cudm.evolve
+// NONE-LABEL: module @two_pulses
+// NONE-NOT: cudm.callback_kind = 512
+// NONE-COUNT-3: cudm.callback_kind = 1 : i32
+// NONE-NOT: cudm.callback_kind
+// NONE: cudm.evolve
+module @two_pulses attributes {qop.qudit_count = 1 : i64, qop.t_start = 0.0 : f64, qop.t_end = 20.0 : f64, qop.step_count = 20 : i64} {
+func.func @main() {
+  %c0 = arith.constant 0 : i64
+  %sx0 = qop.spin(%c0) {kind = #qop<handler_kind spin_x>} : !qop.handler
+  %sy0 = qop.spin(%c0) {kind = #qop<handler_kind spin_y>} : !qop.handler
+  %sx1 = qop.spin(%c0) {kind = #qop<handler_kind spin_x>} : !qop.handler
+  %e0x = qop.callback_scalar @pulse_0_x {cudm.callback_kind = 1 : i32, cudm.callback_params = array<f64: 0.0, 4.0, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0>} : !qop.scalar
+  %e0y = qop.callback_scalar @pulse_0_y {cudm.callback_kind = 1 : i32, cudm.callback_params = array<f64: 0.0, 4.0, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0>} : !qop.scalar
+  %e1x = qop.callback_scalar @pulse_1_x {cudm.callback_kind = 1 : i32, cudm.callback_params = array<f64: 10.0, 4.0, 0.25, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0>} : !qop.scalar
+  %x0 = qop.make_product(%e0x, %sx0) : !qop.product
+  %y0 = qop.make_product(%e0y, %sy0) : !qop.product
+  %x1 = qop.make_product(%e1x, %sx1) : !qop.product
+  %sm = qop.spin(%c0) {kind = #qop<handler_kind spin_lowering>} : !qop.handler
+  %cm = qop.const_scalar {real = 0.1 : f64, imag = 0.0 : f64} : !qop.scalar
+  %m = qop.make_product(%cm, %sm) : !qop.product
+  %c = qop.make_sum(%m) : !qop.op
+  %h = qop.make_sum(%x0, %y0, %x1) : !qop.op
+  %l = qop.lindblad(%h, %c) : !qop.super_op
+  qop.evolve %l : !qop.super_op
+  return
+}
+}
+
+// -----
+
+// A product the Hamiltonian lists twice is a member twice: its operator's
+// term lists its envelope twice and is appended once on each side. With
+// nothing fused, its term is appended twice on each side.
+// CHECK-LABEL: module @repeated_pulse
+// CHECK: cudm.append_elementary_product %{{.*}}, %[[XT:.*]], %{{.*}} {coeff_imag = 0.000000e+00 : f64, coeff_real = 1.000000e+00 : f64, cudm.callback_kind = 512 : i32, cudm.callback_params = array<f64: 2.000000e+00, 1.000000e+00, 1.000000e+01, 0.000000e+00, 4.000000e+00, 5.000000e-01, 0.000000e+00, 1.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 1.000000e+00, 1.000000e+01, 0.000000e+00, 4.000000e+00, 5.000000e-01, 0.000000e+00, 1.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00, 0.000000e+00>, duality = array<i32: 0>, modes_acted_on = array<i32: 0>}
+// CHECK-NEXT: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[XT]] {{.*}}duality = 0 : i32}
+// CHECK-NOT: cudm.operator_append_term
+// CHECK: cudm.append_elementary_product %{{.*}}, %[[YT:.*]], %{{.*}} {callback = @pulse_0_y, {{.*}}cudm.callback_kind = 1 : i32
+// CHECK-NEXT: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[YT]] {{.*}}duality = 0 : i32}
+// CHECK-NEXT: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[XT]] {{.*}}duality = 1 : i32}
+// CHECK-NEXT: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[YT]] {{.*}}duality = 1 : i32}
+// CHECK-NEXT: cudm.evolve
+// NONE-LABEL: module @repeated_pulse
+// NONE: cudm.append_elementary_product %{{.*}}, %[[XT:.*]], %{{.*}} {callback = @pulse_0_x, {{.*}}cudm.callback_kind = 1 : i32
+// NONE: cudm.append_elementary_product %{{.*}}, %[[YT:.*]], %{{.*}} {callback = @pulse_0_y, {{.*}}cudm.callback_kind = 1 : i32
+// NONE-NOT: cudm.callback_kind
+// NONE: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[XT]] {{.*}}duality = 0 : i32}
+// NONE-NEXT: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[XT]] {{.*}}duality = 1 : i32}
+// NONE-NEXT: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[XT]] {{.*}}duality = 0 : i32}
+// NONE-NEXT: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[XT]] {{.*}}duality = 1 : i32}
+// NONE-NEXT: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[YT]] {{.*}}duality = 0 : i32}
+// NONE-NEXT: cudm.operator_append_term %{{.*}}, %{{.*}}, %[[YT]] {{.*}}duality = 1 : i32}
+// NONE-NOT: cudm.callback_kind
+// NONE: cudm.evolve
+module @repeated_pulse attributes {qop.qudit_count = 1 : i64, qop.t_start = 0.0 : f64, qop.t_end = 20.0 : f64, qop.step_count = 20 : i64} {
+func.func @main() {
+  %c0 = arith.constant 0 : i64
+  %sx0 = qop.spin(%c0) {kind = #qop<handler_kind spin_x>} : !qop.handler
+  %sy0 = qop.spin(%c0) {kind = #qop<handler_kind spin_y>} : !qop.handler
+  %e0x = qop.callback_scalar @pulse_0_x {cudm.callback_kind = 1 : i32, cudm.callback_params = array<f64: 0.0, 4.0, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0>} : !qop.scalar
+  %e0y = qop.callback_scalar @pulse_0_y {cudm.callback_kind = 1 : i32, cudm.callback_params = array<f64: 0.0, 4.0, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0>} : !qop.scalar
+  %x0 = qop.make_product(%e0x, %sx0) : !qop.product
+  %y0 = qop.make_product(%e0y, %sy0) : !qop.product
+  %sm = qop.spin(%c0) {kind = #qop<handler_kind spin_lowering>} : !qop.handler
+  %cm = qop.const_scalar {real = 0.1 : f64, imag = 0.0 : f64} : !qop.scalar
+  %m = qop.make_product(%cm, %sm) : !qop.product
+  %c = qop.make_sum(%m) : !qop.op
+  %h = qop.make_sum(%x0, %x0, %y0) : !qop.op
+  %l = qop.lindblad(%h, %c) : !qop.super_op
   qop.evolve %l : !qop.super_op
   return
 }

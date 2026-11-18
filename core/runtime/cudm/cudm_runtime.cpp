@@ -109,7 +109,7 @@ int32_t evaluateWaveformCallback(size_t slot, double time,
   if (!scalarStorage)
     return 2;
   double value = 0.0;
-  if (int32_t status = cudaq_pulse::evaluateWaveform(
+  if (int32_t status = cudaq_pulse::evaluateCallback(
           callback.kind, callback.parameters.data(), callback.parameters.size(),
           time, value))
     return status;

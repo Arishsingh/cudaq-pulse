@@ -33,6 +33,8 @@
 #define GET_OP_CLASSES
 #include "cudaq-pulse/Dialect/CuDensityMat/CuDensityMatOps.h.inc"
 
+#include "cudaq-pulse/Runtime/WaveformCallback.h"
+
 #include <complex>
 #include <cstdlib>
 
@@ -314,10 +316,12 @@ struct QOpToCuDensityMatPass
       llvm::cl::desc(
           "How the Lindbladian becomes cuDensityMat terms: 'fused' sums the "
           "constant Hamiltonian terms and dissipators on small groups of "
-          "modes into dense blocks and stores the operators of one diagonal "
-          "on modes of four or more levels by their diagonal; 'banded' only "
-          "does the latter; 'dense' makes every product its own term of "
-          "dense operators (CUDAQ_PULSE_GPU_OPERATORS sets the default)"),
+          "modes into dense blocks, makes the time-dependent terms of one "
+          "operator one term whose callback sums theirs, and stores the "
+          "operators of one diagonal on modes of four or more levels by "
+          "their diagonal; 'banded' only does the latter; 'dense' makes "
+          "every product its own term of dense operators "
+          "(CUDAQ_PULSE_GPU_OPERATORS sets the default)"),
       llvm::cl::init("fused")};
   Option<int64_t> maxFusedDimension{
       *this, "max-fused-dimension",
@@ -631,10 +635,11 @@ struct QOpToCuDensityMatPass
       return signalPassFailure();
 
     SmallVector<Value> allOperatorTerms;
-    auto createTerm = [&](ArrayRef<Value> elementaryOps,
-                          ArrayRef<int32_t> modes, ArrayRef<int32_t> dualities,
-                          Complex coefficient,
-                          qop::CallbackScalarOp callback = {}) -> Value {
+    auto createTerm =
+        [&](ArrayRef<Value> elementaryOps, ArrayRef<int32_t> modes,
+            ArrayRef<int32_t> dualities, Complex coefficient,
+            qop::CallbackScalarOp callback = {},
+            ArrayRef<qop::CallbackScalarOp> summed = {}) -> Value {
       auto term = cudm::CreateOpTermOp::create(b, loc, opTermTy, handle,
                                                modeExtentsAttr);
       FlatSymbolRefAttr callbackAttr;
@@ -650,6 +655,23 @@ struct QOpToCuDensityMatPass
           append->setAttr("cudm.callback_kind", kind);
         if (auto parameters = callback->getAttr("cudm.callback_params"))
           append->setAttr("cudm.callback_params", parameters);
+      }
+      if (!summed.empty()) {
+        SmallVector<double> parameters = {static_cast<double>(summed.size())};
+        for (qop::CallbackScalarOp member : summed) {
+          auto memberParameters =
+              member->getAttrOfType<DenseF64ArrayAttr>("cudm.callback_params")
+                  .asArrayRef();
+          parameters.push_back(static_cast<double>(
+              member->getAttrOfType<IntegerAttr>("cudm.callback_kind")
+                  .getInt()));
+          parameters.push_back(static_cast<double>(memberParameters.size()));
+          parameters.append(memberParameters.begin(), memberParameters.end());
+        }
+        append->setAttr("cudm.callback_kind",
+                        b.getI32IntegerAttr(cudaq_pulse::kSumKind));
+        append->setAttr("cudm.callback_params",
+                        b.getDenseF64ArrayAttr(parameters));
       }
       allOperatorTerms.push_back(term);
       return term;
@@ -800,7 +822,8 @@ struct QOpToCuDensityMatPass
       // few enough levels become a few dense blocks: on both sides of the
       // density matrix (superoperators) where their dimension squared fits
       // maxFusedDimension, otherwise one-sided sums per group of modes.
-      // Time-dependent terms stay one term each.
+      // Time-dependent terms stay out of the blocks; those of one operator
+      // become one term (below).
       const int64_t cap = maxFusedDimension;
       auto fits = [&](ArrayRef<int32_t> modes, bool bothSides) {
         const int64_t d = dimensionOf(modes, modeExtents);
@@ -965,6 +988,69 @@ struct QOpToCuDensityMatPass
         norms.push_back({*modes, jump.adjoint() * jump * Complex(-0.5)});
         foldedNorms.insert(op);
       }
+
+      // Time-dependent terms of the same operator, such as the pulses one
+      // drive plays, become one term whose callback sums theirs. A group is
+      // named by its first product; a product the Hamiltonian lists twice is
+      // a member twice.
+      DenseMap<Operation *, Operation *> groupOf;
+      DenseMap<Operation *, SmallVector<Operation *>> membersOf;
+      {
+        // A callback whose kind and parameters a sum can list. Others, such
+        // as one with parameters of another type, stay terms of their own.
+        auto summable = [&](const Product &product) {
+          if (!product.callback || product.coefficient != Complex(1.0))
+            return false;
+          auto kind = product.callback->getAttrOfType<IntegerAttr>(
+              "cudm.callback_kind");
+          return kind && kind.getInt() != cudaq_pulse::kSumKind &&
+                 product.callback->getAttrOfType<DenseF64ArrayAttr>(
+                     "cudm.callback_params");
+        };
+        auto sameOperator = [&](const Product &left, const Product &right) {
+          return left.modes == right.modes &&
+                 llvm::equal(left.leaves, right.leaves,
+                             [&](Operation *x, Operation *y) {
+                               return leaves.find(x)->second.matrix ==
+                                      leaves.find(y)->second.matrix;
+                             });
+        };
+        SmallVector<Operation *> firsts;
+        for (Operation *op : remainingHamiltonian) {
+          const Product &product = products.find(op)->second;
+          if (!summable(product))
+            continue;
+          auto first = llvm::find_if(firsts, [&](Operation *other) {
+            return sameOperator(products.find(other)->second, product);
+          });
+          if (first == firsts.end()) {
+            firsts.push_back(op);
+            first = firsts.end() - 1;
+          }
+          groupOf[op] = *first;
+          membersOf[*first].push_back(op);
+        }
+      }
+      // The term of a group of more than one member, whose callback sums
+      // the members' callbacks, made on first use.
+      DenseMap<Operation *, Value> summedTerm;
+      auto summedTermOf = [&](Operation *group) -> Value {
+        Value &term = summedTerm[group];
+        if (!term) {
+          const Product &product = products.find(group)->second;
+          SmallVector<Value> elementaryOps;
+          for (Operation *leaf : product.leaves)
+            elementaryOps.push_back(elementaryOf(leaf));
+          SmallVector<int32_t> ketDualities(elementaryOps.size(), 0);
+          SmallVector<qop::CallbackScalarOp> callbacks;
+          for (Operation *member : membersOf.find(group)->second)
+            callbacks.push_back(products.find(member)->second.callback);
+          term = createTerm(elementaryOps, product.modes, ketDualities, 1.0, {},
+                            callbacks);
+        }
+        return term;
+      };
+
       for (int32_t side : {0, 1}) {
         if (side == 1 && !hasDissipation)
           break;
@@ -1001,8 +1087,18 @@ struct QOpToCuDensityMatPass
           appendTerm(createTerm({elementary}, group.modes, ketDualities, 1.0),
                      side, 1.0);
         }
-        for (Operation *op : separate)
-          appendTerm(termOf(op), side, sign);
+        // Each listing of a product appends its term, except that a group of
+        // more than one member appends its summed term once per side, where
+        // its first member is listed.
+        DenseSet<Operation *> summedOnSide;
+        for (Operation *op : separate) {
+          auto found = groupOf.find(op);
+          if (found == groupOf.end() ||
+              membersOf.find(found->second)->second.size() == 1)
+            appendTerm(termOf(op), side, sign);
+          else if (summedOnSide.insert(found->second).second)
+            appendTerm(summedTermOf(found->second), side, sign);
+        }
       }
       for (Operation *op : remainingCollapse)
         appendDissipator(op, !foldedNorms.contains(op));

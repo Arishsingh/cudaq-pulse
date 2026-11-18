@@ -133,6 +133,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **Long pulse sequences on the GPU.** With `backend="gpu"` and the
+  default operator lowering, the pulses played on one qudit are one
+  time-dependent term per quadrature, whose envelope callback sums theirs,
+  so the number of terms cuDensityMat applies at each step no longer grows
+  with the number of pulses. The drives now take two of an evolution's
+  1024 envelope callbacks per driven qudit, not two per pulse or pulse
+  train: a program of more than about 512 pulses that do not form a
+  train, which failed with "the drives of this program need more than
+  1024 envelope callbacks", now runs. The host still evaluates every
+  pulse's envelope at each step. The envelopes are added before they
+  scale the drive's operator, so results can differ from before in the
+  last bits. `CUDAQ_PULSE_GPU_OPERATORS=banded` or `dense` lowers as
+  before.
 - **Schedule plots look different.** `viz.plot_schedule`, `viz.save_schedule`
   and `timeline()` draw in the style of the documentation's figures: drives
   green, readouts rose, waits hatched grey and classical calls teal (colors
