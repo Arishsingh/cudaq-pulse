@@ -9,6 +9,7 @@ every value). The two must schedule every value alike.
 
 from __future__ import annotations
 
+import pickle
 import types
 
 import cudaq_pulse as pulse
@@ -271,6 +272,36 @@ def test_a_bound_call_lowers_to_llvm_and_the_generic_module_does_not():
     assert "llvm.func" in lowered.mlir("llvm")
     with pytest.raises(ValueError, match="float parameters"):
         lowered.generic.mlir("llvm")
+
+
+def test_a_call_whose_values_set_a_wait_is_rescheduled():
+    lowered = pulse.compile(pulse.kernel(t1)).lower(Q[0], 250.0)
+    # Reading it does no work: the call is scheduled when its schedule is
+    # first read.
+    assert lowered.rescheduled and lowered._concrete_module is None
+    assert not lowered.rescheduled_for_line_delays
+    assert _events(lowered)[-1][2] == 290 and lowered._concrete_module is not None
+    # The module without values keeps the schedule it was compiled with;
+    # each call of it is scheduled again, and a pickle keeps that.
+    assert not lowered.generic.rescheduled
+    assert lowered.generic.bind([7.0]).rescheduled
+    assert pickle.loads(pickle.dumps(lowered)).rescheduled
+    with pytest.raises(AttributeError):
+        lowered.rescheduled = False  # type: ignore[misc]
+
+
+def test_a_call_whose_values_move_no_op_keeps_the_compiled_schedule():
+    @pulse.kernel
+    def k(q, amp: float):
+        d = get_drive_line(q)
+        drive(d, square(40, amp))
+        wait(d, 100)
+        drive(d, square(40, -amp))
+
+    lowered = pulse.compile(k).lower(Q[0], 0.3)
+    assert not lowered.rescheduled and not lowered.generic.rescheduled
+    assert not lowered.rescheduled_for_line_delays
+    assert lowered.schedule == lowered.generic.schedule
 
 
 # ── Bounds ───────────────────────────────────────────────────────────────

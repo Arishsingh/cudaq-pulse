@@ -113,6 +113,17 @@ _SLOW_CONTROLLER = ControlSystem(controllers=[Controller(clock_ghz=1.0)])
 _DELAYED = ControlSystem(
     controllers=[Controller(drive_lines=[DriveLine(0, delay_ns=1.5)], readout_lines=[0])]
 )
+_DELAYED_AGAIN = ControlSystem(
+    controllers=[Controller(drive_lines=[DriveLine(0, delay_ns=2.5)], readout_lines=[0])]
+)
+
+
+def _scheduled_again():
+    """A module compiled again with only other line delays, which schedules
+    a fresh kernel's earlier trace again (``rescheduled_for_line_delays``)."""
+    kernel = pulse.kernel(rabi.__pulse_kernel_fn__)
+    pulse.compile(kernel, control_system=_DELAYED).lower(Q[0], 0.3)
+    return pulse.compile(kernel, control_system=_DELAYED_AGAIN).lower(Q[0], 0.3)
 
 
 def _programs():
@@ -125,6 +136,7 @@ def _programs():
         "classical_call": pulse.compile(reset, schedule="asap").lower(Q[0]),
         "other_clock": pulse.compile(rabi, control_system=_SLOW_CONTROLLER).lower(Q[0], 0.3),
         "line_delays": pulse.compile(rabi, control_system=_DELAYED).lower(Q[0], 0.3),
+        "line_delays_again": _scheduled_again(),
         "shipped": rabi.lower(_SHIPPED_DEVICE.qudits[2], 0.1),
     }
 
@@ -142,6 +154,8 @@ def _views(program):
         "options": program.options,
         "target": program.quantum_system,
         "classical": program.classical_report(),
+        "rescheduled": program.rescheduled,
+        "rescheduled_for_line_delays": program.rescheduled_for_line_delays,
     }
     if not program.parameters:
         shown["controller"] = program.export_to_controller()

@@ -627,6 +627,8 @@ waveform whose parameters the export does not name can't be converted, so
 on a controller with its own clock it is a ``ControllerLimitError`` too,
 never exported in program cycles.
 
+.. _line-delays:
+
 Line delays
 -----------
 
@@ -662,7 +664,16 @@ In a system file a delayed line is ``{"qudit": 0, "delay_ns": 2.3}`` and an
 undelayed one its carrier index. Compiling a kernel again with only other
 delays, such as a control system calibrated again, reuses its trace and
 optimized module and schedules it again, with the same result, byte for
-byte, as compiling it anew.
+byte, as compiling it anew. The ``rescheduled_for_line_delays`` of what
+``lower()`` returns says which it did, so a calibration loop can check
+that each round took that path: ``True`` when the earlier trace was
+scheduled again, ``False`` when the kernel was traced, such as the first
+time, with the line delays it was last compiled with, the first time it
+is compiled with line delays at all (only a compile with line delays keeps
+its trace), for a kernel with list or qudit parameters, and after a change
+to what the kernel read while it was traced. A call's ``rescheduled`` says
+something else: whether its float values set a wait length (see
+:ref:`wait-lengths`).
 
 Shared lines
 ------------

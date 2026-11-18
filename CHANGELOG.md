@@ -147,6 +147,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   once while it is in view, with Pause and step buttons, and its data
   comes from what the page compiles and simulates. Readers without
   JavaScript, or who ask for reduced motion, see the still frame.
+- **Whether a program was scheduled again.** `ScheduledKernel.rescheduled`
+  says whether a call's float values set a wait length, so its times come
+  from scheduling the module again with them bound; it is `False` for a
+  call whose values move no op, which keeps the module's times.
+  `ScheduledKernel.rescheduled_for_line_delays` says whether the module was
+  compiled again with only other line delays, scheduling its kernel's
+  earlier trace again instead of tracing it, and holds for its calls too. A
+  call of such a module whose values set a wait length is both. A loop that
+  compiles each round, as after a line-delay calibration, can check which
+  path each round took. Both are read-only, reading them does no work, and
+  copies and pickles keep them.
 
 - `UdpChannel` and `InProcess` print what they're set up with:
   `UdpChannel(('127.0.0.1', 50123), slot_bytes=65536, timeout_s=2.0)` and
