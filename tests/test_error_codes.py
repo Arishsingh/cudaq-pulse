@@ -40,6 +40,7 @@ def test_the_codes_are_the_documented_vocabulary():
         "kernel_raised",
         "python_error",
         "control_system",
+        "schedule_block",
         "timing",
         "controller_limit",
         "other",
