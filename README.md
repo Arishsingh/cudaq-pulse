@@ -3,6 +3,12 @@
        alt="CUDA-Q Pulse: a Python pulse kernel beside a timeline of drive, readout and GPU lanes. A readout result goes to a GPU decoder over NVQLink within a latency budget, and the answer conditions the next drive pulse." width="100%">
 </p>
 
+<p align="center">
+    <a href="https://github.com/NVIDIA/cudaq-pulse/actions/workflows/ci.yml"><img src="https://github.com/NVIDIA/cudaq-pulse/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://nvidia.github.io/cudaq-pulse/"><img src="https://github.com/NVIDIA/cudaq-pulse/actions/workflows/docs.yml/badge.svg?branch=main" alt="Docs"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"></a>
+</p>
+
 # CUDA-Q Pulse
 
 ## Highlights and Key Features
