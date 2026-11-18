@@ -47,6 +47,50 @@ def test_the_store_versions_every_change_and_the_log_round_trips():
         log.tracking_error("amplitude")
 
 
+def test_parameter_store_reader_is_named_live_and_clamped():
+    store = ParameterStore(x=2.0)
+    reader = store.reader("x", bounds=(0.0, 3.0))
+
+    assert reader.name == "read_x"
+    assert reader() == 2.0
+
+    store.set("x", 4.0)
+    assert reader() == 3.0
+    store.set("x", -1.0)
+    assert reader() == 0.0
+
+    with pytest.raises(KeyError, match="no parameter 'missing'"):
+        store.reader("missing")
+
+
+def test_parameter_store_snapshot_is_an_independent_copy():
+    store = ParameterStore(amplitude=0.1)
+    snapshot = store.snapshot()
+
+    snapshot["amplitude"] = 0.2
+    snapshot["wait_ns"] = 1000.0
+    assert store.snapshot() == {"amplitude": 0.1}
+
+    store.set("amplitude", 0.3)
+    assert snapshot == {"amplitude": 0.2, "wait_ns": 1000.0}
+
+
+def test_estimate_log_extend_preserves_order_series_and_length():
+    log = EstimateLog()
+    log.record(0, "t1_us", 18.0)
+    log.record(1, "amplitude", 0.1)
+
+    additional = EstimateLog()
+    additional.record(2, "t1_us", 21.0)
+    additional.record(3, "amplitude", 0.12)
+    log.extend(additional.entries)
+
+    assert len(log) == 4
+    assert [entry.iteration for entry in log.entries] == [0, 1, 2, 3]
+    assert [entry.iteration for entry in log.series("t1_us")] == [0, 2]
+    assert [entry.iteration for entry in log.series("amplitude")] == [1, 3]
+
+
 STORE = ParameterStore(wait_cycles=4000.0, amplitude=PI_AMP)
 READ_WAIT = STORE.reader("wait_cycles", bounds=(0.0, 80000.0))
 

@@ -33,8 +33,9 @@
 
 namespace pulse {
 
-/// A tone's rotating frame. `phase` is the frame phase at `timeNs`;
-/// between drives a tone detuned from its frame frequency accrues phase.
+/// A tone's rotating frame. `phase` is the frame phase at `timeNs`, the end
+/// of its latest drive or the place of a later frame change; from there a
+/// tone detuned from its frame frequency accrues phase.
 struct ToneState {
   Affine frequencyHz = 0.0;
   Affine frameFrequencyHz = 0.0;
@@ -287,6 +288,16 @@ private:
                         "kernel's float arguments");
       }
       ToneState &tone = toneOf(op->getOperand(0));
+      // The frame runs at its old frequency until the change: after a wait,
+      // that is later than its tone's latest drive.
+      if (auto start = scheduledStart(op, iteration)) {
+        double changeNs = static_cast<double>(*start) / clockGHz;
+        if (changeNs > tone.timeNs) {
+          tone.phase += (tone.frequencyHz - tone.frameFrequencyHz) *
+                        (2.0 * M_PI) * 1.0e-9 * (changeNs - tone.timeNs);
+          tone.timeNs = changeNs;
+        }
+      }
       if (name == "pulse.shift_phase")
         tone.phase += *value;
       else if (name == "pulse.set_phase")

@@ -93,6 +93,12 @@ def _lowered(kernel, qs, *qudits, **options):
     )
 
 
+def _native(qs, role, qudit):
+    """The frequency of the own tone of qudit *qudit*'s *role* line."""
+    physical = qs.physical_qudits[qs.layout[qudit]]
+    return physical.readout.frequency_hz if role == "readout" else physical.frequency_hz
+
+
 # ── The line ────────────────────────────────────────────────────────────────
 
 
@@ -316,12 +322,14 @@ def test_a_line_s_delay_reaches_each_of_its_qudits():
 
 
 def test_a_feedline_reads_out_its_qudits_together():
-    lowered = _lowered(multiplexed, _feedline(4), 0, 1, 2, 3)
+    qs = _feedline(4)
+    lowered = _lowered(multiplexed, qs, 0, 1, 2, 3)
     assert lowered.export_to_controller(version=2)["lines"][0] == {
         "line": 0,
         "role": "readout",
         "qudits": [0, 1, 2, 3],
         "max_concurrent_tones": 4,
+        "native_frequencies_hz": [_native(qs, "readout", q) for q in range(4)],
     }
 
 
@@ -498,10 +506,17 @@ def _played(events):
 
 
 def test_format_2_gives_each_tone_its_slot_and_qudit():
-    lowered = _lowered(multiplexed, _feedline(4), 0, 1, 2, 3)
+    qs = _feedline(4)
+    lowered = _lowered(multiplexed, qs, 0, 1, 2, 3)
     program = lowered.export_to_controller(version=2)
     assert program["lines"] == [
-        {"line": 0, "role": "readout", "qudits": [0, 1, 2, 3], "max_concurrent_tones": 4}
+        {
+            "line": 0,
+            "role": "readout",
+            "qudits": [0, 1, 2, 3],
+            "max_concurrent_tones": 4,
+            "native_frequencies_hz": [_native(qs, "readout", q) for q in range(4)],
+        }
     ]
     assert [
         {k: e[k] for k in ("kind", "line", "tone_slot", "qudits", "start_cycles") if k in e}
@@ -531,11 +546,23 @@ def test_format_2_numbers_physical_lines_by_first_use():
         readout(ra, square(200, 0.05))
         readout(rb, square(200, 0.05))
 
-    lowered = _lowered(mixed, _feedline(2, (0, 1)), 0, 1)
+    qs = _feedline(2, (0, 1))
+    lowered = _lowered(mixed, qs, 0, 1)
     program = lowered.export_to_controller(version=2)
     assert program["lines"] == [
-        {"line": 0, "role": "drive", "qudits": [0]},
-        {"line": 1, "role": "readout", "qudits": [0, 1], "max_concurrent_tones": 2},
+        {
+            "line": 0,
+            "role": "drive",
+            "qudits": [0],
+            "native_frequencies_hz": [_native(qs, "drive", 0)],
+        },
+        {
+            "line": 1,
+            "role": "readout",
+            "qudits": [0, 1],
+            "max_concurrent_tones": 2,
+            "native_frequencies_hz": [_native(qs, "readout", 0), _native(qs, "readout", 1)],
+        },
     ]
     drive_event = next(e for e in program["events"] if e["kind"] == "play")
     assert "tone_slot" not in drive_event and "qudits" not in drive_event
@@ -650,7 +677,8 @@ def _slots(program):
 
 
 def test_format_1_gives_each_line_its_shared_line_and_tone_slot():
-    lowered = _lowered(multiplexed, _feedline(4), 0, 1, 2, 3)
+    qs = _feedline(4)
+    lowered = _lowered(multiplexed, qs, 0, 1, 2, 3)
     program = lowered.export_to_controller()
     assert program["lines"] == [
         {
@@ -659,6 +687,7 @@ def test_format_1_gives_each_line_its_shared_line_and_tone_slot():
             "qudit": q,
             "qudits": [0, 1, 2, 3],
             "max_concurrent_tones": 4,
+            "native_frequency_hz": _native(qs, "readout", q),
         }
         for q in range(4)
     ]
@@ -724,8 +753,11 @@ def test_a_program_on_a_dedicated_line_of_a_system_with_a_feedline_has_no_slots(
     def drives(a):
         drive(get_drive_line(a), gaussian(40, 0.5, 10.0))
 
-    program = _lowered(drives, _feedline(2, (0, 1), drive_lines=(0, 1)), 0).export_to_controller()
-    assert program["lines"] == [{"line": 0, "role": "drive", "qudit": 0}]
+    qs = _feedline(2, (0, 1), drive_lines=(0, 1))
+    program = _lowered(drives, qs, 0).export_to_controller()
+    assert program["lines"] == [
+        {"line": 0, "role": "drive", "qudit": 0, "native_frequency_hz": _native(qs, "drive", 0)}
+    ]
     assert all("tone_slot" not in e for e in program["events"])
 
 

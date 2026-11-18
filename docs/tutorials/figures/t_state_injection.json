@@ -1,0 +1,641 @@
+{
+ "format": "pulse-visual/1",
+ "source": "docs/tutorials/t_state_injection.rst",
+ "scenes": [
+  {
+   "name": "tomography_axes",
+   "title": "One pulse picks the axis",
+   "end": 391.4,
+   "lanes": [
+    {
+     "id": "l0",
+     "label": "D5 drive",
+     "role": "drive"
+    },
+    {
+     "id": "l1",
+     "label": "D5 readout",
+     "role": "readout"
+    }
+   ],
+   "spans": [
+    {
+     "id": "prep",
+     "lane": "l0",
+     "role": "drive",
+     "label": "Y90"
+    },
+    {
+     "id": "turn",
+     "lane": "l0",
+     "role": "drive"
+    },
+    {
+     "id": "read",
+     "lane": "l1",
+     "role": "readout",
+     "label": "readout"
+    }
+   ],
+   "snapshots": [
+    {
+     "label": "X axis: −Y90 turns +X onto Z",
+     "short": "X axis",
+     "say": "X axis: −Y90 turns +X onto Z. The readout gives ⟨X⟩ = 0.71.",
+     "spans": {
+      "prep": [
+       0.0,
+       40.0
+      ],
+      "read": [
+       80.0,
+       380.0
+      ],
+      "turn": [
+       40.0,
+       80.0
+      ]
+     },
+     "labels": {
+      "turn": "−Y90"
+     },
+     "marks": [],
+     "weight": 0.8548,
+     "value": "⟨X⟩ = 0.71"
+    },
+    {
+     "label": "Y axis: X90 turns +Y onto Z",
+     "short": "Y axis",
+     "say": "Y axis: X90 turns +Y onto Z. The readout gives ⟨Y⟩ = 0.71.",
+     "spans": {
+      "prep": [
+       0.0,
+       40.0
+      ],
+      "read": [
+       80.0,
+       380.0
+      ],
+      "turn": [
+       40.0,
+       80.0
+      ]
+     },
+     "labels": {
+      "turn": "X90"
+     },
+     "marks": [],
+     "weight": 0.8541,
+     "value": "⟨Y⟩ = 0.71"
+    },
+    {
+     "label": "Z axis: no pulse, Z is read as it is",
+     "short": "Z axis",
+     "say": "Z axis: no pulse. The T gate shows as a +π/4 frame shift. The readout gives ⟨Z⟩ = 0.01.",
+     "spans": {
+      "prep": [
+       0.0,
+       40.0
+      ],
+      "read": [
+       40.0,
+       340.0
+      ],
+      "turn": null
+     },
+     "labels": {},
+     "marks": [
+      {
+       "role": "frame",
+       "t": 40.0,
+       "lanes": [
+        "l0"
+       ],
+       "label": "+π/4"
+      }
+     ],
+     "weight": 0.5049,
+     "value": "⟨Z⟩ = 0.01"
+    }
+   ],
+   "share_label": "shots reading 0",
+   "panels": [
+    "timeline",
+    "cases"
+   ]
+  },
+  {
+   "clock_ghz": 2.0,
+   "end": 1157.72,
+   "lanes": [
+    {
+     "id": "l0",
+     "label": "D5 drive",
+     "role": "drive"
+    },
+    {
+     "id": "l1",
+     "label": "D5 readout",
+     "role": "readout"
+    },
+    {
+     "id": "k0",
+     "label": "controller link",
+     "role": "link"
+    }
+   ],
+   "spans": [
+    {
+     "id": "e0",
+     "lane": "l1",
+     "a": 0.0,
+     "b": 300.0,
+     "role": "readout",
+     "label": "outcome"
+    },
+    {
+     "id": "e4",
+     "lane": "l0",
+     "a": 352.0,
+     "b": 392.0,
+     "role": "drive",
+     "when": [
+      [
+       "accepted 1",
+       0
+      ]
+     ],
+     "label": "π 1"
+    },
+    {
+     "id": "e6",
+     "lane": "l1",
+     "a": 392.0,
+     "b": 692.0,
+     "role": "readout",
+     "label": "outcome"
+    },
+    {
+     "id": "e10",
+     "lane": "l0",
+     "a": 744.0,
+     "b": 784.0,
+     "role": "drive",
+     "when": [
+      [
+       "accepted 2",
+       0
+      ]
+     ],
+     "label": "π 2"
+    },
+    {
+     "id": "e12",
+     "lane": "l0",
+     "a": 784.0,
+     "b": 824.0,
+     "role": "drive",
+     "label": "Y90"
+    },
+    {
+     "id": "e15",
+     "lane": "l1",
+     "a": 824.0,
+     "b": 1124.0,
+     "role": "readout",
+     "label": "Z readout"
+    }
+   ],
+   "marks": [
+    {
+     "role": "sync",
+     "t": 300.0,
+     "lanes": [
+      "l0",
+      "l1"
+     ]
+    },
+    {
+     "role": "sync",
+     "t": 392.0,
+     "lanes": [
+      "l0",
+      "l1"
+     ]
+    },
+    {
+     "role": "sync",
+     "t": 692.0,
+     "lanes": [
+      "l0",
+      "l1"
+     ]
+    },
+    {
+     "role": "sync",
+     "t": 784.0,
+     "lanes": [
+      "l0",
+      "l1"
+     ]
+    },
+    {
+     "role": "frame",
+     "t": 824.0,
+     "lanes": [
+      "l0"
+     ],
+     "label": "+π/4"
+    },
+    {
+     "role": "sync",
+     "t": 824.0,
+     "lanes": [
+      "l0",
+      "l1"
+     ]
+    },
+    {
+     "role": "due",
+     "t": 352.0,
+     "lanes": [
+      "k0"
+     ],
+     "label": "due 352 ns"
+    },
+    {
+     "role": "due",
+     "t": 744.0,
+     "lanes": [
+      "k0"
+     ],
+     "label": "due 744 ns"
+    }
+   ],
+   "windows": [
+    {
+     "lane": "k0",
+     "a": 328.0,
+     "b": 344.0,
+     "role": "answer",
+     "label": "answer may arrive"
+    },
+    {
+     "lane": "k0",
+     "a": 720.0,
+     "b": 736.0,
+     "role": "answer",
+     "label": "answer may arrive"
+    }
+   ],
+   "messages": [
+    {
+     "id": "req1",
+     "from": "l1",
+     "to": "k0",
+     "a": 300.0,
+     "b": 304.0,
+     "role": "request"
+    },
+    {
+     "id": "ans2-l0",
+     "from": "k0",
+     "to": "l0",
+     "a": 344.0,
+     "b": 352.0,
+     "role": "answer"
+    },
+    {
+     "id": "req7",
+     "from": "l1",
+     "to": "k0",
+     "a": 692.0,
+     "b": 696.0,
+     "role": "request"
+    },
+    {
+     "id": "ans8-l0",
+     "from": "k0",
+     "to": "l0",
+     "a": 736.0,
+     "b": 744.0,
+     "role": "answer"
+    }
+   ],
+   "calls": [
+    {
+     "function": "herald",
+     "answer": "accepted 1",
+     "link": "controller",
+     "lane": "k0",
+     "submit": 300.0,
+     "sent": 304.0,
+     "due": 352.0,
+     "feedback_ns": 8.0,
+     "latency_ns": {
+      "min": 20.0,
+      "nominal": 30.0,
+      "max": 40.0
+     }
+    },
+    {
+     "function": "herald",
+     "answer": "accepted 2",
+     "link": "controller",
+     "lane": "k0",
+     "submit": 692.0,
+     "sent": 696.0,
+     "due": 744.0,
+     "feedback_ns": 8.0,
+     "latency_ns": {
+      "min": 20.0,
+      "nominal": 30.0,
+      "max": 40.0
+     }
+    }
+   ],
+   "name": "herald_loop",
+   "title": "Two heralded attempts, then the T state",
+   "cases": [
+    {
+     "label": "If herald accepts both attempts, no π pulse plays.",
+     "short": "accepts, then accepts: kept",
+     "given": {
+      "accepted 1": 1,
+      "accepted 2": 1
+     },
+     "weight": 0.971954,
+     "value": "97.2%",
+     "moments": [
+      [
+       0.0,
+       "Attempt 1 reads D5 out."
+      ],
+      [
+       300.0,
+       "The outcome goes to herald on the controller link."
+      ],
+      [
+       352.0,
+       "herald accepts the shot: no π pulse."
+      ],
+      [
+       392.0,
+       "Attempt 2 reads D5 out."
+      ],
+      [
+       692.0,
+       "The outcome goes to herald on the controller link."
+      ],
+      [
+       744.0,
+       "herald accepts the shot: no π pulse."
+      ],
+      [
+       784.0,
+       "Y90 and the T gate's +π/4 frame shift prepare |T⟩."
+      ],
+      [
+       824.0,
+       "The last readout measures Z. Post-selection keeps the shot."
+      ]
+     ]
+    },
+    {
+     "label": "If herald rejects attempt 1 and accepts attempt 2, π 1 plays.",
+     "short": "rejects, then accepts: kept",
+     "given": {
+      "accepted 1": 0,
+      "accepted 2": 1
+     },
+     "weight": 0.026913,
+     "value": "2.7%",
+     "moments": [
+      [
+       0.0,
+       "Attempt 1 reads D5 out."
+      ],
+      [
+       300.0,
+       "The outcome goes to herald on the controller link."
+      ],
+      [
+       352.0,
+       "herald rejects the shot: π 1 turns D5 back to |0⟩."
+      ],
+      [
+       392.0,
+       "Attempt 2 reads D5 out."
+      ],
+      [
+       692.0,
+       "The outcome goes to herald on the controller link."
+      ],
+      [
+       744.0,
+       "herald accepts the shot: no π pulse."
+      ],
+      [
+       784.0,
+       "Y90 and the T gate's +π/4 frame shift prepare |T⟩."
+      ],
+      [
+       824.0,
+       "The last readout measures Z. Post-selection keeps the shot."
+      ]
+     ]
+    },
+    {
+     "label": "If herald rejects both attempts, both π pulses play.",
+     "short": "rejects, then rejects: dropped",
+     "given": {
+      "accepted 1": 0,
+      "accepted 2": 0
+     },
+     "weight": 0.000815,
+     "value": "8.2e-4",
+     "moments": [
+      [
+       0.0,
+       "Attempt 1 reads D5 out."
+      ],
+      [
+       300.0,
+       "The outcome goes to herald on the controller link."
+      ],
+      [
+       352.0,
+       "herald rejects the shot: π 1 turns D5 back to |0⟩."
+      ],
+      [
+       392.0,
+       "Attempt 2 reads D5 out."
+      ],
+      [
+       692.0,
+       "The outcome goes to herald on the controller link."
+      ],
+      [
+       744.0,
+       "herald rejects the shot: π 2 turns D5 back to |0⟩."
+      ],
+      [
+       784.0,
+       "Y90 and the T gate's +π/4 frame shift prepare |T⟩."
+      ],
+      [
+       824.0,
+       "The last readout measures Z. Post-selection drops the shot."
+      ]
+     ]
+    },
+    {
+     "label": "If herald accepts attempt 1 and rejects attempt 2, π 2 plays.",
+     "short": "accepts, then rejects: dropped",
+     "given": {
+      "accepted 1": 1,
+      "accepted 2": 0
+     },
+     "weight": 0.000318,
+     "value": "3.2e-4",
+     "moments": [
+      [
+       0.0,
+       "Attempt 1 reads D5 out."
+      ],
+      [
+       300.0,
+       "The outcome goes to herald on the controller link."
+      ],
+      [
+       352.0,
+       "herald accepts the shot: no π pulse."
+      ],
+      [
+       392.0,
+       "Attempt 2 reads D5 out."
+      ],
+      [
+       692.0,
+       "The outcome goes to herald on the controller link."
+      ],
+      [
+       744.0,
+       "herald rejects the shot: π 2 turns D5 back to |0⟩."
+      ],
+      [
+       784.0,
+       "Y90 and the T gate's +π/4 frame shift prepare |T⟩."
+      ],
+      [
+       824.0,
+       "The last readout measures Z. Post-selection drops the shot."
+      ]
+     ]
+    }
+   ],
+   "panels": [
+    "timeline",
+    "cases"
+   ]
+  },
+  {
+   "name": "herald_branches",
+   "title": "What post-selection keeps",
+   "tree": {
+    "columns": [
+     "",
+     "herald readout",
+     "tomography, kept shots only"
+    ],
+    "nodes": [
+     {
+      "id": "start",
+      "col": 0,
+      "p": 1.0,
+      "text": "start",
+      "step": 0,
+      "y": 0.5833
+     },
+     {
+      "id": "h0",
+      "parent": "start",
+      "col": 1,
+      "p": 0.972272,
+      "step": 1,
+      "text": "herald read 0: 97.2%",
+      "y": 0.1667
+     },
+     {
+      "id": "h1",
+      "parent": "start",
+      "col": 1,
+      "p": 0.02698,
+      "step": 1,
+      "text": "herald read 1: 2.7%",
+      "drop": 2,
+      "y": 0.6667
+     },
+     {
+      "id": "h2",
+      "parent": "start",
+      "col": 1,
+      "p": 0.000749,
+      "step": 1,
+      "text": "herald read 2: 7.5e-4",
+      "drop": 2,
+      "y": 1.0
+     },
+     {
+      "id": "z0",
+      "parent": "h0",
+      "col": 2,
+      "p": 0.490865,
+      "step": 3,
+      "text": "Z reads 0: 49.1%",
+      "y": 0.0
+     },
+     {
+      "id": "z1",
+      "parent": "h0",
+      "col": 2,
+      "p": 0.481407,
+      "step": 3,
+      "text": "Z reads 1 or 2: 48.1%",
+      "y": 0.3333
+     }
+    ],
+    "height": 4
+   },
+   "snapshots": [
+    {
+     "label": "Every shot starts in D5's thermal mixture",
+     "short": "start",
+     "say": "Every shot starts in D5's thermal mixture.",
+     "spans": {}
+    },
+    {
+     "label": "The herald reads D5 out",
+     "short": "herald readout",
+     "say": "The herald readout splits the shots: it reads 0 on 97.2%, 1 on 2.7%, 2 on 7.5e-4.",
+     "spans": {}
+    },
+    {
+     "label": "Post-selection keeps what herald accepts",
+     "short": "post-select",
+     "say": "Post-selection keeps the branches herald accepts, the 97.2% that read 0. The rest are dropped.",
+     "spans": {}
+    },
+    {
+     "label": "The tomography reads Z on the kept shots",
+     "short": "Z readout",
+     "say": "Of the kept shots, Z reads 0 on 49.1% and 1 or 2 on 48.1%, as |T⟩ gives.",
+     "spans": {}
+    }
+   ],
+   "panels": [
+    "tree"
+   ]
+  }
+ ]
+}

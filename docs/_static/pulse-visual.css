@@ -1,0 +1,151 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The tutorials' animated figures (pulse-visual.js), in the palette of the
+ * static figures (docs/tutorials/figures/_style.py): drive green, Q blue,
+ * readout rose, classical calls and latencies teal. A conditional pulse is
+ * outlined dashed and a late window hatched, so color is never the only cue.
+ * The variables sit on the SVG, so the still that
+ * tools/render-pulse-visual.js draws carries these rules and the class pv-dark.
+ */
+
+.pv-svg {
+  --pv-drive: #5b8c00;
+  --pv-q: #3d6fa3;
+  --pv-readout: #c2185b;
+  --pv-classical: #00796b;
+  --pv-text: #1a1a1a;
+  --pv-muted: #5c636a;
+  --pv-grid: #e8e8e8;
+  --pv-rule: #b8bdc2;
+  --pv-panel: rgba(0, 0, 0, 0.03);
+  --pv-on-pill: #ffffff;
+  --pv-page: #ffffff;
+  display: block;
+  width: 100%;
+  height: auto;
+  font-family: var(--pst-font-family-base, NVIDIA, Arial, Helvetica, sans-serif);
+}
+
+html[data-theme="dark"] .pv-svg,
+.pv-svg.pv-dark {
+  --pv-drive: #76b900;
+  --pv-q: #8fb8e8;
+  --pv-readout: #f06292;
+  --pv-classical: #4dd0c4;
+  --pv-text: #eeeeee;
+  --pv-muted: #b4bac1;
+  --pv-grid: #2c2f33;
+  --pv-rule: #5a6066;
+  --pv-panel: rgba(255, 255, 255, 0.04);
+  --pv-on-pill: #0b0b0b;
+  --pv-page: #111111;
+}
+
+.pulse-visual {
+  margin: 1rem 0 0.5rem;
+  text-align: left;
+}
+
+.pulse-visual:empty,
+.pulse-visual-figure .pulse-fallback[hidden] {
+  display: none;
+}
+
+.pulse-visual:focus-visible {
+  outline: 2px solid var(--pst-color-primary, #76b900);
+  outline-offset: 4px;
+}
+
+.pv-svg text { fill: var(--pv-text); font-size: 12px; }
+.pv-svg .pv-title { font-weight: 600; font-size: 12.5px; }
+.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted); }
+.pv-svg .pv-small { font-size: 10px; }
+.pv-svg .pv-tiny { font-size: 9px; }
+.pv-svg .pv-tiny.pv-on-text, .pv-svg .pv-on-bar { fill: var(--pv-on-pill); }
+.pv-svg .pv-lane { font-size: 10.5px; }
+.pv-svg .pv-lane, .pv-svg .pv-pill text {
+  font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace);
+}
+.pv-svg .pv-classical-text, .pv-svg .pv-window-text { fill: var(--pv-classical); }
+.pv-svg .pv-drive-text { fill: var(--pv-drive); }
+
+.pv-grid { stroke: var(--pv-grid); }
+.pv-head { stroke: var(--pv-text); opacity: 0.6; }
+.pv-svg .pv-halo { paint-order: stroke; stroke: var(--pv-page); stroke-width: 3px; stroke-linejoin: round; }
+.pv-break { stroke: var(--pv-muted); stroke-width: 1.2; fill: none; }
+.pv-cut { fill: var(--pv-page); opacity: 0.55; }
+.pv-hatch { fill: var(--pv-muted); opacity: 0.55; }
+
+.pv-ghost { fill: none; stroke: var(--pv-rule); }
+.pv-ghost.pv-cond { stroke-dasharray: 3 2; }
+.pv-ghost.pv-was { stroke: var(--pv-muted); stroke-dasharray: 1 2; opacity: 0.8; }
+.pv-fill.pv-drive { fill: var(--pv-drive); }
+.pv-fill.pv-readout { fill: var(--pv-readout); }
+.pv-fill.pv-link { fill: var(--pv-classical); }
+.pv-frame { fill: var(--pv-drive); }
+
+.pv-window { stroke: none; }
+.pv-window-answer { fill: var(--pv-classical); opacity: 0.16; }
+.pv-window-passed { fill: var(--pv-classical); opacity: 0.22; }
+.pv-window-late { stroke: var(--pv-rule); }
+.pv-window-idle { fill: none; stroke: var(--pv-muted); stroke-dasharray: 2 2; }
+
+.pv-sync { stroke: var(--pv-muted); stroke-dasharray: 1 3; }
+.pv-due { stroke: var(--pv-classical); stroke-width: 2; }
+.pv-arrow { fill: none; stroke: var(--pv-classical); stroke-width: 1.4; }
+.pv-arrow-answer { stroke-dasharray: 4 2; }
+
+.pv-pill rect { fill: var(--pv-classical); }
+.pv-svg .pv-pill text { fill: var(--pv-on-pill); font-size: 10.5px; }
+
+.pv-branch { fill: none; stroke: var(--pv-classical); stroke-linecap: butt; opacity: 0.85; }
+.pv-branch.pv-dropped { stroke: var(--pv-muted); stroke-dasharray: 3 2; opacity: 0.6; }
+.pv-dot { fill: var(--pv-classical); }
+.pv-dot.pv-dropped { fill: var(--pv-muted); }
+.pv-svg .pv-node-text { font-size: 10.5px; }
+
+.pv-axis { stroke: var(--pv-rule); }
+.pv-area { fill: var(--pv-drive); opacity: 0.18; }
+.pv-line { fill: none; stroke: var(--pv-drive); stroke-width: 2; }
+.pv-was-curve { fill: none; stroke: var(--pv-muted); stroke-width: 1.2; stroke-dasharray: 2 3; }
+.pv-mark { stroke: var(--pv-text); stroke-dasharray: 2 2; }
+
+.pv-flow { stroke: var(--pv-rule); stroke-width: 1.5; }
+.pv-stage { fill: var(--pv-page); stroke-width: 1.4; }
+.pv-stage.pv-current { fill: var(--pv-panel); stroke-width: 3; }
+.pv-stage-drive { stroke: var(--pv-drive); }
+.pv-stage-q { stroke: var(--pv-q); }
+.pv-stage-link { stroke: var(--pv-classical); }
+.pv-svg .pv-q-text { fill: var(--pv-q); }
+.pv-svg .pv-link-text { fill: var(--pv-classical); }
+.pv-svg .pv-code { font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace); }
+
+.pv-track { fill: var(--pv-grid); }
+.pv-share { fill: var(--pv-classical); }
+.pv-case-band { fill: transparent; }
+.pv-case-band.pv-current { fill: var(--pv-panel); stroke: var(--pv-rule); }
+
+.pulse-visual .pv-caption {
+  min-height: 2.8em;
+  margin: 0.3rem 0;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.pulse-visual .pv-bar { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+
+.pulse-visual .pv-button {
+  color: var(--pst-color-text-base, inherit);
+  background: var(--pst-color-surface, transparent);
+  border: 1px solid var(--pst-color-border, #c8c8c8);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.pulse-visual .pv-button:focus-visible {
+  outline: 2px solid var(--pst-color-primary, #76b900);
+  outline-offset: 2px;
+}

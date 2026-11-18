@@ -48,9 +48,9 @@ def test_export_lists_every_timed_operation_with_its_waveform_and_tone():
     assert program["format"] == FORMAT == "cudaq-pulse.controller/1"
     assert json.loads(json.dumps(program)) == program
     assert program["lines"] == [
-        {"line": 0, "role": "drive", "qudit": 0},
-        {"line": 1, "role": "readout", "qudit": 0},
-        {"line": 2, "role": "drive", "qudit": 1},
+        {"line": 0, "role": "drive", "qudit": 0, "native_frequency_hz": 5.0e9},
+        {"line": 1, "role": "readout", "qudit": 0, "native_frequency_hz": 5.0e9},
+        {"line": 2, "role": "drive", "qudit": 1, "native_frequency_hz": 5.1e9},
     ]
     kinds = [(e["kind"], e["line"], e["start_cycles"], e["end_cycles"]) for e in program["events"]]
     assert kinds == [
@@ -196,10 +196,42 @@ def idle_readout_line(q, r):
 
 def test_a_line_is_listed_with_its_role_even_when_it_only_waits():
     program = _program(idle_readout_line)
-    assert program["lines"] == [{"line": 0, "role": "readout", "qudit": 0}]
+    assert program["lines"] == [
+        {"line": 0, "role": "readout", "qudit": 0, "native_frequency_hz": 5.0e9}
+    ]
     (event,) = program["events"]
     assert event["kind"] == "wait" and event["end_cycles"] == 10
     assert "waveform" not in event
+
+
+@pulse.kernel
+def other_tones(q):
+    d = get_drive_line(q)
+    r = get_readout_line(q)
+    drive(d, square(16, 0.1), tone=d.tones[(1, 2)])
+    shift_frequency(d.tone, 2.0e6)
+    drive(d, square(16, 0.1))
+    sync(d, r)
+    readout(r, square(100, 0.05))
+
+
+def test_each_line_gives_the_frequency_of_its_own_tone():
+    qs = pulse.quantum_system("transmon_surface17", layout=[0])
+    physical = qs.physical_qudits[qs.layout[0]]
+    assert physical.readout is not None
+    lowered = pulse.compile(other_tones, quantum_system=qs).lower(qs.qudits[0])
+    flat = lowered.export_to_controller()
+    native = {line["role"]: line["native_frequency_hz"] for line in flat["lines"]}
+    assert native == {"drive": physical.frequency_hz, "readout": physical.readout.frequency_hz}
+    # No drive plays the line's own tone at its own frequency; the line gives it.
+    played = [e["frequency_hz"] for e in flat["events"] if e["kind"] == "drive"]
+    assert native["drive"] not in played
+    assert played[1] == pytest.approx(native["drive"] + 2.0e6)
+    structured = lowered.export_to_controller(version=2)
+    assert [line["native_frequencies_hz"] for line in structured["lines"]] == [
+        [native[line["role"]]] for line in structured["lines"]
+    ]
+    assert controller_module.unroll(structured)["lines"] == flat["lines"]
 
 
 def test_export_samples_envelopes_at_a_multiple_of_the_clock():
@@ -434,6 +466,123 @@ def test_only_the_controller_limits_the_amplitude():
     for wrong in (0, -1.0, math.inf, math.nan, True, "1"):
         with pytest.raises(pulse.InvalidValueError, match="max_amplitude must be a positive"):
             Controller(max_amplitude=wrong)  # type: ignore[arg-type]
+
+
+@pulse.kernel
+def short_pulses(q, r):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    drive(d, square(8, 0.1))
+    drive(d, gaussian(16, 0.3, 4.0))
+    drive(get_drive_line(r), square(8, 0.2))
+    sync(d, ro)
+    readout(ro, square(100, 0.05))
+
+
+def test_a_controller_may_require_a_minimum_pulse_length():
+    lowered = pulse.compile(short_pulses).lower(Q[0], Q[1])
+    assert check(lowered, Controller()) == check(lowered, Controller(min_pulse_cycles=8)) == []
+    assert check(lowered, Controller(min_pulse_cycles=16)) == [
+        "line 0 (drive of qudit 0): the drive at 0 lasts 8 cycles; the controller plays none "
+        "shorter than 16 (Controller.min_pulse_cycles)",
+        "line 2 (drive of qudit 1): the drive at 116 lasts 8 cycles; the controller plays none "
+        "shorter than 16 (Controller.min_pulse_cycles)",
+    ]
+    found = check(lowered, Controller(min_pulse_cycles=101))
+    assert [f.split(": the ")[1].split(" lasts")[0] for f in found] == [
+        "drive at 0",
+        "drive at 8",
+        "readout at 24",
+        "drive at 116",
+    ]
+    # In the controller's own cycles: 8 cycles of the 2 GHz program clock are 4 at 1 GHz.
+    own = check(lowered, Controller(clock_ghz=1.0, min_pulse_cycles=8))
+    assert [f.split(" lasts ")[1].split(";")[0] for f in own] == ["4 cycles", "4 cycles"]
+    machine = ControlSystem(controllers=[Controller(min_pulse_cycles=16)])
+    with pytest.raises(ControllerLimitError, match=r"lasts 8 cycles; .* shorter than 16 \("):
+        pulse.compile(short_pulses, control_system=machine).lower(Q[0], Q[1])
+    machine = ControlSystem(controllers=[Controller(min_pulse_cycles=8)])
+    program = pulse.compile(short_pulses, control_system=machine).lower(Q[0], Q[1])
+    assert program.export_to_controller()["limits"]["min_pulse_cycles"] == 8
+    assert program.export_to_controller(version=2)["controller"]["min_pulse_cycles"] == 8
+    assert "min_pulse_cycles" not in Controller().as_dict()
+    for wrong in (-1, 1.5, True, "8"):
+        with pytest.raises(pulse.InvalidValueError, match="min_pulse_cycles must be an int"):
+            Controller(min_pulse_cycles=wrong)  # type: ignore[arg-type]
+
+
+def test_each_controller_of_a_system_checks_its_own_minimum_pulse_length():
+    def system(first, second):
+        return ControlSystem(
+            controllers=[
+                Controller(drive_lines=[0], readout_lines=[0], min_pulse_cycles=first),
+                Controller(drive_lines=[1], readout_lines=[1], min_pulse_cycles=second),
+            ]
+        )
+
+    with pytest.raises(ControllerLimitError) as caught:
+        pulse.compile(short_pulses, control_system=system(16, 0)).lower(Q[0], Q[1])
+    (violation,) = caught.value.violations
+    assert "(drive of qudit 0): the drive at 0 lasts 8 cycles" in violation
+    pulse.compile(short_pulses, control_system=system(0, 8)).lower(Q[0], Q[1])
+
+
+def test_a_controller_may_cap_the_length_of_a_pulse():
+    lowered = pulse.compile(short_pulses).lower(Q[0], Q[1])
+    assert check(lowered, Controller(max_pulse_cycles=100)) == []
+    assert check(lowered, Controller(max_pulse_cycles=99)) == [
+        "line 1 (readout of qudit 0): the readout at 24 lasts 100 cycles; the controller "
+        "plays none longer than 99 (Controller.max_pulse_cycles)",
+    ]
+    found = check(lowered, Controller(max_pulse_cycles=8))
+    assert [f.split(": the ")[1].split(" lasts")[0] for f in found] == [
+        "drive at 8",
+        "readout at 24",
+    ]
+    # Both bounds: each pulse is reported once, against the bound it breaks.
+    both = check(lowered, Controller(min_pulse_cycles=16, max_pulse_cycles=16))
+    assert [f.split(" lasts ")[1].split(" (")[0] for f in both] == [
+        "8 cycles; the controller plays none shorter than 16",
+        "100 cycles; the controller plays none longer than 16",
+        "8 cycles; the controller plays none shorter than 16",
+    ]
+    # In the controller's own cycles: the 100-cycle readout of the 2 GHz program
+    # clock lasts 50 cycles at 1 GHz.
+    assert check(lowered, Controller(clock_ghz=1.0, max_pulse_cycles=50)) == []
+    (own,) = check(lowered, Controller(clock_ghz=1.0, max_pulse_cycles=49))
+    assert "the readout at 12 lasts 50 cycles" in own
+    machine = ControlSystem(controllers=[Controller(max_pulse_cycles=64)])
+    with pytest.raises(ControllerLimitError, match=r"lasts 100 cycles; .* longer than 64 \("):
+        pulse.compile(short_pulses, control_system=machine).lower(Q[0], Q[1])
+    machine = ControlSystem(controllers=[Controller(max_pulse_cycles=128)])
+    program = pulse.compile(short_pulses, control_system=machine).lower(Q[0], Q[1])
+    assert program.export_to_controller()["limits"]["max_pulse_cycles"] == 128
+    assert program.export_to_controller(version=2)["controller"]["max_pulse_cycles"] == 128
+    assert "max_pulse_cycles" not in Controller().as_dict()
+    for wrong in (0, -1, 1.5, True, "8"):
+        with pytest.raises(
+            pulse.InvalidValueError, match="max_pulse_cycles must be None or an int"
+        ):
+            Controller(max_pulse_cycles=wrong)  # type: ignore[arg-type]
+    with pytest.raises(pulse.InvalidValueError, match=r"at least min_pulse_cycles \(16\), got 8"):
+        Controller(min_pulse_cycles=16, max_pulse_cycles=8)
+    Controller(min_pulse_cycles=16, max_pulse_cycles=16)
+
+
+def test_each_controller_of_a_system_checks_its_own_maximum_pulse_length():
+    def system(first, second):
+        return ControlSystem(
+            controllers=[
+                Controller(drive_lines=[0], readout_lines=[0], max_pulse_cycles=first),
+                Controller(drive_lines=[1], readout_lines=[1], max_pulse_cycles=second),
+            ]
+        )
+
+    with pytest.raises(ControllerLimitError) as caught:
+        pulse.compile(short_pulses, control_system=system(64, None)).lower(Q[0], Q[1])
+    (violation,) = caught.value.violations
+    assert "(readout of qudit 0): the readout at 24 lasts 100 cycles" in violation
+    pulse.compile(short_pulses, control_system=system(None, 8)).lower(Q[0], Q[1])
 
 
 def _after_a_loop(n: int) -> pulse.Kernel:
@@ -726,6 +875,83 @@ def test_export_carries_calls_with_their_measurements_and_waits():
     assert all(line["role"] in ("drive", "readout") for line in program["lines"])
 
 
+@pulse.kernel
+def settled_by_float(q, wait_ns: float):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    for _ in range(2):
+        drive(d, square(40, 0.1))
+        wait(d, wait_ns * pulse.ns, bounds=(100 * pulse.ns, 200 * pulse.us))
+        sync(d, ro)
+        if check_bit.submit([readout(ro, square(300, 0.05))]).result()[0]:
+            drive(d, square(40, 0.1))
+        sync(d, ro)
+
+
+@pulse.kernel
+def settled_by_int(q, wait_ns: int):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    for _ in range(2):
+        drive(d, square(40, 0.1))
+        wait(d, wait_ns * pulse.ns)
+        sync(d, ro)
+        if check_bit.submit([readout(ro, square(300, 0.05))]).result()[0]:
+            drive(d, square(40, 0.1))
+        sync(d, ro)
+
+
+@pulse.kernel
+def settled(q):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    for _ in range(2):
+        drive(d, square(40, 0.1))
+        wait(d, 50 * pulse.us)
+        sync(d, ro)
+        if check_bit.submit([readout(ro, square(300, 0.05))]).result()[0]:
+            drive(d, square(40, 0.1))
+        sync(d, ro)
+
+
+def _call_times(calls):
+    return [(c["submit_cycles"], c["taken_cycles"]) for c in calls]
+
+
+def _event_call_times(events):
+    submits = [e["start_cycles"] for e in events if e["kind"] == "submit"]
+    answers = [e["start_cycles"] for e in events if e["kind"] == "answer"]
+    return list(zip(submits, answers, strict=True))
+
+
+@pytest.mark.parametrize(
+    ("kernel", "arguments"),
+    [(settled_by_float, (50_000.0,)), (settled_by_int, (50_000,)), (settled, ())],
+    ids=["float", "int", "literal"],
+)
+def test_calls_are_timed_as_the_events_after_a_wait_an_argument_sets(kernel, arguments):
+    from cudaq_pulse.classical.emulation import emulate
+
+    lowered = pulse.compile(kernel).lower(Q[0], *arguments)
+    flat = lowered.export_to_controller()
+    structured = lowered.export_to_controller(version=2)
+    times = _event_call_times(flat["events"])
+    # Each shot's readout comes after the 50 us wait: 100,000 cycles at 2 GHz.
+    assert len(times) == 2 and times[0][0] > 100_000
+    assert _event_call_times(controller_module.unroll(structured)["events"]) == times
+    report = [(c.submit_cycles, c.taken_cycles) for c in lowered.classical_report()]
+    assert report == times
+    assert _call_times(flat["calls"]) == times
+    assert _call_times(structured["calls"]) == times
+    assert _call_times(controller_module.unroll(structured)["calls"]) == times
+    emulated = lowered.export_to_emulator()
+    assert _call_times(emulated["calls"]) == times
+    assert _event_call_times(emulated["events"]) == times
+    clock = lowered.quantum_system.clock_ghz
+    traces = emulate(lowered, seed=1).calls[0]
+    assert [round(t.submit_ns * clock) for t in traces] == [s for s, _ in times]
+
+
 @pulse.classical(max_latency_ns=400)
 def two_bits(bits: pulse.Bits) -> pulse.Length[pulse.Bits, 2]:
     return [bits[0], not bits[0]]
@@ -849,6 +1075,74 @@ def test_a_controller_without_timeouts_rejects_a_timed_wait():
         pulse.compile(timed_out, control_system=ControlSystem(controllers=[limits])).lower(Q[0])
 
 
+@pulse.classical(max_latency_ns=400, latency_mode="timeout", timeout_ns=250)
+def timed_bits(bits: pulse.Bits) -> pulse.Length[pulse.Bits, 2]:
+    return [bits[0], not bits[0]]
+
+
+def _answer_waits(program):
+    return [(e["wait"], e.get("timeout_ns")) for e in program["events"] if e["kind"] == "answer"]
+
+
+def test_a_function_declared_with_a_timeout_exports_a_timeout_wait():
+    # It exported "bounded" with no timeout, though result 0 is the flag.
+    @pulse.kernel
+    def k(q, r):
+        d = get_drive_line(q)
+        e = get_drive_line(r)
+        ro = get_readout_line(q)
+        m = readout(ro, square(100, 0.05))
+        ok, fix = timed_bits.submit([m]).result()
+        sync(d, e, ro)
+        if ok:
+            drive(d, square(20, 0.3))
+        if fix[1]:
+            drive(e, square(20, 0.3))
+
+    lowered = pulse.compile(k, schedule="rcp").lower(Q[0], Q[1])
+    flat = lowered.export_to_controller()
+    structured = lowered.export_to_controller(version=2)
+    unrolled = controller_module.unroll(structured)
+    expected = [(0, True, "answer", 0), (1, True, "answer", 2)]
+    for program in (flat, structured, unrolled):
+        assert _answer_waits(program) == [("timeout", pytest.approx(250))]
+        assert _answer_conditions(program) == expected
+    assert json.loads(json.dumps(structured)) == structured
+
+
+def test_a_timeout_at_the_call_outranks_the_functions():
+    @pulse.kernel
+    def k(q):
+        d = get_drive_line(q)
+        ro = get_readout_line(q)
+        m = readout(ro, square(100, 0.05))
+        ok, _ = timed_bits.submit([m]).result(timeout=150)
+        sync(d, ro)
+        if ok:
+            drive(d, square(20, 0.3))
+
+    lowered = pulse.compile(k, schedule="rcp").lower(Q[0])
+    structured = lowered.export_to_controller(version=2)
+    for program in (
+        lowered.export_to_controller(),
+        structured,
+        controller_module.unroll(structured),
+    ):
+        assert _answer_waits(program) == [("timeout", pytest.approx(150))]
+
+
+def test_a_function_without_a_timeout_still_exports_a_bounded_wait():
+    lowered = pulse.compile(decoded, schedule="rcp").lower(Q[0])
+    structured = lowered.export_to_controller(version=2)
+    for program in (
+        lowered.export_to_controller(),
+        structured,
+        controller_module.unroll(structured),
+    ):
+        assert _answer_waits(program) == [("bounded", None)]
+    assert "timeout_ns" not in next(e for e in structured["events"] if e["kind"] == "answer")
+
+
 # ── Values known at run time ────────────────────────────────────────────────
 
 
@@ -885,8 +1179,9 @@ def test_values_from_answers_are_exported_as_expressions():
     }
     [shift] = first["frame_updates"]
     [phase] = second["frame_updates"]
-    # Each change is where its tone is free: the shot's start, then the end
-    # of the drive before it.
+    wait = next(e for e in events if e["kind"] == "wait")
+    # Each change is where the program makes it on its tone's line: the
+    # shot's start, then the end of the wait before it.
     assert shift == {
         "id": shift["id"],
         "op": "shift_frequency",
@@ -897,7 +1192,7 @@ def test_values_from_answers_are_exported_as_expressions():
     assert phase == {
         "id": phase["id"],
         "op": "shift_phase",
-        "start_cycles": first["end_cycles"],
+        "start_cycles": wait["end_cycles"],
         "value": {"answer": answer, "result": 0},
         "conditions": [],
     }
@@ -906,7 +1201,7 @@ def test_values_from_answers_are_exported_as_expressions():
     readout = next(e for e in events if e["kind"] == "readout")
     # The readout tone's frame does not depend on run time.
     assert first["tone"] == second["tone"] and "tone" not in readout
-    wait = next(e for e in events if e["kind"] == "wait")
+    assert wait["start_cycles"] == first["end_cycles"]
     assert (wait["min_cycles"], wait["max_cycles"]) == (8, 400)
 
     def answers(expr):
@@ -938,24 +1233,25 @@ def retuned_by_answer(q):
 
 def retuned_by_answer_changes(events):
     """The places of the frame changes of `retuned_by_answer`'s export, checked
-    against its drives: each drive takes the change after the drive before
-    it, at that drive's end, and its own, at its start (a change before the
-    first pulse of an iteration on a tone the iteration before played is
+    against its drives and waits: each drive takes the change after the wait
+    before it, at that wait's end, and its own, at its start (a change before
+    the first pulse of an iteration on a tone the iteration before played is
     placed at the pulse); the last change is a frame update where the last
-    drive ends. Returns every change's (id, start_cycles)."""
+    wait ends. Returns every change's (id, start_cycles)."""
     drives = [e for e in events if e["kind"] == "drive"]
+    waits = [e for e in events if e["kind"] == "wait"]
     [kept] = (e for e in events if e["kind"] == "frame_update")
-    assert len(drives) == 3
+    assert len(drives) == len(waits) == 3
     places = []
     for k, drive in enumerate(drives):
         made = [u["start_cycles"] for u in drive["frame_updates"]]
         expected = [drive["start_cycles"]]
         if k:
-            expected.insert(0, drives[k - 1]["end_cycles"])
+            expected.insert(0, waits[k - 1]["end_cycles"])
         assert made == expected
         places += [(u["id"], u["start_cycles"]) for u in drive["frame_updates"]]
     [last] = kept["frame_updates"]
-    assert last["start_cycles"] == kept["start_cycles"] == drives[-1]["end_cycles"]
+    assert last["start_cycles"] == kept["start_cycles"] == waits[-1]["end_cycles"]
     return [*places, (last["id"], last["start_cycles"])]
 
 

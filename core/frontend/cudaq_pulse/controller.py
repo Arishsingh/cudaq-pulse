@@ -55,8 +55,9 @@ import copy
 import math
 import os
 import sys
+import threading
 import types
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
@@ -79,6 +80,7 @@ if TYPE_CHECKING:
     from fractions import Fraction
 
     import numpy as np
+    import numpy.typing as npt
 
     from . import _clocks
     from ._classical_report import ClassicalCall
@@ -90,6 +92,7 @@ if TYPE_CHECKING:
     from ._controller_cost import ProcessorUsage as ProcessorUsage
     from ._controller_cost import UsageReport as UsageReport
     from ._controller_cost import usage as usage
+    from ._device import QuantumSystem
     from ._op_classes import ExpressionTerm as ExpressionTerm
     from ._op_classes import OpClass as OpClass
     from ._op_tables import OpCounts as OpCounts
@@ -97,6 +100,7 @@ if TYPE_CHECKING:
     from ._system import Controller, ControlSystem
     from ._system import DriveLine as DriveLine
     from ._system import ReadoutLine as ReadoutLine
+    from ._system import UpdateBus as UpdateBus
     from .compiler import ScheduledKernel
 
     # The real and the imaginary parts of a waveform's samples.
@@ -118,6 +122,7 @@ __all__ = [
     "OpCycles",
     "ProcessorUsage",
     "ReadoutLine",
+    "UpdateBus",
     "UsageReport",
     "WaveformMemoryScope",
     "check",
@@ -496,7 +501,7 @@ def _failed(what: str) -> ExecutionError:
 
 def sample_waveform(
     node: Mapping[str, Any], duration_cycles: int, samples_per_cycle: float = 1
-) -> np.ndarray:
+) -> npt.NDArray[np.complex128]:
     """The complex envelope of a waveform, ``samples_per_cycle`` per cycle.
 
     Sample ``k`` is the envelope at ``k / samples_per_cycle`` cycles from the
@@ -848,8 +853,43 @@ def export(
     controller are exceeded. On a control system of several
     controllers, the program of the one *controller* indexes (see
     ``_export_part``); without it, a program on more than one is a
-    ``ValueError``.
+    ``ValueError``. Without runtime qudits, each line has the frequency of
+    its own tone (``_native_frequencies``).
     """
+    program = _export(lowered, sample_rate_ghz, controller, version)
+    if lowered._role is None or lowered._role.slots == 0:
+        _native_frequencies(program, lowered.quantum_system)
+    return program
+
+
+def _native_frequencies(program: dict[str, Any], quantum_system: Any) -> None:
+    """Give each line of *program* the frequency of its own tone, at which
+    every shot starts its frame: its qudit's 0-1 frequency on a drive line,
+    its readout's frequency (else the 0-1 frequency) on a readout line, as
+    the compiled module records them; in place. Format /1 gives its qudit's
+    (``native_frequency_hz``), format /2 one for each of its ``qudits``
+    (``native_frequencies_hz``)."""
+    lines = program["lines"]
+    structured = program["format"] == _STRUCTURED
+    reached = [q for line in lines for q in (line["qudits"] if structured else (line["qudit"],))]
+    if not reached:
+        return
+    _, drive, readout = quantum_system._frequency_tables(max(reached) + 1)
+    for line in lines:
+        table = drive if line["role"] == "drive" else readout
+        if structured:
+            line["native_frequencies_hz"] = [table[q] for q in line["qudits"]]
+        else:
+            line["native_frequency_hz"] = table[line["qudit"]]
+
+
+def _export(
+    lowered: ScheduledKernel,
+    sample_rate_ghz: float | None,
+    controller: int | None,
+    version: int,
+) -> dict[str, Any]:
+    """``export`` without the lines' native frequencies."""
     from .classical.wire import _export as emulation
 
     machine = lowered.options.machine
@@ -1507,6 +1547,9 @@ def _handles(
             {"line": line["line"], "role": line["role"], "qudit": line["qudits"][0]}
             for line in program["lines"]
         ]
+        for handle, line in zip(same, program["lines"], strict=True):
+            if "native_frequencies_hz" in line:
+                handle["native_frequency_hz"] = line["native_frequencies_hz"][0]
         return same, {(line["line"], line["qudit"]): line["line"] for line in same}, None
     played: set[tuple[int, int]] = set()
     stack = [program["events"]]
@@ -1533,6 +1576,9 @@ def _handles(
             if shared:
                 entry["qudits"] = list(line["qudits"])
                 entry["max_concurrent_tones"] = line["max_concurrent_tones"]
+            if "native_frequencies_hz" in line:
+                at = line["qudits"].index(qudit)
+                entry["native_frequency_hz"] = line["native_frequencies_hz"][at]
             handle_of[(line["line"], qudit)] = len(lines)
             mine.append(len(lines))
             lines.append(entry)
@@ -1674,29 +1720,234 @@ def _part(
     lines, events, frames, _, _ = _walk(lowered, slots=None)
     owners, _ = system._owners(lines)
     parts = system._parts(events, owners)
-    count = len(system.controllers)
+    index = _part_index(
+        controller,
+        len(system.controllers),
+        _known_owners(owners),
+        lambda: sorted({c for part in parts for c in part}),
+    )
+    return lines, events, owners, parts, index, frames
+
+
+def _known_owners(owners: Sequence[int | None]) -> list[int]:
+    return sorted({o for o in owners if o is not None})
+
+
+def _part_index(
+    controller: int | None, count: int, used: list[int], calling: Callable[[], list[int]]
+) -> int:
+    """The controller of *count* whose part is wanted: *controller*, else
+    the only one that plays a line (of *used*), else the only one that makes
+    a call (*calling* gives them)."""
     if controller is not None:
-        index = _controller_index(controller, count)
-    else:
-        used = sorted({o for o in owners if o is not None})
+        return _controller_index(controller, count)
+    if len(used) > 1:
+        raise InvalidValueError(
+            f"the program plays lines of {len(used)} controllers ("
+            + ", ".join(f"controllers[{i}]" for i in used)
+            + f"); pass controller= (0 to {count - 1}) to export one controller's program"
+        )
+    if not used:
+        # Without lines, the program is its calls.
+        used = calling()
         if len(used) > 1:
             raise InvalidValueError(
-                f"the program plays lines of {len(used)} controllers ("
+                f"the program's calls are made on {len(used)} controllers ("
                 + ", ".join(f"controllers[{i}]" for i in used)
-                + f"); pass controller= (0 to {count - 1}) to export one controller's program"
+                + f"); pass controller= (0 to {count - 1}) to export one controller's "
+                "program"
             )
-        if not used:
-            # Without lines, the program is its calls.
-            used = sorted({c for part in parts for c in part})
-            if len(used) > 1:
-                raise InvalidValueError(
-                    f"the program's calls are made on {len(used)} controllers ("
-                    + ", ".join(f"controllers[{i}]" for i in used)
-                    + f"); pass controller= (0 to {count - 1}) to export one controller's "
-                    "program"
-                )
-        index = used[0] if used else 0
-    return lines, events, owners, parts, index, frames
+    return used[0] if used else 0
+
+
+# The nested values of an event that converting it to its controller's cycles
+# rewrites (``_clocks.off_grid``).
+_CONVERTED = ("frame_updates", "waveform")
+
+
+class _Parts:
+    """What the exports of each controller's part of one program share: the
+    program walked in program cycles and checked against the whole control
+    system, once. A program keeps it (``ScheduledKernel._export_parts``)
+    until every controller's part has been exported, and each export copies
+    the events it takes, so that what it returns shares nothing with the
+    next. Once the check fails, only the violations and what chooses the
+    controller are kept."""
+
+    __slots__ = (
+        "key",
+        "lines",
+        "events",
+        "frames",
+        "owners",
+        "parts",
+        "used",
+        "calling",
+        "violations",
+        "tone_slots",
+        "plan",
+        "slot_names",
+        "members",
+        "played",
+        "synced",
+        "exported",
+        "lock",
+    )
+
+    def __init__(self, lowered: ScheduledKernel, system: Any) -> None:
+        self.key = _parts_key(lowered)
+        self.lines, self.events, self.frames, _, _ = _walk(lowered, slots=None)
+        self.owners, _ = system._owners(self.lines)
+        self.parts: list[list[int]] | None = system._parts(self.events, self.owners)
+        self.used = _known_owners(self.owners)
+        self.calling: list[int] | None = None
+        self.violations: list[str] | None = None
+        self.tone_slots: Mapping[int, int] | None = None
+        self.plan: _ExportPlan | None = None
+        self.slot_names: dict[int, str] | None = None
+        self.members: list[list[int]] = []
+        self.played: list[list[dict[str, Any]]] = []
+        self.synced: dict[int, dict[int, list[int]]] = {}
+        self.exported: set[int] = set()
+        self.lock = threading.Lock()
+
+    def calls(self) -> list[int]:
+        """The controllers that take part in the program's calls."""
+        if self.calling is None:
+            assert self.parts is not None
+            self.calling = sorted({c for part in self.parts for c in part})
+        return self.calling
+
+    def check(self, lowered: ScheduledKernel, system: Any, clocks: Any) -> list[str]:
+        """The violations of the whole control system, found once; then what
+        every part needs of the whole program."""
+        with self.lock:
+            if self.violations is None:
+                self.violations = self._checked(lowered, system, clocks)
+            return self.violations
+
+    def _checked(self, lowered: ScheduledKernel, system: Any, clocks: Any) -> list[str]:
+        events = self.events
+        # The checks count each controller's events in its cycles, in place (a
+        # controller on another clock, or timing in steps what is computed at
+        # run time): each event's times and its frame updates' and waveform's.
+        checked = events
+        if clocks is not None and any(
+            c.ratio != 1 or (c.grid > 1 and _computes_at_run_time(lowered))
+            for c in clocks.controllers
+        ):
+            memo: dict[int, Any] = {}
+            checked = [
+                {**e, **{k: copy.deepcopy(e[k], memo) for k in _CONVERTED if k in e}}
+                for e in events
+            ]
+        violations: list[str] = system._violations(
+            lowered, self.lines, checked, clocks, (), (), True, None, None
+        )
+        if violations:
+            self.calls()
+            self.lines, self.events, self.frames, self.owners, self.parts = [], [], {}, [], []
+            return violations
+        if system._shares:
+            from ._shared_lines import flat
+
+            # From the whole program, in program cycles: a shared line is one
+            # controller's, and its slots are those of every export of the
+            # program.
+            self.tone_slots = flat(system, self.lines, events)
+        role = lowered._role
+        if role is not None:
+            plan = role.export_plan
+            if plan is None or len(plan[1]) != len(events):
+                slots: list[int] = []
+                walked = _walk(lowered, slots=slots)[0]
+                plan = _export_plan(lowered, role, slots, walked, events)
+            self.plan = plan
+        count = len(system.controllers)
+        self.members = [[] for _ in range(count)]
+        assert self.parts is not None
+        for position, part in enumerate(self.parts):
+            for c in part:
+                self.members[c].append(position)
+        self.played = [[] for _ in range(count)]
+        for line, owner in zip(self.lines, self.owners, strict=True):
+            if owner is not None:
+                self.played[owner].append(line)
+        owners = self.owners
+        for position, event in enumerate(events):
+            if event["kind"] == "sync":
+                synced: dict[int, list[int]] = {}
+                for line in event["lines"]:
+                    owner = owners[line]
+                    if owner is not None:
+                        synced.setdefault(owner, []).append(line)
+                self.synced[position] = synced
+        return violations
+
+    def names(self, role: Any) -> dict[int, str]:
+        """``_slot_names`` of the program's events with their symbols."""
+        if self.slot_names is None:
+            names: dict[int, str] = {}
+            if role is not None and self.plan is not None:
+                for event, template in zip(self.events, self.plan[1], strict=True):
+                    if template is not None and "qudit" in template[0]:
+                        names[event["line"]] = template[0]["qudit"]
+            self.slot_names = names
+        return self.slot_names
+
+
+def _parts_key(lowered: ScheduledKernel) -> tuple[Any, ...]:
+    """What a program's walk depends on that a program keeps, compared by
+    identity: none of it is replaced once the program is made."""
+    return (lowered.options, lowered.quantum_system, lowered.arguments, lowered.carriers)
+
+
+_parts_lock = threading.Lock()
+
+
+def _shared_parts(lowered: ScheduledKernel, system: Any) -> _Parts:
+    """The ``_Parts`` of *lowered*: the one it keeps for its key, else new,
+    kept when its control system has more than one controller."""
+    with _parts_lock:
+        kept: _Parts | None = getattr(lowered, "_export_parts", None)
+    if kept is not None:
+        key = _parts_key(lowered)
+        if all(a is b for a, b in zip(kept.key, key, strict=True)):
+            return kept
+    shared = _Parts(lowered, system)
+    if len(system.controllers) > 1:
+        with _parts_lock:
+            lowered._export_parts = shared
+    return shared
+
+
+def _exported(lowered: ScheduledKernel, shared: _Parts, index: int, count: int) -> None:
+    """Note that the part of controller *index* of *count* is exported: once
+    every part is, *lowered* keeps *shared* no longer."""
+    with _parts_lock:
+        shared.exported.add(index)
+        if len(shared.exported) == count and getattr(lowered, "_export_parts", None) is shared:
+            del lowered._export_parts
+
+
+def _copied(value: Any, memo: dict[int, Any]) -> Any:
+    """*value*, export data, with its dicts and lists copied; one shared by
+    two values in *memo*'s copy stays shared."""
+    cls = value.__class__
+    if cls is dict:
+        found = memo.get(id(value))
+        if found is None:
+            found = memo[id(value)] = {}
+            for key, item in value.items():
+                found[key] = _copied(item, memo)
+        return found
+    if cls is list:
+        found = memo.get(id(value))
+        if found is None:
+            found = memo[id(value)] = []
+            found.extend([_copied(item, memo) for item in value])
+        return found
+    return value
 
 
 def _export_part(
@@ -1707,46 +1958,46 @@ def _export_part(
     takes part in (see ``ControlSystem._parts``); a sync lists its lines
     alone. Line and event ids are the program's, so an event names one
     another controller plays (a readout whose outcome it is sent) by the id
-    that controller's program gives it."""
-    import copy
-
+    that controller's program gives it. The walk and the check of the whole
+    system are shared by the exports of every controller (``_Parts``)."""
     from .classical.wire import _export as emulation
 
     machine = lowered.options.machine
     system = machine._system
     assert system is not None
     clocks = (lowered._generic or lowered).clocks
-    lines, events, owners, parts, index, frames = _part(lowered, controller)
-    # The checks count each controller's events in its cycles, in place.
-    checked = events if clocks is None else copy.deepcopy(events)
-    violations = system._violations(lowered, lines, checked, clocks, (), (), True, None, None)
+    count = len(system.controllers)
+    shared = _shared_parts(lowered, system)
+    index = _part_index(controller, count, shared.used, shared.calls)
+    violations = shared.check(lowered, system, clocks)
     if violations:
+        _exported(lowered, shared, index, count)
         raise _limit_error(lowered, violations)
-    if system._shares:
-        from ._shared_lines import flat
-
-        # From the whole program, in program cycles: a shared line is one
-        # controller's, and its slots are those of every export of the program.
-        tone_slots = flat(system, lines, events)
     role = lowered._role
-    plan: _ExportPlan | None = None if role is None else role.export_plan
-    if role is not None:
-        if plan is None or len(plan[1]) != len(events):
-            slots: list[int] = []
-            walked = _walk(lowered, slots=slots)[0]
-            plan = _export_plan(lowered, role, slots, walked, events)
-        for event, template in zip(events, plan[1], strict=True):
+    plan = shared.plan
+    events = shared.events
+    memo: dict[int, Any] = {}
+    mine: list[dict[str, Any]] = []
+    for position in shared.members[index]:
+        source = events[position]
+        if source["kind"] == "sync":
+            # A sync lists its lines alone.
+            synced = shared.synced[position].get(index, ())
+            event: dict[str, Any] = {
+                key: list(synced) if key == "lines" else _copied(value, memo)
+                for key, value in source.items()
+            }
+        else:
+            event = _copied(source, memo)
+        if plan is not None:
+            template = plan[1][position]
             if template is not None:
                 symbols = template[0].copy()
                 for key in template[1]:
                     symbols[key] = symbols[key][:]
                 event["symbols"] = symbols
-    mine = []
-    for event, part in zip(events, parts, strict=True):
-        if index in part:
-            if event["kind"] == "sync":
-                event["lines"] = [line for line in event["lines"] if owners[line] == index]
-            mine.append(event)
+        mine.append(event)
+    played = [_copied(line, memo) for line in shared.played[index]]
     own = None
     keys: dict[str, float] = {}
     if clocks is not None:
@@ -1756,13 +2007,14 @@ def _export_part(
         keys = _clocks.clock_keys(clocks, own)
         if own.ratio != 1 or own.grid > 1:
             alone = _clocks.ClockPlan(clocks.program_ghz, (own,), clocks.reference_clock_ghz)
-            _clocks.off_grid(alone, lines, mine, True, True, _computes_at_run_time(lowered))
+            _clocks.off_grid(alone, shared.lines, mine, True, True, _computes_at_run_time(lowered))
     clock = lowered.quantum_system.clock_ghz if own is None else own.clock_ghz
     if sample_rate_ghz is not None:
         _add_samples(mine, sample_rate_ghz, clock)
-    functions = frozenset(e["function"] for e in mine if e["kind"] in ("submit", "answer"))
+    functions: frozenset[str] = frozenset(
+        e["function"] for e in mine if e["kind"] in ("submit", "answer")
+    )
     base = emulation(lowered, False, (index, own, functions, ()))
-    played = [line for line, owner in zip(lines, owners, strict=True) if owner == index]
     exported = {
         "format": FORMAT,
         "quantum_system": lowered.quantum_system.name,
@@ -1784,13 +2036,16 @@ def _export_part(
         assert plan is not None
         exported["program_id"] = role.program_id
         exported["symbols"] = _symbols(lowered, plan[0])
+    frames = shared.frames
     if "runtime_tones" in frames:
         # A controller's part has the run-time tones of its lines, and no
         # frame_state.
-        tones = {"runtime_tones": frames["runtime_tones"]}
-        exported = _with_frames(exported, tones, _slot_names(events, role))
+        tones = {"runtime_tones": _copied(frames["runtime_tones"], memo)}
+        exported = _with_frames(exported, tones, shared.names(role))
         if system._shares:
-            _framed_slots(exported, tone_slots)
+            assert shared.tone_slots is not None
+            _framed_slots(exported, shared.tone_slots)
+    _exported(lowered, shared, index, count)
     return exported
 
 
@@ -1970,6 +2225,23 @@ def _memory(limits: Controller) -> tuple[int, int, bool, bool, list[str], bool]:
     return samples, 1, shared, True, [], False
 
 
+def _walks_every(
+    lowered: ScheduledKernel, limits: Controller, clocks: _clocks.ClockPlan | None
+) -> bool:
+    """Whether a check of *limits* walks every execution rather than a walk
+    that summarizes loops: for calls that hold the lines, and for update
+    buses with a violation to list, which the summarizing walk, without
+    frame updates, cannot. On one clock the native check says whether
+    there is one (``_bus_fast``); a call binds a runtime qudit's bus."""
+    if limits.blocks_on_calls:
+        return True
+    if not limits.update_buses:
+        return False
+    if not _one_clock(clocks) or (lowered._role is not None and lowered._role.slots > 0):
+        return True
+    return bool(_bus_fast(lowered, lowered._concrete(), limits))
+
+
 def _checks_natively(limits: Controller, clocks: _clocks.ClockPlan | None) -> bool:
     """Whether the native check counts every limit of *limits* on *clocks*."""
     return (
@@ -2012,6 +2284,11 @@ def _native_check(
     # Any found sends the check to its walk, which counts the amplitudes too.
     if limits.max_amplitude is not None and not found:
         found.extend(_amplitude_violations(lowered, module, limits.max_amplitude, unresolved))
+    if _checks_pulse_lengths(limits) and not found:
+        found.extend(_pulse_length_violations(lowered, module, limits))
+    # A value a call sets is an update here; the walk tells it apart.
+    if limits.update_buses and not found:
+        found.extend(_bus_fast(lowered, module, limits))
     return found
 
 
@@ -2063,7 +2340,7 @@ def _limit_violations(
             _native_clock(clocks),
             False,
             # Held lines are checked call by call, every iteration walked.
-            summary=None if limits.blocks_on_calls else (repeats, periods),
+            summary=None if _walks_every(lowered, limits, clocks) else (repeats, periods),
         )
         if not repeats:
             break
@@ -2125,6 +2402,8 @@ def _violations(
     natives: Sequence[int] | None = None,
     *,
     held: bool = True,
+    timed: Sequence[Mapping[str, Any]] | None = None,
+    answers: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """The limits *events* exceed. With *clocks*, the events are in the
     controller's own cycles: the native walk's, with *off* its line events
@@ -2137,7 +2416,9 @@ def _violations(
     *unresolved* instead, to be checked with them. *natives* has, by event
     index, the qudit argument whose native frequency the event plays, or -1.
     *held* false leaves the lines held by calls to the caller, which knows
-    the controller each call holds."""
+    the controller each call holds. *timed* and *answers*, when the caller
+    has them, are the timed drives and readouts of *events* and its answers,
+    in order; then only the update-bus check reads all of *events*."""
     if clocks is None:
         found = []
     else:
@@ -2150,9 +2431,10 @@ def _violations(
             found = _clocks.off_grid(
                 clocks, lines, events, True, waveforms, _computes_at_run_time(lowered)
             )
-    timed: list[Mapping[str, Any]] = [
-        e for e in events if e["kind"] in _PLAYED and e["end_cycles"] is not None
-    ]
+    if timed is None:
+        timed = [e for e in events if e["kind"] in _PLAYED and e["end_cycles"] is not None]
+    if answers is None:
+        answers = () if limits.supports_timeouts else [e for e in events if e["kind"] == "answer"]
     if limits.max_pulses is not None and len(timed) > limits.max_pulses:
         found.extend(_event_count(timed, limits.max_pulses, limits._runs_loops))
     by_line: dict[int, list[Mapping[str, Any]]] = {}
@@ -2163,6 +2445,7 @@ def _violations(
     shared = limits.waveform_memory is WaveformMemoryScope.SHARED
     stored: dict[Any, int] = {}
     unknown_stored = 0
+    peaks: dict[str, float | None] = {}
     for line, items in sorted(by_line.items()):
         for previous, event in _pairs(items):
             distance = event["start_cycles"] - previous["start_cycles"]
@@ -2192,7 +2475,15 @@ def _violations(
                 if len(tones) + count > limits.max_frequencies_per_line:
                     unresolved.append(f"line {line}: tone frequencies")
         if limits.max_amplitude is not None:
-            found.extend(_over_amplitude(lines[line], items, limits.max_amplitude, unresolved))
+            found.extend(
+                _over_amplitude(lines[line], items, limits.max_amplitude, unresolved, peaks)
+            )
+        if _checks_pulse_lengths(limits):
+            for e in items:
+                duration = e["end_cycles"] - e["start_cycles"]
+                violation = _pulse_length(lines[line], e["kind"], duration, limits)
+                if violation is not None:
+                    found.append(f"{violation[0]}{e['start_cycles']}{violation[1]}")
         if limits.waveform_memory_samples is not None:
             shapes = stored if shared else {}
             unknown_samples = 0
@@ -2238,6 +2529,8 @@ def _violations(
                         f"{event['start_cycles']} starts before the detector is free at {free} "
                         f"(the readout of qudit {previous['qudit']} at {previous['start_cycles']})"
                     )
+    if limits.update_buses:
+        found.extend(_bus_violations(lowered, events, limits, lines, clocks, unresolved))
     if limits.feedback_latency_cycles:
         for event in timed:
             for condition in event["conditions"]:
@@ -2256,9 +2549,7 @@ def _violations(
                         )
     if not limits.supports_timeouts:
         functions = {fn.name: fn for fn in lowered.classical}
-        for event in events:
-            if event["kind"] != "answer":
-                continue
+        for event in answers:
             fn = functions.get(event["function"])
             if event["wait"] == "timeout" or (fn is not None and fn.latency_mode == "timeout"):
                 found.append(
@@ -2282,6 +2573,239 @@ def _held(lowered: ScheduledKernel) -> list[str]:
         _held_text(submit, call, event)
         for submit, call, event in _played_while_out(events, lowered.classical_report())
     ]
+
+
+# How far apart two phases may be and still be the same, in radians.
+_PHASE_TOLERANCE = 1e-6
+
+
+def _bus_violations(
+    lowered: ScheduledKernel,
+    events: Sequence[Mapping[str, Any]],
+    limits: Controller,
+    lines: Sequence[Mapping[str, Any]],
+    clocks: _clocks.ClockPlan | None,
+    unresolved: list[str] | None,
+) -> list[str]:
+    """The updates (``_updates``) on one of ``limits.update_buses`` that
+    start less than its ``cycles_per_update`` after the update before them
+    on the bus, on one path; *events* as ``_violations`` takes them. With
+    *unresolved*, a bus whose updates need the call's values is noted there
+    instead."""
+    if clocks is not None and clocks.owners is None:
+        clock_ghz = clocks.controllers[0].clock_ghz
+    else:
+        clock_ghz = lowered.quantum_system.clock_ghz
+    clashes = _bus_clashes(lowered.quantum_system, events, limits, lines, clock_ghz, unresolved)
+    return [_clash_text(limits, *clash) for clash in clashes]
+
+
+def _clash_text(
+    limits: Controller,
+    index: int,
+    previous: Mapping[str, Any],
+    event: Mapping[str, Any],
+    gap: int,
+) -> str:
+    bus = limits.update_buses[index]
+    return (
+        f"update bus {index} ({bus._named()}): the {event['kind']} on line "
+        f"{event['line']} at {event['start_cycles']} updates its tone {gap} cycles "
+        f"after the {previous['kind']} on line {previous['line']} at "
+        f"{previous['start_cycles']}; the bus carries one update per "
+        f"{bus.cycles_per_update} cycles (Controller.update_buses)"
+    )
+
+
+def _bus_clashes(
+    target: QuantumSystem,
+    events: Sequence[Mapping[str, Any]],
+    limits: Controller,
+    lines: Sequence[Mapping[str, Any]],
+    clock_ghz: float,
+    unresolved: list[str] | None,
+    cycles: Sequence[int] | None = None,
+) -> list[tuple[int, Mapping[str, Any], Mapping[str, Any], int]]:
+    """(bus, previous, update, gap) for each update on one of
+    ``limits.update_buses`` that starts less than its *cycles* (by bus;
+    else its ``cycles_per_update``) after the update before it on the bus,
+    on one path, in time order on each bus; *events* in cycles of
+    *clock_ghz*, of a program on quantum system *target*."""
+    # A controller that lists its lines plays only those.
+    plays = {(line._role, q) for line in limits._all_lines for q in line.qudits}
+    bus_of = {}
+    for line in lines:
+        handle = (line["role"], line["qudit"])
+        if line["qudit"] < 0 and unresolved is not None:
+            # Which bus a runtime qudit's line is on, each call says.
+            unresolved.append("update buses")
+            return []
+        if plays and handle not in plays:
+            continue
+        for index, bus in enumerate(limits.update_buses):
+            if handle in bus._lines:
+                bus_of[line["line"]] = index
+    if not bus_of:
+        return []
+    updates = _updates(target, events, lines, bus_of, clock_ghz, unresolved)
+    if updates is None:
+        return []
+    if cycles is None:
+        cycles = [bus.cycles_per_update for bus in limits.update_buses]
+    found = []
+    for index in range(len(limits.update_buses)):
+        on_bus = [e for e in updates if bus_of[e["line"]] == index]
+        for previous, event in _pairs(on_bus):
+            gap = event["start_cycles"] - previous["start_cycles"]
+            if gap < cycles[index]:
+                found.append((index, previous, event, gap))
+    return found
+
+
+# A rolled loop of more trips is played at iterations 0, 1, 2 and its last
+# two only (``_bus_fast``).
+_SUMMARY_TRIPS = 5
+
+
+def _bus_fast(lowered: ScheduledKernel, module: Any, limits: Controller) -> list[str]:
+    """``_bus_violations`` on one clock, on the format /2 walk of *module*,
+    each loop it keeps rolled (each tone's frequency the same in every
+    iteration, its phase one step on) played at iterations 0, 1, 2 and its
+    last two. Whether a pulse is an update depends only on the pulse before
+    it on its line, and a clash only on the update before it on its bus;
+    from iteration 1 on, both are those of the iteration before, shifted by
+    one period and one phase step, so iterations 1 and 2 clash as every
+    later one does, iteration 0 is the entry and the last two what follows
+    the loop follows. It finds a violation if any execution has one; a
+    caller lists them all from a walk of every execution."""
+    with lowered._lock:
+        found_lines, events, _ = module.controller_program(
+            _PARAMETERS, _AMPLITUDES, False, True, _Waveforms(), exportable=False
+        )
+    lines = [{"line": i, "role": r, "qudit": q} for i, (r, q) in enumerate(found_lines)]
+    played: list[dict[str, Any]] = []
+    _copies(events, played, 0, ())
+    clock_ghz = lowered.quantum_system.clock_ghz
+    clashes = _bus_clashes(lowered.quantum_system, played, limits, lines, clock_ghz, None)
+    return [_clash_text(limits, *clash) for clash in clashes]
+
+
+def _copies(
+    events: Sequence[Mapping[str, Any]],
+    out: list[dict[str, Any]],
+    shift: int,
+    trips: tuple[int, ...],
+) -> None:
+    """The format /2 *events* as format /1 events into *out*, each rolled
+    loop at the iterations ``_bus_fast`` plays: shifted *shift* cycles, at
+    iteration *trips* of each rolled loop around them (outermost first)."""
+    for event in events:
+        kind = event["kind"]
+        if kind == "loop":
+            count = event["trips"]
+            picked: Iterable[int] = (
+                range(count) if count <= _SUMMARY_TRIPS else (0, 1, 2, count - 2, count - 1)
+            )
+            for k in picked:
+                _copies(event["body"], out, shift + k * event["period_cycles"], (*trips, k))
+            continue
+        start = event.get("start_cycles")
+        copy: dict[str, Any] = {
+            "kind": _FLAT_KINDS.get(kind, kind),
+            "index": len(out),
+            "line": event.get("line"),
+            "start_cycles": None if start is None else start + shift,
+            "conditions": event.get("conditions", []),
+            "iteration": _iteration(event.get("iteration", []), trips),
+        }
+        duration = event.get("duration_cycles")
+        copy["end_cycles"] = None if start is None or duration is None else start + shift + duration
+        tones = event.get("tones")
+        if tones is not None:
+            tone = tones[0] if len(tones) == 1 else {}
+            phase = tone.get("phase_rad")
+            if phase is not None:
+                steps = tone.get("phase_step_rad", ())
+                phase += sum(k * step for k, step in zip(trips, steps, strict=False))
+            copy["frequency_hz"] = tone.get("frequency_hz")
+            copy["phase_rad"] = phase
+        out.append(copy)
+
+
+def _iteration(given: Sequence[int | None], copies: tuple[int, ...]) -> list[int]:
+    """An event's iteration in format /2, a rolled loop's ``None``, with the
+    rolled loops' iterations *copies* in their places."""
+    rolled = iter(copies)
+    return [next(rolled, 0) if k is None else k for k in given]
+
+
+def _updates(
+    target: QuantumSystem,
+    events: Sequence[Mapping[str, Any]],
+    lines: Sequence[Mapping[str, Any]],
+    bus_of: Mapping[int, int],
+    clock_ghz: float,
+    unresolved: list[str] | None,
+) -> list[Mapping[str, Any]] | None:
+    """The events on the lines of *bus_of* that update their line's tone:
+    each frame update, and each drive or readout whose frequency, or whose
+    phase other than as its tone runs on, differs from that of the drive or
+    readout before it on its line, on one path; the first on a line is set
+    before the shot. A frequency or phase known only at run time is an
+    update. With *unresolved*, ``None`` when one waits for the call's
+    values, after noting it there."""
+    played: dict[int, list[Mapping[str, Any]]] = {}
+    found = []
+    for event in events:
+        line = event.get("line")
+        if line is None or line not in bus_of:
+            continue
+        if event["kind"] == "frame_update":
+            found.append(event)
+        elif event["kind"] in _PLAYED and event["end_cycles"] is not None:
+            played.setdefault(line, []).append(event)
+            if unresolved is not None and None in (event["frequency_hz"], event["phase_rad"]):
+                unresolved.append("update buses")
+                return None
+    reached = [lines[line]["qudit"] for line in played]
+    _, drive, readout = target._frequency_tables(max(reached, default=-1) + 1)
+    for line, items in played.items():
+        qudit = lines[line]["qudit"]
+        table = drive if lines[line]["role"] == "drive" else readout
+        native = None if qudit < 0 else table[qudit]
+        found.extend(
+            event
+            for previous, event in _pairs(items)
+            if _retunes(previous, event, native, clock_ghz)
+        )
+    return found
+
+
+def _retunes(
+    previous: Mapping[str, Any], event: Mapping[str, Any], native: float | None, clock_ghz: float
+) -> bool:
+    """Whether drive or readout *event* plays another tone than *previous*,
+    the one before it on its line: another frequency, or a phase the tone
+    does not reach by running on. A tone at its frame's frequency keeps its
+    phase; one retuned from its line's *native* frequency gains phase at the
+    detuning."""
+    before, after = previous["frequency_hz"], event["frequency_hz"]
+    if before is None or after is None or before != after:
+        return True
+    if previous["phase_rad"] is None or event["phase_rad"] is None:
+        return True
+    turned = event["phase_rad"] - previous["phase_rad"]
+    if _same_angle(turned, 0.0):
+        return False
+    if native is None:
+        return True
+    seconds = (event["start_cycles"] - previous["start_cycles"]) / clock_ghz * 1e-9
+    return not _same_angle(turned, 2.0 * math.pi * (after - native) * seconds)
+
+
+def _same_angle(a: float, b: float) -> bool:
+    off = math.remainder(a - b, 2.0 * math.pi)
+    return abs(off) < _PHASE_TOLERANCE
 
 
 def _played_while_out(
@@ -2332,14 +2856,21 @@ def _over_amplitude(
     events: Sequence[Mapping[str, Any]],
     most: float,
     unresolved: list[str] | None = None,
+    peaks: dict[str, float | None] | None = None,
 ) -> list[str]:
     """The events of *line* whose envelope peaks above *most*. With
     *unresolved*, an envelope whose peak needs the call's values is noted
-    there, to be checked with them."""
+    there, to be checked with them. Each distinct envelope is sampled once,
+    once for all the lines that share *peaks*."""
     found = []
+    if peaks is None:
+        peaks = {}
     for event in events:
         tree = event.get("waveform")
-        peak = _peak_amplitude(tree)
+        key = repr(tree)
+        if key not in peaks:
+            peaks[key] = _peak_amplitude(tree)
+        peak = peaks[key]
         if peak is None and tree is not None and unresolved is not None:
             unresolved.append(f"line {line['line']}: amplitude")
             unresolved = None
@@ -2382,6 +2913,52 @@ def _amplitude_violations(
                 "(Controller.max_amplitude)"
             )
     return [message for _, messages in sorted(by_line.items()) for message in messages]
+
+
+def _checks_pulse_lengths(limits: Controller) -> bool:
+    """Whether *limits* bound the length of a drive or readout."""
+    return bool(limits.min_pulse_cycles) or limits.max_pulse_cycles is not None
+
+
+def _pulse_length(
+    line: Mapping[str, Any], kind: str, duration: int, limits: Controller
+) -> tuple[str, str] | None:
+    """The violation of a *kind* of *duration* cycles on *line* shorter than
+    ``limits.min_pulse_cycles`` or longer than ``limits.max_pulse_cycles``,
+    before and after its start; ``None`` when its length is allowed."""
+    if duration < limits.min_pulse_cycles:
+        bound = f"none shorter than {limits.min_pulse_cycles} (Controller.min_pulse_cycles)"
+    elif limits.max_pulse_cycles is not None and duration > limits.max_pulse_cycles:
+        bound = f"none longer than {limits.max_pulse_cycles} (Controller.max_pulse_cycles)"
+    else:
+        return None
+    return (
+        f"line {line['line']} ({line['role']} of qudit {line['qudit']}): the {kind} at ",
+        f" lasts {duration} cycles; the controller plays {bound}",
+    )
+
+
+def _pulse_length_violations(
+    lowered: ScheduledKernel, module: Any, limits: Controller
+) -> list[str]:
+    """``_pulse_length`` on one clock, on the format /2 walk of *module*: a
+    loop whose iterations repeat is checked once."""
+    with lowered._lock:
+        lines, events, _ = module.controller_program(
+            _PARAMETERS, _AMPLITUDES, lowered.classical != (), True, _Waveforms(), exportable=False
+        )
+    found = []
+    for event in _played(events):
+        duration = event["duration_cycles"]
+        if duration is None:
+            continue
+        role, qudit = lines[event["line"]]
+        line = {"line": event["line"], "role": role, "qudit": qudit}
+        kind = _FLAT_KINDS.get(event["kind"], event["kind"])
+        violation = _pulse_length(line, kind, duration, limits)
+        if violation is not None:
+            found.append(f"{violation[0]}{event['start_cycles']}{violation[1]}")
+    return found
 
 
 def _unset(node: Mapping[str, Any]) -> bool:
@@ -2529,13 +3106,19 @@ def _compile_check(
             return [], not maybe
     # Held lines are checked call by call, every iteration walked.
     repeats: list[tuple[int, ...]] | None = (
-        None if limits is not None and limits.blocks_on_calls else []
+        None if limits is not None and _walks_every(lowered, limits, clocks) else []
     )
     # Loops of lines of different periods summarized too, then not, then none.
     passes: tuple[bool | None, ...] = (True, False, None)
     if system is not None:
         passes = (False, None)
-        if repeats is None or not system._lines_up or slots and not system._plays_everything:
+        if (
+            repeats is None
+            or not system._lines_up
+            or slots
+            and not system._plays_everything
+            or any(c.update_buses for c in system.controllers)
+        ):
             repeats = None
         elif clocks is not None and clocks.owners is not None:
             # A controller counting cycles of its own is walked in full.
@@ -2604,7 +3187,11 @@ def _call_violations(lowered: ScheduledKernel) -> Sequence[str]:
         return [*found, *extra] if extra else found
     if system is not None:
         repeats: list[tuple[int, ...]] | None = []
-        if not system._lines_up or system._blocking:
+        if (
+            not system._lines_up
+            or system._blocking
+            or any(c.update_buses for c in system.controllers)
+        ):
             repeats = None
         elif clocks is not None and clocks.owners is not None:
             # A controller counting cycles of its own is walked in full.
@@ -2707,6 +3294,7 @@ class ControllerNames(Protocol):
     if TYPE_CHECKING:
         DriveLine: type[DriveLine]
         ReadoutLine: type[ReadoutLine]
+        UpdateBus: type[UpdateBus]
         ExpressionTerm: type[ExpressionTerm]
         OpClass: type[OpClass]
         OpCounts: type[OpCounts]
@@ -2728,7 +3316,7 @@ class ControllerNames(Protocol):
     ) -> dict[str, Any]: ...
     def sample_waveform(
         self, node: Mapping[str, Any], duration_cycles: int, samples_per_cycle: float = 1
-    ) -> np.ndarray: ...
+    ) -> npt.NDArray[np.complex128]: ...
     def shape_key(self, node: Mapping[str, Any] | None) -> tuple[Any, ...] | None: ...
     def unroll(self, program: Mapping[str, Any]) -> dict[str, Any]: ...
     def usage(self, lowered: ScheduledKernel) -> _Usage: ...
@@ -2775,6 +3363,7 @@ class _Loaded(str):
 _ELSEWHERE = {
     "DriveLine": "cudaq_pulse._system",
     "ReadoutLine": "cudaq_pulse._system",
+    "UpdateBus": "cudaq_pulse._system",
     "ExpressionTerm": "cudaq_pulse._op_classes",
     "OpClass": "cudaq_pulse._op_classes",
     "OpCounts": "cudaq_pulse._op_tables",
@@ -2815,6 +3404,7 @@ class _ControllerModule(types.ModuleType):
         OpCycles: Any
         DriveLine: Any
         ReadoutLine: Any
+        UpdateBus: Any
 
     FunctionCost = _Loaded("FunctionCost")
     ControllerUsage = _Loaded("ControllerUsage")
@@ -2830,6 +3420,7 @@ class _ControllerModule(types.ModuleType):
     OpCycles = _Loaded("OpCycles")
     DriveLine = _Loaded("DriveLine")
     ReadoutLine = _Loaded("ReadoutLine")
+    UpdateBus = _Loaded("UpdateBus")
 
 
 sys.modules[__name__].__class__ = _ControllerModule

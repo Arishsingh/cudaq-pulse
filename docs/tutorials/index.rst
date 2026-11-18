@@ -34,3 +34,10 @@ Start with the first; the rest can be read in any order once you have it.
 
    gpu_simulation
    kernel_to_controller
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Experimental
+
+   isa_lowering
+   isa_limits

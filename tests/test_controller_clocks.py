@@ -5,7 +5,9 @@ quantum system, and the reference clock they lock to."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import pickle
 
 import cudaq_pulse as pulse
 import numpy as np
@@ -692,6 +694,259 @@ def test_a_one_controller_device_exports_as_before():
     assert "controller" not in lowered.export_to_emulator()
     with pytest.raises(ValueError, match="has one controller"):
         lowered.export_to_controller(controller=1)
+
+
+@pulse.kernel(unroll_threshold=10**6)
+def rounds_on_both(a, b):
+    da = get_drive_line(a)
+    db = get_drive_line(b)
+    ra = get_readout_line(a)
+    for _ in range(3):
+        drive(da, gaussian(40, 0.1, 10.0))
+        drive(db, drag(40, 0.2, 10.0, 2.0))
+        sync(da, db, ra)
+        readout(ra, square(40, 0.05))
+        sync(da, db, ra)
+
+
+@pytest.mark.parametrize("clocks", [(2.0, 2.0), (1.0, 0.5)])
+def test_checking_each_controllers_export_leaves_it_as_exported_unchecked(clocks, monkeypatch):
+    qpu = _device(system=_system(*clocks, tolerance=1), clock_ghz=2.0)
+    lowered = pulse.compile(rounds_on_both, quantum_system=qpu).lower(qpu.qudits[0], qpu.qudits[2])
+    checked = [lowered.export_to_controller(controller=k) for k in (0, 1)]
+    assert all(len(program["events"]) > 6 for program in checked)
+    monkeypatch.setattr(pulse.ControlSystem, "_violations", lambda *args: [])
+    assert [lowered.export_to_controller(controller=k) for k in (0, 1)] == checked
+
+
+@pulse.kernel(unroll_threshold=10**6)
+def rounds_at(a, b, amplitude: float):
+    da = get_drive_line(a)
+    db = get_drive_line(b)
+    ra = get_readout_line(a)
+    for _ in range(3):
+        drive(da, gaussian(40, amplitude, 10.0))
+        drive(db, drag(40, 0.2, 10.0, 2.0))
+        sync(da, db, ra)
+        readout(ra, square(40, 0.05))
+        sync(da, db, ra)
+
+
+def _rounds(clocks, amplitude=0.1, **limits):
+    system = _system(*clocks, tolerance=1)
+    if limits:
+        system = pulse.ControlSystem(
+            controllers=[
+                system.controllers[0],
+                dataclasses.replace(system.controllers[1], **limits),
+            ]
+        )
+    qpu = _device(system=system, clock_ghz=2.0)
+    return pulse.compile(rounds_at, quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[2], amplitude
+    )
+
+
+def _walks_and_checks(monkeypatch):
+    """Count the walks of a whole program and the checks of a whole system."""
+    from cudaq_pulse import controller
+
+    counts = {"walks": 0, "checks": 0}
+    walk = controller._walk
+    check = pulse.ControlSystem._violations
+
+    def counted_walk(*args, **kwargs):
+        counts["walks"] += 1
+        return walk(*args, **kwargs)
+
+    def counted_check(*args, **kwargs):
+        counts["checks"] += 1
+        return check(*args, **kwargs)
+
+    monkeypatch.setattr(controller, "_walk", counted_walk)
+    monkeypatch.setattr(pulse.ControlSystem, "_violations", counted_check)
+    return counts
+
+
+@pytest.mark.parametrize("clocks", [(2.0, 2.0), (1.0, 0.5)])
+def test_exporting_every_controller_walks_and_checks_the_program_once(clocks, monkeypatch):
+    from cudaq_pulse import controller
+
+    lowered = _rounds(clocks)
+    counts = _walks_and_checks(monkeypatch)
+    shared = [lowered.export_to_controller(controller=k) for k in (0, 1)]
+    assert counts == {"walks": 1, "checks": 1}
+    # Each export alone walks and checks the program again; what it gives is
+    # the same, byte for byte, in any order and with samples.
+    monkeypatch.setattr(controller, "_shared_parts", controller._Parts)
+    alone = [lowered.export_to_controller(controller=k) for k in (1, 0)][::-1]
+    assert counts == {"walks": 3, "checks": 3}
+    assert json.dumps(shared) == json.dumps(alone)
+    sampled = lowered.export_to_controller(4.0, controller=1)
+    monkeypatch.undo()
+    assert lowered.export_to_controller(4.0, controller=1) == sampled
+    assert lowered.export_to_controller(controller=0) == shared[0]
+
+
+@pulse.kernel(unroll_threshold=10**6)
+def turned_rounds(a, b, c):
+    da, db, dc = get_drive_line(a), get_drive_line(b), get_drive_line(c)
+    for _ in range(3):
+        shift_phase(da.tone, 0.5)
+        shift_phase(db.tone, 0.5)
+        shift_phase(dc.tone, 0.5)
+        drive(da, square(16, 0.1))
+        drive(db, square(16, 0.1))
+        drive(dc, square(16, 0.1))
+        sync(da, db, dc)
+
+
+@pytest.mark.parametrize("clocks", [(2.0, 2.0), (1.0, 0.5)])
+def test_exports_on_spaced_update_buses_walk_and_check_once(clocks, monkeypatch):
+    from cudaq_pulse import controller
+
+    bus = controller.UpdateBus(drive_lines=[0, 1], cycles_per_update=8)
+    first, second = _system(*clocks, tolerance=1).controllers
+    system = pulse.ControlSystem(
+        controllers=[
+            dataclasses.replace(first, update_buses=[bus], space_updates=True),
+            dataclasses.replace(second, update_buses=[controller.UpdateBus(drive_lines=[2, 3])]),
+        ]
+    )
+    qpu = _device(system=system, clock_ghz=2.0)
+    lowered = pulse.compile(turned_rounds, schedule="asap", quantum_system=qpu).lower(
+        qpu.qudits[0], qpu.qudits[1], qpu.qudits[2]
+    )
+    counts = _walks_and_checks(monkeypatch)
+    shared = [lowered.export_to_controller(controller=k) for k in (0, 1)]
+    assert counts == {"walks": 1, "checks": 1}
+    # After the first, set before the shot, the bus holds the second update
+    # of each round back by its cycles.
+    starts = [
+        [e["start_cycles"] for e in shared[0]["events"] if e["kind"] == "drive" and e["line"] == k]
+        for k in (0, 1)
+    ]
+    gaps = [b - a for a, b in zip(*starts, strict=True)]
+    assert gaps[0] == 0 and min(gaps[1:]) >= 8
+    assert shared[0]["limits"]["space_updates"] is True
+    monkeypatch.setattr(controller, "_shared_parts", controller._Parts)
+    alone = [lowered.export_to_controller(controller=k) for k in (1, 0)][::-1]
+    assert json.dumps(shared) == json.dumps(alone)
+    # Unspaced, the second update of the second and third rounds clashes on
+    # the bus, and the system check finds it on its controller's events.
+    unspaced = _device(system=_system(*clocks, tolerance=1), clock_ghz=2.0)
+    plain = pulse.compile(turned_rounds, schedule="asap", quantum_system=unspaced).lower(
+        unspaced.qudits[0], unspaced.qudits[1], unspaced.qudits[2]
+    )
+    tight = pulse.ControlSystem(
+        controllers=[dataclasses.replace(system.controllers[0], space_updates=False), second]
+    )
+    lines, events, _, _, _ = controller._walk(plain, slots=None)
+    found = tight._violations(
+        plain, lines, events, (plain._generic or plain).clocks, (), (), True, None, None
+    )
+    assert len(found) == 2
+    assert all(
+        v.startswith("controllers[0]: update bus 0 (drive lines of qudits 0, 1)") for v in found
+    )
+
+
+def test_a_program_keeps_its_walk_until_every_controller_is_exported():
+    lowered = _rounds((1.0, 0.5))
+    assert not hasattr(lowered, "_export_parts")
+    first = lowered.export_to_controller(controller=1)
+    kept = lowered._export_parts
+    # Again, or changed by its caller: the next export shares nothing with it.
+    first["events"][0]["start_cycles"] = -1
+    first["lines"][0]["qudit"] = -1
+    again = lowered.export_to_controller(controller=1)
+    assert again["events"][0]["start_cycles"] >= 0 and again["lines"][0]["qudit"] == 2
+    assert lowered._export_parts is kept
+    lowered.export_to_controller(controller=0)
+    assert not hasattr(lowered, "_export_parts")
+    # A pickled program leaves it behind.
+    lowered.export_to_controller(controller=0)
+    assert not hasattr(pickle.loads(pickle.dumps(lowered)), "_export_parts")
+
+
+def test_a_programs_walk_is_not_shared_with_other_values_or_controllers():
+    lowered = _rounds((2.0, 2.0), amplitude=0.1)
+    lowered.export_to_controller(controller=1)
+    generic = lowered.generic
+    other = generic.bind([0.3])
+    peaks = [
+        e["waveform"]["params"]["amplitude"]
+        for e in other.export_to_controller(controller=0)["events"]
+        if e["kind"] == "drive"
+    ]
+    assert peaks == [0.3] * 3
+    fresh = _rounds((2.0, 2.0), 0.3)
+    assert other.export_to_controller(controller=0) == fresh.export_to_controller(controller=0)
+    # The same kernel and values on other controllers is another program.
+    limited = _rounds((2.0, 2.0), max_amplitude=0.5)
+    assert limited.export_to_controller(controller=1)["limits"]["max_amplitude"] == 0.5
+    assert lowered.export_to_controller(controller=0)["limits"].get("max_amplitude") is None
+    # A program whose control system was replaced walks and checks again.
+    kept = _rounds((2.0, 2.0))
+    kept.export_to_controller(controller=0)
+    kept.options = limited.options
+    assert kept.export_to_controller(controller=1)["limits"]["max_amplitude"] == 0.5
+
+
+def test_every_controllers_export_raises_the_systems_violations(monkeypatch):
+    lowered = _rounds((1.0, 0.5))
+    counts = _walks_and_checks(monkeypatch)
+    check = pulse.ControlSystem._violations
+
+    def over(*args):
+        return [*check(*args), "controllers[1]: too much"]
+
+    monkeypatch.setattr(pulse.ControlSystem, "_violations", over)
+    raised = []
+    for k in (0, 0, 1):
+        with pytest.raises(ControllerLimitError) as caught:
+            lowered.export_to_controller(controller=k)
+        raised.append(caught.value.violations)
+        if k == 0:
+            # A failed check keeps its violations and not the program.
+            assert lowered._export_parts.events == []
+            # A part chosen wrongly is named so first, as before.
+            with pytest.raises(pulse.InvalidValueError, match="2 controllers"):
+                lowered.export_to_controller(controller=2)
+            with pytest.raises(pulse.InvalidValueError, match="plays lines of 2 controllers"):
+                lowered.export_to_controller()
+    assert list(raised[0]) == ["controllers[1]: too much"]
+    assert raised[0] == raised[1] == raised[2]
+    assert counts == {"walks": 1, "checks": 1}
+    # Once every part has been asked for, the program keeps nothing.
+    assert not hasattr(lowered, "_export_parts")
+
+
+def test_the_amplitude_check_samples_each_envelope_once_and_reports_every_pulse(monkeypatch):
+    from cudaq_pulse import controller
+
+    line = {"line": 0, "role": "drive", "qudit": 0}
+    # One shape at two amplitudes, alternating, each event with its own tree.
+    events = [
+        {
+            "kind": "drive",
+            "start_cycles": 40 * k,
+            "waveform": {
+                "shape": "square",
+                "params": {"duration": 40.0, "amplitude": a, "amplitude_imag": 0.0},
+            },
+        }
+        for k, a in enumerate([0.9, 0.3] * 3)
+    ]
+    sampled = []
+    peak = controller._peak_amplitude
+    monkeypatch.setattr(
+        controller, "_peak_amplitude", lambda tree: sampled.append(tree) or peak(tree)
+    )
+    found = controller._over_amplitude(line, events, 0.5)
+    assert len(sampled) == 2
+    assert [v.split(" peaks")[0].rsplit(" ", 1)[1] for v in found] == ["0", "80", "160"]
+    assert all("amplitude 0.9;" in v for v in found)
 
 
 # ── Budgets between controllers ──────────────────────────────────────────────

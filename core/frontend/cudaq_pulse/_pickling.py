@@ -321,6 +321,8 @@ def rebuilt_compiled(kernel: Any, options: Any, quantum_system: Any, general: An
 # What a program holds of the native module, which pickles as bytecode or is
 # made again.
 _NATIVE = frozenset({"_module", "_text", "_lock", "_concrete_module"})
+# What a program keeps between its exports, which it builds again.
+_KEPT = frozenset({"_export_parts"})
 _slots: dict[type, tuple[str, ...]] = {}
 
 
@@ -331,7 +333,7 @@ def _fields(cls: type) -> tuple[str, ...]:
             name
             for klass in reversed(cls.__mro__)
             for name in getattr(klass, "__slots__", ())
-            if name not in _NATIVE
+            if name not in _NATIVE and name not in _KEPT
         )
         _slots[cls] = names
     return names

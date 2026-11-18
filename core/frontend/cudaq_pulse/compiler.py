@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from ._system import Controller, ControlSystem
     from ._waits import _WaitLengths
     from .classical import Link
-    from .controller import UsageReport
+    from .controller import UsageReport, _Parts
     from .kernel._kernel import CompiledKernel, Kernel
 
     type _Kernel = ScheduledKernel
@@ -678,6 +678,9 @@ class ScheduledKernel:
         "classical",
         "runtime_selects",
         "_arity",
+        # What exporting each controller's part shares, until every part is
+        # exported (``controller._Parts``); unset until the first export.
+        "_export_parts",
     )
 
     # Its controllers' clocks, when one is not the program clock or they
@@ -688,6 +691,7 @@ class ScheduledKernel:
     fine_delays: Mapping[tuple[str, int], float] | None = None
     # How many values bind takes: set by a generic module's first bind.
     _arity: int
+    _export_parts: _Parts
     # A module with list or qudit parameters is a _Placed: what its calls
     # share, and the carrier of each runtime qudit of a call, in slot order.
     _role: _Role | None = None
@@ -1005,7 +1009,9 @@ class ScheduledKernel:
         (see ``cudaq_pulse.controller``); with *sample_rate_ghz*, each
         envelope's samples too. On a control system of several controllers,
         the program of the one *controller* indexes, in its own cycles (a
-        program that plays the lines of more than one needs it).
+        program that plays the lines of more than one needs it). Exporting
+        each controller in turn walks and checks the whole program once:
+        the program keeps that until every controller's part is exported.
         ``version=2`` gives the structured format, which keeps loops
         rolled."""
         from .controller import export
@@ -1312,6 +1318,8 @@ def build(
         if not parameters or any(name in text for name in _BUDGETS):
             raise
         scheduled = False
+    if scheduled and not plain:
+        module = _spaced(module, machine, target, schedule_args)
     metrics.schedule_ms = (time.perf_counter() - t0) * 1000
     metrics.total_ms = metrics.trace_ms + metrics.ffi_ms + metrics.passes_ms + metrics.schedule_ms
 
@@ -1503,6 +1511,19 @@ def _line_delays(
         raise CompilationError(str(e)) from None
 
 
+def _spaced(module: Any, machine: _MachineModel, target: QuantumSystem, args: Any) -> Any:
+    """*module*, scheduled, with the updates on the update buses of the
+    controllers that ask for it spaced (``_bus_spacing``)."""
+    system = machine._system
+    given = (machine.controller,) if system is None else system.controllers
+    spacing = [c for c in given if c is not None and c.space_updates and c.update_buses]
+    if not spacing:
+        return module
+    from ._bus_spacing import spaced
+
+    return spaced(module, spacing, target, args)
+
+
 def _check_controller(lowered: ScheduledKernel) -> ScheduledKernel:
     """*lowered*, checked against its controller limits: those it exceeds
     whatever its float values fail now, and when some values may exceed
@@ -1557,6 +1578,7 @@ def with_line_delays(lowered: _Kernel, options: CompileOptions) -> _Kernel | Non
             )
     except Exception:
         return None
+    module = _spaced(module, options.machine, target, schedule_args)
     old = lowered.metrics
     metrics = CompileMetrics(quantum_system=old.quantum_system)
     metrics.op_count = old.op_count

@@ -30,7 +30,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
       - run: uv sync --locked
@@ -41,13 +41,19 @@ jobs:
           uv run --no-sync cmake --preset docs
           uv run --no-sync cmake --build --preset docs
 
-      # The operations guide's waveform explorer runs under Node, which the
-      # runner has, and every line it prints must compile and play its plot.
-      - name: The waveform explorer matches the library
+      # The in-page scripts run under Node, which the runner has: every line
+      # the operations guide's waveform explorer prints must compile and play
+      # its plot, the ISA tutorial's animation and gauges must place what
+      # their data says, and the tutorials' animated figures must play what
+      # their data says and draw their committed stills.
+      - name: The in-page scripts match the library
         env:
           PYTHONPATH: build/docs/python
           CUDAQ_PULSE_REQUIRE_NODE: "1"
-        run: uv run --no-sync python -m pytest tests/test_waveform_explorer.py -q -p no:cacheprovider
+        run: >-
+          uv run --no-sync python -m pytest tests/test_waveform_explorer.py tests/test_toy_flow.py
+          tests/test_pulse_visual.py
+          -q -p no:cacheprovider
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

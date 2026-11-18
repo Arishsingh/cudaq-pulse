@@ -33,6 +33,22 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   units, `0`, `round_duration` counts and calibrated pulses are not
   warned. It is off by default, does not change the program, and a
   compilation without it checks nothing.
+- **Minimum pulse length.** `Controller(min_pulse_cycles=...)` states the
+  shortest drive or readout a controller plays, in its own cycles, as some
+  instruments require a minimum pulse length. Compiling checks it like the
+  other limits: a shorter pulse is a `ControllerLimitError` naming its line,
+  start and length, also in rolled loops and on each controller of a
+  control system. The default, 0, is no limit, and the export lists the key
+  among the limits only when it is set, so existing programs and exports
+  are unchanged.
+- **Maximum pulse length.** `Controller(max_pulse_cycles=...)` states the
+  longest drive or readout a controller plays, in its own cycles, as some
+  instruments cap a pulse's length. It is checked wherever the minimum is:
+  a longer pulse is a `ControllerLimitError` naming its line, start and
+  length, also in rolled loops and on each controller of a control system.
+  The default, `None`, is no limit, it may not be below `min_pulse_cycles`,
+  and the export lists it among the limits only when it is set, so existing
+  programs and exports are unchanged.
 - **Reading calibrations.** `PhysicalQudit.calibrations` and
   `Coupling.calibrations` give the calibrations a qudit or coupling
   publishes, read-only and keyed as `calibrations=` takes them (by
@@ -49,6 +65,22 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   multiplies the samples by `exp(-i phase_rad)`. Each rule has a snippet
   that shows it; `tests/test_conventions.py` runs the snippets, checks what
   they print, and checks each rule.
+- **Update buses.** `Controller(update_buses=[UpdateBus(drive_lines=[0, 1],
+  cycles_per_update=8)])` (`cudaq_pulse.controller.UpdateBus`) states that
+  a group of lines is retuned over one shared bus, one update at a time.
+  An update is a frame update, or a drive or readout whose frequency, or
+  whose phase other than as its tone runs on, differs from the one before
+  it on its line. Compiling checks that updates on one bus start at least
+  `cycles_per_update` apart, naming the bus, the lines and the times, on
+  each controller of a control system; on one clock a rolled loop is
+  checked at its first three iterations and its last two, which stand for
+  every iteration. With `Controller(space_updates=True)` compiling spaces
+  the updates instead: it holds the first update that clashes back on its
+  line as little as it must and schedules again, until none clashes, and
+  the checks, the export and the simulator all read the spaced program.
+  The buses are wiring, given when a description is loaded. There are
+  none by default and spacing is off, and the export lists both only when
+  set, so existing programs and exports are unchanged.
 - **Phase gates.** `pulse.gates.Z`, `S` and `T` are virtual Z rotations by
   pi, pi / 2 and pi / 4. `get_calibration` gives each as a `VirtualZ`
   (`cudaq_pulse.quantum_systems.VirtualZ(phase_rad=...)`), derived on every
@@ -62,6 +94,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   probabilities divided by the kept total, which is the new result's
   `acceptance`, and the shots that took them in `records`. Every other
   result has an `acceptance` of 1.0.
+- **Validating branches on slow feedback.**
+  `backends.validate(..., feedback_gap_cycles=n)` waits `n` cycles of the
+  controller's clock between the readout of the corpus's `branch` program
+  and the pulse on its outcome, so a controller with long feedback latency
+  (`feedback_latency_cycles`) runs `branch` instead of skipping it. A
+  backend may declare its own `feedback_gap_cycles` attribute, which the
+  argument overrides. The default, 0, runs the corpus as before.
 
 - **Waveform explorer.** The operations guide has an interactive plot of
   the built-in waveforms next to its waveform table: sliders for each
@@ -73,9 +112,65 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   without JavaScript see a static figure. The new example
   `29_waveform_envelopes.py` prints and plots the samples of every
   built-in envelope.
+- **Native line frequencies in the controller export.** Each line of
+  `export_to_controller()` now has `native_frequency_hz` (format `/1`) or
+  `native_frequencies_hz`, one per qudit (format `/2`): the frequency of
+  the line's own tone, at which every shot starts its frame and from which
+  a retuned tone's `phase_rad` advances. A backend whose line plays several
+  frequencies no longer needs the quantum system to find it. The key is new
+  within both formats, so the format names are unchanged; `unroll` carries
+  it, and a kernel with qudit parameters gives it as the slot's symbols
+  instead, as before.
+- **Animated tutorial figures.** T-State Injection plays its tomography
+  axes one at a time, its heralded loop once per answer with a playhead,
+  and the branches post-selection keeps one readout at a time. Adaptive
+  Calibration moves its estimator's distribution from the prior to where
+  a readout of 1, or of 0, takes it, and Simulating on a GPU steps through
+  its program's lowering one stage at a time. Each plays
+  once when scrolled into view, with Replay and step buttons, and its data
+  comes from what the page compiles and simulates. Readers without
+  JavaScript, or who ask for reduced motion, see the still frame.
+
+### Changed
+
+- **Schedule plots look different.** `viz.plot_schedule`, `viz.save_schedule`
+  and `timeline()` draw in the style of the documentation's figures: drives
+  green, readouts rose, waits hatched grey and classical calls teal (colors
+  that stay apart under the common color-vision deficiencies), no box or
+  bar outlines, light gridlines, line 0 at the top, and the legend in one
+  row above the plot. The rows, bars, labels and axis limits, and the
+  functions' arguments, are as before, and matplotlib is still imported only
+  when a plot is drawn.
 
 ### Fixed
 
+- A frame change made after a wait on its tone's line acted where the
+  tone's previous drive or readout ended, before the wait:
+  `shift_frequency(tone, +d)`, a wait of `T` and `shift_frequency(tone, -d)`
+  exported (formats /1 and /2) and simulated with no phase gained, where
+  the frame runs `2 pi d T` further on, as it did with a pulse in place of
+  the wait; and a frequency set after a wait gained phase during it. The
+  change was placed there, and the export and the simulator ran a tone at
+  its latest frequency from its latest drive, wherever the change was. A
+  change is now made where the program reaches it on the tone's line, after
+  the waits, pulses and syncs before it there, and after a readout it
+  depends on (in an arm of a branch on the measurement, or with a value
+  computed from it), as with a sync after the readout; never after the
+  pulse that plays with it. The frame runs at its old frequency until then.
+  Phase changes play as before; their frame updates' `start_cycles` move to
+  the end of such a wait or readout.
+- After a wait whose length a `float` argument sets, `classical_report()`
+  and the `"calls"` of `export_to_controller()` (formats /1 and /2, and
+  `unroll`) and of `export_to_emulator()` gave each call's times with the
+  wait at the lowest length its `bounds` allow, not at the length the
+  argument gives: a call the schedule and the export's `"events"` submit at
+  cycle 100340 was listed at 540. They now give the times of the program as
+  the call's arguments schedule it, the same as its events and `emulate`.
+  Waits set by an `int` argument or a literal were not affected.
+- `pulse.controller.sample_waveform` is annotated as returning
+  `npt.NDArray[np.complex128]`, not a bare `np.ndarray`, so editors and
+  type checkers accept `.real` and `.imag` of its samples with NumPy 2.5,
+  whose annotations allow them only on arrays of a known dtype.
 - `backends.validate` checks the order of a backend's classical calls and
   answers on their link, apart from the pulses of the line with the same
   number. A backend that gives its events back in time order, as a
@@ -150,6 +245,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   formats `/1` and `/2`, and `controller.unroll()` keeps it. Other
   conditions export as before. `backends.validate` runs one more program,
   `answer_timeout`, which branches on both.
+- In the controller export, the answer of a function declared with
+  `latency_mode="timeout"` and taken with `result()` had `wait`
+  `"bounded"` and a `timeout_ns` of `null`, though its result 0 is the
+  in-time flag. It now has `wait` `"timeout"` and the function's
+  `timeout_ns`, as a call taken with `result(timeout=...)` does, whose own
+  timeout still wins. This holds in formats `/1` and `/2`, and
+  `controller.unroll()` keeps it. Other answers export as before.
+  `backends.validate` runs one more program, `timeout_function`, which
+  branches on such an answer.
 
 ## [0.1.0] - 2026-11-13
 

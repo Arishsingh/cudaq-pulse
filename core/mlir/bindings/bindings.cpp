@@ -791,8 +791,9 @@ struct ControllerEventWalk : ControllerExpressions {
                  std::vector<int64_t>, std::string, std::string, double>;
 
   /// A tone's frame as the simulator tracks it (pulse::ToneState): `phase`
-  /// at `timeNs`, the end of its latest drive; a tone detuned from its
-  /// frame frequency gains phase from there on.
+  /// at `timeNs`, the end of its latest drive or the place of a later frame
+  /// change; a tone detuned from its frame frequency gains phase from there
+  /// on.
   struct Frame {
     double frequencyHz = 0.0;
     double frameFrequencyHz = 0.0;
@@ -804,6 +805,17 @@ struct ControllerEventWalk : ControllerExpressions {
       if (detuning == 0.0)
         return phase;
       return phase + detuning * (2.0 * M_PI) * 1.0e-9 * (timeNs - this->timeNs);
+    }
+    /// The frame at a frame change at `start` cycles, if that is later: it
+    /// runs at its old frequency until then.
+    void advanceTo(std::optional<int64_t> start, double clockGHz) {
+      if (!start)
+        return;
+      double changeNs = static_cast<double>(*start) / clockGHz;
+      if (changeNs > timeNs) {
+        phase = phaseAt(changeNs);
+        timeNs = changeNs;
+      }
     }
     /// Whether two arms leave the frame the same: without a detuning, the
     /// time of the last drive does not matter.
@@ -1414,11 +1426,9 @@ struct ControllerEventWalk : ControllerExpressions {
     double timeoutNs = kUnknown;
     if (!submit) {
       latest[op] = static_cast<int64_t>(result.size());
-      mode = AttrNames::has(op, names.blocking) ? "blocking" : "bounded";
-      if (auto timeout = op->getAttrOfType<mlir::FloatAttr>("timeout_ns")) {
-        mode = "timeout";
-        timeoutNs = timeout.getValueAsDouble();
-      }
+      auto [wait, timeout] = waitMode(op);
+      mode = wait;
+      timeoutNs = timeout;
     }
     if constexpr (RunTime)
       if (auto request = mlir::dyn_cast<classical::SubmitOp>(op))
@@ -1473,6 +1483,7 @@ struct ControllerEventWalk : ControllerExpressions {
       if constexpr (RunTime)
         if (!tracked.empty())
           frameChange(op, name.drop_front(6));
+      frame.advanceTo(pulse::scheduledStart(op, iteration), clockGHz);
       if (name == "pulse.shift_phase")
         frame.phase += value;
       else if (name == "pulse.set_phase")
@@ -3339,14 +3350,15 @@ public:
   /// cycles (see ownCycles; what an event computes at run time stays in
   /// program cycles, for the caller to convert), and fourth, the drives,
   /// readouts and waits off its grid of `grid` program cycles. A list
-  /// `slots` gets each line's runtime-qudit slot (-1 for none). Without
+  /// `slots` gets each line's runtime-qudit slot (-1 for none), a list
+  /// `ids` each event's `pulse.op_id` (see with_holds; -1 for none). Without
   /// `exportable`, for a check, a value the export's vocabulary has no term
   /// for is {"unknown": what it is computed from} rather than an error.
   nb::tuple
   controller_program(nb::handle parameters, nb::handle amplitudes,
                      bool segments, bool rolled, nb::object waveform,
                      std::optional<std::tuple<int64_t, int64_t, int64_t>> own,
-                     nb::object slots, bool exportable) {
+                     nb::object slots, bool exportable, nb::object ids) {
     if (own && (rolled || std::get<0>(*own) < 1 || std::get<1>(*own) < 1 ||
                 std::get<2>(*own) < 1))
       throw std::invalid_argument("controller_program: a controller's ratio "
@@ -3376,6 +3388,11 @@ public:
       auto out = nb::borrow<nb::list>(slots);
       for (int64_t slot : found)
         out.append(slot);
+    }
+    if (!ids.is_none()) {
+      auto out = nb::borrow<nb::list>(ids);
+      for (const ControllerRecord &r : walk.result)
+        out.append(r.op ? classical::intAttr(r.op, "pulse.op_id", -1) : -1);
     }
     nb::list roles;
     if (rolled) {
@@ -3858,6 +3875,43 @@ public:
                                       system.getClockPeriodFsNumerator(),
                                       system.getClockPeriodFsDenominator(),
                                       parsed, system.getControllers()));
+    PulseModule result(ctx_, std::move(copy));
+    result.loops_ = loops_;
+    result.runTime_ = runTime_;
+    result.keepSource();
+    runSchedule(*result.module_, true, policy, maxDrives, maxReadouts,
+                readoutLatency, switchPenalty, "pulse scheduling failed");
+    result.verified();
+    return result;
+  }
+
+  /// This module scheduled again from its module before scheduling, each
+  /// drive, readout and frame change numbered in walk order
+  /// (`pulse.op_id`, which controller_program() gives with `ids`) and held
+  /// back as `holds` gives by number (`pulse.hold_cycles`: the cycles its
+  /// line stays idle before it), every other hold removed.
+  PulseModule with_holds(const std::map<int64_t, int64_t> &holds,
+                         const std::string &policy, int64_t maxDrives,
+                         int64_t maxReadouts, int64_t readoutLatency,
+                         int64_t switchPenalty) {
+    std::lock_guard<std::recursive_mutex> guard(*lock_);
+    auto copy = mlir::OwningOpRef<mlir::ModuleOp>(source().clone());
+    auto i64 = mlir::IntegerType::get(ctx_.get(), 64);
+    int64_t next = 0;
+    copy->walk([&](mlir::Operation *op) {
+      if (!mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::ShiftPhaseOp,
+                     pulse::SetPhaseOp, pulse::ShiftFrequencyOp,
+                     pulse::SetFrequencyOp>(op))
+        return;
+      int64_t id = next++;
+      op->setAttr("pulse.op_id", mlir::IntegerAttr::get(i64, id));
+      auto hold = holds.find(id);
+      if (hold != holds.end() && hold->second > 0)
+        op->setAttr("pulse.hold_cycles",
+                    mlir::IntegerAttr::get(i64, hold->second));
+      else
+        op->removeAttr("pulse.hold_cycles");
+    });
     PulseModule result(ctx_, std::move(copy));
     result.loops_ = loops_;
     result.runTime_ = runTime_;
@@ -7283,9 +7337,10 @@ NB_MODULE(_cudaq_pulse_native, m) {
            nb::arg("parameters"), nb::arg("amplitudes"), nb::arg("segments"),
            nb::arg("rolled") = false, nb::arg("waveform").none() = nb::none(),
            nb::arg("own") = nb::none(), nb::arg("slots").none() = nb::none(),
-           nb::arg("exportable") = true,
+           nb::arg("exportable") = true, nb::arg("ids").none() = nb::none(),
            "The lines and the events of the program, for a controller; a "
-           "list `slots` gets each line's runtime-qudit slot")
+           "list `slots` gets each line's runtime-qudit slot, a list `ids` "
+           "each event's op number (with_holds)")
       .def("controller_check", &PulseModule::controller_check,
            nb::call_guard<nb::gil_scoped_release>(), nb::arg("issue"),
            nb::arg("gap"), nb::arg("samples_num"), nb::arg("samples_den"),
@@ -7300,6 +7355,13 @@ NB_MODULE(_cudaq_pulse_native, m) {
            nb::call_guard<nb::gil_scoped_release>(),
            "This module with other line delays, scheduled again",
            nb::arg("lines"), nb::arg("policy"), nb::arg("max_drives") = 4,
+           nb::arg("max_readouts") = 2, nb::arg("readout_latency") = 0,
+           nb::arg("switch_penalty") = 0)
+      .def("with_holds", &PulseModule::with_holds,
+           nb::call_guard<nb::gil_scoped_release>(),
+           "This module with its ops held back as `holds` gives by op "
+           "number, scheduled again",
+           nb::arg("holds"), nb::arg("policy"), nb::arg("max_drives") = 4,
            nb::arg("max_readouts") = 2, nb::arg("readout_latency") = 0,
            nb::arg("switch_penalty") = 0)
       .def("simulation_module", &PulseModule::simulation_module,

@@ -155,6 +155,12 @@ static int64_t durationOf(mlir::Operation *op) {
   return pulse::waitCycles(mlir::cast<pulse::WaitOp>(op)).value_or(0);
 }
 
+/// The cycles `op` keeps its line idle before it starts: its
+/// `pulse.hold_cycles`, which spacing for an update bus sets, else 0.
+static int64_t holdOf(mlir::Operation *op) {
+  return classical::intAttr(op, "pulse.hold_cycles", 0);
+}
+
 /// The cycles a drive, readout or wait takes as the forward pass places it,
 /// once it is known to be valid: the schedule places an op for the cycles it
 /// takes, so an unknown length is an error rather than a placement that
@@ -2713,7 +2719,8 @@ private:
       if (mlir::failed(duration))
         return mlir::failure();
       int64_t t = timelineOf(op);
-      int64_t start = std::max(ready(op->getOperand(0)), floorOf(t));
+      int64_t start =
+          std::max(ready(op->getOperand(0)) + holdOf(op), floorOf(t));
       int64_t owner = several() ? controllerOf(op) : kAnyOwner;
       if (!armFloors.empty())
         start = std::max(start, armFloorOf(owner));
@@ -3429,7 +3436,7 @@ private:
         armStarts[owner] = std::min(armStarts[owner], start);
       else
         armStart = std::min(armStart, start);
-      bound(op->getOperand(0), start);
+      bound(op->getOperand(0), start - holdOf(op));
       if (mlir::Value tone = toneOperand(op))
         bound(tone, start);
       if (classical) {

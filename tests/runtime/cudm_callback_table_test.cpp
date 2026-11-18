@@ -254,6 +254,36 @@ void batchedMembersEvolveAsTheirOwnRuns() {
         "a buffer that does not split into the batch is refused");
 }
 
+// A multi-diagonal operator takes one vector per ascending offset on one mode.
+void multidiagonalOperatorsAreChecked() {
+  Run run("multidiagonal");
+  constexpr std::array<int64_t, 1> extents = {4};
+  constexpr std::array<int32_t, 2> offsets = {-1, 1};
+  constexpr std::array<int32_t, 2> descending = {1, -1};
+  constexpr std::array<int32_t, 1> outside = {4};
+  const std::array<double, 16> data{};
+  CudmElementaryOp elementary = nullptr;
+  check(cudm_elementary_op_create_multidiagonal(
+            run.handle, &elementary, data.data(), data.size(), extents.data(),
+            1, 16, 2, offsets.data()) == CUDM_SUCCESS &&
+            elementary,
+        "an operator on the two off-diagonals is made");
+  cudm_elementary_op_destroy(elementary);
+  check(cudm_elementary_op_create_multidiagonal(
+            run.handle, &elementary, data.data(), data.size(), extents.data(),
+            1, 16, 2, descending.data()) == CUDM_ERROR_INVALID_HANDLE &&
+            !elementary,
+        "descending offsets are refused");
+  check(cudm_elementary_op_create_multidiagonal(
+            run.handle, &elementary, data.data(), 8, extents.data(), 1, 16, 1,
+            outside.data()) == CUDM_ERROR_INVALID_HANDLE,
+        "an offset outside the mode is refused");
+  check(cudm_elementary_op_create_multidiagonal(
+            run.handle, &elementary, data.data(), 8, extents.data(), 1, 16, 2,
+            offsets.data()) == CUDM_ERROR_INVALID_HANDLE,
+        "data of the wrong size is refused");
+}
+
 } // namespace
 
 int main() {
@@ -262,6 +292,7 @@ int main() {
   callbacksOutsideAnEvolutionFail();
   invalidParametersAreRejected();
   batchedMembersEvolveAsTheirOwnRuns();
+  multidiagonalOperatorsAreChecked();
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures.load());
     return 1;

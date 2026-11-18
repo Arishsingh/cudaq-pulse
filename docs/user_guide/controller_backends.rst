@@ -31,7 +31,16 @@ program uses, ``lines`` each line's index, ``role`` (``"drive"`` or
 ``"readout"``) and qudit (and, with line delays, its ``fine_delay_ns``;
 see below; on a shared line, the line's ``qudits`` and
 ``max_concurrent_tones``; see `Shared lines`_), and ``limits`` the controller limits it was
-checked against (``null`` without). ``events`` lists every drive, readout,
+checked against (``null`` without). Each line also has
+``native_frequency_hz``, the frequency of its own tone (``line.tone``):
+its qudit's 0-1 frequency on a drive line, and its readout's
+``frequency_hz`` (else the 0-1 frequency) on a readout line. Every shot
+starts that tone's frame at this frequency, and its ``phase_rad`` advances
+from it when the tone is retuned, so a backend that plays a line's other
+frequencies (another transition's tone, a shifted frequency) as offsets
+from one oscillator needs nothing from the quantum system. A kernel with
+qudit parameters gives it as the slot's symbols instead (``s0.f01``,
+``s0.f_ro``; see below) and its lines leave it out. ``events`` lists every drive, readout,
 wait, sync, classical call and frame update in program order, once per loop
 iteration and both arms of a branch. ``segments``, ``calls``, ``links`` and
 ``manifest`` are those of ``ScheduledKernel.export_to_emulator()`` (see
@@ -138,7 +147,13 @@ program without such tones has no ``runtime_tones``.
 Every shot starts from the reset frame: each tone at its own frequency, with
 phase 0. A frame change (``shift_phase``, ``set_phase``, ``shift_frequency``,
 ``set_frequency``) is a point on the timeline: in the scheduled IR it has
-``start_cycles`` and a ``duration_cycles`` of 0. The next drive or readout on
+``start_cycles`` and a ``duration_cycles`` of 0. It is where the program
+makes it on its tone's line: after the waits, pulses and syncs before it
+there and after the readouts it depends on (in the arm of a branch on a
+measurement, or with a value computed from one); or, on a tone that next
+plays on another line earlier, where its previous drive or readout ends. A frequency shifted before a wait and back
+after it so runs shifted through the wait, and the drives after it have
+the phase gained. The next drive or readout on
 its tone takes it in its ``frequency_hz`` and ``phase_rad``; in a loop, the
 next iteration's do. In a loop whose iterations do not play its tone, a
 change is at the start of each iteration. A change takes no time: every
@@ -199,7 +214,10 @@ and ``operands``, its arguments in the order of the function's argument
 descriptors (one per scalar or element, and one ``{"readout": i}`` per
 measurement), each an expression; an answer has ``wait``,
 ``"bounded"`` (by the latency budget), ``"blocking"`` or ``"timeout"``,
-with ``timeout_ns``.
+with ``timeout_ns``. A call taken with ``result(timeout=...)`` waits
+with that timeout, and one of a function declared with
+``latency_mode="timeout"`` (and taken without one) with the function's
+``timeout_ns``.
 
 The events of one operation, and of operations with the same waveform,
 share their ``waveform`` and ``amplitude`` objects; copy one before
@@ -372,7 +390,9 @@ length; for one on its own clock, or with line delays, export
     Each line's ``qudits``, a list, in the order the program first uses the
     lines. A shared line (see `Shared lines`_) is listed once, with every
     qudit it reaches and its ``max_concurrent_tones``, which a dedicated line
-    does not have.
+    does not have. In place of ``native_frequency_hz``,
+    ``native_frequencies_hz``: the native frequency of each of its
+    ``qudits``, in the same order.
 Events on a shared line
     A play, readout, wait or frame update on a shared line has, after its
     ``line``, its ``tone_slot`` (0 to the line's ``max_concurrent_tones``
@@ -521,7 +541,10 @@ program that plays the lines of more than one controller needs
 that plays no lines is exported by the controller that makes its calls.
 A controller the program does not use exports a valid empty program: no
 lines, events or calls. ``export_to_emulator(controller=k)`` gives the same
-part for an emulator.
+part for an emulator. Exporting every controller in turn walks the program
+and checks it against the whole control system once, not once per
+controller: the program keeps what its parts share until each one has been
+exported, and every export is a fresh copy, whatever the order.
 
 A link is shared by default: every controller it reaches sends its
 requests to one instance, which holds ``slots`` requests for all
@@ -756,6 +779,18 @@ per distinct values, so a call that compiles also exports.
 without raising. A control system without controllers checks nothing
 more.
 
+Some instruments require a minimum pulse length.
+``Controller(min_pulse_cycles=16)`` makes every drive and readout shorter
+than 16 of the controller's cycles a violation naming its line, its start
+and its length; on a control system of several controllers, each checks
+its own lines. It is 0, no limit, by default, and the export lists it
+among the limits only when it is set. Likewise, an instrument that caps a
+pulse's length declares ``Controller(max_pulse_cycles=4095)``: every drive
+and readout longer than 4095 of the controller's cycles is a violation
+naming its line, its start and its length. It is ``None``, no limit, by
+default, may not be below ``min_pulse_cycles``, and is listed among the
+limits only when it is set.
+
 A controller that plays nothing while one of its classical calls is out
 declares ``Controller(blocks_on_calls=True)``. Each call then holds every
 line from its submission until its answer is due: the scheduler sends it
@@ -770,6 +805,79 @@ per-controller link runs it, else those that send its measurements, else,
 over a shared link, every controller that plays), reads a measurement the
 call sends or plays a pulse that uses its answer (branches on it, or
 computes with it); the lines of the others play on while it is out.
+
+Update buses
+~~~~~~~~~~~~
+
+Some instruments retune a group of lines over one shared bus that carries
+one update at a time. ``Controller(update_buses=[...])`` lists such
+groups, each a ``cudaq_pulse.controller.UpdateBus``: its lines by carrier
+index, as the controller's own are given, and the cycles of the
+controller's clock one update holds the bus for::
+
+    from cudaq_pulse.controller import UpdateBus
+
+    box = pulse.Controller(
+        drive_lines=[0, 1, 2, 3],
+        readout_lines=[0, 1, 2, 3],
+        update_buses=[UpdateBus(drive_lines=[0, 1, 2, 3], cycles_per_update=8)],
+    )
+
+An update is what changes the tone a line plays, read from the program
+alone:
+
+- each frame update (a frame change no later drive or readout takes, see
+  `Exporting a program`_);
+- each drive or readout whose ``frequency_hz`` differs from that of the
+  drive or readout before it on its line, or whose ``phase_rad`` differs
+  other than as the tone runs on: a tone at its frame's frequency keeps
+  its phase, and one retuned from the line's own frequency gains phase at
+  its detuning, so neither is an update by itself. A frequency or phase
+  known only at run time is an update.
+
+The first drive or readout on a line is not an update, its tone being set
+before the shot, and neither is a pulse that changes only its envelope or
+amplitude. An update holds the bus for the ``cycles_per_update`` before it
+takes effect, so updates on one bus must start at least that far apart;
+two in the two arms of one branch never meet. A program that has them
+closer is a ``ControllerLimitError`` naming the bus, its lines, both
+updates and their times. A line is on at most one bus, and a bus reaches
+only lines its controller plays. In a system file each bus is
+``{"drive_lines": [0, 1], "readout_lines": [], "cycles_per_update": 8}``;
+like the lines, the buses are wiring, given when a description is loaded
+(``pulse.controller(name, ..., update_buses=[...])``), and the export lists
+them among the limits only when there are any.
+
+By default the scheduler does not place updates for the bus, and timing
+never changes: space them with waits or syncs. A controller that asks for
+it, ``Controller(update_buses=[...], space_updates=True)``, has compiling
+space them instead. After scheduling, it takes the updates of each bus in
+time order and holds the first that clashes back on its line by the
+fewest cycles that put it ``cycles_per_update`` after the one before it,
+and schedules the program again: what follows it on its line moves, and
+syncs carry the move to their other lines, as the scheduler places them,
+on the controller's grid. A delay can change which later pulses are
+updates (a tone retuned across a wait gains phase over it), so it checks
+the whole program again, and repeats until no update clashes, at most 256
+times, else ``CompilationError``. An op is held back in every execution:
+in a rolled loop, in every iteration. Updates in the two arms of a branch
+stay independent. The export, the simulator and the controller checks all
+read the spaced program, so feedback latency, syncs and every other limit
+hold on it; a program with nothing to space keeps its schedule. Spacing
+works on the program as compiled, so a kernel whose waits a call's
+``float`` values set keeps the holds its compile found, and each call is
+checked; one with runtime qudits is checked when a call binds them.
+
+The check of a rolled loop does not play every iteration. Whether a pulse
+is an update depends only on the pulse before it on its line, and a clash
+only on the update before it on its bus; from a loop's iteration 1 on,
+both are those of the iteration before, a period later and a phase step
+on. On one clock the check plays each loop it keeps rolled at iterations
+0 (the entry), 1 and 2 (every later iteration clashes as these do) and
+its last two (which what follows the loop follows), and lists violations,
+when there are any, from a walk of every execution. A program on
+controllers with their own clocks, or on several controllers, is checked
+on every execution.
 
 A minimal backend
 -----------------
@@ -882,11 +990,13 @@ Validating a backend
 which ships with cudaq-pulse, through a backend: a program for each kind of
 event (``cudaq_pulse.Event``), one with a branch, ``answer_timeout``, which
 branches on whether a call's answer came in time and on the answer itself
-(its conditions differ only in ``result``), and one with values known
-only at run time, compiled for the controller (by default the backend's
-control system's) and exported in each format the backend reads. Two more
-are wired from that controller: ``shared_line`` reads out both qudits at
-once on one readout line reaching both (``ReadoutLine([0, 1],
+(its conditions differ only in ``result``), ``timeout_function``, the
+same for a function declared with ``latency_mode="timeout"``, and one
+with values known only at run time, compiled for the controller (by
+default the backend's control system's) and exported in each format the
+backend reads. Two more are wired from that controller: ``shared_line``
+reads out both qudits at once on one readout line reaching both
+(``ReadoutLine([0, 1],
 max_concurrent_tones=2)`` in place of its readout lines), and
 ``several_controllers`` runs on two controllers made from it, one driving
 qudit 0 and reading out both qudits on such a line, the other driving qudit
@@ -909,12 +1019,28 @@ controller's limits is skipped.
    # ...
    # PASS unsupported_event
    # PASS newer_format
-   # backend 'text': 10 passed, 7 refused
+   # backend 'text': 10 passed, 8 refused
    print(report.ok)  # True
 
 A backend that accepted the unknown event would instead report ``FAIL
 unsupported_event: emit() accepted 'forward_outcome'; it should raise
 IncompatibleBackendError``.
+
+``branch`` plays its pulse on the readout's outcome as soon as the readout
+ends, so on a controller with a ``feedback_latency_cycles`` it is skipped.
+``feedback_gap_cycles=`` waits that many cycles of the controller's clock
+before that pulse; set it to the feedback latency, or more, to check
+branches on controllers with long feedback latency. A backend may declare
+its own ``feedback_gap_cycles`` attribute, which the argument overrides;
+without either it is 0, and the other programs are the same for any gap.
+
+.. code-block:: python
+
+   slow = Controller(clock_ghz=1.0, feedback_latency_cycles=2000)  # 2 us
+   backends.validate(backend, controller=slow)
+   # SKIP branch: exceeds the controller's limits: ... 2000 cycles of feedback latency ...
+   backends.validate(backend, controller=slow, feedback_gap_cycles=2000)
+   # PASS branch
 
 Two optional methods make the checks stronger. With ``events(artifact)``,
 which gives the emitted programs back, one list of events per controller

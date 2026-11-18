@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The rules docs/user_guide/conventions.rst states: units, time bases and
 signs, one test each, which the page names; and the page's snippets, which
-run and print what their comments say, as a tutorial page's do."""
+run and print what their output blocks or comments say, as a tutorial page's do."""
 
 from __future__ import annotations
 
@@ -71,14 +71,23 @@ def test_the_page_runs_and_prints_its_comments(tmp_path, monkeypatch):
     namespace: dict = {"__name__": "conventions_page"}
     blocks = code_blocks(_PAGE)
     assert len(blocks) > 10
-    for number, (_, code) in enumerate(blocks, 1):
+    checked = 0
+    for number, (_, code, shown) in enumerate(blocks, 1):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             exec(compile(code, f"{_PAGE.name}, block {number}", "exec"), namespace)
-        printed = out.getvalue().splitlines()
+        printed = [line.rstrip() for line in out.getvalue().splitlines()]
+        if shown is not None:
+            assert printed == shown, (
+                f"block {number}: printed {printed!r}, its output block shows {shown!r}"
+            )
+            checked += len(shown)
+            continue
         for k, want in enumerate(expected_output(code)):
             got = printed[k] if k < len(printed) else "<nothing printed>"
             assert _matches(want, got), f"block {number}: printed {got!r}, says {want!r}"
+            checked += 1
+    assert checked > 10
 
 
 # The tests of the page itself, which it does not name.
@@ -282,6 +291,51 @@ def test_shift_frequency_raises_the_tone():
     # The qudit is now 1 MHz below the tone: D = -1 MHz, which v = -1 MHz cancels.
     assert _rho(shifted_ramsey, -1e6)[1, 1].real == pytest.approx(1.0, abs=1e-3)
     assert _rho(shifted_ramsey, 1e6)[1, 1].real == pytest.approx(0.0, abs=1e-3)
+
+
+@pulse.kernel
+def _excursion_over_a_wait(q, delta_hz: float):
+    d = get_drive_line(q)
+    drive(d, square(2 * pulse.ns, A90))
+    shift_frequency(d.tone, delta_hz)
+    wait(d, 250 * pulse.ns)
+    shift_frequency(d.tone, -delta_hz)
+    drive(d, square(2 * pulse.ns, A90))
+
+
+@pulse.kernel
+def _excursion_over_a_pulse(q, delta_hz: float):
+    d = get_drive_line(q)
+    drive(d, square(2 * pulse.ns, A90))
+    shift_frequency(d.tone, delta_hz)
+    drive(d, square(250 * pulse.ns, 0.0))
+    shift_frequency(d.tone, -delta_hz)
+    drive(d, square(2 * pulse.ns, A90))
+
+
+@pulse.kernel
+def _shifted_after_the_wait(q, delta_hz: float):
+    d = get_drive_line(q)
+    drive(d, square(2 * pulse.ns, A90))
+    wait(d, 250 * pulse.ns)
+    shift_frequency(d.tone, delta_hz)
+    drive(d, square(2 * pulse.ns, A90))
+
+
+def test_a_frequency_shifted_over_a_wait_and_back_leaves_the_phase_it_gained():
+    over_wait, over_pulse = _excursion_over_a_wait, _excursion_over_a_pulse
+    for delta in (1e6, -1e6):
+        gained = 2 * math.pi * delta * 250e-9
+        last = _drives(_export(over_wait, delta))[-1]
+        assert (last["frequency_hz"], last["phase_rad"]) == (F, pytest.approx(gained))
+        assert _drives(_export(over_pulse, delta))[-1]["phase_rad"] == pytest.approx(gained)
+        # A quarter turn either way: the second X90 turns about -Y or +Y.
+        assert _bloch(_rho(over_wait, delta)) == pytest.approx([0.0, -1.0, 0.0], abs=1e-2)
+        assert _rho(over_wait, delta) == pytest.approx(_rho(over_pulse, delta), abs=1e-6)
+        # Made after the wait, the shift does not act during it.
+        [_, after] = _drives(_export(_shifted_after_the_wait, delta))
+        assert (after["frequency_hz"], after["phase_rad"]) == (F + delta, pytest.approx(0.0))
+    assert _bloch(_rho(over_wait, 0.0)) == pytest.approx([0.0, 0.0, -1.0], abs=1e-2)
 
 
 def test_an_exported_frame_phase_multiplies_the_samples_by_exp_minus_i_phase():

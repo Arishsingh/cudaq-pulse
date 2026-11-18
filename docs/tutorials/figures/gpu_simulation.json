@@ -1,0 +1,94 @@
+{
+ "format": "pulse-visual/1",
+ "source": "docs/tutorials/gpu_simulation.rst",
+ "scenes": [
+  {
+   "name": "lowering",
+   "title": "One program, lowered for the GPU and exported",
+   "stages": [
+    {
+     "title": "Pulse MLIR",
+     "sub": "mlir(\"pulse\")",
+     "count": "21 operations",
+     "detail": "pulse 13  arith 7",
+     "role": "drive",
+     "step": 0
+    },
+    {
+     "title": "QOp",
+     "sub": "mlir(\"qop\")",
+     "count": "82 operations",
+     "detail": "qop 61  arith 20",
+     "role": "q",
+     "step": 1,
+     "from": 0
+    },
+    {
+     "title": "cuDensityMat",
+     "sub": "mlir(\"cudm\")",
+     "count": "122 operations",
+     "detail": "cudm 87  arith 34",
+     "role": "q",
+     "step": 2,
+     "from": 1
+    },
+    {
+     "title": "LLVM IR",
+     "sub": "mlir(\"llvm\")",
+     "count": "88 llvm.call",
+     "detail": "1641 operations",
+     "role": "q",
+     "step": 3,
+     "from": 2
+    },
+    {
+     "title": "controller export",
+     "sub": "export_to_controller()",
+     "count": "5 events",
+     "detail": "drive 2  wait 2  sync 1",
+     "role": "link",
+     "step": 4,
+     "from": 0,
+     "row": 1,
+     "verb": "export",
+     "note": "the program a control system plays, from the same Pulse MLIR"
+    }
+   ],
+   "snapshots": [
+    {
+     "label": "Pulse MLIR: 21 operations",
+     "short": "Pulse MLIR",
+     "say": "The kernel as written: pulses, waits and syncs on its lines. It holds 21 operations.",
+     "spans": {}
+    },
+    {
+     "label": "QOp: 82 operations",
+     "short": "QOp",
+     "say": "QOp writes the pair's Hamiltonian and the Lindblad terms of its decay. It holds 82 operations.",
+     "spans": {}
+    },
+    {
+     "label": "cuDensityMat: 122 operations",
+     "short": "cuDensityMat",
+     "say": "The cuDensityMat dialect is the cuDensityMat API as IR. It holds 122 operations.",
+     "spans": {}
+    },
+    {
+     "label": "LLVM IR: 1641 operations, 88 of them calls into cuDensityMat",
+     "short": "LLVM IR",
+     "say": "LLVM IR turns each of its operations into a call into the cuDensityMat runtime. It holds 1641 operations, 88 of them calls into cuDensityMat.",
+     "spans": {}
+    },
+    {
+     "label": "Controller export: 5 events",
+     "short": "export",
+     "say": "From the same Pulse MLIR, the program exports for a controller as 5 events. Only the last steps differ.",
+     "spans": {}
+    }
+   ],
+   "panels": [
+    "stages"
+   ]
+  }
+ ]
+}

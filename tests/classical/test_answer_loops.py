@@ -29,7 +29,7 @@ from cudaq_pulse.classical import Link
 
 from tests import _child
 from tests._handles import Q
-from tests._work import native_seconds
+from tests._work import native_seconds, python_work
 
 POLICIES = ("asap", "alap", "rcp", "alap_rcp")
 
@@ -758,23 +758,22 @@ def test_a_long_loop_of_calls_simulates_as_when_the_whole_program_is_bound_each_
 
 
 @pytest.mark.slow
-def test_simulating_a_long_loop_of_calls_takes_the_same_time_per_round():
-    # Eight times the rounds in about eight times the time; binding each
-    # answer in the whole program took about three times as long per round
-    # at 60 rounds as at 10. The time is the best of three in CPU time.
-    import time
-
+def test_simulating_a_long_loop_of_calls_does_the_same_work_per_round(monkeypatch):
+    # Eight times the rounds, about eight times the work: the Python lines
+    # and calls, and the events of the modules bound for the answers, which
+    # the native code schedules. Binding each answer in the whole program
+    # binds about eight times as many events per round at 80 rounds as at 10.
+    # Counted, not timed: a CPU-time ratio of runs of a few milliseconds
+    # failed on some machines and passed on others for the same code.
     qs = _relaxing()
-    per_round = {}
+    options = {"levels": 2, "dt_ns": 1.0, "shots_count": 4, "seed": 3, "branches": "sampled"}
+    work = {}
     for rounds in (10, 80):
         lowered = pulse.compile(_tracking(rounds), quantum_system=qs).lower(qs.qudits[0])
-        best = float("inf")
-        for _ in range(3):
-            t0 = time.process_time()
-            pulse.simulate(lowered, levels=2, dt_ns=1.0, shots_count=4, seed=3, branches="sampled")
-            best = min(best, time.process_time() - t0)
-        per_round[rounds] = best / rounds
-    assert per_round[80] < 1.6 * per_round[10], per_round
+        work[rounds] = python_work(lambda lowered=lowered: pulse.simulate(lowered, **options))
+        _, sizes = _simulate_bound(monkeypatch, lowered, **options)
+        work[rounds]["bound events"] = sum(sizes)
+    assert all(work[80][count] <= 1.25 * 8 * work[10][count] for count in work[10]), work
 
 
 @pytest.mark.parametrize("schedule", POLICIES)

@@ -198,13 +198,16 @@ def validate(
     *,
     shots_count: int = 1000,
     tolerance: float = 0.05,
+    feedback_gap_cycles: int | None = None,
 ) -> _Report:
     """Run the export test corpus through *backend* (a ``Backend`` or the
     name of one) and report what it does wrong.
 
     The corpus has a program for each kind of event (``cudaq_pulse.Event``),
     one with a branch, ``answer_timeout``, which branches on whether a
-    call's answer came in time and on the answer itself, and two with
+    call's answer came in time and on the answer itself,
+    ``timeout_function``, the same for a function declared with
+    ``latency_mode="timeout"``, and two with
     values known only at run time (one a frequency change made ahead of
     the pulse that takes it), compiled
     for *controller* (by default the backend's control system's), in each
@@ -216,6 +219,15 @@ def validate(
     ``IncompatibleBackendError``; a program
     with an event kind no format has, and one in a newer format, must be
     refused. A program that exceeds the controller's limits is skipped.
+
+    ``branch`` plays its pulse on the readout's outcome as soon as the
+    readout ends, so it is skipped on a controller with a
+    ``feedback_latency_cycles``. *feedback_gap_cycles* (by default the
+    backend's ``feedback_gap_cycles`` attribute, else 0) is a wait of that
+    many cycles of the controller's clock before that pulse; set it to the
+    controller's feedback latency, or more, to check branches on
+    controllers with long feedback latency. The other programs are the same
+    for any gap.
 
     A backend may offer two more methods, which make the checks stronger.
     ``events(artifact)`` gives back the emitted programs, one list per
@@ -245,4 +257,4 @@ def validate(
         )
     from . import _validation
 
-    return _validation.validate(found, controller, shots_count, tolerance)
+    return _validation.validate(found, controller, shots_count, tolerance, feedback_gap_cycles)

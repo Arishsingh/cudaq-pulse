@@ -28,7 +28,7 @@ import math
 import os
 import re
 import warnings
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from functools import partial
 from itertools import repeat
@@ -75,6 +75,7 @@ __all__ = [
     "DriveLine",
     "Processor",
     "ReadoutLine",
+    "UpdateBus",
 ]
 
 SYSTEM_FORMAT = "cudaq-pulse.system/1"
@@ -249,6 +250,112 @@ class ReadoutLine(_Line):
 
     __slots__ = ()
     _role = "readout"
+
+
+@_dataclass_when_used(frozen=True)
+class UpdateBus:
+    """A bus that carries the updates of a group of a controller's lines
+    (``Controller.update_buses``) one at a time, each holding it for the
+    ``cycles_per_update`` of the controller's cycles before the update takes
+    effect: ``UpdateBus(drive_lines=[0, 1], cycles_per_update=8)``.
+    ``drive_lines`` and ``readout_lines`` name its lines by carrier index,
+    as the controller's own do. An update is a frame update, or a drive or
+    readout whose tone's frequency, or whose phase other than as the tone
+    runs on, differs from the drive or readout before it on its line; see
+    "Update buses" in the controller backends guide."""
+
+    drive_lines: Sequence[int] = ()
+    readout_lines: Sequence[int] = ()
+    cycles_per_update: int = 1
+
+    def __post_init__(self) -> None:
+        for name in ("drive_lines", "readout_lines"):
+            given = getattr(self, name)
+            if isinstance(given, (str, bytes)) or not isinstance(given, Iterable):
+                raise InvalidTypeError(
+                    f"UpdateBus.{name} is a sequence of carrier indices, got {given!r}"
+                )
+            qudits = tuple(given)
+            if any(isinstance(q, bool) or not isinstance(q, int) or q < 0 for q in qudits):
+                raise InvalidValueError(
+                    f"UpdateBus.{name} holds carrier indices (ints >= 0), got {list(qudits)}"
+                )
+            if len(set(qudits)) != len(qudits):
+                raise InvalidValueError(f"UpdateBus.{name} lists a carrier twice: {list(qudits)}")
+            object.__setattr__(self, name, qudits)
+        if not self.drive_lines and not self.readout_lines:
+            raise InvalidValueError("UpdateBus lists no lines")
+        cycles = self.cycles_per_update
+        if isinstance(cycles, bool) or not isinstance(cycles, int) or cycles < 1:
+            raise InvalidValueError(
+                f"UpdateBus.cycles_per_update must be an int of at least 1, got {cycles!r}"
+            )
+
+    def __hash__(self) -> int:
+        return hash((self.drive_lines, self.readout_lines, self.cycles_per_update))
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        from ._pickling import frozen_reduce
+
+        return frozen_reduce(self)
+
+    def as_dict(self) -> dict[str, Any]:
+        """The bus as JSON-serializable data, as a system file holds it."""
+        return {
+            "drive_lines": list(self.drive_lines),
+            "readout_lines": list(self.readout_lines),
+            "cycles_per_update": self.cycles_per_update,
+        }
+
+    @property
+    def _lines(self) -> tuple[tuple[str, int], ...]:
+        """Its lines as (role, carrier index)."""
+        return (
+            *(("drive", q) for q in self.drive_lines),
+            *(("readout", q) for q in self.readout_lines),
+        )
+
+    def _named(self) -> str:
+        """Its lines, as a violation names them."""
+        parts = []
+        for role, qudits in (("drive", self.drive_lines), ("readout", self.readout_lines)):
+            if qudits:
+                s = "s" if len(qudits) > 1 else ""
+                parts.append(f"{role} line{s} of qudit{s} {', '.join(map(str, qudits))}")
+        return " and ".join(parts)
+
+
+def _update_buses(value: Any) -> tuple[UpdateBus, ...]:
+    """*value*, ``Controller.update_buses``, as buses (a mapping, as a system
+    file states one, is read as ``UpdateBus(**mapping)``), each line on at
+    most one. A line the controller does not play has no updates."""
+    if isinstance(value, (str, bytes, Mapping, UpdateBus)) or not isinstance(value, Iterable):
+        raise InvalidTypeError(
+            f"Controller.update_buses is a list of cudaq_pulse.controller.UpdateBus, got {value!r}"
+        )
+    buses = []
+    for index, item in enumerate(value):
+        if isinstance(item, Mapping):
+            try:
+                item = UpdateBus(**item)
+            except TypeError as error:
+                raise InvalidValueError(f"Controller.update_buses[{index}]: {error}") from None
+        elif not isinstance(item, UpdateBus):
+            raise InvalidTypeError(
+                f"Controller.update_buses[{index}] is not a cudaq_pulse.controller.UpdateBus: "
+                f"{item!r}"
+            )
+        buses.append(item)
+    seen: set[tuple[str, int]] = set()
+    for index, bus in enumerate(buses):
+        for role, qudit in bus._lines:
+            if (role, qudit) in seen:
+                raise InvalidValueError(
+                    f"Controller.update_buses[{index}]: the {role} line of qudit {qudit} is on "
+                    "another bus already; a line is on at most one"
+                )
+            seen.add((role, qudit))
+    return tuple(buses)
 
 
 _QUDIT: Callable[[Any], int] = itemgetter(0)
@@ -585,6 +692,15 @@ class Controller:
     ``instruction_cycles + min_idle_cycles`` apart, because the controller
     issues one instruction per ``instruction_cycles`` and idles no less than
     ``min_idle_cycles``.
+    ``min_pulse_cycles``: the shortest drive or readout its lines play (0:
+    no limit), as some instruments require a minimum pulse length; a
+    shorter one is a violation naming its line. Exports list it among the
+    limits only when it is set.
+    ``max_pulse_cycles``: the longest drive or readout its lines play
+    (``None``: no limit), as some instruments cap a pulse's length; a longer
+    one is a violation naming its line. It may not be below
+    ``min_pulse_cycles``. Exports list it among the limits only when it is
+    set.
     ``sample_rate_ghz``: the rate its lines play samples at (``None``: one
     per cycle of its clock). Its ratio to the clock may be a fraction, and
     every operation on its lines must start and last a whole number of
@@ -655,6 +771,15 @@ class Controller:
     lists none plays every line. A line may reach several qudits
     (``ReadoutLine([0, 1, 2, 3], max_concurrent_tones=4)``, a shared line);
     each qudit is reached by at most one line of each kind.
+    ``update_buses``: the groups of its lines whose updates share one bus
+    (``UpdateBus``), which carries one update at a time; updates on one bus
+    must start ``cycles_per_update`` apart, else the program is a violation
+    naming the bus, the lines and the times (none by default: no limit).
+    Exports list it among the limits only when it is set.
+    ``space_updates``: whether compiling spaces the updates on its update
+    buses, holding each back as little as it must, instead of refusing them
+    (see "Update buses" in the controller backends guide). Off by default;
+    exports list it only when it is set.
     ``peer_latency_cycles`` is the time an outcome this controller reads
     takes to reach another controller, in this controller's own cycles: one
     number for every receiver, or a mapping from the receiving controller's
@@ -672,6 +797,8 @@ class Controller:
     cycles_per_timestep: int = 1
     instruction_cycles: int = 1
     min_idle_cycles: int = 0
+    min_pulse_cycles: int = 0
+    max_pulse_cycles: int | None = None
     sample_rate_ghz: float | None = None
     waveform_memory_samples: int | None = None
     max_frequencies_per_line: int | None = None
@@ -690,6 +817,8 @@ class Controller:
     blocks_on_calls: bool = False
     drive_lines: Sequence[DriveLine | int] = ()
     readout_lines: Sequence[ReadoutLine | int] = ()
+    update_buses: Sequence[UpdateBus] = ()
+    space_updates: bool = False
     peer_latency_cycles: int | Mapping[int, int] = 0
     clock_skew_cycles: int = 0
     supports: Sequence[Capability | str] | None = None
@@ -699,7 +828,7 @@ class Controller:
     processors: Sequence[Processor] = ()
 
     def __post_init__(self) -> None:
-        for name in ("persistent_frames", "blocks_on_calls"):
+        for name in ("persistent_frames", "blocks_on_calls", "space_updates"):
             if not isinstance(getattr(self, name), bool):
                 raise InvalidValueError(
                     f"Controller.{name} must be a bool, got {getattr(self, name)!r}"
@@ -726,6 +855,19 @@ class Controller:
         for name in ("min_idle_cycles", "detector_recovery_cycles", "feedback_latency_cycles"):
             if getattr(self, name) < 0:
                 raise InvalidValueError(f"Controller.{name} cannot be negative")
+        least = self.min_pulse_cycles
+        if isinstance(least, bool) or not isinstance(least, int) or least < 0:
+            raise InvalidValueError(
+                f"Controller.min_pulse_cycles must be an int of at least 0, got {least!r}"
+            )
+        most = self.max_pulse_cycles
+        if most is not None and (
+            isinstance(most, bool) or not isinstance(most, int) or most < max(least, 1)
+        ):
+            raise InvalidValueError(
+                "Controller.max_pulse_cycles must be None or an int of at least 1 and at "
+                f"least min_pulse_cycles ({least}), got {most!r}"
+            )
         object.__setattr__(self, "max_fine_delay_ns", as_nanoseconds(self.max_fine_delay_ns))
         if self.max_program_duration is not None:
             object.__setattr__(
@@ -774,6 +916,7 @@ class Controller:
         object.__setattr__(
             self, "readout_lines", _lines(self.readout_lines, "readout_lines", ReadoutLine)
         )
+        object.__setattr__(self, "update_buses", _update_buses(self.update_buses))
         peers = self.peer_latency_cycles
         if isinstance(peers, Mapping):
             object.__setattr__(
@@ -852,9 +995,16 @@ class Controller:
         # Every field in order: the class has none that fields() would leave out.
         data = {name: getattr(self, name) for name in self.__dataclass_fields__}
         data["detectors"] = {str(k): v for k, v in sorted(self.detectors.items())}
-        for name in ("max_amplitude", "max_instructions", "max_program_duration"):
+        for name in (
+            "max_amplitude",
+            "max_instructions",
+            "max_program_duration",
+            "max_pulse_cycles",
+        ):
             if data[name] is None:
                 del data[name]
+        if not self.min_pulse_cycles:
+            del data["min_pulse_cycles"]
         # Memory per line exports as it did before the key existed.
         if self.waveform_memory == "per_line":
             del data["waveform_memory"]
@@ -870,6 +1020,12 @@ class Controller:
         else:
             data["drive_lines"] = []
             data["readout_lines"] = []
+        if self.update_buses:
+            data["update_buses"] = [bus.as_dict() for bus in self.update_buses]
+        else:
+            del data["update_buses"]
+        if not self.space_updates:
+            del data["space_updates"]
         peers = self.peer_latency_cycles
         if not isinstance(peers, int):
             data["peer_latency_cycles"] = {str(k): v for k, v in sorted(peers.items())}
@@ -942,6 +1098,60 @@ def _known(owners: Iterable[int | None]) -> list[int]:
     return sorted({o for o in owners if o is not None})
 
 
+class _SeenBy(Sequence[dict[str, Any]]):
+    """*events* as the controller *index* sees them: another controller's
+    drives and readouts untimed, made as each is read."""
+
+    __slots__ = ("_events", "_index", "_owners")
+
+    def __init__(
+        self, events: Sequence[dict[str, Any]], owners: Sequence[int | None], index: int
+    ) -> None:
+        self._events = events
+        self._owners = owners
+        self._index = index
+
+    def __len__(self) -> int:
+        return len(self._events)
+
+    def __getitem__(self, k: Any) -> Any:
+        return self._seen(self._events[k])
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        return map(self._seen, self._events)
+
+    def _seen(self, e: dict[str, Any]) -> dict[str, Any]:
+        if e["kind"] not in _PLAYED or self._owners[e["line"]] == self._index:
+            return e
+        return {**e, "end_cycles": None}
+
+
+def _timed_by_controller(
+    events: Sequence[dict[str, Any]], owners: Sequence[int | None], count: int
+) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
+    """For each of *count* controllers, the timed drives, readouts and plays
+    of *events* it sees (``_SeenBy``), in order; and the answers."""
+    from .controller import _PLAYED as TIMED
+
+    timed: list[list[dict[str, Any]]] = [[] for _ in range(count)]
+    answers = []
+    for e in events:
+        kind = e["kind"]
+        if kind in TIMED:
+            if e["end_cycles"] is None:
+                continue
+            if kind in _PLAYED:
+                owner = owners[e["line"]]
+                if owner is not None:
+                    timed[owner].append(e)
+            else:
+                for mine in timed:
+                    mine.append(e)
+        elif kind == "answer":
+            answers.append(e)
+    return timed, answers
+
+
 def _cycles_text(cycles: Fraction) -> str:
     return str(cycles.numerator) if cycles.denominator == 1 else f"{float(cycles):g}"
 
@@ -952,6 +1162,8 @@ def _takers(
     """The controllers that take each answer: those playing a line event
     that tests it or computes a value from it at run time."""
     takers: dict[int, set[int]] = {}
+    if not any(event["kind"] == "answer" for event in events):
+        return takers
     for event in events:
         if event["kind"] not in _NEEDS:
             continue
@@ -1392,12 +1604,14 @@ class ControlSystem:
         events: Sequence[Mapping[str, Any]],
         owners: Sequence[int | None],
         clocks: _clocks.ClockPlan | None,
+        run_time: bool,
     ) -> list[str]:
         """The pulses that branch on, or compute with, a readout of another
         controller before its outcome can reach them: the reader's feedback
         latency, its ``peer_latency_cycles`` to the user, and both
         controllers' start uncertainty, each in its own cycles (events in
-        program cycles)."""
+        program cycles). Only a program that computes at run time
+        (*run_time*) computes with a readout."""
         from fractions import Fraction
 
         found: list[str] = []
@@ -1413,7 +1627,7 @@ class ControlSystem:
                 for condition in event["conditions"]
                 for ref in condition["readouts"]
             ]
-            stack = [value for key, value in event.items() if key != "conditions"]
+            stack = [v for k, v in event.items() if k != "conditions"] if run_time else []
             while stack:
                 value = stack.pop()
                 if isinstance(value, dict):
@@ -1657,7 +1871,7 @@ class ControlSystem:
             found.extend(self._needs(lowered, events, owners, unresolved))
         else:
             needs = self._needs(lowered, events, owners, unresolved)
-            needs.extend(self._forwarding(events, owners, clocks))
+            needs.extend(self._forwarding(events, owners, clocks, _computes_at_run_time(lowered)))
             needs.extend(
                 self._alignment(lines, events, owners, clocks, lowered.quantum_system.clock_ghz)
             )
@@ -1670,20 +1884,14 @@ class ControlSystem:
                         clocks, lines, events, True, waveforms, _computes_at_run_time(lowered)
                     )
                 )
+            timed, answers = _timed_by_controller(events, owners, len(self.controllers))
             for index, controller in enumerate(self.controllers):
                 label = _label(index, controller)
-                # Every controller sees the others' pulses as untimed.
-                mine = [
-                    e
-                    if e["kind"] not in _PLAYED or owners[e["line"]] == index
-                    else {**e, "end_cycles": None}
-                    for e in events
-                ]
                 found.extend(
                     f"{label}: {v}"
                     for v in _violations(
                         lowered,
-                        mine,
+                        _SeenBy(events, owners, index),
                         controller,
                         lines,
                         None,
@@ -1693,6 +1901,8 @@ class ControlSystem:
                         unresolved,
                         natives,
                         held=False,
+                        timed=timed[index],
+                        answers=answers,
                     )
                 )
             found.extend(needs)
@@ -1862,7 +2072,7 @@ class ControlSystem:
                 )
             )
         else:
-            if self._forwarding(events, owners, clocks):
+            if self._forwarding(events, owners, clocks, run_time):
                 return None
             for index, controller in enumerate(self.controllers):
                 mine = [
@@ -2243,6 +2453,7 @@ _WIRING = (
     "peer_latency_cycles",
     "clock_skew_cycles",
     "alignment_tolerance_cycles",
+    "update_buses",
 )
 _NOTICED: set[tuple[str, str, str]] = set()
 

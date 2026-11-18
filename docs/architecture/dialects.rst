@@ -123,7 +123,10 @@ to op like a line.
   delay advances the frame. The carrier runs on through the wait: a tone off
   its qudit's frequency by a detuning is that detuning times the elapsed time
   further round in the qudit's frame, whether the time passed in a wait or in
-  pulses.
+  pulses. A frame change is made where the program reaches it on its tone's
+  line, after the waits before it there: ``pulse.shift_frequency`` by ``+d``
+  before a wait of ``T`` and by ``-d`` after it leave the frame ``2 pi d T``
+  further on, as a pulse of that length in place of the wait would.
 - A frame rotates through ``pulse.sync``: a change made before a sync
   applies to the next pulse on the tone after it, however long the sync holds
   the line.
@@ -178,7 +181,18 @@ CuDensityMat
 
 The cuDensityMat API as IR. ``qop-to-cudm`` turns the Lindbladian into a
 handle, states, elementary operators, operator terms and a composite operator,
-then a ``cudm.evolve`` with the chosen integrator. ``cudm-to-llvm`` lowers each
+then a ``cudm.evolve`` with the chosen integrator. The constant Hamiltonian
+terms and the dissipators that act on few levels become a few dense operators,
+as CUDA-Q builds them: where a group of modes is small enough, one
+superoperator on its ket and bra sides; otherwise one operator per group of
+modes on each side, which also takes the dissipators' anticommutators. Each
+time-dependent term stays a term of its own. On a mode of four or more
+levels, an operator with a single nonzero diagonal (a lowering, raising or
+number operator, or a sum of diagonal terms) is stored multi-diagonal, by that
+diagonal. The pass option ``max-fused-dimension`` (16) bounds the size of a
+group; ``operators=banded`` stores operators by their diagonals without
+fusing them, and ``operators=dense`` makes every product its own term of dense
+operators. ``cudm-to-llvm`` lowers each
 op to a call into the CUDA-Q Pulse cuDensityMat runtime (``cudm_init``,
 ``cudm_evolve`` and so on), which the JIT links when a program is simulated
 on the GPU.

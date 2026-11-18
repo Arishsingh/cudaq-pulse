@@ -312,6 +312,65 @@ def test_a_rolled_loop_carries_a_line_read_from_a_list():
     _compiles(k, Q[0])
 
 
+def _rolls_as_unrolled(kernel, *args) -> None:
+    """*kernel* compiles to a rolled loop whose schedule is its unrolled one's."""
+    schedules = []
+    for threshold, rolled in ((0, True), (10**6, False)):
+        lowered = pulse.compile(kernel, unroll_threshold=threshold).lower(*args)
+        assert ("scf.for" in lowered.mlir()) is rolled
+        schedules.append([(e.kind, e.qudit, e.start, e.duration_cycles) for e in lowered.schedule])
+    assert schedules[0] == schedules[1]
+
+
+def test_a_rolled_loop_syncs_lines_from_two_lists():
+    @pulse.kernel
+    def k(qs):
+        drives = [get_drive_line(q) for q in qs]
+        probes = [get_readout_line(q) for q in qs]
+        for _ in range(20):
+            for d in drives:
+                drive(d, gaussian(16, 0.4, 4.0))
+            sync(*drives, *probes)
+            for r in probes:
+                readout(r, square(40, 0.05))
+            sync(*drives, *probes)
+        drive(drives[0], square(8, 0.1))
+        readout(probes[1], square(24, 0.05))
+
+    _rolls_as_unrolled(k, Q[0:2])
+
+
+def test_a_rolled_loop_syncs_lines_from_one_list():
+    @pulse.kernel
+    def k(qs):
+        lines = [get_drive_line(qs[0]), get_drive_line(qs[1]), get_readout_line(qs[0])]
+        for _ in range(20):
+            drive(lines[0], gaussian(16, 0.4, 4.0))
+            drive(lines[1], square(24, 0.1))
+            sync(*lines)
+            readout(lines[2], square(40, 0.05))
+            sync(*lines)
+        drive(lines[1], square(8, 0.1))
+
+    _rolls_as_unrolled(k, Q[0:2])
+
+
+def test_a_rolled_loop_syncs_lines_from_a_list_that_also_holds_a_qudit():
+    @pulse.kernel
+    def k(qs):
+        held = [qs[0], get_drive_line(qs[0]), get_readout_line(qs[1])]
+        others = [get_drive_line(qs[1])]
+        for _ in range(20):
+            drive(held[1], gaussian(16, 0.4, 4.0))
+            readout(held[2], square(40, 0.05))
+            drive(others[0], square(24, 0.1))
+            sync(*held[1:], *others)
+        drive(held[1], square(8, 0.1))
+        drive(others[0], square(8, 0.1))
+
+    _rolls_as_unrolled(k, Q[0:2])
+
+
 def test_pop_insert_extend_and_del_on_lists_of_lines_from_the_friction_log():
     @pulse.kernel
     def popped(q0, q1):
