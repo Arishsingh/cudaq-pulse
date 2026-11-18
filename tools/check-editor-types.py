@@ -59,26 +59,51 @@ def docs_modules(docs: Path) -> dict[str, str]:
     A block with the option ``:class: fragment`` continues an example whose
     other parts the page shows in prose, so it is left out, as is one with
     ``:class: cudaq-qec``, which calls CUDA-Q QEC (see _UNTYPED_DEPENDENCIES).
+    A block with ``:class: continues`` shows the start of code the next block
+    finishes, such as a function's signature before its body: the two are
+    one block, as tests/test_tutorials.py runs them, left out if either is.
+    A Python ``literalinclude`` is a block of the lines it shows, cut by
+    ``start-after`` and ``end-before``; one cut otherwise is left out.
     """
     modules = {}
     for page in sorted(docs.rglob("*.rst")):
         lines = page.read_text().splitlines()
         blocks, i = [], 0
+        pending, pending_left_out = "", False
         while i < len(lines):
-            if re.match(r"\s*\.\. code-block:: python\s*$", lines[i]):
+            code = re.match(r"\s*\.\. code-block:: python\s*$", lines[i])
+            include = re.match(r"\s*\.\. literalinclude:: (\S+)\s*$", lines[i])
+            if code or include:
                 i += 1
-                block, fragment = [], False
+                block, classes, options = [], set(), {}
                 while i < len(lines) and (not lines[i].strip() or lines[i][:1] in " \t"):
                     if lines[i].lstrip().startswith(":"):
-                        option = lines[i].split()
-                        fragment |= option[0] == ":class:" and bool(
-                            {"fragment", "cudaq-qec"} & set(option[1:])
-                        )
+                        key, _, value = lines[i].strip()[1:].partition(":")
+                        if key == "class":
+                            classes |= set(value.split())
+                        options[key] = value.strip()
                     else:
                         block.append(lines[i])
                     i += 1
-                if not fragment:
-                    blocks.append(textwrap.dedent("\n".join(block)).strip())
+                left_out = pending_left_out or bool({"fragment", "cudaq-qec"} & classes)
+                if include:
+                    if options.get("language") != "python":
+                        continue
+                    left_out |= bool({"pyobject", "lines", "start-at", "end-at"} & options.keys())
+                    block = (page.parent / include[1]).read_text().splitlines()
+                    if "start-after" in options:
+                        at = next(k for k, ln in enumerate(block) if options["start-after"] in ln)
+                        block = block[at + 1 :]
+                    if "end-before" in options:
+                        at = next(k for k, ln in enumerate(block) if options["end-before"] in ln)
+                        block = block[:at]
+                if "continues" in classes:
+                    pending += "\n".join(block) + "\n"
+                    pending_left_out = left_out
+                    continue
+                if not left_out:
+                    blocks.append(textwrap.dedent(pending + "\n".join(block)).strip())
+                pending, pending_left_out = "", False
             else:
                 i += 1
         if blocks:
