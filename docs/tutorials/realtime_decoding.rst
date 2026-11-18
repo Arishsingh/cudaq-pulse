@@ -19,6 +19,9 @@ What you'll learn:
 - how to check both arms in simulation;
 - how the same round calls a CUDA-Q QEC decoder.
 
+All the code on this page is also one Python script,
+:download:`realtime_decoding.py <scripts/realtime_decoding.py>`.
+
 The code and its syndrome
 -------------------------
 

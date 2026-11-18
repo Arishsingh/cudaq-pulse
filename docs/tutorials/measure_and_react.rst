@@ -16,6 +16,9 @@ What you'll learn:
 - how the simulator follows every outcome at once;
 - where the conditional pulse sits in the schedule.
 
+All the code on this page is also one Python script,
+:download:`measure_and_react.py <scripts/measure_and_react.py>`.
+
 Outcomes and shots
 ------------------
 

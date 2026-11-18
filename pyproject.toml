@@ -262,7 +262,8 @@ test-command = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["build", ".cache"]
+# The tutorial scripts are written from the pages (tools/tutorial-scripts.py).
+extend-exclude = ["build", ".cache", "docs/tutorials/scripts"]
 # Kernel DSL intrinsics: resolved while @pulse.kernel traces the body, never
 # bound at module scope.
 builtins = [

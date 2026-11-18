@@ -18,6 +18,9 @@ What you'll learn:
 - how to write, register and validate a small backend;
 - how one program splits across two controllers.
 
+All the code on this page is also one Python script,
+:download:`kernel_to_controller.py <scripts/kernel_to_controller.py>`.
+
 The exported program
 --------------------
 

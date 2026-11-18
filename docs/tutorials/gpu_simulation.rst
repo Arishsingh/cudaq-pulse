@@ -22,6 +22,9 @@ What you'll learn:
    this page needs Linux and an NVIDIA GPU, and the tests run it only there.
    Its CPU parts run anywhere.
 
+All the code on this page is also one Python script,
+:download:`gpu_simulation.py <scripts/gpu_simulation.py>`.
+
 Install and check
 -----------------
 

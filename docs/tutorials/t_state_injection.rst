@@ -24,6 +24,9 @@ seconds on a laptop CPU.
 
 The page builds on :doc:`measure_and_react` and :doc:`classical_calls`.
 
+All the code on this page is also one Python script,
+:download:`t_state_injection.py <scripts/t_state_injection.py>`.
+
 Why T states
 ------------
 
