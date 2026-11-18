@@ -14,7 +14,7 @@ from pathlib import Path
 
 # The page imports examples/isa_lowering/toy_isa.py. Run this script from a
 # clone of the repository, or save that file beside it.
-_EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
+_EXAMPLES = Path(__file__).resolve().parent.parent.parent.parent / "examples"
 sys.path.insert(0, str(_EXAMPLES / "isa_lowering"))
 
 

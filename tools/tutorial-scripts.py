@@ -150,10 +150,14 @@ def script(page: Path) -> str:
             imported.append((module, Path(linked).parent.as_posix()))
     if imported:
         names = " and ".join(f"examples/{d}/{m}.py" for m, d in imported)
+        # In a clone the script is docs/tutorials/scripts/<page>.py, so its
+        # fourth parent is the clone. .parent stops at the root, so a script
+        # saved higher up, as ~/<page>.py, still runs; parents[3] would raise
+        # IndexError there.
         lines = [
             f"# The page imports {names}. Run this script from a",
             "# clone of the repository, or save that file beside it.",
-            '_EXAMPLES = Path(__file__).resolve().parents[3] / "examples"',
+            '_EXAMPLES = Path(__file__).resolve().parent.parent.parent.parent / "examples"',
         ]
         for directory in dict.fromkeys(d for _, d in imported):
             lines.append(f'sys.path.insert(0, str(_EXAMPLES / "{directory}"))')

@@ -51,6 +51,23 @@ def test_the_page_links_its_script(page):
     assert f":download:`{page.stem}.py <scripts/{page.stem}.py>`" in page.read_text()
 
 
+@pytest.mark.parametrize("saved_as", ["/{}.py", "/reader/scripts/{}.py"])
+def test_a_script_saved_outside_a_clone_starts(saved_as, monkeypatch):
+    """A reader may save a script anywhere, as ~/isa_lowering.py: looking for
+    the clone's examples/ must not fail there."""
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    tool = _tool()
+    checked = []
+    for page in tool.pages():
+        text = (tool.SCRIPTS / f"{page.stem}.py").read_text()
+        if "_EXAMPLES" in text:
+            preamble = text.partition("\n# %% ")[0]
+            script = saved_as.format(page.stem)
+            exec(compile(preamble, script, "exec"), {"__file__": script})
+            checked.append(page.stem)
+    assert checked
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("page", _pages(), ids=lambda p: p.stem)
 def test_the_script_runs(page, tmp_path):
