@@ -2404,6 +2404,7 @@ def _violations(
     held: bool = True,
     timed: Sequence[Mapping[str, Any]] | None = None,
     answers: Sequence[Mapping[str, Any]] | None = None,
+    updates: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """The limits *events* exceed. With *clocks*, the events are in the
     controller's own cycles: the native walk's, with *off* its line events
@@ -2418,7 +2419,9 @@ def _violations(
     *held* false leaves the lines held by calls to the caller, which knows
     the controller each call holds. *timed* and *answers*, when the caller
     has them, are the timed drives and readouts of *events* and its answers,
-    in order; then only the update-bus check reads all of *events*."""
+    in order; then only the update-bus check reads all of *events*, or only
+    *updates*, the frame updates, drives and readouts of *events* on the
+    controller's lines, when the caller has them."""
     if clocks is None:
         found = []
     else:
@@ -2530,7 +2533,8 @@ def _violations(
                         f"(the readout of qudit {previous['qudit']} at {previous['start_cycles']})"
                     )
     if limits.update_buses:
-        found.extend(_bus_violations(lowered, events, limits, lines, clocks, unresolved))
+        on_lines = events if updates is None else updates
+        found.extend(_bus_violations(lowered, on_lines, limits, lines, clocks, unresolved))
     if limits.feedback_latency_cycles:
         for event in timed:
             for condition in event["conditions"]:
@@ -2652,9 +2656,11 @@ def _bus_clashes(
         return []
     if cycles is None:
         cycles = [bus.cycles_per_update for bus in limits.update_buses]
+    by_bus: list[list[Mapping[str, Any]]] = [[] for _ in limits.update_buses]
+    for e in updates:
+        by_bus[bus_of[e["line"]]].append(e)
     found = []
-    for index in range(len(limits.update_buses)):
-        on_bus = [e for e in updates if bus_of[e["line"]] == index]
+    for index, on_bus in enumerate(by_bus):
         for previous, event in _pairs(on_bus):
             gap = event["start_cycles"] - previous["start_cycles"]
             if gap < cycles[index]:
