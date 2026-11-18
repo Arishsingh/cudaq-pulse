@@ -66,10 +66,10 @@ A call has two halves: ``submit`` sends the request, and ``result`` takes
 the answer where the program needs it.
 
 The kernel reads the qubit and sends the outcome. With a timeout,
-``result`` also returns whether the answer came in time:
+``result`` also returns whether the answer came in time, and a late answer
+falls back to the raw outcome:
 
 .. code-block:: python
-   :class: continues
 
    @pulse.kernel
    def correct_if_needed(qudit):
@@ -81,10 +81,6 @@ The kernel reads the qubit and sends the outcome. With a timeout,
        outcome = readout(readout_line, measurement)
        request = decode.submit([outcome])
        in_time, answer = request.result(timeout=4 * pulse.us)
-
-A late answer falls back to the raw outcome:
-
-.. code-block:: python
 
        needs_flip = answer if in_time else outcome
        sync(drive_line, readout_line)
@@ -164,7 +160,7 @@ taken.
 
 Start the qubit in an equal superposition, so both outcomes happen. With
 ``latency_branching``, the simulator also branches on whether each answer
-arrives in time:
+arrives in time. Then add up the branches whose answer arrived in time:
 
 .. code-block:: python
 
@@ -174,10 +170,6 @@ arrives in time:
        initial_state=equal_superposition,
        latency_branching=True,
    )
-
-Add up the branches whose answer arrived in time:
-
-.. code-block:: python
 
    in_time = 0.0
    for branch in result.branches:

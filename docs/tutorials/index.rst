@@ -37,7 +37,7 @@ Start with the first; the rest can be read in any order once you have it.
 
 .. toctree::
    :maxdepth: 1
-   :caption: Experimental
+   :caption: Extending CUDA-Q Pulse
 
    isa_lowering
    isa_limits

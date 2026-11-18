@@ -52,7 +52,7 @@ The QPU has three qudits on two controllers:
 
 - The first controller drives qudits 0 and 1, and reads both on one
   feedline.
-- The second drives and reads qudit 2.
+- The second controller drives and reads qudit 2.
 - Outcomes reach the other controller 40 cycles later.
 - Both count from a 250 MHz reference clock, and a decoder sits on a
   link.
@@ -440,10 +440,10 @@ A round with a deadline
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 A QEC round reads two syndromes and asks the decoder. It waits at most
-60 ns for the answer:
+60 ns for the answer, then applies the correction, or the fallback when the
+answer is late:
 
 .. code-block:: python
-   :class: continues
 
    @pulse.kernel
    def qec_round(data, ancilla):
@@ -454,10 +454,6 @@ A QEC round reads two syndromes and asks the decoder. It waits at most
        syndrome_1 = readout(get_readout_line(ancilla), probe)
        request = decode.submit([syndrome_0, syndrome_1])
        in_time, fix = request.result(timeout=60 * pulse.ns)
-
-Then it applies the correction, or the fallback when the answer is late:
-
-.. code-block:: python
 
        if fix[0]:
            drive(get_drive_line(data), flip)
@@ -475,7 +471,8 @@ came by the deadline.
 The listing
 ~~~~~~~~~~~
 
-Lower the round:
+Lower the round. Both syndromes are read at once, on the two tones of the
+feedline:
 
 .. code-block:: python
 
@@ -486,10 +483,6 @@ Lower the round:
    )
    qec = compiled.lower(q0, q1)
    listing = lower(qec.export_to_controller())
-
-Both syndromes are read at once, on the two tones of the feedline:
-
-.. code-block:: python
 
    for line in listing.code:
        print(line)

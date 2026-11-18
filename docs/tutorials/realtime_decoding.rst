@@ -94,13 +94,11 @@ budget, as the simulation below does.
 One round, with a deadline
 --------------------------
 
-The round reads both ancillas, asks the decoder, and corrects the data
-qubits.
-
-First the syndrome and the call, with the deadline as a kernel argument:
+The round reads both ancillas and asks the decoder, with the deadline as a
+kernel argument. Then each data qubit takes the decoder's answer, or the
+table's if the answer is late:
 
 .. code-block:: python
-   :class: continues
 
    @pulse.kernel
    def qec_round(data, ancillas, deadline_ns: int):
@@ -113,11 +111,6 @@ First the syndrome and the call, with the deadline as a kernel argument:
 
        request = decode.submit([s0, s1])
        in_time, fix = request.result(timeout=deadline_ns * pulse.ns)
-
-Then each data qubit takes the decoder's answer, or the table's if the
-answer is late:
-
-.. code-block:: python
 
        # The fallback, computed on the controller.
        table = [s0 and not s1, s0 and s1, s1 and not s0]
@@ -180,7 +173,8 @@ Now check how often the round restores the data qubits.
 
 Start from the state syndrome extraction leaves: no error, or one flipped
 data qubit, each with a quarter of the probability, with the ancillas
-holding the matching syndrome:
+holding the matching syndrome. Each start is a basis state with amplitude
+0.5:
 
 .. code-block:: python
 
@@ -192,9 +186,6 @@ holding the matching syndrome:
        (0, 0, 1, 0, 1),
    ]
 
-Each start is a basis state with amplitude 0.5:
-
-.. code-block:: python
 
    def start_state():
        state = np.zeros(2**5)
@@ -206,10 +197,10 @@ Each start is a basis state with amplitude 0.5:
        return state
 
 ``run`` simulates a program from that state, branching on whether each
-answer arrives in time:
+answer arrives in time. It returns the share of shots that used the
+decoder's answer, and the share whose data qubits end back in 000:
 
 .. code-block:: python
-   :class: continues
 
    def run(program):
        result = pulse.simulate(
@@ -219,12 +210,6 @@ answer arrives in time:
            latency_branching=True,
            dt_ns=2.0,
        )
-
-It returns the share of shots that used the decoder's answer, and the
-share whose data qubits end back in 000:
-
-.. code-block:: python
-
        used = 0.0
        for branch in result.branches:
            if branch.calls and branch.calls[-1].in_time:

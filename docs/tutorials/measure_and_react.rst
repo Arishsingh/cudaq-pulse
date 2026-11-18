@@ -21,7 +21,8 @@ Outcomes and shots
 
 First, put a qubit halfway between its two states and read it out.
 
-Set up the quantum system and pick its first qubit:
+Pick the quantum system's first qubit. The kernel plays a calibrated π/2
+pulse on it, then the calibrated readout:
 
 .. code-block:: python
 
@@ -32,9 +33,6 @@ Set up the quantum system and pick its first qubit:
    system = pulse.quantum_system("transmon_surface17")
    qubit = system.qudits[0]
 
-The kernel plays a calibrated π/2 pulse, then the calibrated readout:
-
-.. code-block:: python
 
    @pulse.kernel
    def measure_superposition(qudit):
@@ -92,10 +90,10 @@ An ``if`` on a readout's result stays in the compiled program, as a branch
 the controller takes while the shot runs. This kernel resets the qubit
 whatever state it was in, then reads it again to check.
 
-It starts like ``measure_superposition``:
+It starts like ``measure_superposition``, then reacts to the outcome and
+reads the qubit again:
 
 .. code-block:: python
-   :class: continues
 
    @pulse.kernel
    def active_reset(qudit):
@@ -108,10 +106,6 @@ It starts like ``measure_superposition``:
        drive(drive_line, half_flip)
        sync(drive_line, readout_line)
        outcome = readout(readout_line, measurement)
-
-Then it reacts to the outcome, and reads the qubit again:
-
-.. code-block:: python
 
        sync(drive_line, readout_line)
        if outcome:

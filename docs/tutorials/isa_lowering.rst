@@ -121,11 +121,6 @@ maker's. Both toy controllers are the same model, wired differently:
        readout_lines=[feedline],
        peer_latency_cycles=40,
    )
-
-The second controller is the same model, on qudit 2:
-
-.. code-block:: python
-
    second = pulse.controller(
        "toy_sequencer.toml",
        drive_lines=[2],
@@ -145,7 +140,7 @@ What to notice:
 
 - The first controller drives qudits 0 and 1, and reads both on one
   feedline.
-- The second drives and reads qudit 2.
+- The second controller drives and reads qudit 2.
 - An outcome takes 40 more cycles to reach the other controller.
 
 One QPU
@@ -166,26 +161,18 @@ The QPU has three qudits, each with its frequency and coherence times:
            t2_star_us=30.0,
        )
 
-The control system holds both controllers, the clock and the link:
+The control system holds both controllers, the clock and the link to the
+decoder. The QPU puts it together with the qudits. It is one value, which
+``as_dict`` saves as a file:
 
 .. code-block:: python
 
-   decoder = pulse.Link(fixed_ns=4, feedback_ns=8)
+   decoder_link = pulse.Link(fixed_ns=4, feedback_ns=8)
    control_system = pulse.ControlSystem(
        controllers=[first, second],
        reference_clock_ghz=0.25,
-       links={"decoder": decoder},
+       links={"decoder": decoder_link},
    )
-
-Both controllers count from the 250 MHz reference clock. A call to the
-decoder takes 4 ns to go out and 8 ns to come back, on top of its own
-latency.
-
-The QPU puts them together. It is one value, which ``as_dict`` saves as
-a file:
-
-.. code-block:: python
-
    qpu = pulse.quantum_system(
        name="toy-qpu",
        qudits=qudits,
@@ -196,15 +183,17 @@ a file:
    saved = qpu.as_dict()
    controllers = saved["control_system"]["controllers"]
    print("controllers:", len(controllers))
-   print("second drives:", controllers[1]["drive_lines"])
+   print("second line drives:", controllers[1]["drive_lines"])
 
 .. code-block:: text
    :class: output
 
    controllers: 2
-   second drives: [2]
+   second line drives: [2]
 
-Every compile now checks a program against these two controllers.
+Both controllers count from the 250 MHz reference clock. A call to the
+decoder takes 4 ns to go out and 8 ns to come back, on top of its own
+latency. Every compile now checks a program against these two controllers.
 
 The program before lowering
 ---------------------------
@@ -214,11 +203,9 @@ This section shows what a backend receives: the scheduled program.
 A Ramsey sequence with a reset
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The kernel is a detuned Ramsey sequence, then an active reset. It starts
-with its lines and pulses:
+The kernel is a detuned Ramsey sequence, then an active reset:
 
 .. code-block:: python
-   :class: continues
 
    @pulse.kernel
    def ramsey_then_reset(qudit):
@@ -228,11 +215,7 @@ with its lines and pulses:
        x180 = gaussian(duration=40, amplitude=0.5, sigma=10.0)
        probe = square(duration=200, amplitude=0.05)
 
-First the Ramsey part, detuned by 2 MHz while it waits:
-
-.. code-block:: python
-   :class: continues
-
+       # Ramsey, detuned by 2 MHz while it waits.
        drive(drive_line, x90)
        shift_frequency(drive_line.tone, 2.0e6)
        wait(drive_line, 100)
@@ -240,10 +223,7 @@ First the Ramsey part, detuned by 2 MHz while it waits:
        drive(drive_line, x90)
        shift_frequency(drive_line.tone, -2.0e6)
 
-Then the readout, and a π pulse when it reads 1:
-
-.. code-block:: python
-
+       # Read out, and play a π pulse when it reads 1.
        sync(drive_line, readout_line)
        outcome = readout(readout_line, probe)
        sync(drive_line, readout_line)
@@ -255,8 +235,11 @@ What to notice: the reset flips the qudit back when it reads 1.
 The scheduled IR
 ~~~~~~~~~~~~~~~~
 
-Compile with the resource-constrained schedule, ``rcp``. Then print each
-operation's start and length, in clock cycles:
+Compile with the resource-constrained schedule, ``rcp``. The scheduled
+pulse dialect gives each operation a place in time, as the attributes
+``start_cycles`` and ``duration_cycles``. The regular expression below
+picks each operation's name and those two attributes out of the MLIR
+text, to print its start and length in clock cycles:
 
 .. code-block:: python
 
@@ -269,16 +252,11 @@ operation's start and length, in clock cycles:
    )
    scheduled = compiled.lower(qpu.qudits[0])
 
-   timing = re.compile(
+   op_timing = re.compile(
        r"= (pulse\.\w+) .*"
        r"duration_cycles = (\d+) : i64, start_cycles = (\d+)"
    )
-
-The scheduled pulse dialect gives each operation a place in time:
-
-.. code-block:: python
-
-   for op, duration, start in timing.findall(scheduled.mlir()):
+   for op, duration, start in op_timing.findall(scheduled.mlir()):
        print(f"{op:<23} start {start:>3}  length {duration:>3}")
 
 .. code-block:: text

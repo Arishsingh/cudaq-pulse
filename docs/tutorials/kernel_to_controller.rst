@@ -25,7 +25,7 @@ The export gives a scheduled program as JSON-ready data: every drive,
 readout, wait and sync, with its line and its time in clock cycles.
 
 Start with one qudit at 5 GHz and a 1 GHz clock, so one cycle is one
-nanosecond:
+nanosecond, and a kernel that drives it and reads it out:
 
 .. code-block:: python
 
@@ -45,9 +45,6 @@ nanosecond:
        clock_ghz=1.0,
    )
 
-The kernel drives it and reads it out:
-
-.. code-block:: python
 
    @pulse.kernel
    def drive_and_measure(qudit):

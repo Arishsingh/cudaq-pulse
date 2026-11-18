@@ -27,18 +27,16 @@ a gamma distribution with two parameters, ``shape`` and ``rate``. Its T1
 estimate is rate / shape.
 
 Each readout updates the distribution, which then says which wait would
-teach the most next. CUDA-Q Pulse ships both steps:
+teach the most next. CUDA-Q Pulse ships both steps. Declared as a
+classical function on the controller's own link, they run between shots.
+It takes the readout, the distribution and the last wait, and returns the
+updated distribution and the next wait:
 
 .. code-block:: python
 
    import cudaq_pulse as pulse
    from cudaq_pulse.classical import calibration as cal
 
-Declared as a classical function on the controller's own link, they run
-between shots. It takes the readout, the distribution and the last wait:
-
-.. code-block:: python
-   :class: continues
 
    @pulse.classical(link="controller", max_latency_ns=500)
    def update_t1(
@@ -47,11 +45,6 @@ between shots. It takes the readout, the distribution and the last wait:
        rate: float,
        wait_ns: float,
    ) -> tuple[float, float, float]:
-
-It returns the updated distribution and the next wait:
-
-.. code-block:: python
-
        shape, rate = cal.adaptive_t1_update(
            shape,
            rate,
@@ -89,10 +82,11 @@ The tracking kernel
 Every shot is one pass of a loop inside one kernel, so the whole run is one
 program.
 
-The kernel takes the number of shots, the prior, and the first wait:
+The kernel takes the number of shots, the prior, and the first wait. Each
+shot excites the qubit, waits, reads it out, asks the estimator for the
+next wait, and resets the qubit:
 
 .. code-block:: python
-   :class: continues
 
    @pulse.kernel
    def track_t1(
@@ -106,11 +100,6 @@ The kernel takes the number of shots, the prior, and the first wait:
        readout_line = get_readout_line(qudit)
        flip = drive_line.get_calibration(pulse.gates.X)
        measurement = readout_line.get_calibration(pulse.gates.READOUT)
-
-Each shot excites the qubit, waits, reads it out, asks the estimator for
-the next wait, and resets the qubit:
-
-.. code-block:: python
 
        for shot in range(shots_count):
            drive(drive_line, flip)
