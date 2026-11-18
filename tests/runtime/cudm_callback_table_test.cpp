@@ -4,8 +4,9 @@
 // The waveform-callback table of the cuDensityMat runtime, run against the
 // host fake in fake_cudensitymat/: concurrent runs each see their own
 // envelopes, the capacity is per run, a callback evaluated outside its
-// run's evolution fails instead of reading another run's parameters, and
-// the members of a batched run evolve as their own runs do.
+// run's evolution fails instead of reading another run's parameters, the
+// members of a batched run evolve as their own runs do, and a workspace
+// serves more than one evolution.
 
 #include "cudm_runtime.h"
 
@@ -284,6 +285,26 @@ void multidiagonalOperatorsAreChecked() {
         "data of the wrong size is refused");
 }
 
+// A second evolution with the same workspace re-prepares it, attaches the
+// buffer the first one allocated, and ends where the first one did.
+void aWorkspaceServesASecondEvolution() {
+  Run run("second evolution");
+  check(run.appendEnvelope(0.25) == CUDM_SUCCESS, "second evolution: append");
+  const auto first = run.evolveAll("first evolution", 1);
+  const bool evolved =
+      cudm_evolve(run.handle, run.op, run.in, run.out, run.workspace, 0.0,
+                  durationNs, 200, 4) == CUDM_SUCCESS &&
+      cudm_state_capture(run.out) == CUDM_SUCCESS;
+  check(evolved,
+        std::string("second evolution failed: ") + cudm_last_error_message());
+  std::vector<double> second(4);
+  if (evolved)
+    cudm_last_result_copy(second.data(), second.size() * sizeof(double));
+  check(evolved && first.size() == 4 &&
+            std::memcmp(first.data(), second.data(), 4 * sizeof(double)) == 0,
+        "the second evolution ends where the first one did");
+}
+
 } // namespace
 
 int main() {
@@ -293,6 +314,7 @@ int main() {
   invalidParametersAreRejected();
   batchedMembersEvolveAsTheirOwnRuns();
   multidiagonalOperatorsAreChecked();
+  aWorkspaceServesASecondEvolution();
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures.load());
     return 1;
