@@ -246,6 +246,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `controller.unroll()` keeps it. Other answers export as before.
   `backends.validate` runs one more program, `timeout_function`, which
   branches on such an answer.
+- A kernel with more than about 10,000 waits whose length a `float`
+  argument sets failed to compile with `RecursionError: maximum recursion
+  depth exceeded during compilation` (about 25,000 on Python 3.14 and
+  3.15): the check that a call's wait lengths keep the program within the
+  most it may last added one term per wait to a single Python expression.
+  A rotated surface-code round with a `float` CZ length has about 13,000
+  such waits at distance 41. The check now compiles for any number of
+  waits and accepts and refuses the same calls as before; waits of one
+  length and bounds share one test.
 
 ## [0.1.0] - 2026-11-13
 
