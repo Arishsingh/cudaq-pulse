@@ -38,8 +38,9 @@ an open MLIR pulse dialect that any controller can target.
   interface.
 
 Underneath are a Python kernel DSL, the Pulse and Classical MLIR dialects, and
-their compiler passes. The wheel contains its own statically linked MLIR, so
-`pip` is the only installer you need.
+their compiler passes. `cudaq-pulse` does not depend on CUDA-Q. The wheel
+contains its own statically linked MLIR, so `pip` is the only installer you
+need.
 
 `cudaq-pulse` is an experimental, community-driven research project under
 active development. We're releasing it now because our partners want a
