@@ -179,6 +179,7 @@ an exchange interaction of a few megahertz:
 
    x2 = system.qudit("X2")
    coupling = system.coupling(data[0], x2)
+   assert coupling.strength_hz is not None  # None: not measured yet
    idle_zz_hz = system.calibration.idle_zz_hz("X2-D1")
 
    print(f"g / 2π:  {coupling.strength_hz / 1e6:.2f} MHz")
