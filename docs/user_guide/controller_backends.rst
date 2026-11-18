@@ -1000,7 +1000,13 @@ own in format ``/1`` (``several_controllers[0]``, ``several_controllers[1]``),
 and is not compared with ``emulate``. Each must be emitted or refused with
 ``IncompatibleBackendError``, and a program with an event kind no format
 has, or in a newer format, must be refused. A program that exceeds the
-controller's limits is skipped.
+controller's limits is skipped. The corpus's pulses and waits last 16 to 200
+cycles, all multiples of 4; on a controller with a longer
+``min_pulse_cycles``, or a timestep or sample rate those lengths are off,
+every one of them lasts the fewest whole times as long that the controller
+plays (16 cycles become 64 for a ``min_pulse_cycles`` of 64), so its
+programs are checked rather than skipped. On every other controller the
+corpus is as written.
 
 .. code-block:: python
 

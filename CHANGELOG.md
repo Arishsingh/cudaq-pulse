@@ -86,6 +86,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   probabilities divided by the kept total, which is the new result's
   `acceptance`, and the shots that took them in `records`. Every other
   result has an `acceptance` of 1.0.
+- **Validating controllers with long minimum pulses.** `backends.validate`
+  makes every pulse and wait of its corpus the fewest whole times as long
+  that the controller plays: no shorter than its `min_pulse_cycles`, and
+  on its lines' timestep and sample rate. A controller whose shortest pulse
+  is 64 cycles had 14 of the 16 programs skipped; it now has them all
+  checked, with 16-cycle pulses lasting 64. On a controller that plays the
+  corpus as written, the corpus, its exports and every report are as
+  before.
 - **Validating branches on slow feedback.**
   `backends.validate(..., feedback_gap_cycles=n)` waits `n` cycles of the
   controller's clock between the readout of the corpus's `branch` program
