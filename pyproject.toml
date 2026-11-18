@@ -109,7 +109,7 @@ lint = [
 docs = [
     "sphinx>=7",
     "myst-parser>=3",
-    "nvidia-sphinx-theme==0.0.8",
+    "nvidia-sphinx-theme==0.0.9.post1",
 ]
 bench = ["matplotlib>=3.9"]
 # The coverage job in ci.yml only; not part of dev.
