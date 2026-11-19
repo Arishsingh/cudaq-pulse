@@ -20,6 +20,7 @@ extensions = [
     "themed_figure",
     "pulse_visual",
     "data_figures",
+    "a11y",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
