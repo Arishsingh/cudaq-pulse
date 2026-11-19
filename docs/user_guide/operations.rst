@@ -167,7 +167,11 @@ an ``int`` number of clock cycles or a time such as ``20 * pulse.ns``;
    * - Function
      - Description
    * - ``gaussian(duration, amplitude, sigma)``
-     - Gaussian envelope with standard deviation *sigma*
+     - Gaussian envelope with standard deviation *sigma*:
+       ``amplitude * exp(-(t - duration / 2)**2 / (2 * sigma**2))`` at time
+       ``t`` from the start of the pulse. It is cut off at the ends of
+       *duration*, with no offset subtracted: with ``duration = 4 * sigma``
+       it starts and ends at about 14% of *amplitude*.
    * - ``square(duration, amplitude)``
      - Constant-amplitude (flat-top) envelope
    * - ``drag(duration, amplitude, sigma, beta)``
@@ -196,10 +200,10 @@ two edges have the same integer duration.
 
 .. rubric:: Waveform explorer
 
-Pick a waveform and move its sliders; the line under the plot is the call
-that makes it. *combine* applies the waveform arithmetic below to a second
-waveform, and *modulate* shows the drive in the qudit's frame (see
-:ref:`conventions-frames`).
+Pick a waveform and move its sliders or type a value; the line under the
+plot is the call that makes it. *combine* applies the waveform arithmetic
+below to a second waveform, and *modulate* shows the drive in the qudit's
+frame (see :ref:`conventions-frames`).
 
 .. only:: html
 

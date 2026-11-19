@@ -6,8 +6,13 @@
  * static figures (docs/tutorials/figures/_style.py): drive green, Q blue,
  * readout rose, classical calls and latencies teal. A conditional pulse is
  * outlined dashed and a late window hatched, so color is never the only cue.
+ * The outlines are darker than the static figures' rules: there a rule is a
+ * tick or a guide, here an outline says that something may play, so it is
+ * at least 3:1 on the page (3.7:1 light, 3.8:1 dark).
  * The variables sit on the SVG, so the still that
  * tools/render-pulse-visual.js draws carries these rules and the class pv-dark.
+ * That script takes every rule that starts with ".pv-", so a rule for the
+ * page around the picture starts with ".pulse-visual".
  */
 
 .pv-svg {
@@ -18,7 +23,7 @@
   --pv-text: #1a1a1a;
   --pv-muted: #5c636a;
   --pv-grid: #e8e8e8;
-  --pv-rule: #b8bdc2;
+  --pv-rule: #80868c;
   --pv-panel: rgba(0, 0, 0, 0.03);
   --pv-on-pill: #ffffff;
   --pv-page: #ffffff;
@@ -37,7 +42,7 @@ html[data-theme="dark"] .pv-svg,
   --pv-text: #eeeeee;
   --pv-muted: #b4bac1;
   --pv-grid: #2c2f33;
-  --pv-rule: #5a6066;
+  --pv-rule: #6b7177;
   --pv-panel: rgba(255, 255, 255, 0.04);
   --pv-on-pill: #0b0b0b;
   --pv-page: #111111;
@@ -53,18 +58,12 @@ html[data-theme="dark"] .pv-svg,
   display: none;
 }
 
-.pulse-visual:focus-visible {
-  outline: 2px solid var(--pst-color-primary, #76b900);
-  outline-offset: 4px;
-}
-
+/* The picture is 760 units wide in a column of about 656 px, where 11.5
+   units are 10 px. */
 .pv-svg text { fill: var(--pv-text); font-size: 12px; }
 .pv-svg .pv-title { font-weight: 600; font-size: 12.5px; }
-.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted); }
-.pv-svg .pv-small { font-size: 10px; }
-.pv-svg .pv-tiny { font-size: 9px; }
+.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted); font-size: 11.5px; }
 .pv-svg .pv-tiny.pv-on-text, .pv-svg .pv-on-bar { fill: var(--pv-on-pill); }
-.pv-svg .pv-lane { font-size: 10.5px; }
 .pv-svg .pv-lane, .pv-svg .pv-pill text {
   font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace);
 }
@@ -98,13 +97,12 @@ html[data-theme="dark"] .pv-svg,
 .pv-arrow-answer { stroke-dasharray: 4 2; }
 
 .pv-pill rect { fill: var(--pv-classical); }
-.pv-svg .pv-pill text { fill: var(--pv-on-pill); font-size: 10.5px; }
+.pv-svg .pv-pill text { fill: var(--pv-on-pill); font-size: 11.5px; }
 
 .pv-branch { fill: none; stroke: var(--pv-classical); stroke-linecap: butt; opacity: 0.85; }
 .pv-branch.pv-dropped { stroke: var(--pv-muted); stroke-dasharray: 3 2; opacity: 0.6; }
 .pv-dot { fill: var(--pv-classical); }
 .pv-dot.pv-dropped { fill: var(--pv-muted); }
-.pv-svg .pv-node-text { font-size: 10.5px; }
 
 .pv-axis { stroke: var(--pv-rule); }
 .pv-area { fill: var(--pv-drive); opacity: 0.18; }
@@ -120,32 +118,83 @@ html[data-theme="dark"] .pv-svg,
 .pv-stage-link { stroke: var(--pv-classical); }
 .pv-svg .pv-q-text { fill: var(--pv-q); }
 .pv-svg .pv-link-text { fill: var(--pv-classical); }
-.pv-svg .pv-code { font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace); }
+/* A stage's line of code is the widest text in its box, so it is a little
+   smaller than the other small text. */
+.pv-svg .pv-code {
+  font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 11px;
+}
 
 .pv-track { fill: var(--pv-grid); }
 .pv-share { fill: var(--pv-classical); }
 .pv-case-band { fill: transparent; }
 .pv-case-band.pv-current { fill: var(--pv-panel); stroke: var(--pv-rule); }
 
-.pulse-visual .pv-caption {
+/* The line under the picture: the step on show and what it says. It holds
+   two lines of text, four on a narrow screen, so the buttons under it stay
+   where they are from one step to the next. */
+.pulse-visual .pulse-visual-status {
   min-height: 2.8em;
   margin: 0.3rem 0;
   font-size: 0.9rem;
   line-height: 1.4;
 }
 
-.pulse-visual .pv-bar { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+@media (max-width: 719.98px) {
+  .pulse-visual .pulse-visual-status {
+    min-height: 5.6em;
+  }
+}
+
+/* The case a step belongs to is the picture's heading. The line repeats it
+   for screen readers only, which cannot read the picture. */
+.pulse-visual .pv-spoken {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.pulse-visual .pulse-visual-controls { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 
 .pulse-visual .pv-button {
+  min-width: 24px;
+  min-height: 24px;
   color: var(--pst-color-text-base, inherit);
   background: var(--pst-color-surface, transparent);
   border: 1px solid var(--pst-color-border, #c8c8c8);
   border-radius: 0.25rem;
   padding: 0.1rem 0.6rem;
-  font-size: 0.85rem;
+  font-size: max(0.875rem, 14px);
 }
 
-.pulse-visual .pv-button:focus-visible {
-  outline: 2px solid var(--pst-color-primary, #76b900);
-  outline-offset: 2px;
+/* Wide enough for "Replay", its longest name, so the buttons after it stay
+   where they are when its name changes. */
+.pulse-visual .pv-toggle { min-width: 5em; }
+
+/* The step on show: its button's name is underlined and its border is in the
+   text color. The underline is a shape, so the mark does not rest on color
+   and stays under forced colors and under the page's focus ring. */
+.pulse-visual .pv-button[aria-current] {
+  border-color: currentColor;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.2em;
+}
+
+/* A step button at the first or last step keeps the focus, so the arrow keys
+   go on working there; it is dashed as well as muted. */
+.pulse-visual .pv-button[aria-disabled="true"] {
+  color: var(--pst-color-text-muted, #666666);
+  border-color: currentColor;
+  border-style: dashed;
+  cursor: default;
+}
+
+@media (forced-colors: active) {
+  .pulse-visual .pv-button[aria-disabled="true"] {
+    color: GrayText;
+  }
 }

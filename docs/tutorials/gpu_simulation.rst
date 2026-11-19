@@ -32,16 +32,19 @@ GPU support comes as an extra of the same package, for CUDA 12 or CUDA 13.
 The CUDA libraries come from PyPI too, so the NVIDIA driver is the only
 thing the machine needs.
 
-Install the extra for your CUDA version, then run the doctor:
+Install one CUDA extra, unless the environment already has one, then run
+the doctor:
 
 .. code-block:: bash
 
-   pip install "cudaq-pulse[cu13]"
+   pip install "cudaq-pulse[cu12]"
    python -m cudaq_pulse.doctor
 
-Use ``cudaq-pulse[cu12]`` for CUDA 12. The doctor reports the GPU runtime
-it loaded, the driver version and the number of GPUs. It exits with an
-error when GPU execution doesn't work.
+``cu12`` needs NVIDIA driver 525.60.13 or newer. ``cudaq-pulse[cu13]``
+installs the CUDA 13 libraries instead and needs driver 580 or newer. Never
+install both. The doctor reports the GPU runtime it loaded, the driver
+version and the number of GPUs. It exits with an error when GPU execution
+doesn't work.
 
 The same check from Python raises an error that says what is missing:
 

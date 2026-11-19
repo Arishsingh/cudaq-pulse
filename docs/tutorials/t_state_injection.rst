@@ -388,7 +388,7 @@ herald answer was true:
 
 .. pulse-visual:: figures/t_state_injection.json
    :scene: herald_branches
-   :alt: What post-selection keeps. Every shot starts in D5's thermal mixture. The herald readout splits the shots: it reads 0 on 97.2%, 1 on 2.7%, 2 on 7.5e-4. Post-selection keeps the branches herald accepts, the 97.2% that read 0. The rest are dropped. Of the kept shots, Z reads 0 on 49.1% and 1 or 2 on 48.1%, as |T⟩ gives.
+   :alt: What post-selection keeps. Every shot starts in D5's thermal mixture. The herald readout splits the shots: it reads 0 on 97.2%, 1 on 2.7%, 2 on 7.5e-4. Post-selection keeps the branches herald accepts, the 97.2% that read 0. The rest are dropped. The kept shots split about equally: Z reads 0 on 49.1% of all shots and 1 or 2 on 48.1%, as |T⟩ gives.
 
    The branches of one attempt, measured on Z, one readout at a time.
 

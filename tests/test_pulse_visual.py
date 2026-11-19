@@ -12,6 +12,10 @@ that it is still what the scripts write. Here:
   exactly the cases its conditions allow, shows each sentence from its
   moment, plays the first two cases and ends on its last frame, and moves
   each span from one snapshot to the next;
+- its playback, run under Node on a stand-in for the page, plays a figure
+  once while it is in view and says nothing meanwhile, hands over to the
+  reader's Pause, Previous step and Next step and says each step they take,
+  and under reduced motion shows the still frame and never moves;
 - ``tools/render-pulse-visual.js`` draws the committed stills byte for byte;
 - each scene says what its page prints.
 
@@ -29,8 +33,11 @@ from pathlib import Path
 
 import pytest
 
+from tests._tools import tool_env
+
 _ROOT = Path(__file__).resolve().parents[1]
 _ENGINE = _ROOT / "docs" / "_static" / "pulse-visual.js"
+_STYLE = _ROOT / "docs" / "_static" / "pulse-visual.css"
 _RENDER = _ROOT / "tools" / "render-pulse-visual.js"
 _FIGURES = _ROOT / "docs" / "tutorials" / "figures"
 _BUDGET_GZ = 12 * 1024
@@ -61,6 +68,14 @@ def _scene(page: str, name: str) -> dict:
 def test_the_engine_fits_its_budget():
     size = len(gzip.compress(_ENGINE.read_bytes(), compresslevel=9))
     assert size <= _BUDGET_GZ, f"pulse-visual.js is {size} bytes gzipped, over {_BUDGET_GZ}"
+
+
+def test_the_figures_follow_the_reduced_motion_setting_and_nothing_moves_without_end():
+    script = _ENGINE.read_text()
+    assert '"(prefers-reduced-motion: reduce)"' in script
+    # The setting can change while the page is open.
+    assert 'addEventListener("change"' in script
+    assert "infinite" not in _STYLE.read_text()
 
 
 def test_every_scene_has_a_still_in_both_themes():
@@ -200,6 +215,11 @@ for (const file of process.argv.slice(2)) {
       moves: snaps.slice(1).map((_, k) =>
         [0, 0.5, 1].map((f) => v.spansAt(scene, { step: k, f, c: 0, t: end }))),
       stills: snaps.map((_, k) => v.spansAt(scene, { step: k, f: 0, c: 0, t: end })),
+      stops: v.stops(scene).map((stop) => {
+        const start = v.startOf(scene, stop);
+        return [v.stopAt(scene, stop), start, v.stopAt(scene, v.frameAt(scene, start))];
+      }),
+      total,
     });
   }
 }
@@ -217,25 +237,57 @@ def node():
     return found
 
 
-@pytest.fixture(scope="module")
-def model(node, tmp_path_factory):
-    sample = tmp_path_factory.mktemp("sample") / "sample.json"
+def _run(node: str, script: str, folder: Path) -> str:
+    """What *script* prints for the sample scene and every committed one."""
+    sample = folder / "sample.json"
     sample.write_text(json.dumps({"format": "pulse-visual/1", "scenes": [_SAMPLE]}))
     files = [str(sample), *map(str, _files())]
     result = subprocess.run(
-        [node, "-e", _DUMP, str(_ENGINE), *files],
+        [node, "-e", script, str(_ENGINE), *files],
         capture_output=True,
         text=True,
         timeout=120,
-        check=True,
+        env=tool_env(),
     )
-    return {d["name"]: d for d in json.loads(result.stdout)}
+    assert result.returncode == 0, result.stderr[-3000:]
+    return result.stdout
+
+
+@pytest.fixture(scope="module")
+def model(node, tmp_path_factory):
+    drawn = json.loads(_run(node, _DUMP, tmp_path_factory.mktemp("sample")))
+    return {d["name"]: d for d in drawn}
 
 
 def _all_scenes():
     yield _SAMPLE
     for _, scene in _scenes():
         yield scene
+
+
+def _steps(scene: dict) -> list[tuple[int, str]]:
+    """Each step a reader can stop on: its case, and what the line under the picture says.
+
+    A snapshot says its sentence. A case says each of its moments, then the last one again
+    with the playhead at the end; a screen reader hears the case's label first.
+    """
+    if scene.get("snapshots"):
+        return [(0, snap.get("say") or snap["label"]) for snap in scene["snapshots"]]
+    out = []
+    for c, kase in enumerate(scene["cases"]):
+        said = [[line for u, line in kase["moments"] if u <= t][-1] for t, _ in kase["moments"]]
+        out += [(c, f"{kase['label']} {line}") for line in [*said, said[-1]]]
+    return out
+
+
+def _status(scene: dict, k: int) -> str:
+    steps = _steps(scene)
+    return f"Step {k + 1} of {len(steps)}: {steps[k][1]}"
+
+
+def _played(scene: dict) -> int:
+    """How many steps the run plays: every snapshot, or the steps of the first two cases."""
+    return sum(1 for c, _ in _steps(scene) if c < 2)
 
 
 def test_the_first_two_cases_play_once_from_the_start_and_end_still(model):
@@ -310,9 +362,30 @@ def test_the_still_is_the_first_case_or_the_last_snapshot(model):
             assert (rest["c"], rest["t"]) == (0, scene.get("end") or 1)
 
 
+def test_playing_goes_on_from_the_step_a_reader_stopped_on(model):
+    for scene in _all_scenes():
+        drawn = model[scene["name"]]
+        steps = _steps(scene)
+        assert len(drawn["stops"]) == len(steps)
+        for k, (at, start, resumed) in enumerate(drawn["stops"]):
+            assert at == k, (scene["name"], k)
+            last_of_case = k + 1 == len(steps) or steps[k + 1][0] != steps[k][0]
+            if k >= _played(scene) or k + 1 == _played(scene):
+                # A step the run doesn't play, and its last step: "Replay" starts over.
+                assert start == drawn["total"], (scene["name"], k)
+            elif last_of_case:
+                # From a case's last step, the next case plays.
+                assert resumed == k + 1, (scene["name"], k)
+            else:
+                assert resumed == k, (scene["name"], k)
+        # A later step is never earlier in the run.
+        starts = [start for _, start, _ in drawn["stops"]]
+        assert starts == sorted(starts), scene["name"]
+
+
 def test_the_stills_are_what_the_script_draws(node, tmp_path):
     for path in _files():
-        subprocess.run([node, str(_RENDER), str(path), str(tmp_path)], check=True)
+        subprocess.run([node, str(_RENDER), str(path), str(tmp_path)], env=tool_env(), check=True)
         for scene in json.loads(path.read_text())["scenes"]:
             for suffix in ("", "-dark"):
                 file = f"{scene['name']}{suffix}.svg"
@@ -320,3 +393,441 @@ def test_the_stills_are_what_the_script_draws(node, tmp_path):
                     f"{file} is not what the script draws; run "
                     f"node tools/render-pulse-visual.js docs/tutorials/figures/{path.name}"
                 )
+
+
+# ── Playback, on a stand-in for the page ──────────────────────────────
+
+# Mounts each scene as the directive writes it, then moves the clock, the
+# window, the tab and the reduced-motion setting, presses the controls, and
+# prints what the figure shows after each.
+_PAGE = r"""
+// Just enough of a DOM for the playback code: nodes that keep their
+// attributes, children and listeners.
+let heard = [];
+class Node {
+  constructor(tag, text = "") {
+    Object.assign(this, { tag, text, attrs: new Map(), children: [], listeners: {}, parent: null });
+  }
+  setAttribute(k, v) { this.attrs.set(k, String(v)); }
+  getAttribute(k) { return this.attrs.has(k) ? this.attrs.get(k) : null; }
+  removeAttribute(k) { this.attrs.delete(k); }
+  get className() { return this.getAttribute("class") || ""; }
+  set className(v) { this.setAttribute("class", v); }
+  get classList() { return { add: (c) => (this.className = `${this.className} ${c}`.trim()) }; }
+  get hidden() { return this.attrs.has("hidden"); }
+  set hidden(v) { if (v) this.setAttribute("hidden", ""); else this.removeAttribute("hidden"); }
+  set tabIndex(v) { this.setAttribute("tabindex", v); }
+  appendChild(c) { c.parent = this; this.children.push(c); return c; }
+  append(...cs) {
+    cs.forEach((c) => this.appendChild(typeof c === "string" ? new Node("#text", c) : c));
+  }
+  replaceChildren(...cs) {
+    this.children = [];
+    this.append(...cs);
+    // A screen reader says a status line that is written, unless it is off.
+    if (this.getAttribute("role") === "status") {
+      heard.push(this.getAttribute("aria-live") !== "off");
+    }
+  }
+  get textContent() { return this.text + this.children.map((c) => c.textContent).join(""); }
+  set textContent(t) { this.text = String(t); this.children = []; }
+  addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  closest(tag) { return this.tag === tag ? this : this.parent && this.parent.closest(tag); }
+  all(cls, out = []) {
+    if (this.className.split(" ").includes(cls)) out.push(this);
+    this.children.forEach((c) => c.all(cls, out));
+    return out;
+  }
+  querySelector(selector) { return this.all(selector.slice(1))[0] || null; }
+}
+
+let now = 1000;
+let frames = new Map();
+let ids = 0;
+globalThis.requestAnimationFrame = (fn) => (frames.set(++ids, fn), ids);
+globalThis.cancelAnimationFrame = (id) => frames.delete(id);
+// Moves the clock on by up to *ms*, a frame every 25 ms, while the figure
+// moves; returns how long it did.
+function run(ms) {
+  let moved = 0;
+  for (; moved < ms && frames.size; moved += 25) {
+    now += 25;
+    const due = [...frames.values()];
+    frames = new Map();
+    due.forEach((fn) => fn(now));
+  }
+  return moved;
+}
+
+const observers = [];
+globalThis.IntersectionObserver = class {
+  constructor(seen) { this.seen = seen; observers.push(this); }
+  observe() {}
+  disconnect() {}
+};
+const queries = [];
+let reduced = false;
+globalThis.window = {
+  matchMedia(media) {
+    const query = { media, matches: reduced, addEventListener: (_, fn) => (query.changed = fn) };
+    queries.push(query);
+    return query;
+  },
+};
+function reduce(on) {
+  reduced = on;
+  for (const query of queries) {
+    query.matches = on;
+    if (query.changed) query.changed();
+  }
+}
+const page = new Node("#document");
+let roots = [];
+let source = "";
+globalThis.document = Object.assign(page, {
+  readyState: "loading",
+  hidden: false,
+  createElement: (tag) => new Node(tag),
+  createElementNS: (_ns, tag) => new Node(tag),
+  createTextNode: (text) => new Node("#text", text),
+  getElementById: () => ({ textContent: source }),
+  querySelectorAll: () => roots,
+});
+function tab(hidden) {
+  page.hidden = hidden;
+  page.listeners.visibilitychange.forEach((fn) => fn());
+}
+
+const [engine, ...files] = process.argv.slice(1);
+const { stops } = require(engine);
+const start = page.listeners.DOMContentLoaded[0];
+
+// One figure on the page, as the directive writes it.
+function mount(scene) {
+  source = JSON.stringify({ scenes: [scene] });
+  const figure = new Node("figure");
+  const root = new Node("div");
+  root.className = "pulse-visual";
+  root.dataset = { source: "data", scene: scene.name };
+  const fallback = new Node("div");
+  fallback.className = "pulse-fallback";
+  figure.append(root, fallback);
+  roots = [root];
+  heard = [];
+  start();
+  const [svg, status, bar] = root.children;
+  const observer = observers[observers.length - 1];
+  const named = (attr, value) =>
+    bar.children.filter((b) => b.getAttribute(attr) === value).map((b) => b.textContent);
+  return {
+    root, svg, status, bar, fallback,
+    // Whether each write of the status line since the last call was said.
+    said: () => heard.splice(0),
+    press(name) {
+      const button = bar.children.find((b) => b.textContent === name);
+      if (!button) throw new Error(`${scene.name}: no button reads "${name}"`);
+      button.onclick();
+    },
+    // How much of the figure is in the window, and whether its controls are.
+    see(ratio, controls) {
+      observer.seen([
+        { target: root, isIntersecting: ratio > 0, intersectionRatio: ratio },
+        { target: bar, isIntersecting: controls, intersectionRatio: controls ? 1 : 0 },
+      ]);
+    },
+    key(key, held) {
+      const event = { key, [held]: true, prevented: false };
+      event.preventDefault = () => (event.prevented = true);
+      (bar.listeners.keydown || []).forEach((fn) => fn(event));
+      return event.prevented;
+    },
+    state: () => ({
+      status: status.textContent,
+      live: status.getAttribute("aria-live"),
+      toggle: bar.children[0].hidden ? null : bar.children[0].textContent,
+      disabled: named("aria-disabled", "true"),
+      current: named("aria-current", "step"),
+      moving: frames.size > 0,
+    }),
+  };
+}
+
+const out = {};
+for (const file of files) {
+  for (const scene of JSON.parse(require("fs").readFileSync(file, "utf8")).scenes) {
+    // A scene with autoplay false has no run to check.
+    if (scene.autoplay === false) continue;
+    const seen = (out[scene.name] = {});
+    const attrs = (node) => Object.fromEntries(node.attrs);
+    // No loop below outlasts a figure that never ends or never marks its ends.
+    const count = stops(scene).length;
+
+    // Mounted, below the window: what a screen reader is given.
+    let fig = mount(scene);
+    const [title, desc] = fig.svg.children;
+    seen.markup = {
+      root: attrs(fig.root),
+      keysOnRoot: Object.keys(fig.root.listeners),
+      svg: attrs(fig.svg),
+      title: [title.getAttribute("id"), title.textContent],
+      desc: [desc.getAttribute("id"), desc.textContent],
+      status: attrs(fig.status),
+      bar: attrs(fig.bar),
+      buttons: fig.bar.children.map((b) => [b.tag, b.type, b.textContent]),
+      fallbackHidden: fig.fallback.hidden,
+    };
+    seen.mounted = fig.state();
+    seen.saidOnMount = fig.said();
+
+    // It plays once, in view, and says nothing while it does.
+    fig.see(0.5, false);
+    seen.halfWithoutControls = fig.state();
+    fig.see(0.4, true);
+    seen.controlsWithoutHalf = fig.state();
+    fig.see(0.5, true);
+    seen.playing = fig.state();
+    seen.run = [];
+    for (let ms = 0; ms < 60000 && run(25); ms += 25) {
+      const s = fig.state();
+      const last = seen.run[seen.run.length - 1];
+      if (!last || last[0] !== s.status) seen.run.push([s.status, s.live, s.toggle]);
+    }
+    seen.saidWhilePlaying = fig.said();
+    seen.ended = fig.state();
+    fig.see(0, false);
+    fig.see(1, true);
+    seen.seenAgain = fig.state();
+
+    // Out of the window it waits, and goes on from there when it is back.
+    fig = mount(scene);
+    seen.total = fig.root.pulseVisual.total;
+    fig.see(1, true);
+    seen.ranBeforeLeaving = run(2500);
+    fig.see(0, false);
+    seen.left = fig.state();
+    now += 60000;
+    fig.see(0.6, true);
+    seen.back = fig.state();
+    seen.ranAfterComingBack = run(60000);
+    // So it does while the tab is hidden.
+    fig = mount(scene);
+    fig.see(1, true);
+    run(500);
+    tab(true);
+    seen.tabHidden = fig.state();
+    tab(false);
+    seen.tabShown = fig.state();
+    fig.press("Pause");
+
+    // A control stops the run for good, and the step it goes to is said.
+    fig = mount(scene);
+    fig.see(1, true);
+    run(300);
+    fig.said();
+    fig.press("Next step");
+    seen.saidOnStep = fig.said();
+    seen.stepped = fig.state();
+    fig.see(0, false);
+    fig.see(1, true);
+    tab(true);
+    tab(false);
+    seen.steppedThenSeen = fig.state();
+    fig.press("Play");
+    seen.played = fig.state();
+    run(100);
+    fig.said();
+    fig.press("Pause");
+    seen.saidOnPause = fig.said();
+    seen.paused = fig.state();
+    now += 1000;
+    seen.pausedLater = fig.state();
+    const ended = (name) => fig.state().disabled.includes(name);
+    for (let i = 0; i < count && !ended("Previous step"); i++) fig.press("Previous step");
+    seen.first = fig.state();
+    fig.said();
+    fig.press("Previous step");
+    seen.beforeFirst = fig.state();
+    seen.saidBeforeFirst = fig.said();
+    seen.walk = [];
+    for (let i = 0; i < count && !ended("Next step"); i++) {
+      fig.press("Next step");
+      seen.walk.push(fig.state().status);
+    }
+    seen.last = fig.state();
+    seen.jumps = fig.bar.children.slice(3).map((b) => (b.onclick(), fig.state()));
+
+    // The arrow keys step, unless a modifier is held; they count as a control.
+    fig = mount(scene);
+    fig.press("Next step");
+    const second = fig.state().status;
+    seen.keys = {};
+    for (const held of ["altKey", "ctrlKey", "metaKey", "shiftKey"]) {
+      seen.keys[held] = [fig.key("ArrowLeft", held), fig.state().status === second];
+    }
+    seen.keys.Tab = [fig.key("Tab"), fig.state().status === second];
+    seen.keys.ArrowLeft = [fig.key("ArrowLeft"), fig.state().status];
+    seen.keys.ArrowRight = [fig.key("ArrowRight"), fig.state().status === second];
+    fig.see(1, true);
+    seen.keysThenSeen = fig.state();
+
+    // Reduced motion: the still frame and no run; the setting is followed
+    // while the page is open.
+    reduce(true);
+    fig = mount(scene);
+    fig.see(1, true);
+    seen.still = fig.state();
+    reduce(false);
+    seen.motionAllowed = fig.state();
+    fig = mount(scene);
+    fig.see(1, true);
+    run(300);
+    reduce(true);
+    seen.reducedWhilePlaying = fig.state();
+    seen.saidOnSettling = fig.said();
+    reduce(false);
+  }
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def playback(node, tmp_path_factory):
+    """Each scene that plays by itself, with what the page showed of it."""
+    seen = json.loads(_run(node, _PAGE, tmp_path_factory.mktemp("page")))
+    return [(scene, seen[scene["name"]]) for scene in _all_scenes() if scene["name"] in seen]
+
+
+def _jumps(scene: dict) -> list[str]:
+    """The buttons that name a snapshot."""
+    return [snap.get("short") or snap["label"] for snap in scene.get("snapshots") or []]
+
+
+def _rest(scene: dict) -> int:
+    """The step a still figure shows: the last snapshot, or the end of the first case."""
+    if scene.get("snapshots"):
+        return len(scene["snapshots"]) - 1
+    return len(scene["cases"][0]["moments"])
+
+
+def test_a_figure_is_a_named_group_with_a_described_picture_and_one_bar_of_buttons(playback):
+    for scene, seen in playback:
+        markup = seen["markup"]
+        # The group and the picture are named by the short title alone; the long text is
+        # the picture's description. The group is not a Tab stop and takes no keys.
+        assert markup["root"] == {
+            "class": "pulse-visual",
+            "role": "group",
+            "aria-label": scene["title"],
+        }
+        assert markup["keysOnRoot"] == []
+        (title_id, title), (desc_id, desc) = markup["title"], markup["desc"]
+        assert title == scene["title"] and desc.startswith(f"{title}. ")
+        assert markup["svg"]["role"] == "img"
+        assert markup["svg"]["aria-labelledby"] == title_id
+        assert markup["svg"]["aria-describedby"] == desc_id
+        # The line is a status that starts off: nothing is said when the page loads.
+        assert markup["status"] == {
+            "class": "pulse-visual-status",
+            "role": "status",
+            "aria-live": "off",
+        }
+        assert markup["bar"] == {"class": "pulse-visual-controls"}
+        names = ["Play", "Previous step", "Next step", *_jumps(scene)]
+        assert markup["buttons"] == [["button", "button", name] for name in names]
+        assert markup["fallbackHidden"]
+
+
+def test_a_figure_plays_once_in_view_and_says_nothing_meanwhile(playback):
+    for scene, seen in playback:
+        first = {
+            "status": _status(scene, 0),
+            "live": "off",
+            "toggle": "Play",
+            "disabled": ["Previous step"],
+            "current": _jumps(scene)[:1],
+            "moving": False,
+        }
+        # It waits for half of it and for its controls to be in the window.
+        assert seen["mounted"] == first
+        assert seen["halfWithoutControls"] == first
+        assert seen["controlsWithoutHalf"] == first
+        assert seen["playing"] == {**first, "toggle": "Pause", "moving": True}
+        # The line counts the steps up while the status is off.
+        said = [status for status, _, _ in seen["run"]]
+        steps = [_status(scene, k) for k in range(_played(scene))]
+        assert said[0] == steps[0] and said[-1] == steps[-1], scene["name"]
+        assert [steps.index(status) for status in said] == sorted({*map(steps.index, said)})
+        assert {(live, toggle) for _, live, toggle in seen["run"]} == {("off", "Pause")}
+        assert seen["saidOnMount"] == [False]
+        assert seen["saidWhilePlaying"] and not any(seen["saidWhilePlaying"])
+        # At the end it stops, and does not start again when it comes back into view.
+        assert seen["ended"]["status"] == steps[-1]
+        assert (seen["ended"]["live"], seen["ended"]["toggle"]) == ("off", "Replay")
+        assert not seen["ended"]["moving"]
+        assert seen["seenAgain"] == seen["ended"]
+
+
+def test_a_figure_waits_while_it_is_out_of_the_window_or_the_tab_is_hidden(playback):
+    for scene, seen in playback:
+        assert seen["ranBeforeLeaving"] == 2500
+        assert (seen["left"]["moving"], seen["left"]["toggle"]) == (False, "Play")
+        assert (seen["back"]["moving"], seen["back"]["toggle"]) == (True, "Pause")
+        assert seen["back"]["status"] == seen["left"]["status"]
+        # It goes on from where it waited: the two parts make one run. Each start
+        # spends a frame on reading the clock.
+        over = seen["ranBeforeLeaving"] + seen["ranAfterComingBack"] - seen["total"]
+        assert 0 <= over <= 100, (scene["name"], over)
+        assert (seen["tabHidden"]["moving"], seen["tabHidden"]["toggle"]) == (False, "Play")
+        assert (seen["tabShown"]["moving"], seen["tabShown"]["toggle"]) == (True, "Pause")
+
+
+def test_a_control_stops_the_run_for_good_and_the_step_is_said(playback):
+    for scene, seen in playback:
+        count = len(_steps(scene))
+        stepped = seen["stepped"]
+        assert stepped["status"] == _status(scene, 1)
+        assert (stepped["live"], stepped["toggle"], stepped["moving"]) == (None, "Play", False)
+        assert seen["saidOnStep"] == [True]
+        # Neither the window nor the tab starts it again.
+        assert seen["steppedThenSeen"] == stepped
+        # Play goes on from the step; Pause keeps the frame, and says where it is.
+        assert seen["played"] == {**stepped, "live": "off", "toggle": "Pause", "moving": True}
+        assert seen["paused"] == stepped
+        assert seen["saidOnPause"] == [True]
+        assert seen["pausedLater"] == stepped
+        # The step buttons stop at the first and the last step.
+        assert seen["first"]["status"] == _status(scene, 0)
+        assert seen["first"]["disabled"] == ["Previous step"]
+        assert seen["beforeFirst"] == seen["first"] and seen["saidBeforeFirst"] == []
+        assert seen["walk"] == [_status(scene, k) for k in range(1, count)]
+        assert seen["last"]["disabled"] == ["Next step"]
+        assert seen["last"]["toggle"] == "Replay"
+        # A button that names a step goes there, and is marked as the current one.
+        assert [jump["status"] for jump in seen["jumps"]] == [
+            _status(scene, k) for k in range(len(_jumps(scene)))
+        ]
+        assert [jump["current"] for jump in seen["jumps"]] == [[name] for name in _jumps(scene)]
+
+
+def test_the_arrow_keys_step_unless_a_modifier_is_held(playback):
+    for scene, seen in playback:
+        # [the key was taken from the browser, the figure stayed on its step]
+        for held in ("altKey", "ctrlKey", "metaKey", "shiftKey", "Tab"):
+            assert seen["keys"][held] == [False, True], (scene["name"], held)
+        assert seen["keys"]["ArrowLeft"] == [True, _status(scene, 0)]
+        assert seen["keys"]["ArrowRight"] == [True, True]
+        assert not seen["keysThenSeen"]["moving"]
+
+
+def test_reduced_motion_shows_the_still_frame_and_is_followed_while_the_page_is_open(playback):
+    for scene, seen in playback:
+        still = seen["still"]
+        assert still["status"] == _status(scene, _rest(scene))
+        # No button plays it, and coming into view does not either.
+        assert (still["toggle"], still["moving"], still["live"]) == (None, False, "off")
+        # Motion allowed again: the button is back, and the figure stays still.
+        assert seen["motionAllowed"] == {**still, "toggle": "Replay"}
+        # Reduced motion turned on during the run: the still frame at once, in silence.
+        assert seen["reducedWhilePlaying"] == still
+        assert not any(seen["saidOnSettling"])

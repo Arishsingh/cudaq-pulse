@@ -17,13 +17,16 @@ research and should not be treated as a production simulator.
 Installation
 ------------
 
-Install cudaq-pulse from PyPI with the extra for your CUDA major, as in
+Install cudaq-pulse from PyPI with one CUDA extra, never both, as in
 :doc:`../getting_started`:
 
 .. code-block:: bash
 
-   pip install "cudaq-pulse[cu12]"   # CUDA 12 libraries
-   pip install "cudaq-pulse[cu13]"   # CUDA 13 libraries
+   # CUDA 12 libraries: NVIDIA driver 525.60.13 or newer
+   pip install "cudaq-pulse[cu12]"
+
+   # CUDA 13 libraries instead: NVIDIA driver 580 or newer
+   # pip install "cudaq-pulse[cu13]"
 
 The Linux wheels include a cuDensityMat runtime library for each of CUDA 12
 and CUDA 13. The ``cu12`` and ``cu13`` extras install cuDensityMat and the

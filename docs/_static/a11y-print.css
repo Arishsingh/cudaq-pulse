@@ -1,0 +1,250 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The print stylesheet, which a11y.py links for print only: the whole article
+ * reaches the paper, a figure keeps its caption and prints its description,
+ * long code lines wrap, and a page printed from the dark theme takes the
+ * light theme's figures and colors. The rules also sit in a print block, so
+ * the screen is safe if the file is ever linked for all media.
+ */
+
+@media print {
+  /* The theme lays the page out as nested flex boxes. They keep the height
+     the article has before it is split over pages, and the innermost one
+     clips what then runs past it, so the end of the article would be lost.
+     Plain blocks split with their content. The theme's selectors for these
+     boxes are the more specific ones, hence !important. */
+  body,
+  .bd-container,
+  .bd-container__inner,
+  .bd-main,
+  .bd-main .bd-content,
+  .bd-main .bd-content .bd-article-container {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  /* The flex boxes centered the page and the article in it. On paper wider
+     than either, a block needs its own margins for that. */
+  .bd-container__inner,
+  .bd-main .bd-content .bd-article-container {
+    margin-inline: auto;
+  }
+
+  /* Narrow paper keeps the sidebars off the page; wide paper would print
+     them. The "Back to top" button is fixed to the window. */
+  .bd-sidebar-primary,
+  .bd-sidebar-secondary,
+  #pst-back-to-top {
+    display: none !important;
+  }
+
+  /* A figure stays on one page with its caption and its description. */
+  figure {
+    break-inside: avoid;
+  }
+
+  details.figure-description {
+    break-before: avoid;
+  }
+
+  /* A heading stays on the page of the text it heads; a whole figure that
+     moves to the next page would leave it behind at the foot of this one. */
+  .bd-article :is(h1, h2, h3, h4, h5, h6),
+  .bd-article p.rubric {
+    break-after: avoid;
+  }
+
+  /* A signature's box stays whole and on the page of the text under it. A
+     long one would be cut, and its last lines would head the next page.
+     The brackets of a signature are set larger than its line and reach just
+     above the box. A browser may then draw a box that begins a page with
+     the page before as well, past its edge, where the top border shows as a
+     line at the foot of that page. Clipped to the height of the box, nothing
+     reaches above it. */
+  .bd-article dl > dt.sig {
+    break-inside: avoid;
+    break-after: avoid;
+    overflow-y: clip;
+  }
+
+  /* The footer stays on one sheet; its logo would end one and its links
+     stand alone on the next. */
+  .bd-footer {
+    break-inside: avoid;
+  }
+
+  /* Paper cannot open a disclosure, so a figure's description prints in
+     full. a11y.js opens it too, for browsers without ::details-content; this
+     rule serves a page printed with scripts off. */
+  details.figure-description::details-content {
+    content-visibility: visible;
+  }
+
+  details.figure-description > summary {
+    list-style: none;
+  }
+
+  details.figure-description > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  /* A figure drawn by a script would print whichever frame or setting it
+     shows. Where the page holds a still, a table or the text of it for
+     readers without scripts, that prints in its place, however the script
+     has hidden it. A browser without :has() cannot tell where that is and
+     prints the figure as drawn. The figures' stylesheets load after this
+     one and the theme makes the hidden attribute !important, hence
+     !important here. */
+  @supports selector(:has(*)) {
+    :is(.pulse-visual, .pulse-toy-flow, .pulse-mem-gauge):has(~ .pulse-fallback),
+    .pulse-waveform-explorer:has(~ .pwe-fallback) {
+      display: none !important;
+    }
+
+    figure .pulse-fallback,
+    figure.pwe-fallback {
+      display: block !important;
+    }
+
+    figure table.pulse-fallback {
+      display: table !important;
+    }
+  }
+
+  /* A figure that prints as drawn does so without its controls. */
+  :is(.pulse-visual, .pulse-toy-flow, .pulse-mem-gauge, .pulse-waveform-explorer) button,
+  .pulse-visual-controls,
+  .pulse-toy-flow-controls,
+  .pwe-controls {
+    display: none !important;
+  }
+
+  /* A code line longer than the paper wraps; it would run off the edge.
+     Other rules for pre are as specific as this one or load after it, hence
+     !important. */
+  pre {
+    overflow: visible !important;
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere;
+  }
+
+  /* Paper cannot follow a link, so a link to another site prints its
+     address. A link to one of the repository's examples already reads as
+     the file's path. */
+  .bd-article a.reference.external:not(.extlink-example)::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+    overflow-wrap: anywhere;
+  }
+
+  /*
+   * Paper is white. A page printed from the dark theme takes the light
+   * theme's figures and colors. :root puts these rules above the dark
+   * theme's own, whatever the order of the stylesheets.
+   */
+  .only-dark,
+  .only-dark ~ figcaption {
+    display: none !important;
+  }
+
+  html[data-theme="dark"]:root .only-light,
+  html[data-theme="dark"]:root .only-light ~ figcaption {
+    display: revert !important;
+  }
+
+  /* The dark theme dims an image that was drawn for a light page. */
+  html[data-theme="dark"]:root img:not(.only-dark, .dark-light) {
+    filter: none;
+  }
+
+  /* The light theme's colors of text, surfaces, rules, tables and
+     admonitions. */
+  html[data-theme="dark"]:root {
+    color-scheme: light;
+    --pst-color-background: #fff;
+    --pst-color-on-background: #fff;
+    --pst-color-surface: #f7f7f7;
+    --pst-color-on-surface: #333;
+    --pst-color-text-base: #1a1a1a;
+    --pst-color-text-muted: #666;
+    --pst-color-heading: #000;
+    --pst-color-primary: var(--nv-color-green-2);
+    --pst-color-link-higher-contrast: #085d6c;
+    --pst-color-border: #d1d5da;
+    --pst-color-border-muted: rgba(23, 23, 26, 0.2);
+    --pst-color-shadow: #ccc;
+    --pst-color-blockquote-notch: #677384;
+    --pst-color-target: #f3cf95;
+    --pst-color-table: #14181e;
+    --pst-color-table-inner-border: #e5e7ea;
+    --pst-color-info: #276be9;
+    --pst-color-info-bg: #dce7fc;
+    --pst-color-warning: #f66a0a;
+    --pst-color-warning-bg: #f8e3d0;
+    --pst-color-success: #00843f;
+    --pst-color-success-bg: #d6ece1;
+    --pst-color-danger: #d72d47;
+    --pst-color-danger-bg: #f9e1e4;
+    --pst-color-primary-bg: #d0ecf1;
+    --pst-color-secondary-bg: var(--nv-color-green);
+    --pst-color-accent-bg: #f8dff5;
+  }
+
+  /* The underline a11y.css gives a link in running text on a light page. */
+  html[data-theme="dark"]:root .bd-article a {
+    text-decoration-color: var(--a11y-link-underline);
+  }
+
+  /* Highlighted code in the light palette of docs/_ext/code_style.py: text
+     first, then each kind of token. */
+  html[data-theme="dark"]:root .highlight,
+  html[data-theme="dark"]:root .highlight span {
+    color: #1a1a1a;
+  }
+
+  html[data-theme="dark"]:root .highlight :is(.c, .c1, .ch, .cm, .cp, .cpf, .cs, .gp) {
+    color: #5c636b;
+  }
+
+  html[data-theme="dark"]:root .highlight :is(.k, .kd, .kn, .kp, .kr, .kt, .nt, .ow) {
+    color: #7b30b8;
+  }
+
+  html[data-theme="dark"]:root .highlight :is(.fm, .gh, .gu, .nc, .ne, .nf) {
+    color: #0b58b8;
+  }
+
+  html[data-theme="dark"]:root .highlight :is(.bp, .nb, .vm) {
+    color: #00707a;
+  }
+
+  html[data-theme="dark"]:root .highlight .nd {
+    color: #875c00;
+  }
+
+  html[data-theme="dark"]:root
+    .highlight
+    :is(.dl, .gi, .s, .s1, .s2, .sa, .sb, .sc, .sd, .sh, .sr, .ss, .sx) {
+    color: #2e7300;
+  }
+
+  html[data-theme="dark"]:root .highlight :is(.il, .kc, .m, .mb, .mf, .mh, .mi, .mo) {
+    color: #b03c00;
+  }
+
+  html[data-theme="dark"]:root .highlight :is(.o, .p, .pm, .se, .si) {
+    color: #a8336d;
+  }
+
+  html[data-theme="dark"]:root .highlight :is(.err, .gd, .gr, .gt) {
+    color: #b3261e;
+  }
+
+  html[data-theme="dark"]:root .highlight .hll {
+    background-color: #fff3b0;
+  }
+}
