@@ -165,6 +165,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- A kernel called with its own `schedule=` could hand out a tone whose phase
+  a measured `if` changed (on a bit it read, was passed, or carried from an
+  earlier trip of a loop) as if unchanged, so the caller's drive started
+  before the readout ended; and a loop in such a kernel that passes tones
+  from one iteration argument to another could hand out a tone it was still
+  playing on. `alap` and `alap_rcp` could move the readout before a loop past
+  the first branch on the measurement the loop carries.
 - A program's constants are created in the same order on every platform.
   The Linux x86_64 build created the constants of a waveform's literal
   arguments, and of a loop's bounds, in the reverse order of the Linux

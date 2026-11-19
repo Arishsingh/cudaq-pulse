@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import cudaq_pulse as pulse
 import pytest
 from cudaq_pulse._native._cudaq_pulse_native import MLIRPipeline
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from tests._handles import Q, ladder_target
 from tests.property_settings import examples
 
 _DURATIONS = (20, 40, 60, 100)
@@ -170,3 +172,122 @@ def test_retained_loop_schedules_like_its_unrolling(policy, case, drives, penalt
     assert _timeline(rolled, policy, drives, 0, penalty) == _timeline(
         unrolled, policy, drives, 0, penalty
     )
+
+
+# ── A measurement carried to the next iteration ──────────────────────
+
+
+@pulse.kernel(unroll_threshold=0)
+def _carried_round(qs):
+    d1 = get_drive_line(qs[1])
+    r0 = get_readout_line(qs[0])
+    m = readout(r0, square(400, 0.05))
+    for _ in range(40):
+        if m:
+            drive(d1, square(40, 0.5))
+        wait(d1, 600)
+        m = readout(r0, square(400, 0.05))
+
+
+@pulse.kernel(unroll_threshold=0)
+def _rus_long_arm(qs):
+    d0 = get_drive_line(qs[0])
+    r0 = get_readout_line(qs[0])
+    m = readout(r0, square(400, 0.05))
+    for _ in range(20):
+        if m:
+            drive(d0, square(360, 0.5))
+            sync(d0, r0)
+            m = readout(r0, square(400, 0.05))
+
+
+@pulse.kernel(unroll_threshold=0)
+def _carried_longdrive(qs):
+    d1 = get_drive_line(qs[1])
+    r0 = get_readout_line(qs[0])
+    m = readout(r0, square(40, 0.05))
+    for _ in range(40):
+        if m:
+            drive(d1, square(400, 0.5))
+        m = readout(r0, square(40, 0.05))
+
+
+@pulse.kernel(unroll_threshold=0)
+def _readout_before_branch(qs):
+    d1 = get_drive_line(qs[1])
+    r0 = get_readout_line(qs[0])
+    m = readout(r0, square(400, 0.05))
+    for _ in range(20):
+        m2 = readout(r0, square(400, 0.05))
+        if m:
+            drive(d1, square(40, 0.5))
+        m = m2
+
+
+@pulse.kernel(unroll_threshold=0)
+def _nested_carry(qs):
+    d1 = get_drive_line(qs[1])
+    r0 = get_readout_line(qs[0])
+    m = readout(r0, square(40, 0.05))
+    for _ in range(3):
+        for _ in range(4):
+            if m:
+                drive(d1, square(400, 0.5))
+            m = readout(r0, square(40, 0.05))
+
+
+_CARRIED = {
+    "carried_round": _carried_round,
+    "rus_long_arm": _rus_long_arm,
+    "carried_longdrive": _carried_longdrive,
+    "readout_before_branch": _readout_before_branch,
+    "nested": _nested_carry,
+}
+
+
+def _latency_system(latency):
+    controller = pulse.Controller(
+        drive_lines=[0, 1], readout_lines=[0, 1], feedback_latency_cycles=latency
+    )
+    return ladder_target(2, control_system=pulse.ControlSystem(controllers=[controller]))
+
+
+def _slack(compiled):
+    """Each drive's start less the end of the readout it branches on: in
+    every kernel here the k-th drive reads the k-th readout."""
+    readouts = sorted(
+        e.start_cycles + e.duration_cycles for e in compiled.schedule if e.kind == "readout"
+    )
+    drives = sorted(e.start_cycles for e in compiled.schedule if e.kind == "drive")
+    assert len(readouts) == len(drives) + 1
+    return [start - end for start, end in zip(drives, readouts[:-1], strict=True)]
+
+
+@pytest.mark.parametrize("kernel", _CARRIED)
+@pytest.mark.parametrize("policy", ["asap", "alap", "rcp", "alap_rcp", None])
+def test_a_branch_on_a_carried_measurement_waits_for_its_readout(kernel, policy):
+    options = {"schedule": policy} if policy else {}
+    compiled = pulse.compile(_CARRIED[kernel], **options).lower(Q[0:2])
+    assert "scf.for" in compiled.mlir()
+    assert min(_slack(compiled)) >= 0
+
+
+@pytest.mark.parametrize("kernel", _CARRIED)
+@pytest.mark.parametrize("policy", ["rcp", "alap_rcp"])
+def test_a_carried_measurement_leaves_the_latency_under_rcp(kernel, policy):
+    qpu = _latency_system(400)
+    compiled = pulse.compile(_CARRIED[kernel], quantum_system=qpu, schedule=policy).lower(
+        qpu.qudits[0:2]
+    )
+    assert min(_slack(compiled)) >= 400
+
+
+@pytest.mark.parametrize("policy", ["alap", "alap_rcp", None])
+def test_alap_keeps_the_readout_before_the_loop_ahead_of_the_first_branch(policy):
+    options = {"schedule": policy} if policy else {}
+    events = pulse.compile(_rus_long_arm, **options).lower(Q[0:2]).schedule
+    first = sorted(events, key=lambda e: e.start_cycles)[:2]
+    assert [(e.kind, e.start_cycles, e.duration_cycles) for e in first] == [
+        ("readout", 0, 400),
+        ("drive", 400, 360),
+    ]

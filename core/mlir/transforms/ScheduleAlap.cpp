@@ -259,7 +259,8 @@ enum class Carried : uint8_t {
   Untimed,
   /// Must advance by the loop's period every iteration.
   Timed,
-  /// A tone that no pulse in the body plays on keeps its time.
+  /// A tone that no pulse in the body plays on keeps its time (also a link,
+  /// and, backward, a measurement the body reads).
   Tone,
 };
 
@@ -3545,9 +3546,13 @@ private:
     });
     llvm::SmallVector<Carried> kinds;
     llvm::SmallVector<int64_t> carried;
-    for (mlir::Value result : loop.getResults()) {
-      kinds.push_back(
-          carriedKind(result.getType(), isLineType(result.getType())));
+    for (auto [arg, result] : llvm::zip(args, loop.getResults())) {
+      mlir::Type type = result.getType();
+      // A measurement the body reads is due by the next iteration's use of
+      // it, so it moves with the loop, as a tone does, when that use moves.
+      bool due = mlir::isa<pulse::MeasurementType>(type) && !arg.use_empty();
+      kinds.push_back(due ? Carried::Tone
+                          : carriedKind(type, isLineType(type)));
       carried.push_back(late(result));
     }
 
@@ -4362,11 +4367,15 @@ private:
       return;
     }
     if (op->getNumRegions() > 0) {
-      // A branch condition: both arms wait for it.
+      // A branch condition: both arms wait for it, and so does whatever
+      // reads what the branch yields (a tone an arm changes without a timed
+      // op), as in the flat schedule.
       op->walk([&](mlir::Operation *inner) {
         if (isTimedOp(inner))
           note(inner);
       });
+      for (mlir::Value result : op->getResults())
+        visitUses(result);
       return;
     }
     for (mlir::Value result : op->getResults())
@@ -4388,8 +4397,8 @@ public:
   };
 
   Availability(pulse::ScheduleBlockOp block,
-               llvm::MutableArrayRef<int64_t> firstUse)
-      : block(block), firstUse(firstUse) {
+               llvm::MutableArrayRef<int64_t> firstUse, bool classical)
+      : block(block), firstUse(firstUse), classical(classical) {
     for (auto [index, arg] : llvm::enumerate(block.getBody().getArguments()))
       state[arg] = State{0, static_cast<int>(index)};
   }
@@ -4419,6 +4428,77 @@ private:
       if (s.source >= 0 && firstUse[s.source] < 0)
         firstUse[s.source] = time;
     return State{time, -1};
+  }
+
+  /// The states `value` is computed from: the measurements, answers and
+  /// operands it reads.
+  void statesOf(mlir::Value value, llvm::SmallVectorImpl<State> &found,
+                llvm::DenseSet<mlir::Value> &seen) const {
+    if (mlir::isa<classical::LinkType>(value.getType()) ||
+        !seen.insert(value).second)
+      return;
+    if (auto it = state.find(value); it != state.end()) {
+      found.push_back(it->second);
+      return;
+    }
+    if (mlir::Operation *def = value.getDefiningOp())
+      for (mlir::Value operand : def->getOperands())
+        statesOf(operand, found, seen);
+  }
+
+  /// The iteration argument of `loop` that `value` passes on with no timed
+  /// op between them (itself, or a frame change of it), else -1.
+  static int passedOn(mlir::scf::ForOp loop, mlir::Value value) {
+    while (true) {
+      auto args = loop.getRegionIterArgs();
+      if (auto it = llvm::find(args, value); it != args.end())
+        return static_cast<int>(it - args.begin());
+      mlir::Operation *def = value.getDefiningOp();
+      if (!def || isTimedOp(def) || def->getNumRegions() > 0)
+        return -1;
+      mlir::Value only;
+      for (mlir::Value operand : def->getOperands())
+        if (isTimedType(operand.getType())) {
+          if (only)
+            return -1;
+          only = operand;
+        }
+      if (!only)
+        return -1;
+      value = only;
+    }
+  }
+
+  /// Join the carried states of each cycle of arguments that pass each
+  /// other on, when `skipped` trips are not a whole number of its turns.
+  void joinCycles(mlir::scf::ForOp loop, llvm::MutableArrayRef<State> carried,
+                  int64_t skipped) {
+    auto yields = loop.getBody()->getTerminator()->getOperands();
+    llvm::SmallVector<int> from;
+    for (mlir::Value value : yields)
+      from.push_back(passedOn(loop, value));
+    llvm::SmallVector<bool> done(from.size(), false);
+    for (size_t start = 0; start < from.size(); ++start) {
+      llvm::SmallVector<int> cycle;
+      int at = static_cast<int>(start);
+      while (at >= 0 && !done[at] && cycle.size() <= from.size() &&
+             !llvm::is_contained(cycle, at)) {
+        cycle.push_back(at);
+        at = from[at];
+      }
+      if (at != static_cast<int>(start) || cycle.size() < 2)
+        continue;
+      for (int member : cycle)
+        done[member] = true;
+      if (skipped % static_cast<int64_t>(cycle.size()) == 0)
+        continue;
+      llvm::SmallVector<State> states;
+      for (int member : cycle)
+        states.push_back(carried[member]);
+      State latest = join(states);
+      for (int member : cycle)
+        carried[member] = latest;
+    }
   }
 
   State joinValues(mlir::ValueRange values) {
@@ -4456,13 +4536,18 @@ private:
       llvm::SmallVector<State> carried;
       for (mlir::Value init : loop.getInitArgs())
         carried.push_back(state.lookup(init));
-      // The first iteration, then the last from what the first carries:
-      // the ops that run in every iteration override what it carries.
-      llvm::SmallVector<int64_t, 2> runs;
+      // The first iteration, then the last ones, each from what the one
+      // before it carries. A value moves to at most one other iteration
+      // argument per trip and through at most all of them, so what the last
+      // iteration reads (a measurement an arm keeps, a tone passed from
+      // argument to argument) was made in one of the last K + 1 trips.
+      int64_t args = loop.getNumRegionIterArgs();
+      int64_t from = std::max<int64_t>(1, trips - 1 - args);
+      llvm::SmallVector<int64_t> runs;
       if (trips > 0)
         runs.push_back(0);
-      if (trips > 1)
-        runs.push_back(trips - 1);
+      for (int64_t k = from; k < trips; ++k)
+        runs.push_back(k);
       iteration.push_back(0);
       for (int64_t k : runs) {
         iteration.back() = k;
@@ -4474,6 +4559,11 @@ private:
           s = state.lookup(value);
       }
       iteration.pop_back();
+      // Arguments that only pass each other on, in a cycle, end in an order
+      // that depends on the trips skipped: take the latest of the cycle
+      // unless the skipped trips are a whole number of turns.
+      if (from > 1)
+        joinCycles(loop, carried, from - 1);
       for (auto [result, s] : llvm::zip(loop.getResults(), carried))
         state[result] = s;
       return;
@@ -4489,6 +4579,19 @@ private:
              llvm::zip(results, branch.elseYield().getOperands()))
           s = join({s, state.lookup(value)});
       }
+      // What a branch on a measurement or an answer yields is there only
+      // once its condition is, as in the flat schedule (yieldsAfterCondition).
+      mlir::Value condition = branch.getCondition();
+      if (classical || !conditionMeasurements(condition).empty()) {
+        llvm::SmallVector<State> at;
+        llvm::DenseSet<mlir::Value> seen;
+        statesOf(condition, at, seen);
+        for (State &s : results) {
+          at.push_back(s);
+          s = join(at);
+          at.pop_back();
+        }
+      }
       for (auto [result, s] : llvm::zip(branch.getResults(), results))
         state[result] = s;
       return;
@@ -4501,19 +4604,20 @@ private:
 
   pulse::ScheduleBlockOp block;
   llvm::MutableArrayRef<int64_t> firstUse;
+  bool classical;
   llvm::DenseMap<mlir::Value, State> state;
   llvm::SmallVector<int64_t, 2> iteration;
 };
 
 /// Record the shape of `block`, whose body has a local schedule.
-static void writeShape(pulse::ScheduleBlockOp block) {
+static void writeShape(pulse::ScheduleBlockOp block, bool classical) {
   FirstUse firstUse(block);
   llvm::SmallVector<int64_t> in;
   for (mlir::Value arg : block.getBody().getArguments()) {
     int64_t first = firstUse.of(arg);
     in.push_back(first == kNever ? -1 : first);
   }
-  Availability availability(block, in);
+  Availability availability(block, in, classical);
   availability.run();
   llvm::SmallVector<int64_t> out, source;
   int64_t length = availability.length;
@@ -4886,7 +4990,7 @@ scheduleRegion(mlir::Region &region, mlir::Operation *root, Resources resources,
                            block.getPolicy() == pulse::SchedulePolicy::ALAP,
                            classical, timelines, grid, controllers)))
       return mlir::failure();
-    writeShape(block);
+    writeShape(block, classical);
     if (mlir::failed(checkBlockBudget(block)))
       return mlir::failure();
   }
