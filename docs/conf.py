@@ -7,7 +7,6 @@ from pathlib import Path
 
 import sphinx
 from cudaq_pulse._build_config import PACKAGE_VERSION
-from pygments.lexers.special import TextLexer
 from sphinx.errors import ConfigError
 
 project = "CUDA-Q Pulse"
@@ -33,6 +32,7 @@ extensions = [
     "api_docs",
     "api_links",
     "related_pages",
+    "dialect_pages",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
@@ -83,7 +83,4 @@ def _waveform_explorer(app, pagename, templatename, context, doctree):
 
 
 def setup(app):
-    # The generated dialect reference fences its examples as ```mlir, which
-    # Pygments has no lexer for.
-    app.add_lexer("mlir", TextLexer)
     app.connect("html-page-context", _waveform_explorer)
