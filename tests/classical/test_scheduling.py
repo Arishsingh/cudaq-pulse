@@ -69,9 +69,10 @@ def test_feedback_makespan_is_readout_submit_latency_and_arm(policy):
     assert _events(low, "drive")[0].start_cycles == call.due_cycles
 
 
-def test_readout_latency_delays_the_submission_under_rcp():
+@pytest.mark.parametrize("policy", POLICIES)
+def test_readout_latency_delays_the_submission(policy):
     machine = ControlSystem(controllers=[pulse.Controller(feedback_latency_cycles=50)])
-    low = pulse.compile(feedback, schedule="rcp", control_system=machine).lower(Q[0])
+    low = pulse.compile(feedback, schedule=policy, control_system=machine).lower(Q[0])
     (call,) = low.classical_report()
     assert call.submit_cycles == READOUT + 50
 

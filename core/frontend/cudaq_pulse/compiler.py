@@ -229,8 +229,9 @@ _NO_LINKS: Mapping[int | str, Link] = MappingProxyType({})
 @dataclass(frozen=True)
 class _MachineModel:
     """What compiling for a ``ControlSystem`` (``ControlSystem._machine``)
-    needs of it: the lanes, readout latency and switch penalty of the
-    ``rcp`` and ``alap_rcp`` schedules; the links by id, a named link at
+    needs of it: the lanes and switch penalty of the ``rcp`` and
+    ``alap_rcp`` schedules, and the readout latency of every schedule; the
+    links by id, a named link at
     the lowest id no other link has, in the order given (a link id a
     program uses that is not listed gets ``Link()``; an unknown name is an
     error); the controller a program is for, when it is checked as one
@@ -1449,7 +1450,7 @@ def _clocked_module(
     fine_delays = None
     if machine._line_delays:
         shifts, fine_delays = _line_delays(machine, target, clocks)
-    lines = _lines(machine, shifts)
+    lines = _lines(machine, shifts, fine_delays, target.clock_ghz)
     system = machine._system
     if system is not None and machine.controller is None:
         controllers = system._controllers_attribute(target.clock_ghz, max_duration_cycles)
@@ -1514,19 +1515,33 @@ def _controller_attribute(
     return f"[#pulse.controller<{', '.join(fields)}>]" if fields else ""
 
 
-def _lines(machine: _MachineModel, shifts: Mapping[tuple[str, int], int]) -> str:
+def _lines(
+    machine: _MachineModel,
+    shifts: Mapping[tuple[str, int], int],
+    fine_delays: Mapping[tuple[str, int], float] | None = None,
+    program_ghz: float = 0.0,
+) -> str:
     """The ``lines`` of a program's control system: each line the system
     gives a controller of (on several) or that *shifts* moves, with its
-    controller and delay in program cycles; empty for none."""
+    controller and delay in program cycles, and each readout line's fine
+    delay (*fine_delays*, ns) rounded up to the program's cycles, when a
+    readout on it ends that much later; empty for none."""
     system = machine._system if machine.controller is None else None
     owners: Mapping[tuple[str, int], int] = {} if system is None else system._line_owners
+    fine = {
+        key: math.ceil(ns * program_ghz - 1e-9)
+        for key, ns in (fine_delays or {}).items()
+        if key[0] == "readout" and ns > 0
+    }
     lines = []
-    for role, qudit in sorted({*owners, *shifts}):
+    for role, qudit in sorted({*owners, *shifts, *fine}):
         line = f"#pulse.line<{role}, qudits = [{qudit}]"
         if shift := shifts.get((role, qudit)):
             line += f", delay_cycles = {shift}"
         if owner := owners.get((role, qudit)):
             line += f", controller = {owner}"
+        if cycles := fine.get((role, qudit)):
+            line += f", fine_cycles = {cycles}"
         lines.append(line + ">")
     return f"[{', '.join(lines)}]" if lines else ""
 
@@ -1615,7 +1630,7 @@ def with_line_delays(lowered: _Kernel, options: CompileOptions) -> _Kernel | Non
     try:
         with lowered._lock:
             module = lowered._module.with_line_delays(
-                _lines(options.machine, shifts), *schedule_args
+                _lines(options.machine, shifts, fine_delays, target.clock_ghz), *schedule_args
             )
     except Exception:
         return None

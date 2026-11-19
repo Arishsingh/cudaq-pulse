@@ -97,7 +97,13 @@ class _Placing(_Dispatcher):
             (target._structure or _structure(target)) if kernel._slotted else target.fingerprint
         )
         lengths = [len(values[i]) for i in kernel._shaped]
-        return (fingerprint, static, *[_static_key(values[i]) for i in static], *lengths)
+        return (
+            fingerprint,
+            self._machine_key(target),
+            static,
+            *[_static_key(values[i]) for i in static],
+            *lengths,
+        )
 
     def lookup(self, values: tuple[Any, ...]) -> _Entry:
         kernel = self.kernel

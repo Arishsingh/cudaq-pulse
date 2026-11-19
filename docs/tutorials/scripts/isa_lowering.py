@@ -215,16 +215,12 @@ for line in listing[10:]:
 from cudaq_pulse import backends
 from toy_isa import ToyBackend
 
-no_latency = pulse.controller(
-    "toy_sequencer.toml",
-    feedback_latency_cycles=0,
-)
-report = backends.validate(ToyBackend(), controller=no_latency)
+report = backends.validate(ToyBackend())
 lines = str(report).splitlines()
 print(lines[-1])
 
 # Prints:
-#   backend 'toy': 16 passed, 2 skipped
+#   backend 'toy': 27 passed, 2 skipped
 
 
 for result in lines[:-1]:

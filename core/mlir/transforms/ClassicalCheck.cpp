@@ -691,11 +691,14 @@ struct Stretches {
 /// at the corners of the submission's iteration box; the latest readout is
 /// at least as late as each, so the smallest of their worst cases bounds
 /// the reaction. A wait between a readout and the submission whose length
-/// is known only when the program runs counts at its highest length.
+/// is known only when the program runs counts at its highest length. A
+/// request that leaves within `latency` (the feedback latency the schedule
+/// waits) of its readouts' end could not leave sooner, and the error says
+/// so.
 static bool checkReaction(classical::SubmitOp submit,
                           classical::CallableOp callable,
                           mlir::func::FuncOp function, double clock,
-                          Stretches &stretches) {
+                          Stretches &stretches, int64_t latency) {
   if (!pulse::hasStart(submit))
     return true;
   double reactionNs = callable.getReactionDeadlineNs()->convertToDouble();
@@ -777,21 +780,29 @@ static bool checkReaction(classical::SubmitOp submit,
     llvm::interleaveComma(worstAt, diagnostic);
     diagnostic << ") ";
   }
+  // The request left as soon as the outcomes it carries were usable.
+  bool waited =
+      !readouts.empty() && latency > 0 && *bound - duration - budget <= latency;
   diagnostic << "its answer is due " << *bound << " cycles after "
              << (readouts.empty() ? "the submission starts"
-                                  : "the readouts it carries end")
-             << ", but reaction_deadline_ns allows " << limit << " (slack "
-             << limit - *bound
-             << "); submit it sooner, lower max_latency_ns, use a faster link "
-                "or raise reaction_deadline_ns";
+                                  : "the readouts it carries end");
+  if (waited)
+    diagnostic << " (" << latency
+               << " of them the feedback latency before the request can "
+                  "leave)";
+  diagnostic << ", but reaction_deadline_ns allows " << limit << " (slack "
+             << limit - *bound << "); " << (waited ? "" : "submit it sooner, ")
+             << "lower max_latency_ns, use a faster link or raise "
+                "reaction_deadline_ns";
   return false;
 }
 
 /// Check the classical calls of `module` (see the file comment), loops of
 /// at least `summarizeFrom` trips (none when 0) from one copy of their
-/// body.
+/// body; `latency`: the feedback latency its schedule waits after readouts.
 static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
-                                               int64_t summarizeFrom) {
+                                               int64_t summarizeFrom,
+                                               int64_t latency) {
   if (!classical::declaresClassicalCalls(module))
     return mlir::success();
   bool failed = false;
@@ -866,7 +877,8 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
         auto callable =
             symbols.lookup<classical::CallableOp>(submit.getCallee());
         if (callable && callable.getReactionDeadlineNs() &&
-            !checkReaction(submit, callable, function, clock, stretches))
+            !checkReaction(submit, callable, function, clock, stretches,
+                           latency))
           failed = true;
       });
     }
@@ -1004,10 +1016,17 @@ struct PulseClassicalCheckPass
            "sizes, deadlines, answer timing, link capacity and order";
   }
 
+  PulseClassicalCheckPass() = default;
+  explicit PulseClassicalCheckPass(int64_t readoutLatency)
+      : readoutLatency(readoutLatency) {}
+
   void runOnOperation() override {
-    if (mlir::failed(checkClassicalCalls(getOperation(), kSummarizedTrips)))
+    if (mlir::failed(checkClassicalCalls(getOperation(), kSummarizedTrips,
+                                         readoutLatency)))
       signalPassFailure();
   }
+
+  int64_t readoutLatency = 0;
 };
 
 /// pulse-classical-check as cudaq-pulse-opt runs it, with the trips from
@@ -1031,9 +1050,16 @@ struct PulseClassicalCheckOptionsPass
            "sizes, deadlines, answer timing, link capacity and order";
   }
   void runOnOperation() override {
-    if (mlir::failed(checkClassicalCalls(getOperation(), summarizeTrips)))
+    if (mlir::failed(checkClassicalCalls(getOperation(), summarizeTrips,
+                                         readoutLatency)))
       signalPassFailure();
   }
+
+  Option<int64_t> readoutLatency{
+      *this, "readout-latency",
+      llvm::cl::desc("Cycles the schedule waits after a readout ends before "
+                     "its outcome is usable"),
+      llvm::cl::init(0)};
 
   Option<int64_t> summarizeTrips{
       *this, "summarize-trips",
@@ -1045,8 +1071,9 @@ struct PulseClassicalCheckOptionsPass
 } // namespace
 
 namespace pulse {
-std::unique_ptr<mlir::Pass> createPulseClassicalCheckPass() {
-  return std::make_unique<PulseClassicalCheckPass>();
+std::unique_ptr<mlir::Pass>
+createPulseClassicalCheckPass(int64_t readoutLatency) {
+  return std::make_unique<PulseClassicalCheckPass>(readoutLatency);
 }
 
 std::unique_ptr<mlir::Pass> createPulseClassicalCheckOptionsPass() {

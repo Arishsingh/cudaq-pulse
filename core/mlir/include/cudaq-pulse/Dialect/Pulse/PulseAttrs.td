@@ -124,19 +124,20 @@ def LineAttr : AttrDef<PulseDialect, "Line"> {
     quantum system), the most tones it plays at once
     (`max_concurrent_tones`, default 1), its calibrated delay in program
     cycles (`delay_cycles`, default 0: every op on it starts that much later
-    than scheduled) and the index of the controller that plays it
-    (`controller`, default 0). Fields at their default are not printed.
+    than scheduled), the cycles its fine delay adds to when an op on it
+    ends, rounded up (`fine_cycles`, default 0: the hardware adds it below a
+    cycle, so a readout's outcome is usable that much later than its
+    scheduled end plus `delay_cycles`), and the index of the controller that
+    plays it (`controller`, default 0). Fields at their default are not
+    printed.
 
     Example: `#pulse.line<readout, qudits = [5], delay_cycles = 24,
     controller = 1>`.
   }];
-  let parameters = (ins
-    EnumParameter<LineKind>:$kind,
-    ArrayRefParameter<"int64_t", "qudits it reaches">:$qudits,
-    "int64_t":$max_concurrent_tones,
-    "int64_t":$delay_cycles,
-    "int64_t":$controller
-  );
+  let parameters = (ins EnumParameter<LineKind>:$kind,
+      ArrayRefParameter<"int64_t", "qudits it reaches">:$qudits,
+      "int64_t":$max_concurrent_tones, "int64_t":$delay_cycles,
+      "int64_t":$controller, "int64_t":$fine_cycles);
   let hasCustomAssemblyFormat = 1;
   let genVerifyDecl = 1;
 }

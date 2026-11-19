@@ -722,7 +722,9 @@ class Controller:
     each qudit; readouts on one detector are serialized, each holding it
     for its duration plus ``detector_recovery_cycles``.
     ``feedback_latency_cycles``: the least time from the end of a readout to
-    the start of an operation in a branch on its outcome.
+    the start of any operation that depends on its outcome (in a branch on
+    it, on a tone whose frame a branch on it changed, computed from it, or a
+    request that sends it); every schedule waits it.
     ``supports_timeouts``: whether the controller can stop waiting for an
     answer after a timeout (``result(timeout=...)``, ``latency_mode=
     "timeout"``); without, only waits that block or are budgeted are
@@ -1238,10 +1240,11 @@ class ControlSystem:
     and latencies apply to every schedule, because they are hardware.
     ``max_concurrent_drives``, ``max_concurrent_readouts`` and
     ``line_switch_penalty_cycles`` apply to the ``rcp`` and ``alap_rcp``
-    schedules, which keep a branch on a readout at least the
-    ``feedback_latency_cycles`` of the controllers that play readouts after it,
-    and pulses of two controllers that follow each other on one lane their
-    start uncertainty apart.
+    schedules, which keep pulses of two controllers that follow each other on
+    one lane their start uncertainty apart. Every schedule keeps an operation
+    that depends on a readout at least the ``feedback_latency_cycles`` of the
+    controller that read it after the readout ends (on another controller,
+    its peer latency and both start uncertainties too).
     ``reference_clock_ghz`` is a clock every controller locks to, if they
     share one: each controller's clock must be a whole multiple of it, and
     without it each controller's start is known only to within one of its
@@ -1423,16 +1426,22 @@ class ControlSystem:
         )
 
     def __hash__(self) -> int:
-        return hash(
-            (
-                self.controllers,
-                tuple(sorted(self.links.items())),
-                self.max_concurrent_drives,
-                self.max_concurrent_readouts,
-                self.line_switch_penalty_cycles,
-                self.reference_clock_ghz,
+        # Kept: a kernel's cache key holds the control system its qudits
+        # are lowered for, read at every call.
+        found: int | None = self.__dict__.get("_hash")
+        if found is None:
+            found = hash(
+                (
+                    self.controllers,
+                    tuple(sorted(self.links.items())),
+                    self.max_concurrent_drives,
+                    self.max_concurrent_readouts,
+                    self.line_switch_penalty_cycles,
+                    self.reference_clock_ghz,
+                )
             )
-        )
+            object.__setattr__(self, "_hash", found)
+        return found
 
     def __reduce__(self) -> tuple[Any, ...]:
         from ._pickling import frozen_reduce
