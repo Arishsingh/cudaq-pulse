@@ -566,6 +566,64 @@ def test_each_controller_of_a_system_checks_its_own_minimum_pulse_length():
     pulse.compile(short_pulses, control_system=system(0, 8)).lower(Q[0], Q[1])
 
 
+def test_a_controller_may_cap_the_length_of_a_pulse():
+    lowered = pulse.compile(short_pulses).lower(Q[0], Q[1])
+    assert check(lowered, Controller(max_pulse_cycles=100)) == []
+    assert check(lowered, Controller(max_pulse_cycles=99)) == [
+        "line 1 (readout of qudit 0): the readout at 24 lasts 100 cycles; the controller "
+        "plays none longer than 99 (Controller.max_pulse_cycles)",
+    ]
+    found = check(lowered, Controller(max_pulse_cycles=8))
+    assert [f.split(": the ")[1].split(" lasts")[0] for f in found] == [
+        "drive at 8",
+        "readout at 24",
+    ]
+    # Both bounds: each pulse is reported once, against the bound it breaks.
+    both = check(lowered, Controller(min_pulse_cycles=16, max_pulse_cycles=16))
+    assert [f.split(" lasts ")[1].split(" (")[0] for f in both] == [
+        "8 cycles; the controller plays none shorter than 16",
+        "100 cycles; the controller plays none longer than 16",
+        "8 cycles; the controller plays none shorter than 16",
+    ]
+    # In the controller's own cycles: the 100-cycle readout of the 2 GHz program
+    # clock lasts 50 cycles at 1 GHz.
+    assert check(lowered, Controller(clock_ghz=1.0, max_pulse_cycles=50)) == []
+    (own,) = check(lowered, Controller(clock_ghz=1.0, max_pulse_cycles=49))
+    assert "the readout at 12 lasts 50 cycles" in own
+    machine = ControlSystem(controllers=[Controller(max_pulse_cycles=64)])
+    with pytest.raises(ControllerLimitError, match=r"lasts 100 cycles; .* longer than 64 \("):
+        pulse.compile(short_pulses, control_system=machine).lower(Q[0], Q[1])
+    machine = ControlSystem(controllers=[Controller(max_pulse_cycles=128)])
+    program = pulse.compile(short_pulses, control_system=machine).lower(Q[0], Q[1])
+    assert program.export_to_controller()["limits"]["max_pulse_cycles"] == 128
+    assert program.export_to_controller(version=2)["controller"]["max_pulse_cycles"] == 128
+    assert "max_pulse_cycles" not in Controller().as_dict()
+    for wrong in (0, -1, 1.5, True, "8"):
+        with pytest.raises(
+            pulse.InvalidValueError, match="max_pulse_cycles must be None or an int"
+        ):
+            Controller(max_pulse_cycles=wrong)  # type: ignore[arg-type]
+    with pytest.raises(pulse.InvalidValueError, match=r"at least min_pulse_cycles \(16\), got 8"):
+        Controller(min_pulse_cycles=16, max_pulse_cycles=8)
+    Controller(min_pulse_cycles=16, max_pulse_cycles=16)
+
+
+def test_each_controller_of_a_system_checks_its_own_maximum_pulse_length():
+    def system(first, second):
+        return ControlSystem(
+            controllers=[
+                Controller(drive_lines=[0], readout_lines=[0], max_pulse_cycles=first),
+                Controller(drive_lines=[1], readout_lines=[1], max_pulse_cycles=second),
+            ]
+        )
+
+    with pytest.raises(ControllerLimitError) as caught:
+        pulse.compile(short_pulses, control_system=system(64, None)).lower(Q[0], Q[1])
+    (violation,) = caught.value.violations
+    assert "(readout of qudit 0): the readout at 24 lasts 100 cycles" in violation
+    pulse.compile(short_pulses, control_system=system(None, 8)).lower(Q[0], Q[1])
+
+
 def _after_a_loop(n: int) -> pulse.Kernel:
     @pulse.kernel
     def after(q, r):
@@ -652,6 +710,69 @@ def test_a_kernel_with_float_parameters_is_checked_when_compiled():
     machine = ControlSystem(controllers=[Controller(instruction_cycles=4, min_idle_cycles=40)])
     with pytest.raises(ControllerLimitError, match="starts 16 cycles after"):
         pulse.compile(ramsey, control_system=machine).lower(Q[0], 0.75)
+
+
+@pulse.kernel
+def long_train(q):
+    d = get_drive_line(q)
+    for _ in range(400):
+        drive(d, square(8, 0.1))
+        wait(d, 4)
+
+
+def test_events_without_branches_pair_without_testing_arms(monkeypatch):
+    # The spacing check pairs each pulse with the one before it on its line;
+    # with no branches, no pair needs the test for arms of one branch, at
+    # compile or at export.
+    tested = []
+    exclusive = controller_module._exclusive
+    monkeypatch.setattr(
+        controller_module, "_exclusive", lambda a, b: tested.append(1) or exclusive(a, b)
+    )
+    machine = ControlSystem(
+        controllers=[Controller(drive_lines=[0], instruction_cycles=4, min_idle_cycles=4)]
+    )
+    lowered = pulse.compile(long_train, control_system=machine, unroll_threshold=10**6).lower(Q[0])
+    assert len(lowered.export_to_controller()["events"]) == 800
+    assert tested == []
+
+
+def _scanned(events):
+    """``controller._pairs`` as a scan back from each event to the first it
+    can follow."""
+    ordered = sorted(events, key=lambda e: (e["start_cycles"], e["index"]))
+    pairs = []
+    for k in range(1, len(ordered)):
+        for j in range(k - 1, -1, -1):
+            if not controller_module._exclusive(ordered[j], ordered[k]):
+                pairs.append((ordered[j], ordered[k]))
+                break
+    return pairs
+
+
+@given(
+    st.lists(
+        st.tuples(
+            st.integers(0, 6),
+            st.integers(0, 1),
+            st.lists(st.tuples(st.integers(0, 2), st.integers(0, 1)), max_size=3),
+        ),
+        max_size=24,
+    )
+)
+@settings(max_examples=examples(200))
+def test_pairs_follow_the_latest_event_on_one_path(made):
+    events = [
+        {
+            "index": index,
+            "start_cycles": start,
+            "iteration": [iteration],
+            "conditions": [{"branch": b, "arm": arm} for b, arm in dict(conditions).items()],
+        }
+        for index, (start, iteration, conditions) in enumerate(made)
+    ]
+    found = [(a["index"], b["index"]) for a, b in controller_module._pairs(events)]
+    assert found == [(a["index"], b["index"]) for a, b in _scanned(events)]
 
 
 @pulse.kernel

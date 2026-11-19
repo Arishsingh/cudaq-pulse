@@ -13,6 +13,7 @@ import dataclasses
 import math
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 import cudaq_pulse as pulse
@@ -57,32 +58,35 @@ _QUDITS = 2
 # ── Corpus ───────────────────────────────────────────────────────────────────
 
 
-def _branch(gap: int) -> Kernel[[Qudit, Qudit]]:
+def _branch(gap: int, stretch: int = 1) -> Kernel[[Qudit, Qudit]]:
     """The program with a branch: a pulse on a readout's outcome, *gap*
-    cycles after the readout ends."""
+    cycles after the readout ends; its pulses *stretch* times as long."""
+    s = stretch
 
     @pulse.kernel
     def branches(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         ro = get_readout_line(q)
-        drive(d, gaussian(32, 0.5, 8.0))
+        drive(d, gaussian(32 * s, 0.5, 8.0 * s))
         sync(d, ro)
-        m = readout(ro, square(80, 0.05))
+        m = readout(ro, square(80 * s, 0.05))
         sync(d, ro)
         if gap:
             wait(d, gap)
         if m:
-            drive(d, gaussian(32, 0.5, 8.0))
+            drive(d, gaussian(32 * s, 0.5, 8.0 * s))
 
     return branches
 
 
-def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
+def _build(stretch: int = 1) -> dict[str, Kernel[[Qudit, Qudit]]]:
     """One program per kind of event, named for it, one with a branch, one
     that branches on whether an answer came in time and on the answer, one
     that does so for a function declared with a timeout, one whose
     amplitude and phase come from an answer and one whose frequency does,
-    changed ahead of the pulse that takes it."""
+    changed ahead of the pulse that takes it. Every pulse and wait lasts
+    *stretch* times its cycles."""
+    s = stretch
 
     @pulse.classical(max_latency_ns=200, name="echo")
     def echo(bits: pulse.Bits) -> pulse.Bits:
@@ -98,68 +102,68 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
 
     @pulse.classical(max_latency_ns=200, name="retune")
     def retune() -> tuple[float, float]:
-        return 2.5e6, 2.0
+        return 2.5e6 / s, 2.0
 
     @pulse.kernel
     def plays(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         e = get_drive_line(r)
-        drive(d, gaussian(32, 0.4, 8.0))
-        drive(e, square(16, 0.1))
+        drive(d, gaussian(32 * s, 0.4, 8.0 * s))
+        drive(e, square(16 * s, 0.1))
         shift_phase(d.tone, 0.5)
-        drive(d, drag(32, 0.2, 8.0, 0.3))
+        drive(d, drag(32 * s, 0.2, 8.0 * s, 0.3))
 
     @pulse.kernel
     def acquires(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         ro = get_readout_line(q)
-        drive(d, gaussian(32, 0.5, 8.0))
+        drive(d, gaussian(32 * s, 0.5, 8.0 * s))
         sync(d, ro)
-        readout(ro, square(120, 0.05))
+        readout(ro, square(120 * s, 0.05))
 
     @pulse.kernel
     def waits(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
-        drive(d, square(16, 0.1))
-        wait(d, 100)
-        drive(d, square(16, 0.1))
+        drive(d, square(16 * s, 0.1))
+        wait(d, 100 * s)
+        drive(d, square(16 * s, 0.1))
 
     @pulse.kernel
     def syncs(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         e = get_drive_line(r)
         ro = get_readout_line(q)
-        drive(d, gaussian(48, 0.3, 12.0))
-        drive(e, square(16, 0.1))
+        drive(d, gaussian(48 * s, 0.3, 12.0 * s))
+        drive(e, square(16 * s, 0.1))
         sync(d, e, ro)
-        drive(e, square(16, 0.1))
-        readout(ro, square(80, 0.05))
+        drive(e, square(16 * s, 0.1))
+        readout(ro, square(80 * s, 0.05))
 
     @pulse.kernel
     def loops(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         ro = get_readout_line(q)
         for _ in range(6):
-            drive(d, gaussian(16, 0.2, 4.0))
+            drive(d, gaussian(16 * s, 0.2, 4.0 * s))
             sync(d, ro)
-            readout(ro, square(40, 0.05))
+            readout(ro, square(40 * s, 0.05))
             sync(d, ro)
 
     @pulse.kernel
     def calls(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         ro = get_readout_line(q)
-        m = readout(ro, square(80, 0.05))
+        m = readout(ro, square(80 * s, 0.05))
         echo.submit([m])
-        drive(d, square(16, 0.1))
+        drive(d, square(16 * s, 0.1))
 
     @pulse.kernel
     def answers(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         ro = get_readout_line(q)
-        m = readout(ro, square(80, 0.05))
+        m = readout(ro, square(80 * s, 0.05))
         if echo.submit([m]).result()[0]:
-            drive(d, gaussian(32, 0.5, 8.0))
+            drive(d, gaussian(32 * s, 0.5, 8.0 * s))
 
     @pulse.kernel
     def answer_timeout(q: Qudit, r: Qudit) -> None:
@@ -169,15 +173,15 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         e = get_drive_line(r)
         a = get_readout_line(q)
         b = get_readout_line(r)
-        m = readout(a, square(80, 0.05))
+        m = readout(a, square(80 * s, 0.05))
         in_time, bits = echo.submit([m]).result(timeout=300)
         if in_time:
-            drive(e, gaussian(32, 0.5, 8.0))
+            drive(e, gaussian(32 * s, 0.5, 8.0 * s))
         if bits[0]:
-            drive(d, gaussian(32, 0.5, 8.0))
+            drive(d, gaussian(32 * s, 0.5, 8.0 * s))
         sync(d, e, a, b)
-        readout(a, square(80, 0.05))
-        readout(b, square(80, 0.05))
+        readout(a, square(80 * s, 0.05))
+        readout(b, square(80 * s, 0.05))
 
     @pulse.kernel
     def timeout_function(q: Qudit, r: Qudit) -> None:
@@ -186,47 +190,47 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         e = get_drive_line(r)
         a = get_readout_line(q)
         b = get_readout_line(r)
-        m = readout(a, square(80, 0.05))
+        m = readout(a, square(80 * s, 0.05))
         # result() gives (in_time, bits) for a function declared with a
         # timeout, which its type, the function's answer, does not say.
         in_time, bits = timed_echo.submit([m]).result()
         if in_time:
-            drive(e, gaussian(32, 0.5, 8.0))
+            drive(e, gaussian(32 * s, 0.5, 8.0 * s))
         if bits[0]:  # type: ignore[index]
-            drive(d, gaussian(32, 0.5, 8.0))
+            drive(d, gaussian(32 * s, 0.5, 8.0 * s))
         sync(d, e, a, b)
-        readout(a, square(80, 0.05))
-        readout(b, square(80, 0.05))
+        readout(a, square(80 * s, 0.05))
+        readout(b, square(80 * s, 0.05))
 
     @pulse.kernel
     def runtime(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
         ro = get_readout_line(q)
-        m = readout(ro, square(80, 0.05))
+        m = readout(ro, square(80 * s, 0.05))
         amp = gain.submit([m]).result()
         shift_phase(d.tone, amp)
-        drive(d, square(16, amp))
+        drive(d, square(16 * s, amp))
 
     @pulse.kernel
     def runtime_frequency(q: Qudit, r: Qudit) -> None:
-        # The detuning is made where the first pulse ends, 200 cycles before
-        # the pulse that takes it (its frame update's start_cycles): over
-        # them the frame gains half a turn, so the two pulses undo each
-        # other, where applied at the second pulse they add up.
+        # The detuning is made where the first pulse ends, 200 * s cycles
+        # before the pulse that takes it (its frame update's start_cycles):
+        # over them the frame gains half a turn at 1 GHz, so the two pulses
+        # undo each other, where applied at the second pulse they add up.
         d = get_drive_line(q)
         ro = get_readout_line(q)
         detuning, amplitude = retune.submit().result()
-        drive(d, gaussian(32, 2.0, 8.0))
+        drive(d, gaussian(32 * s, 2.0, 8.0 * s))
         shift_frequency(d.tone, detuning)
-        wait(d, 200)
-        drive(d, gaussian(32, amplitude, 8.0))
+        wait(d, 200 * s)
+        drive(d, gaussian(32 * s, amplitude, 8.0 * s))
         sync(d, ro)
-        readout(ro, square(80, 0.05))
+        readout(ro, square(80 * s, 0.05))
 
     @pulse.kernel
     def frame_updates(q: Qudit, r: Qudit) -> None:
         d = get_drive_line(q)
-        drive(d, gaussian(32, 0.4, 8.0))
+        drive(d, gaussian(32 * s, 0.4, 8.0 * s))
         shift_phase(d.tone, 0.5)
         shift_frequency(d.tone, 1.0e6)
 
@@ -235,8 +239,8 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         a = get_readout_line(q)
         b = get_readout_line(r)
         sync(a, b)
-        readout(a, square(80, 0.05))
-        readout(b, square(80, 0.05))
+        readout(a, square(80 * s, 0.05))
+        readout(b, square(80 * s, 0.05))
 
     @pulse.kernel
     def several_controllers(q: Qudit, r: Qudit) -> None:
@@ -244,11 +248,11 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         e = get_drive_line(r)
         a = get_readout_line(q)
         b = get_readout_line(r)
-        drive(d, gaussian(32, 0.5, 8.0))
-        drive(e, gaussian(32, 0.5, 8.0))
+        drive(d, gaussian(32 * s, 0.5, 8.0 * s))
+        drive(e, gaussian(32 * s, 0.5, 8.0 * s))
         sync(d, e, a, b)
-        readout(a, square(80, 0.05))
-        readout(b, square(80, 0.05))
+        readout(a, square(80 * s, 0.05))
+        readout(b, square(80 * s, 0.05))
 
     return {
         Event.PLAY: plays,
@@ -259,7 +263,7 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
         Event.CALL: calls,
         Event.ANSWER: answers,
         Event.FRAME_UPDATE: frame_updates,
-        "branch": _branch(0),
+        "branch": _branch(0, s),
         "answer_timeout": answer_timeout,
         "timeout_function": timeout_function,
         "runtime": runtime,
@@ -269,14 +273,39 @@ def _build() -> dict[str, Kernel[[Qudit, Qudit]]]:
     }
 
 
-_built: dict[str, Kernel[[Qudit, Qudit]]] = {}
+_built: dict[int, dict[str, Kernel[[Qudit, Qudit]]]] = {}
+# Every pulse and wait of the corpus lasts a whole number of these cycles.
+_CORPUS_STEP = 4
+# The shortest pulse of the corpus.
+_CORPUS_SHORTEST = 16
 
 
-def _corpus() -> Mapping[str, Kernel[[Qudit, Qudit]]]:
-    """The corpus, built on first use."""
-    if not _built:
-        _built.update(_build())
-    return _built
+def _corpus(stretch: int = 1) -> Mapping[str, Kernel[[Qudit, Qudit]]]:
+    """The corpus with its pulses *stretch* times as long, built on first use."""
+    if stretch not in _built:
+        _built[stretch] = _build(stretch)
+    return _built[stretch]
+
+
+def _stretch(system: ControlSystem, program_ghz: float) -> int:
+    """The fewest times as long the corpus's pulses and waits must last for
+    every controller of *system* to play them: on its lines' timestep, and no
+    shorter than its ``min_pulse_cycles``. 1 wherever the corpus plays as
+    written."""
+    from . import _clocks
+
+    whole, shortest = 1, 1
+    for controller in system.controllers:
+        plan = _clocks.plan(controller, program_ghz)
+        if plan is None:
+            grid, ratio = 1, Fraction(1)
+        else:
+            grid, ratio = plan.controllers[0].grid, plan.controllers[0].ratio
+        whole = math.lcm(whole, grid // math.gcd(grid, _CORPUS_STEP))
+        # Its minimum, in its own cycles, in program cycles.
+        least = -(-controller.min_pulse_cycles * ratio.denominator // ratio.numerator)
+        shortest = max(shortest, -(-least // _CORPUS_SHORTEST))
+    return -(-shortest // whole) * whole
 
 
 def _feedback_gap(backend: Backend, given: int | None) -> int:
@@ -617,13 +646,14 @@ def validate(
     report = _Report(backend.name)
     system = _control_system(backend, controller)
     dev = _device(system)
+    stretch = _stretch(system, dev.clock_ghz)
     formats = _formats(backend)
     tagged = len(formats) > 1
     emitted = 0
     first: dict[str, Any] | None = None
-    for kind, kernel in _corpus().items():
+    for kind, kernel in _corpus(stretch).items():
         if kind == "branch" and gap:
-            kernel = _branch(gap)
+            kernel = _branch(gap, stretch)
         wired = _WIRED.get(kind)
         on = system if wired is None else wired(system)
         parts = len(on.controllers) > 1

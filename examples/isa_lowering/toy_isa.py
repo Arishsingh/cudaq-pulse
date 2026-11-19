@@ -682,8 +682,8 @@ def run(
 
 def toy_control_system() -> ControlSystem:
     """Two toy controllers and a decoder on a link. The first drives
-    qudits 0 and 1 and reads both on one feedline; the second drives
-    and reads qudit 2."""
+    qudits 0 and 1 and reads both on one feedline; the second controller
+    drives and reads qudit 2."""
     feedline = ReadoutLine([0, 1], max_concurrent_tones=2)
     first = toy_controller(
         drive_lines=[0, 1],
@@ -695,12 +695,12 @@ def toy_control_system() -> ControlSystem:
         readout_lines=[2],
         peer_latency_cycles=40,
     )
-    decoder = pulse.Link(fixed_ns=4, feedback_ns=8)
+    decoder_link = pulse.Link(fixed_ns=4, feedback_ns=8)
 
     return ControlSystem(
         controllers=[first, second],
         reference_clock_ghz=0.25,
-        links={"decoder": decoder},
+        links={"decoder": decoder_link},
     )
 
 

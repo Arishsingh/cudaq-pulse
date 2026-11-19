@@ -119,6 +119,10 @@ class InProcess:
             if getattr(handler, "takes_history", False)
         }
 
+    def __repr__(self) -> str:
+        names = sorted(self._handlers.keys() | self._stateful.keys())
+        return f"<InProcess serving {', '.join(names) or 'nothing'}>"
+
     def call(self, function: ClassicalFunction[..., Any], request: bytes) -> tuple[bytes, float]:
         """Deliver *request*; returns the answer bytes and the service's time in ns."""
         handler = self._handlers.get(function.name) or self._handlers.get(function.base_name)
@@ -308,6 +312,12 @@ class UdpChannel:
         self._slot_bytes = slot_bytes
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.settimeout(timeout_s)
+
+    def __repr__(self) -> str:
+        return (
+            f"UdpChannel({self._address!r}, slot_bytes={self._slot_bytes!r}, "
+            f"timeout_s={self._sock.gettimeout()!r})"
+        )
 
     def call(self, function: ClassicalFunction[..., Any], request: bytes) -> tuple[bytes, float]:
         t0 = time.perf_counter_ns()

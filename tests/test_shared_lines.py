@@ -477,6 +477,69 @@ def test_a_program_is_checked_against_a_controller_with_a_feedline():
     assert list(pulse.controller.check(lowered, roomy)) == []
 
 
+@pulse.kernel
+def on_every_feedline(*qs):
+    lines = []
+    for q in qs:
+        lines.append(get_readout_line(q))
+    for _ in range(100):
+        sync(*lines)
+        for r in lines:
+            readout(r, square(100, 0.05))
+
+
+def _reads_of_feedlines(count, monkeypatch, unroll_threshold):
+    """The events the shared-line checks read to compile and export a
+    program on *count* feedlines of two qudits each, its event count, and
+    whether the check summarized its rolled loop."""
+    from cudaq_pulse import _shared_lines
+    from cudaq_pulse.quantum_systems import PhysicalQudit
+
+    lines = [ReadoutLine([2 * k, 2 * k + 1], max_concurrent_tones=2) for k in range(count)]
+    qs = pulse.quantum_system(
+        name="feedlines",
+        clock_ghz=1.0,
+        qudits={
+            q: PhysicalQudit(q, 5.0e9 + 1.0e7 * q, 50.0, 30.0, anharmonicity_hz=-2.0e8)
+            for q in range(2 * count)
+        },
+        control_system=pulse.ControlSystem(controllers=[pulse.Controller(readout_lines=lines)]),
+    )
+    counts = {"reads": 0, "summaries": 0}
+    timed_on, summarized = _shared_lines._timed_on, _shared_lines.summarized
+
+    def counted(event, of):
+        counts["reads"] += 1
+        return timed_on(event, of)
+
+    def summary(*args):
+        counts["summaries"] += 1
+        return summarized(*args)
+
+    monkeypatch.setattr(_shared_lines, "_timed_on", counted)
+    monkeypatch.setattr(_shared_lines, "summarized", summary)
+    compiled = pulse.compile(
+        on_every_feedline, quantum_system=qs, unroll_threshold=unroll_threshold
+    )
+    lowered = compiled.lower(*(qs.qudits[q] for q in range(2 * count)))
+    events = len(lowered.export_to_controller()["events"])
+    monkeypatch.undo()
+    return counts["reads"], events, counts["summaries"] > 0
+
+
+@pytest.mark.parametrize("unroll_threshold", [10**6, 10])
+def test_the_shared_line_checks_read_each_event_once(monkeypatch, unroll_threshold):
+    # Every iteration walked (unrolled) or a rolled loop summarized: the
+    # checks read each event a fixed number of times, however many feedlines
+    # it is spread over, not once per feedline.
+    few, few_events, summarized = _reads_of_feedlines(4, monkeypatch, unroll_threshold)
+    many, many_events, _ = _reads_of_feedlines(32, monkeypatch, unroll_threshold)
+    assert summarized == (unroll_threshold == 10)
+    assert many_events > 7 * few_events
+    assert 0 < many / many_events <= 1.1 * few / few_events
+    assert many <= 3 * many_events
+
+
 def test_runtime_qudits_on_a_feedline_are_checked_when_bound():
     @pulse.kernel
     def pair(a: pulse.Qudit, b: pulse.Qudit):
