@@ -223,9 +223,14 @@ jobs:
     steps:
       # The snapshot service needs HTTPS, so the certificates come first,
       # from the current archive; nothing measured uses them.
+      #
+      # The package servers can be out of a runner's reach for minutes. With
+      # the apt.conf.d line, every apt-get retries a failed download up to 5
+      # times (3 by default).
       - name: Install the snapshot's compiler and Valgrind
         run: |
           export DEBIAN_FRONTEND=noninteractive
+          echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates
           apt-get update --snapshot "$UBUNTU_SNAPSHOT"
