@@ -161,6 +161,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- A quantum system's qudits are checked when it is built, as its couplings
+  are: a 0-1 frequency that is not positive, a negative T1, T2* or Hahn-echo
+  T2, a thermal population outside [0, 1), or a value that is not a finite
+  number raises `QuantumSystemDefinitionError`, which lists every problem
+  at its path (`qudits[0].t1_us`) with the value. Such values used to build
+  without an error, and a negative T1 or T2 was taken as 0 (no decay) when
+  simulating.
 - A frame change made after a wait on its tone's line acted where the
   tone's previous drive or readout ended, before the wait:
   `shift_frequency(tone, +d)`, a wait of `T` and `shift_frequency(tone, -d)`
