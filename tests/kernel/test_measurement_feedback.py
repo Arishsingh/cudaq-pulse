@@ -412,6 +412,138 @@ def test_a_branch_on_each_of_many_qudits_traces_in_linear_work():
     assert all(work[256][count] <= 8 * work[32][count] for count in work[32]), work
 
 
+# Loops the trace tries to roll: each iteration moves a name to the other
+# line, and an arm reads it before it is rebound, so rolling stops inside the
+# if and the loop is unrolled. An if around the loop goes on tracing its arm
+# after that attempt.
+@pulse.kernel
+def _swap_in_loop(q0, q1):
+    a = get_drive_line(q0)
+    b = get_drive_line(q1)
+    p = get_readout_line(q0)
+    m = readout(p, square(40, 0.05))
+    for _ in range(40):
+        if m:
+            drive(a, square(16, 0.1))
+        a, b = b, a
+
+
+@pulse.kernel
+def _swap_in_loop_in_if(q0, q1):
+    a = get_drive_line(q0)
+    b = get_drive_line(q1)
+    p = get_readout_line(q0)
+    r = get_readout_line(q1)
+    m0 = readout(p, square(40, 0.05))
+    m1 = readout(r, square(40, 0.05))
+    if m0:
+        drive(a, square(8, 0.2))
+        for _ in range(40):
+            if m1:
+                drive(a, square(16, 0.1))
+            a, b = b, a
+        drive(b, square(8, 0.3))
+    else:
+        drive(b, square(8, 0.4))
+    drive(a, square(8, 0.5))
+    drive(b, square(8, 0.6))
+
+
+@pulse.kernel
+def _swap_list_in_loop_in_if(q0, q1, q2):
+    lines = [get_drive_line(q0), get_drive_line(q1), get_drive_line(q2)]
+    p = get_readout_line(q0)
+    m0 = readout(p, square(40, 0.05))
+    m1 = readout(p, square(40, 0.05))
+    x = lines[0]
+    y = lines[1]
+    if m0:
+        for _ in range(40):
+            if m1:
+                drive(x, square(16, 0.1))
+            x, y = y, x
+        drive(lines[2], square(8, 0.3))
+    drive(x, square(8, 0.5))
+    drive(lines[2], square(8, 0.7))
+
+
+def test_a_loop_that_stops_rolling_inside_an_arm_traces_as_unrolled():
+    for kernel, n in ((_swap_in_loop, 2), (_swap_in_loop_in_if, 2), (_swap_list_in_loop_in_if, 3)):
+        compiled = _compile(kernel, n, schedule="asap")
+        compiled._module.run_passes(["pulse-verify"])
+        assert "scf.for" not in compiled.mlir(), kernel
+        unrolled = _compile(kernel, n, schedule="asap", unroll_threshold=10**9)
+        assert compiled.schedule == unrolled.schedule, kernel
+
+
+def test_a_line_handed_out_again_and_driven_in_an_arm_is_carried_out_of_the_if():
+    # get_drive_line(q0) in the arm returns the line d0 holds, which is shared
+    # from then on: its drive there still makes the line a result of the if.
+    @pulse.kernel
+    def again(q0, q1):
+        d0 = get_drive_line(q0)
+        r = get_readout_line(q1)
+        m = readout(r, square(40, 0.05))
+        if m:
+            line = get_drive_line(q0)
+            drive(line, square(16, 0.1))
+        else:
+            drive(d0, square(24, 0.1))
+        drive(d0, square(8, 0.2))
+
+    @pulse.kernel
+    def named(q0, q1):
+        d0 = get_drive_line(q0)
+        r = get_readout_line(q1)
+        m = readout(r, square(40, 0.05))
+        if m:
+            drive(d0, square(16, 0.1))
+        else:
+            drive(d0, square(24, 0.1))
+        drive(d0, square(8, 0.2))
+
+    _yields_once(again)
+    end = next(op for op in python_ir(again, Q[0], Q[1]).ops if op.kind == "scf.if_end")
+    assert end.attrs == {"result_names": ["d0", "d0.tone"]}
+    compiled = _compile(again, 2, schedule="asap")
+    compiled._module.run_passes(["pulse-verify"])
+    assert compiled.schedule == _compile(named, 2, schedule="asap").schedule
+
+
+def test_a_line_first_acquired_in_an_arm_is_not_carried_out_of_the_if():
+    # q1's line is acquired in the arm that plays on it: the if carries d0
+    # only, and the schedule is the one of acquiring the line before the if.
+    @pulse.kernel
+    def in_arm(q0, q1):
+        d0 = get_drive_line(q0)
+        r = get_readout_line(q0)
+        m = readout(r, square(40, 0.05))
+        if m:
+            d1 = get_drive_line(q1)
+            drive(d1, square(16, 0.1))
+            sync(d1, d0)
+            drive(d0, square(8, 0.3))
+        drive(d0, square(8, 0.2))
+
+    @pulse.kernel
+    def before(q0, q1):
+        d0 = get_drive_line(q0)
+        r = get_readout_line(q0)
+        d1 = get_drive_line(q1)
+        m = readout(r, square(40, 0.05))
+        if m:
+            drive(d1, square(16, 0.1))
+            sync(d1, d0)
+            drive(d0, square(8, 0.3))
+        drive(d0, square(8, 0.2))
+
+    end = next(op for op in python_ir(in_arm, Q[0], Q[1]).ops if op.kind == "scf.if_end")
+    assert end.attrs == {"result_names": ["d0", "d0.tone"]}
+    compiled = _compile(in_arm, 2, schedule="asap")
+    compiled._module.run_passes(["pulse-verify"])
+    assert compiled.schedule == _compile(before, 2, schedule="asap").schedule
+
+
 # A container of each kind, and a change of it that keeps its length or
 # adds to it in place.
 _CHANGED = {
