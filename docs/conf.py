@@ -21,6 +21,8 @@ extensions = [
     "pulse_visual",
     "data_figures",
     "a11y",
+    "api_links",
+    "related_pages",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
