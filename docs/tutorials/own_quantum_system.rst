@@ -118,7 +118,7 @@ from the shape and the qudit's drive strength:
    40.0 ns DRAG, amplitude 0.1313
 
 .. themed-figure:: figures/calibrated_x.svg
-   :alt: The calibrated pi pulse of qudit 0 on its drive line: a 40 ns DRAG pulse of amplitude 0.1313, one smooth bump that starts and ends at zero.
+   :alt: The calibrated pi pulse of qudit 0 on its drive line: a 40 ns DRAG pulse of amplitude 0.1313, one smooth bump cut off at each end at about 14% of its peak.
    :width: 100%
 
    Qudit 0's calibrated π pulse, as its drive line plays it.

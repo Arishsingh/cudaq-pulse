@@ -68,12 +68,21 @@ python -m venv .venv && source .venv/bin/activate
 # Compiler and CPU simulation: compile kernels, inspect the MLIR, simulate
 # with the NumPy reference, run cudaq-pulse-opt.
 pip install cudaq-pulse
+```
 
-# Plus GPU simulation (Linux), with the CUDA 12 or CUDA 13 libraries.
+For GPU simulation on Linux, also install one CUDA extra, never both:
+
+```bash
+# CUDA 12 libraries: NVIDIA driver 525.60.13 or newer.
 pip install "cudaq-pulse[cu12]"
-pip install "cudaq-pulse[cu13]"
 
-# Check what was installed and whether it works.
+# CUDA 13 libraries instead: NVIDIA driver 580 or newer.
+# pip install "cudaq-pulse[cu13]"
+```
+
+Then check what was installed and whether it works:
+
+```bash
 python -m cudaq_pulse.doctor
 ```
 

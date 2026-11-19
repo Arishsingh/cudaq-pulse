@@ -87,8 +87,8 @@ def rabi_pulse(page) -> None:
 
     alt = (
         f"The drive pulse of the rabi kernel at amplitude 0.16: a Gaussian "
-        f"{drive.end_ns - drive.start_ns:g} ns long, climbing from zero to its peak in the middle "
-        "and back."
+        f"{drive.end_ns - drive.start_ns:g} ns long, peaking in the middle and cut off at each end "
+        "at about 14% of its peak."
     )
     save_themed(figure, "rabi_pulse", title="The kernel's drive pulse", desc=alt)
 
