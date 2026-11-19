@@ -3,12 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Accessibility: focus that shows against the page in both themes, targets of
- * at least 24 by 24 px, text of at least 14 px, and a legible shortcut hint.
+ * at least 24 by 24 px, text of at least 14 px, a legible shortcut hint, and
+ * pages that fit a narrow or short screen without scrolling sideways.
  */
 
 :root {
   /* 6.6:1 on white; the theme's green is 2.4:1 there. */
   --a11y-focus: #0b5cad;
+  /* The underline of a link on a light page, 5.1:1 on white. The print
+     stylesheet uses it too. */
+  --a11y-link-underline: #4f7a00;
 }
 
 html[data-theme="dark"] {
@@ -22,14 +26,49 @@ html[data-theme="dark"] {
   box-shadow: none !important;
 }
 
+/* The skip link sits on an orange strip, where the ring above is 2.2:1 in the
+   light theme and 1.1:1 in the dark one. The strip's text color is 5.9:1 and
+   8.0:1. */
+.skip-link a:focus-visible {
+  outline-color: var(--pst-color-warning-text, #14181e) !important;
+}
+
+/* A sidebar toggle shows its ring on the chevron. The summary around it has
+   no height, so a ring there would be a second, flattened one. */
+.bd-sidebar-primary li.has-children > details > summary:focus-visible {
+  outline: none !important;
+}
+
 .bd-sidebar-primary li.has-children > details > summary:focus-visible > .toctree-toggle {
   outline: 3px solid var(--a11y-focus) !important;
   outline-offset: -3px;
 }
 
+/* The bar that marks the current page and the current section stays while
+   its link has focus. */
+nav.bd-links .current > a:focus-visible,
+.toc-entry a.nav-link.active:focus-visible,
+.toc-entry a.nav-link[aria-current="true"]:focus-visible {
+  box-shadow: inset max(3px, 0.1875rem, 0.12em) 0 0
+    var(--nv-color-green, var(--pst-color-primary)) !important;
+}
+
+/* The search field has its own ring. The theme's ring round the whole search
+   box would be a second one, in the green that is 2.4:1 on white. */
+.bd-search:focus-within {
+  box-shadow: none;
+}
+
 /* The Ctrl+K hint: the theme draws it in the border color (1.5:1). */
 .bd-search .search-button__kbd-shortcut {
   color: var(--pst-color-text-muted);
+}
+
+/* Links in running text have the text's color, so the underline is what
+   marks them. The theme's green is 2.4:1 on the light page; this one is
+   5.1:1. The dark theme's underline is 7.8:1 and stays. */
+html:not([data-theme="dark"]) .bd-article a {
+  text-decoration-color: var(--a11y-link-underline);
 }
 
 /* Targets of at least 24 by 24 px. */
@@ -77,20 +116,90 @@ a[href="#main-content"],
   padding-block: 3px;
 }
 
-/* Text of at least 14 px. */
-code,
-pre,
-code .pre,
-pre .pre,
-.sig span.pre {
-  font-size: max(0.875rem, 14px);
+.genindex-jumpbox a,
+.modindex-jumpbox a {
+  display: inline-block;
+  min-width: 24px;
+  min-height: 24px;
+  line-height: 24px;
+  text-align: center;
 }
 
+/* The [source] link floats in a signature whose lines are 20 px high. The
+   padding makes its box 24 px and the margin takes the same 4 px back, so
+   the signature keeps its height. The selector is the theme's own, which
+   floats the link itself. */
+dl > dt > a:has(.viewcode-link) {
+  min-height: 24px;
+  padding-block: 2px;
+  margin-block: -2px;
+}
+
+/* Where the last line of a signature leaves no room beside it, the link
+   drops under that line. The signature's box grows to hold it; otherwise
+   the link lies across the box's border and the entry below. */
+dl > dt:has(.viewcode-link) {
+  display: flow-root;
+}
+
+/* A link that is a whole definition term, and the name of a type in a
+   signature, are 20 and 21 px high. Each is set inline, so the padding makes
+   its box 24 px or more and the line keeps its height. The second selector
+   also reaches the [source] link, which has this padding already. */
+dl.simple > dt > a.reference:only-child,
+.bd-article dt.sig a.reference.internal {
+  padding-block: 2px;
+}
+
+/* The "#" after a figure or table caption is the only link to that anchor,
+   and the theme shows it on mouse hover alone. On screen it also shows while
+   it has keyboard focus, and always where the device cannot hover. This
+   holds for a link that a11y.py has named after its caption: a row of links
+   that all read "#" would tell a screen reader nothing. Paper keeps the
+   link hidden. Heading and definition links stay hover-only: "On this page"
+   and the index lead to those anchors. */
+@media screen {
+  figcaption a.headerlink[aria-label],
+  caption a.headerlink[aria-label] {
+    visibility: visible;
+    opacity: 0;
+  }
+
+  figure:hover figcaption a.headerlink[aria-label],
+  caption:hover a.headerlink[aria-label],
+  figcaption a.headerlink[aria-label]:focus,
+  caption a.headerlink[aria-label]:focus {
+    opacity: 1;
+  }
+}
+
+@media screen and (hover: none) {
+  figcaption a.headerlink[aria-label],
+  caption a.headerlink[aria-label] {
+    opacity: 1;
+  }
+}
+
+/* Text of at least 14 px. Code is sized from the text around it, as in the
+   theme, so it grows with a heading. */
+code,
+pre,
 sup,
 sub,
-span.ellipsis,
+ul.bd-breadcrumbs,
 .search-button-field .kbd-shortcut__modifier {
   font-size: max(0.875em, 14px);
+}
+
+/* A long operation name in a heading may break; Sphinx keeps it on one line,
+   which would push the heading past a narrow screen. */
+:is(h1, h2, h3, h4, h5, h6) > code {
+  max-width: 100%;
+}
+
+:is(h1, h2, h3, h4, h5, h6) > code .pre {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* A figure's full description, under it, for reading and for screen readers. */
@@ -106,4 +215,269 @@ details.figure-description summary {
 
 details.figure-description p {
   margin: 0.5rem 0 0;
+}
+
+/* The general index sets long dotted names in two columns of a layout table,
+   which is wider than the article at every screen size. One column fits. */
+table.genindextable,
+table.genindextable tbody,
+table.genindextable tr,
+table.genindextable td {
+  display: block;
+  width: auto !important; /* The page sets 100% and 33% inline. */
+}
+
+table.genindextable td {
+  overflow-wrap: break-word;
+}
+
+/* The module index folds its rows with a picture that only a mouse can use.
+   The index is short and opens unfolded, so the picture is hidden and the
+   rows stay open. */
+img.toggler {
+  display: none !important;
+}
+
+table.modindextable tr[class^="cg-"] {
+  display: table-row !important;
+}
+
+/* A signature may break between its module path and its name, which Sphinx
+   sets as one word. Without the break the longest signatures run past their
+   boxes on a wide screen, and on a narrow one they are cut inside the name.
+   The break is a zero-width space drawn by this stylesheet, so it is not
+   copied with the name. Its empty alternative text keeps it from a screen
+   reader and a braille display, which would be given it as a character
+   between the path and the name. A browser that does not know that form
+   keeps the first declaration. */
+.bd-article dt.sig .sig-prename::after {
+  content: "\200B";
+  content: "\200B" / "";
+}
+
+/* The icon before the title of a "See also" box, a note, a warning and the
+   other kinds of box, the arrow before a download link and the divider
+   between breadcrumbs are characters of the theme's icon font, and a screen
+   reader would be given each as an unnamed symbol. Empty alternative text
+   keeps the picture and leaves the character out. Each of the ten kinds of
+   box that has a directive of its own gets one rule, with the theme's own
+   selector and variable; a box under a title of its own has none. A browser
+   that does not know the form keeps the theme's rule. An earlier declaration
+   here could not serve it: a value that holds a variable is checked only
+   once its rule has won, and the icon would be lost. */
+@supports (content: "x" / "") {
+  div.admonition.seealso > .admonition-title::after {
+    content: var(--pst-icon-admonition-seealso) / "";
+  }
+
+  div.admonition.note > .admonition-title::after {
+    content: var(--pst-icon-admonition-note) / "";
+  }
+
+  div.admonition.warning > .admonition-title::after {
+    content: var(--pst-icon-admonition-warning) / "";
+  }
+
+  div.admonition.error > .admonition-title::after {
+    content: var(--pst-icon-admonition-error) / "";
+  }
+
+  div.admonition.tip > .admonition-title::after {
+    content: var(--pst-icon-admonition-tip) / "";
+  }
+
+  div.admonition.hint > .admonition-title::after {
+    content: var(--pst-icon-admonition-hint) / "";
+  }
+
+  div.admonition.important > .admonition-title::after {
+    content: var(--pst-icon-admonition-important) / "";
+  }
+
+  div.admonition.caution > .admonition-title::after {
+    content: var(--pst-icon-admonition-caution) / "";
+  }
+
+  div.admonition.attention > .admonition-title::after {
+    content: var(--pst-icon-admonition-attention) / "";
+  }
+
+  div.admonition.danger > .admonition-title::after {
+    content: var(--pst-icon-admonition-danger) / "";
+  }
+
+  a.reference.download::before {
+    content: var(--pst-icon-download) / "";
+  }
+
+  ul.bd-breadcrumbs li.breadcrumb-item:not(.breadcrumb-home)::before {
+    content: var(--pst-breadcrumb-divider) / "";
+  }
+}
+
+/* Narrow screens: a long name in running text or in a one-line signature may
+   break. Sphinx keeps each on one line, which makes the article scroll
+   sideways. On wider screens a name stays whole. */
+@media (max-width: 719.98px) {
+  .bd-article code.literal .pre,
+  .bd-article dt.sig span.pre {
+    white-space: pre-wrap;
+  }
+
+  .bd-article dt.sig {
+    overflow-wrap: break-word;
+  }
+}
+
+/*
+ * Figures on screens under 720 px. This block is the whole of that choice,
+ * so another one can replace it.
+ *
+ * A figure uses the full column, which makes its labels as large as the
+ * screen allows. The width a page gives a static figure (50 to 90%) suits a
+ * wide column and is set aside. The figure's side padding moves to the
+ * caption, so the caption and the link after it stay where they were.
+ * Nothing scrolls sideways and a figure is still not a control. Paper keeps
+ * the page's widths.
+ */
+@media screen and (max-width: 719.98px) {
+  .bd-article figure {
+    padding-inline: 0;
+  }
+
+  .bd-article figcaption {
+    padding-inline: 0.8em;
+  }
+
+  .themed-figure img {
+    width: 100% !important; /* The page sets the width inline. */
+  }
+}
+
+/* Short screens, such as a phone on its side or a window at 400% zoom: the
+   header would hold a quarter of every screen, so it scrolls away with the
+   page. Only below the width where the theme turns both sidebars into
+   drawers; above it they hang under a header that stays. */
+@media (max-height: 30rem) and (max-width: 959.98px) {
+  .bd-header {
+    position: relative; /* Not static: the header keeps its stacking order. */
+  }
+
+  /* A link to an anchor no longer has a header to clear. */
+  html {
+    scroll-padding-top: 1rem;
+  }
+}
+
+/* The skip link slides in from the top; with reduced motion it appears. */
+@media (prefers-reduced-motion: reduce) {
+  .skip-link {
+    transition: none;
+  }
+}
+
+/* Forced colors: the page takes the reader's colors, but a figure and the
+   logo are drawn in the site's light or dark palette, whichever the
+   color-mode switch selects. When that palette is the opposite of the
+   reader's, their ink is about 1.2:1 on the page. Each keeps the page color
+   of its own palette behind it. */
+@media (forced-colors: active) {
+  .bd-article figure img,
+  img.logo__image,
+  :is(.pulse-visual, .pulse-toy-flow, .pulse-mem-gauge, .pulse-waveform-explorer) svg {
+    background-color: var(--pst-color-background);
+    forced-color-adjust: none;
+  }
+}
+
+/* An open navigation or contents drawer holds the page behind it still, and
+   scrolling past the end of the drawer does not carry on into the page. The
+   gutter keeps the page from shifting sideways when its scrollbar goes. */
+html:has(#pst-primary-sidebar-modal[open], #pst-secondary-sidebar-modal[open]) {
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
+
+#pst-primary-sidebar-modal,
+#pst-secondary-sidebar-modal {
+  overscroll-behavior: contain;
+}
+
+/* The Close button that a11y.js adds to the theme's dialogs. The theme moves a
+   drawer's content back into the sidebar when the drawer closes, and the
+   button goes with it, so it shows only as the child of an open dialog. */
+.a11y-dialog-close {
+  display: none;
+}
+
+dialog[open] > .a11y-dialog-close {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  align-self: flex-end;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 0.75rem;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 0.25rem;
+  background: var(--pst-color-background);
+  color: var(--pst-color-text-base);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+/* The search dialog is transparent over a dimmed page. The focus ring is drawn
+   inside the button, against the button's own background. */
+.a11y-dialog-close:focus-visible {
+  outline-offset: -4px;
+}
+
+/* In the search dialog the button sits under the field, at the right. */
+#pst-search-dialog[open] > .a11y-dialog-close {
+  display: flex;
+  width: fit-content;
+  margin: 0.5rem 0 0 auto;
+}
+
+/* In a drawer the button stays in view while the list scrolls: the navigation
+   drawer can open scrolled to the current page, and the button is where
+   keyboard focus starts. It holds its place inside the drawer's own padding,
+   so the offset is zero. */
+#pst-primary-sidebar-modal > .a11y-dialog-close,
+#pst-secondary-sidebar-modal > .a11y-dialog-close {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+/* The second skip link, to "On this page". Below 1200px that list is a drawer
+   and the link would lead nowhere, so it is not shown there. */
+#pst-skip-link a.a11y-skip-toc {
+  display: inline-block;
+  min-height: 24px;
+  margin-left: 1.5rem;
+  padding-block: 3px;
+}
+
+@media (max-width: 1199.98px) {
+  #pst-skip-link a.a11y-skip-toc {
+    display: none;
+  }
+}
+
+/* The label a11y.js adds to each search result, naming the part of the site it
+   is from: a small, quiet tag after the title, inside the link. */
+.a11y-result-kind {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--pst-color-text-muted);
+  border-radius: 0.25rem;
+  color: var(--pst-color-text-muted);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  vertical-align: middle;
+  white-space: nowrap;
 }

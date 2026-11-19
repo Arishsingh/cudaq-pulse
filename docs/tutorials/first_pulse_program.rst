@@ -124,13 +124,15 @@ What the kernel does:
 - the kernel returns the readout's outcome.
 
 .. themed-figure:: figures/rabi_pulse.svg
-   :alt: The drive pulse of the rabi kernel at amplitude 0.16: a Gaussian 32 ns long, climbing from zero to its peak in the middle and back.
+   :alt: The drive pulse of the rabi kernel at amplitude 0.16: a Gaussian 32 ns long, peaking in the middle and cut off at each end at about 14% of its peak.
    :width: 100%
 
    The drive pulse at amplitude 0.16, as the drive line plays it.
 
-What to notice: the pulse starts and ends at zero. Its smooth edges keep
-its spectrum narrow.
+What to notice: the pulse does not start or end at zero. The Gaussian is
+cut off two ``sigma`` from its peak, at about 14% of its height; a longer
+duration for the same ``sigma`` brings the ends closer to zero. Its smooth
+rise and fall keep its spectrum narrow.
 
 Inside a kernel, the operations are used by their bare names. Editors that
 use Pylance or pyright complete and check them with no setup (see

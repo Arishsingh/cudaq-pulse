@@ -27,11 +27,20 @@ needed. Install it from PyPI; ``pip`` picks the wheel for your platform:
    # Compiler and CPU simulation (Linux and macOS)
    pip install cudaq-pulse
 
-   # Plus GPU simulation (Linux), with CUDA 12 or CUDA 13 libraries
-   pip install "cudaq-pulse[cu12]"
-   pip install "cudaq-pulse[cu13]"
+For GPU simulation on Linux, also install one CUDA extra, never both:
 
-   # Report what was installed and whether it works
+.. code-block:: bash
+
+   # CUDA 12 libraries: NVIDIA driver 525.60.13 or newer
+   pip install "cudaq-pulse[cu12]"
+
+   # CUDA 13 libraries instead: NVIDIA driver 580 or newer
+   # pip install "cudaq-pulse[cu13]"
+
+Then check what was installed and whether it works:
+
+.. code-block:: bash
+
    python -m cudaq_pulse.doctor
 
 ``cudaq-pulse-opt``, the MLIR driver, comes along automatically: it is in
@@ -121,6 +130,9 @@ CUDA-Q Pulse is a Python-first compiler pipeline with four stages:
    A program compiled already is simulated the same way without compiling
    it again: ``pulse.simulate(program, *values)`` binds the values of its
    run-time float parameters as ``program.bind(values)`` does.
+
+For how the compiler works inside, from bytecode tracing to scheduling and
+lowering, see :doc:`architecture/pipeline`.
 
 GPU simulation via NVIDIA cuDensityMat is a preview capability; see
 :doc:`user_guide/gpu_execution`.

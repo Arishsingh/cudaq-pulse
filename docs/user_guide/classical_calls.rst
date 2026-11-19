@@ -802,13 +802,13 @@ changing programs.
 Questions
 ---------
 
-**Can a parameter be a** ``Sequence`` **rather than a** ``list``**?** Yes:
+**Can a parameter be a** ``Sequence`` **rather than a** ``list``\ **?** Yes:
 ``Sequence[int]``, ``Sequence[float]`` and ``Sequence[complex]``, from
 ``collections.abc`` or ``typing``, mean what the ``list`` forms do. A type
 checker then also accepts a tuple where ``list[int]`` takes only a list;
 this guide writes ``list``.
 
-**Why does a type checker show** ``pulse.Bits`` **as** ``list[int]``**?**
+**Why does a type checker show** ``pulse.Bits`` **as** ``list[int]``\ **?**
 Checkers see ``pulse.Bits`` as ``list[int]``, so a body may return any list
 of bits and an external's placeholder ``pulse.Bits()`` checks; at run time
 it is a list type of its own, which tells the compiler the items are bits.

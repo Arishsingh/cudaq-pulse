@@ -6,14 +6,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="pv-svg pv-dark" role="img" aria-labelledby="title desc" viewBox="0 0 760 206">
  <title id="title">One pulse picks the axis</title>
  <desc id="desc">One pulse picks the axis. X axis: −Y90 turns +X onto Z. The readout gives ⟨X⟩ = 0.71. Y axis: X90 turns +Y onto Z. The readout gives ⟨Y⟩ = 0.71. Z axis: no pulse. The T gate shows as a +π/4 frame shift. The readout gives ⟨Z⟩ = 0.01.</desc>
- <style>.pv-svg { --pv-drive: #5b8c00; --pv-q: #3d6fa3; --pv-readout: #c2185b; --pv-classical: #00796b; --pv-text: #1a1a1a; --pv-muted: #5c636a; --pv-grid: #e8e8e8; --pv-rule: #b8bdc2; --pv-panel: rgba(0, 0, 0, 0.03); --pv-on-pill: #ffffff; --pv-page: #ffffff; display: block; width: 100%; height: auto; font-family: var(--pst-font-family-base, NVIDIA, Arial, Helvetica, sans-serif);}
-.pv-svg.pv-dark { --pv-drive: #76b900; --pv-q: #8fb8e8; --pv-readout: #f06292; --pv-classical: #4dd0c4; --pv-text: #eeeeee; --pv-muted: #b4bac1; --pv-grid: #2c2f33; --pv-rule: #5a6066; --pv-panel: rgba(255, 255, 255, 0.04); --pv-on-pill: #0b0b0b; --pv-page: #111111;}
+ <style>.pv-svg { --pv-drive: #5b8c00; --pv-q: #3d6fa3; --pv-readout: #c2185b; --pv-classical: #00796b; --pv-text: #1a1a1a; --pv-muted: #5c636a; --pv-grid: #e8e8e8; --pv-rule: #80868c; --pv-panel: rgba(0, 0, 0, 0.03); --pv-on-pill: #ffffff; --pv-page: #ffffff; display: block; width: 100%; height: auto; font-family: var(--pst-font-family-base, NVIDIA, Arial, Helvetica, sans-serif);}
+.pv-svg.pv-dark { --pv-drive: #76b900; --pv-q: #8fb8e8; --pv-readout: #f06292; --pv-classical: #4dd0c4; --pv-text: #eeeeee; --pv-muted: #b4bac1; --pv-grid: #2c2f33; --pv-rule: #6b7177; --pv-panel: rgba(255, 255, 255, 0.04); --pv-on-pill: #0b0b0b; --pv-page: #111111;}
 .pv-svg text { fill: var(--pv-text); font-size: 12px;}
 .pv-svg .pv-title { font-weight: 600; font-size: 12.5px;}
-.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted);}
-.pv-svg .pv-small { font-size: 10px;}
+.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted); font-size: 11.5px;}
 .pv-svg .pv-tiny.pv-on-text, .pv-svg .pv-on-bar { fill: var(--pv-on-pill);}
-.pv-svg .pv-lane { font-size: 10.5px;}
 .pv-svg .pv-lane, .pv-svg .pv-pill text { font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace);}
 .pv-svg .pv-drive-text { fill: var(--pv-drive);}
 .pv-grid { stroke: var(--pv-grid);}
@@ -66,19 +64,19 @@
   <text x="14" y="128" class="pv-lane">every step</text>
   <rect x="128" y="136" width="618" height="18" rx="3" class="pv-case-band"/>
   <text x="132" y="149" class="pv-small">X axis</text>
-  <rect x="350" y="141" width="336" height="10" class="pv-track"/>
-  <rect x="350" y="141" width="287.21" height="10" class="pv-share"/>
-  <text x="692" y="149" class="pv-small">⟨X⟩ = 0.71</text>
+  <rect x="350" y="141" width="328" height="10" class="pv-track"/>
+  <rect x="350" y="141" width="280.37" height="10" class="pv-share"/>
+  <text x="684" y="149" class="pv-small">⟨X⟩ = 0.71</text>
   <rect x="128" y="156" width="618" height="18" rx="3" class="pv-case-band"/>
   <text x="132" y="169" class="pv-small">Y axis</text>
-  <rect x="350" y="161" width="336" height="10" class="pv-track"/>
-  <rect x="350" y="161" width="286.97" height="10" class="pv-share"/>
-  <text x="692" y="169" class="pv-small">⟨Y⟩ = 0.71</text>
+  <rect x="350" y="161" width="328" height="10" class="pv-track"/>
+  <rect x="350" y="161" width="280.14" height="10" class="pv-share"/>
+  <text x="684" y="169" class="pv-small">⟨Y⟩ = 0.71</text>
   <rect x="128" y="176" width="618" height="18" rx="3" class="pv-case-band pv-current"/>
   <text x="132" y="189" class="pv-small">Z axis</text>
-  <rect x="350" y="181" width="336" height="10" class="pv-track"/>
-  <rect x="350" y="181" width="169.64" height="10" class="pv-share"/>
-  <text x="692" y="189" class="pv-small">⟨Z⟩ = 0.01</text>
+  <rect x="350" y="181" width="328" height="10" class="pv-track"/>
+  <rect x="350" y="181" width="165.60" height="10" class="pv-share"/>
+  <text x="684" y="189" class="pv-small">⟨Z⟩ = 0.01</text>
   <text x="350" y="128" class="pv-small">shots reading 0</text>
  </g>
 </svg>

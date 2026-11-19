@@ -6,8 +6,12 @@
 // controller export and toy_isa: each listing, when each bit is ready, each
 // decoder call, every instruction the emulated controllers issue, and the
 // sentence for each moment. This file computes no schedule; it places what the
-// data says at the cycle the playhead is on. tests/test_toy_flow.py runs the
-// functions it exports under Node and checks them against the data.
+// data says at the cycle the playhead is on. The figure plays once by itself
+// while it is in the window; its buttons pause it and step through its
+// moments, and a status line says which step is on screen. Readers who ask
+// for reduced motion get a still frame and the step buttons.
+// tests/test_toy_flow.py runs the functions this file exports under Node,
+// checks them against the data, and presses the buttons on a stand-in page.
 "use strict";
 
 (function () {
@@ -29,6 +33,32 @@
     const local = Math.max(0, elapsed) - shot * each;
     const t = Math.min(1, local / SHOT_MS) * scene.end_cycles;
     return { shot, t, done: elapsed >= scene.shots.length * each };
+  }
+
+  // The ms after the start at which outcome *shot* is at cycle t: where
+  // playing picks up from a frame.
+  function elapsedAt(scene, shot, t) {
+    return shot * (SHOT_MS + HOLD_MS) + (t / scene.end_cycles) * SHOT_MS;
+  }
+
+  // The frames a reader steps through, as [outcome, cycle]: each outcome's
+  // first frame, each of its moments, then its last frame.
+  function steps(scene) {
+    const out = [];
+    scene.shots.forEach((shot, s) => {
+      const cycles = new Set([0, ...shot.moments.map((m) => m[0]), scene.end_cycles]);
+      for (const cycle of [...cycles].sort((a, b) => a - b)) out.push([s, cycle]);
+    });
+    return out;
+  }
+
+  // The step a frame belongs to: the last one at or before it.
+  function stepAt(scene, shot, t) {
+    let at = 0;
+    steps(scene).forEach(([s, cycle], k) => {
+      if (s < shot || (s === shot && cycle <= t)) at = k;
+    });
+    return at;
   }
 
   function clamp01(f) {
@@ -115,6 +145,20 @@
     let text = "";
     for (const [cycle, line] of shot.moments) if (cycle <= t) text = line;
     return text;
+  }
+
+  // What the status line says at step k: where it is, the outcome the step
+  // belongs to, and the sentence of its moment. The picture shows the outcome
+  // in its header, so the line shows the other two and speaks all three.
+  function stepText(scene, k) {
+    const list = steps(scene);
+    const [s, cycle] = list[k];
+    const shot = scene.shots[s];
+    return {
+      step: `Step ${k + 1} of ${list.length}`,
+      outcome: shot.label,
+      says: captionAt(shot, cycle),
+    };
   }
 
   function stateAt(scene, shotIndex, t) {
@@ -208,7 +252,19 @@
     return parts.join(" ");
   }
 
-  const api = { SHOT_MS, HOLD_MS, span, frameAt, stateAt, lanes, description };
+  const api = {
+    SHOT_MS,
+    HOLD_MS,
+    span,
+    frameAt,
+    elapsedAt,
+    steps,
+    stepAt,
+    stepText,
+    stateAt,
+    lanes,
+    description,
+  };
   if (typeof module === "object" && module.exports) module.exports = api;
   if (typeof document === "undefined") return;
 
@@ -218,7 +274,9 @@
   const W = 760;
   const BOX_X = [16, 388];
   const BOX_W = 356;
-  const ROW = 15;
+  // A listing row holds a 12-unit line and leaves room for the outline of the
+  // current row's band.
+  const ROW = 16;
   const LANE = 22;
   const LABEL_W = 136;
 
@@ -230,8 +288,9 @@
     return e;
   }
 
+  // A pill as wide as its text, which is monospace at 12 units.
   function pill(parent, x, y, text, cls) {
-    const w = 10 + text.length * 6.6;
+    const w = 10 + text.length * 7.5;
     const g = el("g", { class: `tf-pill ${cls || ""}` }, parent);
     el("rect", { x: x - w / 2, y: y - 8, width: w, height: 16, rx: 8 }, g);
     el("text", { x, y: y + 4, "text-anchor": "middle" }, g, text);
@@ -337,9 +396,11 @@
         el("rect", { x: x0, width: w, rx: 1.5, class: ghost, ...box }, svg);
         const fill = el("rect", { x: x0, width: 0, rx: 1.5, class: `tf-fill tf-${s.role}`, ...box }, svg);
         if (s.label) {
-          // A label too long for its span sits beside it.
+          // A label too long for its span sits beside it. The one before its
+          // span stands off far enough to read apart from the label of the
+          // span after it, which is centered and reaches back toward it.
           let where = [x0 + w / 2, "middle"];
-          if (s.side === "left") where = [x0 - 3, "end"];
+          if (s.side === "left") where = [x0 - 8, "end"];
           if (s.side === "right") where = [x0 + w + 3, "start"];
           const attrs = { x: where[0], y: y + 11, class: "tf-small tf-span", "text-anchor": where[1] };
           el("text", attrs, svg, s.label);
@@ -350,11 +411,12 @@
     view.head = el("path", { d: "", class: "tf-head" }, svg);
     view.x = x;
     view.axisY = axisY;
+    view.height = height;
     svg.setAttribute("viewBox", `0 0 ${W} ${height}`);
     return view;
   }
 
-  function draw(view, scene, shotIndex, t, still) {
+  function draw(view, scene, shotIndex, t) {
     const shot = scene.shots[shotIndex];
     const now = stateAt(scene, shotIndex, t);
     view.header.textContent = shot.label;
@@ -381,10 +443,9 @@
       box.mark.style.display = k >= 0 && row >= 0 && row < view.rows ? "" : "none";
     }
 
-    const stillClass = still ? " tf-still" : "";
     for (const wire of view.wires) {
       const p = now.live.find((q) => q.controller === wire.controller && q.channel === wire.channel);
-      wire.el.setAttribute("class", `tf-wire${p ? ` tf-on tf-${p.kind}` : ""}${stillClass}`);
+      wire.el.setAttribute("class", `tf-wire${p ? ` tf-on tf-${p.kind}` : ""}`);
     }
     for (const q of view.qudits) {
       const p = now.live.find((r) => r.controller === q.controller && r.qudit === q.qudit);
@@ -453,97 +514,219 @@
       const width = Math.max(0, Math.min(f.w, view.x(t) - f.x0));
       f.el.setAttribute("width", played ? width : 0);
     }
-    view.head.setAttribute("d", `M ${view.x(t)} ${view.axisY + 4} V ${view.svg.viewBox.baseVal.height - 4}`);
-    return now.caption;
+    view.head.setAttribute("d", `M ${view.x(t)} ${view.axisY + 4} V ${view.height - 4}`);
   }
 
+  // ── Playback ───────────────────────────────────────────────────────────
+
   let count = 0;
+
+  function button(text) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tf-button";
+    b.textContent = text;
+    return b;
+  }
 
   function mount(root) {
     const data = JSON.parse(document.getElementById(root.dataset.source).textContent);
     const scene = data.scenes.find((s) => s.name === root.dataset.scene);
     const id = `ptf${count++}`;
-    const svg = el("svg", { role: "img", "aria-labelledby": `${id}-title ${id}-desc`, class: "tf-svg" });
+    // The picture is named by its title alone. What it plays, moment by
+    // moment, is its description: as part of the name it would be read out
+    // whole wherever the picture is named.
+    const svg = el("svg", {
+      role: "img",
+      "aria-labelledby": `${id}-title`,
+      "aria-describedby": `${id}-desc`,
+      class: "tf-svg",
+    });
     el("title", { id: `${id}-title` }, svg, scene.title);
     el("desc", { id: `${id}-desc` }, svg, description(scene));
-    const caption = document.createElement("p");
-    caption.className = "tf-caption";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "tf-button";
+    const status = document.createElement("p");
+    status.className = "pulse-toy-flow-status";
+    status.setAttribute("role", "status");
+    const toggle = button("Play");
+    toggle.classList.add("tf-toggle");
+    const back = button("Previous step");
+    const forth = button("Next step");
     const bar = document.createElement("div");
-    bar.className = "tf-bar";
-    bar.append(button);
-    root.replaceChildren(svg, caption, bar);
+    bar.className = "pulse-toy-flow-controls";
+    bar.append(toggle, back, forth);
+    root.setAttribute("role", "group");
+    root.setAttribute("aria-label", scene.title);
+    root.replaceChildren(svg, status, bar);
     const view = build(svg, scene);
-    view.svg = svg;
     const fallback = root.parentElement.querySelector(".pulse-fallback");
     if (fallback) fallback.hidden = true;
 
+    const list = steps(scene);
     const end = scene.end_cycles;
-    const show = (shotIndex, t, still) => {
-      caption.textContent = draw(view, scene, shotIndex, t, still);
-    };
-
-    // Reduced motion: the last frame, still, and a button that steps through
-    // each moment of each outcome without moving between them.
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      const moments = [];
-      scene.shots.forEach((shot, s) => {
-        for (const [cycle] of shot.moments) moments.push([s, cycle]);
-        moments.push([s, end]);
-      });
-      let step = moments.length - 1;
-      show(0, end, true);
-      button.textContent = "Step through";
-      button.onclick = () => {
-        step = (step + 1) % moments.length;
-        show(moments[step][0], moments[step][1], true);
-        button.textContent = step === moments.length - 1 ? "Start over" : "Next step";
-      };
-      return;
-    }
-
+    const last = scene.shots.length - 1;
+    const calm = window.matchMedia("(prefers-reduced-motion: reduce)");
+    // The frame on screen, and the step it belongs to.
+    let at = { shot: 0, t: 0 };
+    let step = -1;
     let raf = 0;
-    let started = 0;
-    const frame = (now) => {
-      if (!started) started = now;
-      const at = frameAt(scene, now - started);
-      show(at.shot, at.t, false);
-      raf = at.done ? 0 : requestAnimationFrame(frame);
+    let started = null;
+    // It still plays by itself: until it has played to its end, the reader
+    // has used a control, or a still frame has stood in for the playing.
+    let owed = true;
+    // Half of the figure, and half of its controls, are in the window.
+    let half = false;
+    let reach = false;
+
+    // Draws one frame. The status line follows it, and speaks only when
+    // *say* is true: when the reader asked for the frame. While the figure
+    // plays, the line changes in silence.
+    const show = (shot, t, say) => {
+      at = { shot, t };
+      draw(view, scene, shot, t);
+      const k = stepAt(scene, shot, t);
+      if (k === step && !say) return;
+      step = k;
+      const text = stepText(scene, k);
+      const outcome = document.createElement("span");
+      outcome.className = "visually-hidden";
+      outcome.textContent = `${text.outcome} `;
+      // A status is polite unless it is switched off.
+      if (say) status.removeAttribute("aria-live");
+      else status.setAttribute("aria-live", "off");
+      status.replaceChildren(`${text.step}: `, outcome, text.says);
+      // At either end a step button says it is unavailable, and keeps the
+      // focus it may have: a disabled button would drop it.
+      for (const [b, ended] of [[back, k === 0], [forth, k === list.length - 1]]) {
+        if (ended) b.setAttribute("aria-disabled", "true");
+        else b.removeAttribute("aria-disabled");
+      }
+    };
+    const over = () => at.shot === last && at.t >= end;
+    // The live wires' dashes run under tf-playing only, so only with frames.
+    const sync = () => {
+      root.classList.toggle("tf-playing", raf !== 0);
+      toggle.textContent = raf ? "Pause" : over() ? "Replay" : "Play";
+      toggle.hidden = calm.matches;
+    };
+    const stop = () => {
+      cancelAnimationFrame(raf);
+      raf = 0;
+    };
+    const frame = (time) => {
+      // The first frame sets the clock: the frame to play from is on screen.
+      // From an outcome's last frame the next outcome starts at once. The
+      // hold between the two is for a figure that has just played up to it;
+      // after a press of Play it would look as if nothing had happened.
+      if (started === null) {
+        const held = at.t >= end && at.shot < last;
+        started = time - (held ? elapsedAt(scene, at.shot + 1, 0) : elapsedAt(scene, at.shot, at.t));
+      } else {
+        const next = frameAt(scene, time - started);
+        show(next.shot, next.t, false);
+      }
+      raf = over() ? 0 : requestAnimationFrame(frame);
+      if (!raf) {
+        owed = false;
+        sync();
+      }
     };
     const play = () => {
-      cancelAnimationFrame(raf);
-      started = 0;
+      stop();
+      started = null;
+      status.setAttribute("aria-live", "off");
       raf = requestAnimationFrame(frame);
+      sync();
     };
-    show(0, 0, false);
-    button.textContent = "Replay";
-    button.onclick = play;
-    // Plays once, the first time half of it is in view.
-    const seen = new IntersectionObserver(
+    const pause = (say) => {
+      stop();
+      if (say) show(at.shot, at.t, true);
+      sync();
+    };
+
+    // The reader's controls. Using one ends the playing by itself for good;
+    // a step button at its end does that and no more.
+    const move = (by) => {
+      const k = Math.max(0, Math.min(list.length - 1, step + by));
+      owed = false;
+      stop();
+      if (k !== step) show(list[k][0], list[k][1], true);
+      sync();
+    };
+    toggle.onclick = () => {
+      owed = false;
+      if (raf) {
+        pause(true);
+      } else {
+        if (over()) show(0, 0, false);
+        play();
+      }
+    };
+    back.onclick = () => move(-1);
+    forth.onclick = () => move(1);
+    // Left and Right step while focus is on a control. With a modifier the
+    // keys are the browser's: Alt+Left goes back a page.
+    bar.addEventListener("keydown", (e) => {
+      const by = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (!by || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      e.preventDefault();
+      move(by);
+    });
+
+    // It plays by itself once. It starts with half of it and half of its
+    // controls in the window, so Pause is in reach. Any playing stops when
+    // the figure leaves that half, or the tab is hidden; playing by itself
+    // then goes on when the figure is back.
+    const auto = (away) => {
+      if (away) {
+        if (raf) pause(false);
+      } else if (owed && !raf && half && reach && !document.hidden && !calm.matches) {
+        play();
+      }
+    };
+    const watch = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          seen.disconnect();
-          play();
+        let left = false;
+        for (const e of entries) {
+          const most = e.intersectionRatio >= 0.5;
+          if (e.target === bar) {
+            reach = most;
+          } else {
+            left = half && !most;
+            half = most;
+          }
         }
+        auto(left);
       },
       { threshold: 0.5 }
     );
-    seen.observe(root);
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden && raf) {
-        cancelAnimationFrame(raf);
-        raf = 0;
-        show(scene.shots.length - 1, end, false);
+    watch.observe(root);
+    watch.observe(bar);
+    document.addEventListener("visibilitychange", () => auto(document.hidden));
+
+    // Reduced motion: no playing and no Play button. The figure rests on the
+    // first outcome's last frame, which stands in for the playing, and the
+    // step buttons show each moment without moving between them. The setting
+    // may change while the page is open: turned on, it stills a figure that
+    // plays or has yet to.
+    const settle = () => {
+      if (calm.matches && (raf || owed)) {
+        stop();
+        owed = false;
+        show(0, end, false);
       }
-    });
+      sync();
+      auto(false);
+    };
+    if (calm.addEventListener) calm.addEventListener("change", settle);
+    show(0, 0, false);
+    settle();
+
     // For screenshots: stop, and draw one moment.
     root.toyFlowShow = (shotIndex, t) => {
-      seen.disconnect();
-      cancelAnimationFrame(raf);
-      raf = 0;
-      show(shotIndex, t, true);
+      owed = false;
+      stop();
+      show(shotIndex, t, false);
+      sync();
     };
   }
 

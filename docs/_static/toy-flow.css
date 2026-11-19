@@ -5,7 +5,11 @@
  * The toy controllers' data flow (toy-flow.js), in the tutorial figures'
  * palette (docs/tutorials/figures/_style.py): drive green, readout rose,
  * classical calls and latencies teal, in the theme's light and dark modes.
- * A conditional pulse is outlined dashed, so color is never the only cue.
+ * The outlines are darker than that palette's rule color: boxes, wires,
+ * links and the slots of pulses not yet played carry meaning here, so they
+ * are at least 3:1 on the page. A conditional pulse is outlined dashed, a
+ * busy link or box is drawn thicker and the current instruction is outlined,
+ * so color is never the only cue.
  */
 
 .pulse-toy-flow {
@@ -15,7 +19,7 @@
   --tf-text: #1a1a1a;
   --tf-muted: #5c636a;
   --tf-grid: #e8e8e8;
-  --tf-rule: #b8bdc2;
+  --tf-rule: #80868c;
   --tf-panel: rgba(0, 0, 0, 0.025);
   --tf-pc: rgba(91, 140, 0, 0.16);
   --tf-on-pill: #ffffff;
@@ -30,7 +34,7 @@ html[data-theme="dark"] .pulse-toy-flow {
   --tf-text: #eeeeee;
   --tf-muted: #b4bac1;
   --tf-grid: #2c2f33;
-  --tf-rule: #5a6066;
+  --tf-rule: #6b7177;
   --tf-panel: rgba(255, 255, 255, 0.03);
   --tf-pc: rgba(118, 185, 0, 0.22);
   --tf-on-pill: #0b0b0b;
@@ -62,8 +66,10 @@ html[data-theme="dark"] .pulse-toy-flow {
   fill: var(--tf-muted);
 }
 
+/* The smallest text is about 10 px where the figure is as wide as the
+   article's column. */
 .tf-svg .tf-small {
-  font-size: 10px;
+  font-size: 11.5px;
 }
 
 .tf-svg .tf-span {
@@ -76,17 +82,8 @@ html[data-theme="dark"] .pulse-toy-flow {
   font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace);
 }
 
-.tf-svg .tf-lane {
-  font-size: 10.5px;
-}
-
-.tf-svg .tf-code {
-  font-size: 11px;
-}
-
 .tf-svg .tf-code.tf-skipped {
   fill: var(--tf-muted);
-  opacity: 0.6;
   text-decoration: line-through;
 }
 
@@ -97,11 +94,15 @@ html[data-theme="dark"] .pulse-toy-flow {
 
 .tf-box.tf-busy {
   stroke: var(--tf-classical);
-  stroke-width: 1.5;
+  stroke-width: 2.5;
 }
 
+/* The band on a controller's current instruction. The tint alone is 1.2:1
+   on the panel, so the band is outlined. */
 .tf-pc {
   fill: var(--tf-pc);
+  stroke: var(--tf-drive);
+  stroke-width: 1.5;
 }
 
 .tf-bus,
@@ -119,6 +120,7 @@ html[data-theme="dark"] .pulse-toy-flow {
 
 .tf-link.tf-on {
   stroke: var(--tf-classical);
+  stroke-width: 2.5;
 }
 
 .tf-grid {
@@ -135,14 +137,11 @@ html[data-theme="dark"] .pulse-toy-flow {
   stroke-width: 3;
 }
 
-.tf-wire.tf-on {
+/* A live wire's dashes run while the figure plays and at no other time:
+   toy-flow.js sets tf-playing on the figure only while it draws frames. */
+.pulse-toy-flow.tf-playing .tf-wire.tf-on {
   stroke-dasharray: 6 4;
   animation: tf-flow 0.6s linear infinite;
-}
-
-.tf-wire.tf-on.tf-still {
-  stroke-dasharray: none;
-  animation: none;
 }
 
 .tf-drive {
@@ -197,7 +196,6 @@ html[data-theme="dark"] .pulse-toy-flow {
 
 .tf-svg .tf-pill text {
   fill: var(--tf-on-pill);
-  font-size: 10.5px;
 }
 
 .tf-pill.tf-pending rect {
@@ -211,29 +209,69 @@ html[data-theme="dark"] .pulse-toy-flow {
   fill: var(--tf-classical);
 }
 
-.pulse-toy-flow .tf-caption {
+/* The status line holds two lines of text, so the buttons under it stay
+   where they are from step to step. On a narrow screen the longest step
+   wraps to four. */
+.pulse-toy-flow .pulse-toy-flow-status {
   min-height: 2.8em;
   margin: 0.3rem 0 0.3rem;
   font-size: 0.9rem;
   line-height: 1.4;
 }
 
+@media (max-width: 719.98px) {
+  .pulse-toy-flow .pulse-toy-flow-status {
+    min-height: 5.6em;
+  }
+}
+
+.pulse-toy-flow .pulse-toy-flow-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
 .pulse-toy-flow .tf-button {
+  min-width: 24px;
+  min-height: 24px;
   color: var(--pst-color-text-base, inherit);
   background: var(--pst-color-surface, transparent);
   border: 1px solid var(--pst-color-border, #c8c8c8);
   border-radius: 0.25rem;
   padding: 0.1rem 0.6rem;
-  font-size: 0.85rem;
+  font-size: max(0.875rem, 14px);
 }
 
-.pulse-toy-flow .tf-button:focus-visible {
-  outline: 2px solid var(--pst-color-primary, var(--tf-drive));
-  outline-offset: 2px;
+/* The first button reads Pause, Play or Replay. It is as wide as the longest
+   of them, so the step buttons do not move when it changes. */
+.pulse-toy-flow .tf-toggle {
+  min-width: 5em;
+}
+
+/* A step button at its end keeps the focus, so the arrow keys go on working
+   there; it is dashed as well as muted. */
+.pulse-toy-flow .tf-button[aria-disabled="true"] {
+  color: var(--pst-color-text-muted, #666666);
+  border-color: currentColor;
+  border-style: dashed;
+  cursor: default;
+}
+
+@media (forced-colors: active) {
+  .pulse-toy-flow .tf-button[aria-disabled="true"] {
+    color: GrayText;
+  }
+}
+
+/* A figure with no still shows what it plays as text until the script draws:
+   each outcome, then its moments in order. */
+.pulse-data-figure .tf-story {
+  text-align: start;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tf-wire.tf-on {
+  .pulse-toy-flow.tf-playing .tf-wire.tf-on {
     stroke-dasharray: none;
     animation: none;
   }

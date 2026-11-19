@@ -4,7 +4,7 @@
 -->
 <svg role="img" aria-labelledby="title desc" xmlns:xlink="http://www.w3.org/1999/xlink" width="486.89pt" height="97.00pt" viewBox="0 0 486.89 97.00" xmlns="http://www.w3.org/2000/svg" version="1.1">
  <title id="title">The calibrated π pulse</title>
- <desc id="desc">The calibrated pi pulse of qudit 0 on its drive line: a 40 ns DRAG pulse of amplitude 0.1313, one smooth bump that starts and ends at zero.</desc>
+ <desc id="desc">The calibrated pi pulse of qudit 0 on its drive line: a 40 ns DRAG pulse of amplitude 0.1313, one smooth bump cut off at each end at about 14% of its peak.</desc>
  <defs>
   <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
  </defs>
