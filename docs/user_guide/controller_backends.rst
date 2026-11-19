@@ -110,7 +110,13 @@ Drives and readouts also have:
     With ``export_to_controller(sample_rate_ghz=...)``, a whole multiple of the
     clock, the envelope sampled at that rate, ``{"re": [...], "im":
     [...]}``. ``cudaq_pulse.controller.sample_waveform`` computes the same
-    samples for one waveform.
+    samples for one waveform. Sample ``k`` of a shape (``gaussian``,
+    ``drag``, ...) is its envelope at the start of that sample, ``k``
+    samples from the pulse's start, as the simulator plays it; a
+    ``custom()`` envelope was sampled at the middle of each sample when the
+    kernel was traced, and ``custom_samples`` are played as given. An
+    instrument that evaluates a shape at the middle of each sample plays
+    these samples with the shape delayed by half a sample.
 ``frequency_hz``, ``phase_rad``
     The tone's frequency and its frame phase as the event starts, with every
     frame change and virtual Z before it applied and the phase a detuned

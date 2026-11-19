@@ -102,6 +102,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   backend may declare its own `feedback_gap_cycles` attribute, which the
   argument overrides. The default, 0, runs the corpus as before.
 
+- **Where exported samples are taken, and what `phase_rad` counts.** The
+  controller backends guide states that sample `k` of a shape is its
+  envelope at the start of that sample, and a `custom()` envelope's at its
+  middle, so a backend whose instrument evaluates shapes at the middle of
+  each sample knows to delay them by half a sample. The Conventions page
+  states that an event's `phase_rad` is the tone's phase in the frame that
+  turns at the line's own frequency from the start of the shot, so it
+  includes the phase a detuned tone gains, not only the phase shifts
+  before it. Nothing changes in the export.
 - **Waveform explorer.** The operations guide has an interactive plot of
   the built-in waveforms next to its waveform table: sliders for each
   constructor's arguments, the `wf_*` combinations, an optional modulated
