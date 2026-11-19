@@ -165,6 +165,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- A program's constants are created in the same order on every platform.
+  The Linux x86_64 build created the constants of a waveform's literal
+  arguments, and of a loop's bounds, in the reverse order of the Linux
+  aarch64 and macOS builds, so `print(scheduled.mlir())` listed them in
+  another order under other `%cst` names; and of two rejected values in one
+  waveform (`gaussian(40, math.inf, 0.0)`) it named the last where the
+  others name the first. The programs were the same. Output on Linux aarch64
+  and macOS does not change.
 - A quantum system's qudits are checked when it is built, as its couplings
   are: a 0-1 frequency that is not positive, a negative T1, T2* or Hahn-echo
   T2, a thermal population outside [0, 1), or a value that is not a finite
