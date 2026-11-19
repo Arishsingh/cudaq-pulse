@@ -24,11 +24,19 @@ Runs the cases of ``benchmarks/perf_gate/cases.py`` and compares them with
   ``LAYOUT_SHIFT`` either way, it is ``layout only``: the count moved
   below Python, as when one new type at import renumbers the interpreter's
   type version tags and so its method cache's collisions; the case still
-  fails, to be judged before re-baselining. Otherwise it is a
+  fails, to be judged before re-baselining, unless it is within its
+  layout band (below). Otherwise it is a
   ``regression`` or a ``gain`` (to keep by updating the baseline), with
   each counter's change if the work changed, or a note that the change is
   in native code if it did not. A baseline without the work (format 1)
   labels only regressions and gains.
+
+On the baseline's measured code (the tree differs from the baseline's
+commit only in the package's Python sources and files this job never
+reads, as git says), a row with the baseline's Python work passes as
+``layout`` within its case's layout band: Tukey's fences of the counts CI
+measured for the case on that code, which ``--layout-draws`` takes into
+``benchmarks/baselines/perf_gate_layout.json`` with each baseline.
 
 The instruction counts repeat exactly only in the environment they were
 measured in, so a baseline is versioned by it: the baseline holds the
@@ -55,6 +63,7 @@ Usage:
     python tools/perf-gate.py                 # compare with the baseline
     python tools/perf-gate.py --update        # rewrite the baseline from this run
     python tools/perf-gate.py --processes 5   # also show the spread of 5 runs
+    python tools/perf-gate.py --layout-draws --since DATE DIR/RUN...
 
 ``--out FILE`` writes this run's measurements in the baseline's format;
 CI uploads it, so a baseline can be taken from a CI run (CONTRIBUTING.md).
@@ -1466,7 +1475,8 @@ taking a baseline:
          -D benchmarks/baselines
      The file then records the run, its environment (with the MLIR
      toolchain), the cases' tolerances and their Python work (format 2),
-     and has no "bootstrap" field.
+     and has no "bootstrap" field. Take its layout draws in the same
+     commit (layout bands, below).
   4. The pull request's run of that commit must pass the gate.
 
 regressions, gains and "layout only":
@@ -1485,7 +1495,8 @@ regressions, gains and "layout only":
     before taking a new baseline: compare its Callgrind dumps (the
     perf-gate-callgrind-dumps artifact, with callgrind_annotate) with
     those of the baseline's run, and look for the functions whose counts
-    moved.
+    moved. On the baseline's measured code it passes within its case's
+    layout band (layout bands, below).
   A regression or gain lists each counter of Python work that changed;
   with the same work but more than 2%, it says the change is in native
   code.
@@ -1496,6 +1507,42 @@ regressions, gains and "layout only":
   LLVM version:
        git show COMMIT:benchmarks/baselines/perf_gate.json > old.json
        python tools/perf-gate.py --baseline old.json
+
+layout bands:
+  On the baseline's measured code (the tree differs from the baseline's
+  commit only in the package's Python sources and files this job never
+  reads; pyproject.toml and uv.lock only outside what the job builds), a
+  row with the baseline's Python work whose count moved is a layout
+  redraw, unless the native code it calls does more behind the same
+  calls. Such a row passes, as "layout", within its case's layout band:
+  Tukey's fences, the quartiles widened by two interquartile ranges, of
+  the distinct counts CI measured for the case on that code, within 2%;
+  a case with fewer than 8 has none. Each such row is reported with its
+  band and the draws seen. A gain inside the band is not kept: a later
+  change can give it back. Every other row, and every row on other
+  measured code (native code, the build, ci.yml, the gate and its cases),
+  is judged by the limits above. If git cannot tell, the limits apply.
+
+  The draws are in benchmarks/baselines/perf_gate_layout.json, written
+  only with a baseline, in its commit, and used only with that baseline.
+  They come from ci.yml's runs of pushes to main, the baseline's dispatch
+  and pull requests whose trees have its measured code, decided from the
+  run record and git, never from the artifacts; a pull request that is
+  not merged gives one draw, from its latest run. A merge of measured
+  code turns the bands off until the next baseline, which carries the
+  earlier draws across it (--carry) where its pull request's runs and
+  main's moved a case alike on two layouts (two different counts before
+  it; on one, only a zero move carries):
+       gh run list -R OWNER/REPO -w ci.yml --created ">=DATE" -L 1000 \
+         --json databaseId,event --jq '.[] | select(.event == "push" or
+         .event == "pull_request" or .event == "workflow_dispatch")
+         | .databaseId' > runs.txt
+       while read -r run; do gh run download "$run" -R OWNER/REPO \
+         -n perf-gate-baseline -D "draws/$run" || true; done < runs.txt
+       python tools/perf-gate.py --layout-draws --since DATE \
+         [--carry BEFORE:AFTER,BEFORE:AFTER ...] draws/*
+  It prints each case's fences before and after, every new draw's run,
+  and why each other run gives none.
 """
 
 
