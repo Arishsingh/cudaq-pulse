@@ -4034,11 +4034,13 @@ class PulseIREmitter:
             obj[:] = copy
             if (
                 len(copy) > 8
+                and obj.__class__ is list
                 and set(map(type, copy)) == {IRValue}
                 and LINEAR_TYPES.issuperset(map(operator.attrgetter("vtype"), copy))
             ):
                 # Lines or tones only, as a measurement-conditioned if restores
-                # a list of them: every slot at once.
+                # a list of them: every slot at once. A subclass is read by
+                # index (its own len() and indexing run).
                 entries = zip(itertools.repeat(obj), itertools.count(), copy, strict=False)
                 self._slots.update(zip(map(id, copy), entries, strict=False))
             else:
@@ -4160,9 +4162,24 @@ def _slot_changes(
             if not _container_unchanged(obj, copy):
                 return None
             continue
-        for i in itertools.compress(itertools.count(), map(operator.is_not, obj, copy)):
-            new = obj[i]
-            old = copy[i]
+        if obj.__class__ is list:
+            # Only the places that differ are read again.
+            for i in itertools.compress(itertools.count(), map(operator.is_not, obj, copy)):
+                new = obj[i]
+                old = copy[i]
+                if not (
+                    isinstance(new, IRValue)
+                    and isinstance(old, IRValue)
+                    and new.vtype == old.vtype
+                    and new.vtype in LINEAR_TYPES
+                ):
+                    return None
+                changes.append((obj, i, new))
+            continue
+        # A subclass is read as it iterates, once.
+        for i, (new, old) in enumerate(zip(obj, copy, strict=False)):
+            if new is old:
+                continue
             if not (
                 isinstance(new, IRValue)
                 and isinstance(old, IRValue)

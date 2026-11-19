@@ -707,3 +707,88 @@ def test_corrections_from_an_answer_drive_lines_held_in_a_list():
                 drive(d1, square(16, 0.3))  # noqa: F821
 
     assert _events(listed, Q[0], Q[1], Q[2]) == _events(named, Q[0], Q[1], Q[2])
+
+
+class _ReadCounted(list):
+    """A list of lines that counts how often its items are read."""
+
+    reads = 0
+
+    def __getitem__(self, i):
+        _ReadCounted.reads += 1
+        return list.__getitem__(self, i)
+
+
+def _read_counted(body: str, tag: str):
+    scope = vars(pulse) | {"ReadCounted": _ReadCounted}
+    exec(compile("def k(qudits):\n" + body, f"<{tag}>", "exec"), scope)
+    return pulse.kernel(scope["k"])
+
+
+# Kernels holding their drive lines in a list subclass, the qudits each takes, and how often one
+# compile reads the list's items: main's counts, which tracing an if must not change.
+_SUBCLASS_READS = {
+    "across an if": (
+        2,
+        7,
+        """\
+    lines = ReadCounted([get_drive_line(q) for q in qudits])
+    probes = [get_readout_line(q) for q in qudits]
+    bits = []
+    bits.append(readout(probes[0], square(40, 0.05)))
+    if bits[0]:
+        drive(lines[0], square(8, 0.1))
+    else:
+        drive(lines[1], square(16, 0.1))
+    drive(lines[0], square(8, 0.2))
+""",
+    ),
+    "entries swapped in the then arm": (
+        2,
+        5,
+        """\
+    lines = ReadCounted([get_drive_line(q) for q in qudits])
+    probes = [get_readout_line(q) for q in qudits]
+    bits = []
+    bits.append(readout(probes[0], square(40, 0.05)))
+    if bits[0]:
+        lines[0], lines[1] = lines[1], lines[0]
+    wait(probes[1], 8)
+""",
+    ),
+    "nine lines, an empty if": (
+        3,
+        10,
+        """\
+    lines = ReadCounted([get_drive_line(q) for q in qudits] * 3)
+    probes = [get_readout_line(q) for q in qudits]
+    bits = []
+    bits.append(readout(probes[0], square(40, 0.05)))
+    if bits[0]:
+        pass
+    wait(probes[1], 8)
+""",
+    ),
+    "swapped in a rolled loop": (
+        2,
+        6,
+        """\
+    lines = ReadCounted([get_drive_line(q) for q in qudits])
+    probes = [get_readout_line(q) for q in qudits]
+    for _ in range(3):
+        lines[0], lines[1] = lines[1], lines[0]
+        wait(probes[0], 8)
+        wait(probes[1], 8)
+    wait(probes[1], 8)
+""",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_SUBCLASS_READS))
+def test_a_list_subclass_of_lines_is_read_as_often_as_before(case):
+    qudits, reads, body = _SUBCLASS_READS[case]
+    kernel = _read_counted(body, case)
+    _ReadCounted.reads = 0
+    pulse.compile(kernel).lower(Q[0:qudits])
+    assert _ReadCounted.reads == reads
