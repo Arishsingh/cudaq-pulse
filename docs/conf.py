@@ -5,13 +5,22 @@
 import sys
 from pathlib import Path
 
+import sphinx
 from cudaq_pulse._build_config import PACKAGE_VERSION
 from pygments.lexers.special import TextLexer
+from sphinx.errors import ConfigError
 
 project = "CUDA-Q Pulse"
 copyright = "2026, NVIDIA CORPORATION & AFFILIATES"
 author = "NVIDIA Corporation"
 release = PACKAGE_VERSION
+
+# The API reference clean-up in _ext/api_docs.py reads what autodoc records
+# about the entry it is writing, which Sphinx keeps from 8.2 on. The check is
+# made here by number: needs_sphinx compares versions as text, and "10" would
+# count as older than "8.2".
+if sphinx.version_info < (8, 2):
+    raise ConfigError("These docs need Sphinx 8.2 or later.")
 
 sys.path.insert(0, str(Path(__file__).parent / "_ext"))
 
@@ -21,6 +30,7 @@ extensions = [
     "pulse_visual",
     "data_figures",
     "a11y",
+    "api_docs",
     "api_links",
     "related_pages",
     "sphinx.ext.autodoc",
@@ -65,13 +75,6 @@ napoleon_google_docstring = True
 napoleon_numpy_docstring = True
 
 
-def _own_docstrings_only(app, what, name, obj, options, lines):
-    # pulse.Length is typing.Annotated: its page describes it, not typing's
-    # docstring.
-    if name == "cudaq_pulse.Length":
-        lines.clear()
-
-
 def _waveform_explorer(app, pagename, templatename, context, doctree):
     # Files added here load on this page only: Sphinx resets them per page.
     if pagename == "user_guide/operations":
@@ -83,5 +86,4 @@ def setup(app):
     # The generated dialect reference fences its examples as ```mlir, which
     # Pygments has no lexer for.
     app.add_lexer("mlir", TextLexer)
-    app.connect("autodoc-process-docstring", _own_docstrings_only)
     app.connect("html-page-context", _waveform_explorer)
