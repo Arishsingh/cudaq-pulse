@@ -165,6 +165,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
+  two inputs. A schedule block that yields one of its own arguments, passing
+  an input through, is inlined with that input as its result; the passes
+  used the argument after it was destroyed. And a module with no pulse
+  operation or type, such as one with only classical calls, is scheduled
+  like any other; the schedule passes wrote the pulse dialect's schedule
+  state without loading the dialect.
 - A program's constants are created in the same order on every platform.
   The Linux x86_64 build created the constants of a waveform's literal
   arguments, and of a loop's bounds, in the reverse order of the Linux
