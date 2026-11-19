@@ -148,6 +148,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   comes from what the page compiles and simulates. Readers without
   JavaScript, or who ask for reduced motion, see the still frame.
 
+- `UdpChannel` and `InProcess` print what they're set up with:
+  `UdpChannel(('127.0.0.1', 50123), slot_bytes=65536, timeout_s=2.0)` and
+  `<InProcess serving decode, estimate>`.
+
 ### Changed
 
 - **Schedule plots look different.** `viz.plot_schedule`, `viz.save_schedule`
