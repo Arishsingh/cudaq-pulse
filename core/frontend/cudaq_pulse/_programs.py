@@ -232,6 +232,13 @@ def _place(
     target: QuantumSystem | None,
 ) -> _Placed:
     """``ScheduledKernel.bind`` of a module with list or qudit parameters."""
+    if (
+        lowered._generic is not None
+        and not carriers
+        and not _bind_checked(lowered.parameters, values)
+    ):
+        # A call's values and qudits are bound: binding none keeps them.
+        return lowered  # type: ignore[return-value]
     try:
         fits = len(values) == len(lowered.parameters)
     except TypeError:

@@ -747,6 +747,9 @@ class ScheduledKernel:
             # bind; a call's view keeps none and takes none.
             if self._generic is None:
                 self._arity = len(self.parameters)
+            elif not _bind_checked(self.parameters, values):
+                # A call's values are bound: binding none keeps them.
+                return self
             return self._with_values(_bind_checked(self.parameters, values))
         if len(arguments) != arity:
             raise _bind_count_error(self.parameters, arguments)

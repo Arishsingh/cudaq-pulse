@@ -291,6 +291,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   such waits at distance 41. The check now compiles for any number of
   waits and accepts and refuses the same calls as before; waits of one
   length and bounds share one test.
+- Binding no values to the module of one call
+  (`kernel.lower(q, 0.3).bind([])`) returned the module without the call's
+  values, and without its qudits for a kernel with `Qudit` or `Register`
+  parameters: its export had `null` where the values go
+  (`"amplitude": null`), a call whose value sets a wait's length raised
+  `IndexError`, and a call with runtime qudits or `list[float]` parameters
+  could not be exported. It now returns the call itself, with its values
+  and qudits. Binding values to a call with runtime qudits or
+  `list[float]` parameters raises the `InvalidTypeError` other calls
+  raise, where it returned a program without its qudits or with the wrong
+  values.
 
 ## [0.1.0] - 2026-11-13
 
