@@ -213,6 +213,56 @@ def test_one_controller_schedules_a_per_controller_link_as_a_shared_one():
     assert reports[0] == reports[1]
 
 
+@pulse.kernel
+def decoded_on_each(*qudits):
+    for q in qudits:
+        m = readout(get_readout_line(q), square(40, 0.1))
+        drive(get_drive_line(q), square(8, decode.submit([m]).result()))
+
+
+def _reads_of_calls(count, per_controller, monkeypatch):
+    """Exporting every controller of *count* again, once each has been
+    exported: the reads of the program's segments and calls, and the parts,
+    which must be the first exports'."""
+    from cudaq_pulse.classical import wire
+
+    link = Link(fixed_ns=10, slots=count, per_controller=per_controller)
+    controllers = [pulse.Controller(drive_lines=[k], readout_lines=[k]) for k in range(count)]
+    system = pulse.ControlSystem(controllers=controllers, links={"decoder": link})
+    qpu = ladder_target(count, control_system=system)
+    lowered = pulse.compile(decoded_on_each, quantum_system=qpu).lower(
+        *(qpu.qudits[k] for k in range(count))
+    )
+    first = [lowered.export_to_controller(controller=k) for k in range(count)]
+    reads = {"segments": 0, "reports": 0}
+    segments, report = type(lowered)._segments, wire._report
+
+    def counted_segments(self):
+        reads["segments"] += 1
+        return segments(self)
+
+    def counted_report(program):
+        reads["reports"] += 1
+        return report(program)
+
+    monkeypatch.setattr(type(lowered), "_segments", counted_segments)
+    monkeypatch.setattr(wire, "_report", counted_report)
+    parts = [lowered.export_to_controller(controller=k) for k in range(count)]
+    monkeypatch.undo()
+    assert parts == first
+    return reads, parts
+
+
+@pytest.mark.parametrize("per_controller", [False, True])
+def test_exporting_every_controller_reads_the_program_s_calls_once(per_controller, monkeypatch):
+    for count in (2, 8):
+        reads, parts = _reads_of_calls(count, per_controller, monkeypatch)
+        # The segments and calls of the whole program, read once for every
+        # controller's part, not once per controller.
+        assert reads == {"segments": 1, "reports": 1}
+        assert all(len(part["calls"]) == (1 if per_controller else count) for part in parts)
+
+
 # ── Processors ────────────────────────────────────────────────────────────────
 
 

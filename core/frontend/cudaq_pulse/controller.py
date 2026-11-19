@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import copy
 import math
+import operator
 import os
 import sys
 import threading
@@ -1791,6 +1792,7 @@ class _Parts:
         "played",
         "synced",
         "exported",
+        "program",
         "lock",
     )
 
@@ -1809,7 +1811,18 @@ class _Parts:
         self.played: list[list[dict[str, Any]]] = []
         self.synced: dict[int, dict[int, list[int]]] = {}
         self.exported: set[int] = set()
+        self.program: tuple[Any, Any] | None = None
         self.lock = threading.Lock()
+
+    def whole(self, lowered: ScheduledKernel) -> tuple[Any, Any]:
+        """What each part's emulation data reads of the whole program, its
+        segments and calls (``classical.wire._program``), found once."""
+        with self.lock:
+            if self.program is None:
+                from .classical.wire import _program
+
+                self.program = _program(lowered)
+            return self.program
 
     def calls(self) -> list[int]:
         """The controllers that take part in the program's calls."""
@@ -2014,7 +2027,7 @@ def _export_part(
     functions: frozenset[str] = frozenset(
         e["function"] for e in mine if e["kind"] in ("submit", "answer")
     )
-    base = emulation(lowered, False, (index, own, functions, ()))
+    base = emulation(lowered, False, (index, own, functions, ()), shared.whole(lowered))
     exported = {
         "format": FORMAT,
         "quantum_system": lowered.quantum_system.name,
@@ -2374,14 +2387,21 @@ def _exclusive(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     return False
 
 
+_STARTED = operator.itemgetter("start_cycles", "index")
+
+
 def _pairs(
     events: Sequence[Mapping[str, Any]],
 ) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
-    """Each event with the latest earlier event it can follow on one path."""
-    ordered = sorted(events, key=lambda e: (e["start_cycles"], e["index"]))
+    """Each event with the latest earlier event it can follow on one path:
+    for an event without conditions, the one before it."""
+    ordered = sorted(events, key=_STARTED)
     pairs = []
     for k in range(1, len(ordered)):
         event = ordered[k]
+        if not event["conditions"]:
+            pairs.append((ordered[k - 1], event))
+            continue
         for j in range(k - 1, -1, -1):
             if not _exclusive(ordered[j], event):
                 pairs.append((ordered[j], event))
@@ -2404,6 +2424,7 @@ def _violations(
     held: bool = True,
     timed: Sequence[Mapping[str, Any]] | None = None,
     answers: Sequence[Mapping[str, Any]] | None = None,
+    updates: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """The limits *events* exceed. With *clocks*, the events are in the
     controller's own cycles: the native walk's, with *off* its line events
@@ -2418,7 +2439,9 @@ def _violations(
     *held* false leaves the lines held by calls to the caller, which knows
     the controller each call holds. *timed* and *answers*, when the caller
     has them, are the timed drives and readouts of *events* and its answers,
-    in order; then only the update-bus check reads all of *events*."""
+    in order; then only the update-bus check reads all of *events*, or only
+    *updates*, the frame updates, drives and readouts of *events* on the
+    controller's lines, when the caller has them."""
     if clocks is None:
         found = []
     else:
@@ -2530,7 +2553,8 @@ def _violations(
                         f"(the readout of qudit {previous['qudit']} at {previous['start_cycles']})"
                     )
     if limits.update_buses:
-        found.extend(_bus_violations(lowered, events, limits, lines, clocks, unresolved))
+        on_lines = events if updates is None else updates
+        found.extend(_bus_violations(lowered, on_lines, limits, lines, clocks, unresolved))
     if limits.feedback_latency_cycles:
         for event in timed:
             for condition in event["conditions"]:
@@ -2652,9 +2676,11 @@ def _bus_clashes(
         return []
     if cycles is None:
         cycles = [bus.cycles_per_update for bus in limits.update_buses]
+    by_bus: list[list[Mapping[str, Any]]] = [[] for _ in limits.update_buses]
+    for e in updates:
+        by_bus[bus_of[e["line"]]].append(e)
     found = []
-    for index in range(len(limits.update_buses)):
-        on_bus = [e for e in updates if bus_of[e["line"]] == index]
+    for index, on_bus in enumerate(by_bus):
         for previous, event in _pairs(on_bus):
             gap = event["start_cycles"] - previous["start_cycles"]
             if gap < cycles[index]:

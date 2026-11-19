@@ -219,6 +219,9 @@ def validate(
     ``IncompatibleBackendError``; a program
     with an event kind no format has, and one in a newer format, must be
     refused. A program that exceeds the controller's limits is skipped.
+    Every pulse and wait of the corpus lasts the fewest whole times as long
+    that the controllers play: on their lines' timestep and no shorter than
+    their ``min_pulse_cycles``; as written wherever they play it so.
 
     ``branch`` plays its pulse on the readout's outcome as soon as the
     readout ends, so it is skipped on a controller with a

@@ -41,7 +41,7 @@ writes ``placed`` when a line delay moves some op, ``timed`` otherwise.
 A module describes the quantum system it plays on in ``pulse.quantum_system``,
 lists indexed by qudit, every field optional:
 
-.. code-block:: text
+.. code-block:: mlir
 
    module attributes {pulse.quantum_system = #pulse.quantum_system<
        qudit_frequency_hz = [5.0e+09, 5.1e+09], level_counts = [3, 3],
@@ -71,7 +71,7 @@ latency to and the start spread from each other controller and its start
 uncertainty; whether its frames persist between shots and whether it blocks
 on calls; and the longest the program may be, ``max_duration_cycles``):
 
-.. code-block:: text
+.. code-block:: mlir
 
    module attributes {pulse.control_system = #pulse.control_system<
        clock_period_fs = 500000,

@@ -179,6 +179,11 @@ site from a copy of `docs/` with those pages added; running `sphinx-build` on
 `docs/` directly leaves them out. Describe a new op with `description` in its
 `.td` definition.
 
+Each tutorial's code is also a script in `docs/tutorials/scripts/`, written
+from the page. After editing a tutorial's code, run
+`python tools/tutorial-scripts.py` to update its script;
+`tests/test_tutorial_scripts.py` fails on a stale one and runs each script.
+
 ## Sanitizers
 
 `-DCUDAQ_PULSE_SANITIZERS="address;undefined"` (or `thread`) instruments

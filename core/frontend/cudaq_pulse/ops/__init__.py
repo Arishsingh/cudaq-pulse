@@ -299,6 +299,11 @@ def set_frequency(tone: Tone, frequency: Numeric) -> Tone:
 def gaussian(duration: Numeric, amplitude: Numeric, sigma: Numeric) -> Waveform:
     """Create a Gaussian envelope waveform.
 
+    The envelope is ``amplitude * exp(-(t - duration / 2)**2 / (2 * sigma**2))``
+    at time ``t`` from the start of the pulse. It is cut off at the ends of
+    *duration*, with no offset subtracted: with ``duration = 4 * sigma`` it
+    starts and ends at about 14% of *amplitude*.
+
     Args:
         duration: Pulse duration: an int number of clock cycles, or a time
             (``20 * pulse.ns``).
