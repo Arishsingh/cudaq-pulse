@@ -5,20 +5,18 @@
 -->
 <svg xmlns="http://www.w3.org/2000/svg" class="pv-svg pv-dark" role="img" aria-labelledby="title desc" viewBox="0 0 760 196">
  <title id="title">What post-selection keeps</title>
- <desc id="desc">What post-selection keeps. Every shot starts in D5's thermal mixture. The herald readout splits the shots: it reads 0 on 97.2%, 1 on 2.7%, 2 on 7.5e-4. Post-selection keeps the branches herald accepts, the 97.2% that read 0. The rest are dropped. Of the kept shots, Z reads 0 on 49.1% and 1 or 2 on 48.1%, as |T⟩ gives.</desc>
- <style>.pv-svg { --pv-drive: #5b8c00; --pv-q: #3d6fa3; --pv-readout: #c2185b; --pv-classical: #00796b; --pv-text: #1a1a1a; --pv-muted: #5c636a; --pv-grid: #e8e8e8; --pv-rule: #b8bdc2; --pv-panel: rgba(0, 0, 0, 0.03); --pv-on-pill: #ffffff; --pv-page: #ffffff; display: block; width: 100%; height: auto; font-family: var(--pst-font-family-base, NVIDIA, Arial, Helvetica, sans-serif);}
-.pv-svg.pv-dark { --pv-drive: #76b900; --pv-q: #8fb8e8; --pv-readout: #f06292; --pv-classical: #4dd0c4; --pv-text: #eeeeee; --pv-muted: #b4bac1; --pv-grid: #2c2f33; --pv-rule: #5a6066; --pv-panel: rgba(255, 255, 255, 0.04); --pv-on-pill: #0b0b0b; --pv-page: #111111;}
+ <desc id="desc">What post-selection keeps. Every shot starts in D5's thermal mixture. The herald readout splits the shots: it reads 0 on 97.2%, 1 on 2.7%, 2 on 7.5e-4. Post-selection keeps the branches herald accepts, the 97.2% that read 0. The rest are dropped. The kept shots split about equally: Z reads 0 on 49.1% of all shots and 1 or 2 on 48.1%, as |T⟩ gives.</desc>
+ <style>.pv-svg { --pv-drive: #5b8c00; --pv-q: #3d6fa3; --pv-readout: #c2185b; --pv-classical: #00796b; --pv-text: #1a1a1a; --pv-muted: #5c636a; --pv-grid: #e8e8e8; --pv-rule: #80868c; --pv-panel: rgba(0, 0, 0, 0.03); --pv-on-pill: #ffffff; --pv-page: #ffffff; display: block; width: 100%; height: auto; font-family: var(--pst-font-family-base, NVIDIA, Arial, Helvetica, sans-serif);}
+.pv-svg.pv-dark { --pv-drive: #76b900; --pv-q: #8fb8e8; --pv-readout: #f06292; --pv-classical: #4dd0c4; --pv-text: #eeeeee; --pv-muted: #b4bac1; --pv-grid: #2c2f33; --pv-rule: #6b7177; --pv-panel: rgba(255, 255, 255, 0.04); --pv-on-pill: #0b0b0b; --pv-page: #111111;}
 .pv-svg text { fill: var(--pv-text); font-size: 12px;}
 .pv-svg .pv-title { font-weight: 600; font-size: 12.5px;}
-.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted);}
-.pv-svg .pv-small { font-size: 10px;}
+.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted); font-size: 11.5px;}
 .pv-svg .pv-halo { paint-order: stroke; stroke: var(--pv-page); stroke-width: 3px; stroke-linejoin: round;}
 .pv-hatch { fill: var(--pv-muted); opacity: 0.55;}
 .pv-branch { fill: none; stroke: var(--pv-classical); stroke-linecap: butt; opacity: 0.85;}
 .pv-branch.pv-dropped { stroke: var(--pv-muted); stroke-dasharray: 3 2; opacity: 0.6;}
 .pv-dot { fill: var(--pv-classical);}
-.pv-dot.pv-dropped { fill: var(--pv-muted);}
-.pv-svg .pv-node-text { font-size: 10.5px;}</style>
+.pv-dot.pv-dropped { fill: var(--pv-muted);}</style>
  <defs>
   <pattern id="pvh5" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
    <rect width="2" height="5" class="pv-hatch"/>

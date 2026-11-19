@@ -144,7 +144,7 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   Calibration moves its estimator's distribution from the prior to where
   a readout of 1, or of 0, takes it, and Simulating on a GPU steps through
   its program's lowering one stage at a time. Each plays
-  once when scrolled into view, with Replay and step buttons, and its data
+  once while it is in view, with Pause and step buttons, and its data
   comes from what the page compiles and simulates. Readers without
   JavaScript, or who ask for reduced motion, see the still frame.
 
