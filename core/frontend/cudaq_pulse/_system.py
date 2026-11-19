@@ -738,7 +738,10 @@ class Controller:
     time or a number of ns (``None``: no limit); the compiler sums the
     program op after op, every iteration of its loops, and a program longer
     than that is a compile error at the op or loop that passes it (a wait
-    whose length floats set, at the call). Without it, a program may last
+    whose length floats set, at the call). The scheduled program, to the
+    end of its last operation on the controller's lines (line delays and
+    the waits for feedback, lines and links included), is checked against
+    it too, on one controller or several. Without it, a program may last
     up to 2**60 cycles. Exports list it only when it is set.
     ``max_fine_delay_ns``: the longest delay, below one grid step, each line
     can add to its output (0: none), a time or a number of ns; it plays the

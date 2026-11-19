@@ -2695,6 +2695,7 @@ simulationProgram(mlir::ModuleOp source) {
   if (pulse::LineGrid(clocks).enabled() ||
       (clocks.system && clocks.system.getControllers().size() > 1) ||
       clocks.delayed() || pulse::programBudget(module) ||
+      module->hasAttr("pulse.program_limits") ||
       pulse::persistentFrames(module) || pulse::blocksOnCalls(module))
     return program;
   mlir::WalkResult unsupported = main.walk([](mlir::Operation *op) {

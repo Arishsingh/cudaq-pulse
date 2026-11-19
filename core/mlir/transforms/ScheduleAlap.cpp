@@ -4773,17 +4773,41 @@ static mlir::LogicalResult checkBlockBudget(pulse::ScheduleBlockOp block) {
                      budget.getInt());
 }
 
+/// Whether `op` plays on a line the control system `clocks` gives another
+/// controller than `controller` (-1: any).
+static bool playsElsewhere(mlir::Operation *op,
+                           const pulse::ClockAttributes &clocks,
+                           int64_t controller, pulse::AllocationTracer &trace) {
+  if (controller < 0 ||
+      !mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp>(op))
+    return false;
+  mlir::Operation *allocation = trace(op->getOperand(0));
+  if (!allocation)
+    return false;
+  int64_t qudit = pulse::quditOf(allocation);
+  const llvm::SmallVector<int64_t> &owners =
+      mlir::isa<pulse::GetDriveLineOp>(allocation) ? clocks.driveOwner
+                                                   : clocks.readoutOwner;
+  if (qudit < 0 || qudit >= static_cast<int64_t>(owners.size()))
+    return false;
+  return owners[qudit] >= 0 && owners[qudit] != controller;
+}
+
 /// The end of the last execution of the last op of the scheduled
 /// `function`, with each line delayed as `clocks` (its module's; none when
-/// null) delays it.
+/// null) delays it; with `controller`, of the ops on its lines and on lines
+/// of no known controller.
 static int64_t programLength(mlir::func::FuncOp function,
-                             const pulse::ClockAttributes *clocks = nullptr) {
+                             const pulse::ClockAttributes *clocks = nullptr,
+                             int64_t controller = -1) {
   std::optional<pulse::LineDelays> lines;
   if (clocks && clocks->delayed())
     lines.emplace(*clocks);
+  pulse::AllocationTracer trace;
   int64_t length = 0;
   function.walk([&](mlir::Operation *op) {
-    if (!isTimedOp(op))
+    if (!isTimedOp(op) ||
+        (clocks && playsElsewhere(op, *clocks, controller, trace)))
       return;
     std::optional<int64_t> start = pulse::startCycles(op);
     if (!start)
@@ -4834,6 +4858,78 @@ static mlir::LogicalResult checkProgramBudget(mlir::func::FuncOp function) {
       "kernel '" + module.getSymName().value_or("main").str() + "'";
   return checkBudget(function, function, what, programLength(function),
                      *budget);
+}
+
+/// The module attribute that lists each controller's longest program, from
+/// Controller.max_program_duration: by entry, a dictionary of its
+/// `controller` index, `name`, `cycles` (program cycles) and `duration` (as
+/// declared, for messages).
+inline constexpr llvm::StringLiteral kProgramLimitsAttr =
+    "pulse.program_limits";
+
+/// Fail if the scheduled `function` lasts longer than a controller's
+/// longest program: to the end of its last op on the lines that controller
+/// plays (every line, with one), line delays included. `latency`: the
+/// feedback latency the schedule waits after a readout something depends
+/// on (0: none), which the message names.
+static mlir::LogicalResult
+checkProgramLimits(mlir::func::FuncOp function,
+                   const pulse::ClockAttributes &clocks, int64_t latency) {
+  auto module = function->getParentOfType<mlir::ModuleOp>();
+  auto limits = module
+                    ? module->getAttrOfType<mlir::ArrayAttr>(kProgramLimitsAttr)
+                    : nullptr;
+  if (!limits)
+    return mlir::success();
+  // A wait whose length a call sets counts at its length as scheduled: each
+  // call's values are scheduled, and checked, again.
+  for (mlir::Attribute entry : limits) {
+    auto fields = mlir::dyn_cast<mlir::DictionaryAttr>(entry);
+    auto controller =
+        fields ? fields.getAs<mlir::IntegerAttr>("controller") : nullptr;
+    auto cycles = fields ? fields.getAs<mlir::IntegerAttr>("cycles") : nullptr;
+    auto name = fields ? fields.getAs<mlir::StringAttr>("name") : nullptr;
+    auto duration =
+        fields ? fields.getAs<mlir::StringAttr>("duration") : nullptr;
+    if (!controller || !cycles || !name || !duration)
+      continue;
+    int64_t length = programLength(function, &clocks, controller.getInt());
+    if (length <= cycles.getInt())
+      continue;
+    auto diagnostic = function->emitError()
+                      << "kernel '" << module.getSymName().value_or("main")
+                      << "' lasts " << length << " cycles, more than "
+                      << name.getValue() << "'s max_program_duration of "
+                      << duration.getValue() << " (" << cycles.getInt()
+                      << " cycles)";
+    if (latency > 0)
+      diagnostic << ", waiting " << latency
+                 << " cycles of feedback latency after the readouts its "
+                    "operations depend on";
+    diagnostic << "; let its operations overlap, shorten them or raise "
+                  "max_program_duration";
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
+/// The feedback latency the schedule of `function` waits after a readout
+/// something depends on, under `resources`; 0 if nothing does.
+static int64_t waitedLatency(mlir::func::FuncOp function,
+                             const Resources &resources,
+                             const pulse::ClockAttributes &clocks) {
+  bool used = function
+                  .walk([](pulse::ReadoutOp readout) {
+                    return readout.getResult().use_empty()
+                               ? mlir::WalkResult::advance()
+                               : mlir::WalkResult::interrupt();
+                  })
+                  .wasInterrupted();
+  if (!used)
+    return 0;
+  pulse::Controllers controllers(clocks);
+  return resources.enabled && controllers.enabled() ? controllers.own(-1)
+                                                    : resources.readoutLatency;
 }
 
 // ── Driver ───────────────────────────────────────────────────────────────
@@ -5069,7 +5165,9 @@ static mlir::LogicalResult schedule(mlir::func::FuncOp function,
           function.getBody(), function, resources, isAlap, data, timelines,
           pulse::LineGrid(clocks), pulse::Controllers(clocks))) ||
       mlir::failed(checkProgramBudget(function)) ||
-      mlir::failed(checkDelayedLength(function, clocks)))
+      mlir::failed(checkDelayedLength(function, clocks)) ||
+      mlir::failed(checkProgramLimits(
+          function, clocks, waitedLatency(function, resources, clocks))))
     return mlir::failure();
   bool placed = pulse::applyLineDelays(function, clocks);
   function->setAttr(

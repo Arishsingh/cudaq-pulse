@@ -1130,7 +1130,7 @@ def _rejected_literal(
     return located
 
 
-_BUDGETS = ("max_duration_cycles", "reaction_deadline_ns")
+_BUDGETS = ("max_duration_cycles", "reaction_deadline_ns", "max_program_duration")
 
 
 def build(
@@ -1303,6 +1303,11 @@ def build(
         at = text.find("the program lasts more than 2**60 cycles with its lines delayed")
         if at >= 0:
             raise CompilationError(text[at:].partition("\n")[0], code="limit_exceeded") from None
+        # A scheduled program longer than a controller runs.
+        at = text.find("'s max_program_duration of ")
+        if at >= 0:
+            at = text.rfind("kernel '", 0, at)
+            raise CompilationError(text[at:].partition("\n")[0], code="limit_exceeded") from None
         # A call over a per-controller link that uses several controllers
         # fails with any values too. The error names the function as the
         # kernel calls it, not the version of it the module holds.
@@ -1450,6 +1455,8 @@ def _clocked_module(
         controllers = system._controllers_attribute(target.clock_ghz, max_duration_cycles)
     else:
         controllers = _controller_attribute(machine.controller, clocks, max_duration_cycles)
+    if limits := _program_limits(machine, target.clock_ghz):
+        module.set_attributes(limits)
     if lines or controllers:
         text = "{pulse.control_system = #pulse.control_system<clock_period_fs = "
         text += _clocks.clock_period_fs(target.clock_ghz)
@@ -1459,6 +1466,31 @@ def _clocked_module(
             text += f", controllers = {controllers}"
         module.set_attributes(text + ">}")
     return fine_delays
+
+
+def _program_limits(machine: _MachineModel, program_ghz: float) -> str:
+    """``pulse.program_limits``: each controller's ``max_program_duration``,
+    which the scheduled program is checked against; empty for none."""
+    from ._system import _label
+
+    system = machine._system
+    controllers = (
+        [machine.controller]
+        if machine.controller is not None or system is None
+        else list(system.controllers)
+    )
+    entries = []
+    for index, controller in enumerate(controllers):
+        if controller is None or controller.max_program_duration is None:
+            continue
+        ns = controller.max_program_duration
+        cycles = max(1, math.floor(ns * program_ghz + 1e-9))
+        name = '"' + _label(index, controller).replace("\\", "\\\\").replace('"', '\\"') + '"'
+        entries.append(
+            f"{{controller = {index} : i64, cycles = {cycles} : i64, name = {name}, "
+            f'duration = "{ns:g} ns"}}'
+        )
+    return f"{{pulse.program_limits = [{', '.join(entries)}]}}" if entries else ""
 
 
 def _controller_attribute(

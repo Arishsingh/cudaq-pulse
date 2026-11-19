@@ -171,6 +171,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   a 2 GHz program, not 100), and a request sending a readout's outcome could
   leave before it was there. Simulation and classical emulation schedule
   again with the same latency as `compile()`.
+- A schedule longer than `Controller.max_program_duration` compiled when
+  waiting for feedback, a line or a link made it longer than its operations
+  played one after another (on several controllers nothing was checked at
+  all); it is now an error that names the controller, and the feedback
+  latency when the program waits one.
 - A kernel called with its own `schedule=` could hand out a tone whose phase
   a measured `if` changed (on a bit it read, was passed, or carried from an
   earlier trip of a loop) as if unchanged, so the caller's drive started
