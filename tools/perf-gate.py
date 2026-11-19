@@ -65,14 +65,17 @@ from __future__ import annotations
 import argparse
 import collections
 import concurrent.futures
+import fnmatch
 import json
 import os
 import platform
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -81,6 +84,11 @@ ROOT = Path(__file__).resolve().parents[1]
 CASES = ROOT / "benchmarks" / "perf_gate" / "cases.py"
 MARKS = ROOT / "benchmarks" / "perf_gate" / "marks.c"
 BASELINE = ROOT / "benchmarks" / "baselines" / "perf_gate.json"
+# Each case's layout draws: the counts CI measured for it with the
+# baseline's environment, Python work and measured code (--help, layout
+# bands), written by --layout-draws in the baseline's commit.
+LAYOUT = ROOT / "benchmarks" / "baselines" / "perf_gate_layout.json"
+LAYOUT_FORMAT = 1
 # Format 2 adds each case's python_work; a format 1 baseline reads as one
 # without it.
 FORMAT = 2
@@ -105,6 +113,55 @@ NATIVE_ONLY = (
 # Fractions of the baseline's instructions per repetition.
 REGRESSION = 0.004
 IMPROVEMENT = 0.01
+
+# A case's layout band: Tukey's fences of its distinct layout draws, the
+# quartiles widened by FENCE interquartile ranges, as changes from the
+# baseline, within LAYOUT_SHIFT. rustc-perf flags a change as significant
+# beyond three; a band exempts a row from failing instead, so it takes two.
+# A case with fewer than MIN_DRAWS distinct draws has no band.
+FENCE = 2.0
+MIN_DRAWS = 8
+# The paths in which the measured tree may differ from the baseline's commit
+# and still have its rows judged against the layout bands: the package's
+# Python sources, and files the perf-gate job never reads. Any other path
+# (native code, build files, pins, the job in ci.yml, the gate and its cases,
+# data files) is measured code: the limits above apply. Fails closed.
+PYTHON_OR_TEXT = (
+    "core/frontend/*.py",
+    "core/frontend/*.pyi",
+    "tests/*",
+    "docs/*",
+    "examples/*",
+    "*.md",
+    "LICENSE",
+    "LICENSES/*",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES",
+    "REUSE.toml",
+    "CITATION.cff",
+    ".github/ISSUE_TEMPLATE/*",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/CODEOWNERS",
+    "test/*",
+    ".github/workflows/*",
+    ".pre-commit-config.yaml",
+    "pyrightconfig.json",
+    ".clang-format",
+    "tools/check-*.py",
+    "tools/stubtest-allowlist.txt",
+    "tools/tutorial-scripts.py",
+    "benchmarks/baselines/*",
+)
+# Read by the perf-gate job, but only through the parts build_inputs() takes.
+BUILD_FILES = ("pyproject.toml", "uv.lock")
+IN_BAND = (
+    "the measured code is the baseline's, the case ran the same numbers of bytecodes, Python "
+    "calls and C calls per repetition as the baseline, and its count is within its case's "
+    "layout band: reported, not failed, and not a gain to keep"
+)
+# A layout band: its low and high fences, then the lowest and highest draw,
+# each as a change from the baseline.
+Band = tuple[float, float, float, float]
 
 # Callgrind's cache model, fixed so the estimate does not depend on the
 # runner's CPU: 32 KiB 8-way L1 instruction and data caches, 8 MiB 16-way
@@ -522,6 +579,11 @@ class Row:
     # How the case's Python work compares with the baseline's: None where
     # either has none, else each counter's change (empty if the same).
     work_changes: list[str] | None = None
+    # The case's layout band (low, high, lowest draw, highest draw), where
+    # it has one, and why this tree is not judged against it ("" when it has
+    # the baseline's measured code).
+    band: Band | None = None
+    scope: str = ""
 
     @property
     def work(self) -> str:
@@ -541,13 +603,18 @@ def compare(
     sizes: dict[str, dict[str, int]],
     instructions: dict[str, Measured] | None,
     python_work: PythonWork | None = None,
+    bands: dict[str, Band] | None = None,
+    scope: str = "the measured code was not compared with the baseline's",
 ) -> list[Row]:
     """One row per case of the baseline or of this run, with its verdict:
     ``ok``, ``faster`` (within ``IMPROVEMENT``) or a failure: ``slower``,
     ``improved`` (update the baseline), ``sizes``, ``new``, ``removed``,
     ``no baseline``. In bootstrap mode a case without an instruction count
     is ``bootstrap``, which passes. Where this run and the baseline both
-    have the case's Python work, the row has its changes."""
+    have the case's Python work, the row has its changes. A ``slower`` or
+    ``improved`` row is ``layout``, which passes, when the tree has the
+    baseline's measured code (*scope* is empty), the case's Python work is
+    the baseline's, and its change is within the case's band in *bands*."""
     cases = baseline.get("cases", {})
     bootstrap = baseline.get("bootstrap") is True
     rows = []
@@ -600,6 +667,16 @@ def compare(
                     row.verdict = "improved"
                 elif row.delta < -tolerance:
                     row.verdict = "faster"
+            row.band, row.scope = (bands or {}).get(name), scope
+            if (
+                not scope
+                and row.verdict in ("slower", "improved")
+                and row.work_changes == []
+                and row.band is not None
+                and row.delta is not None
+                and row.band[0] <= row.delta <= row.band[1]
+            ):
+                row.verdict = "layout"
         rows.append(row)
     return rows
 
@@ -636,6 +713,14 @@ def failure_reason(r: Row) -> str:
         return f"{r.name}: {reason}"
     if kind == "gain":
         reason += ": update the baseline to keep the gain"
+    if kind == "layout only" and r.band is not None:
+        # Off the baseline's measured code the band was not applied: only a
+        # row within it says why it still fails.
+        within = r.band[0] <= r.delta <= r.band[1]
+        if r.scope and within:
+            reason += f", within its layout band {_band(r.band)}, but {r.scope}: the limits apply"
+        elif not r.scope and not within:
+            reason += f", outside its layout band {_band(r.band)}"
     if kind == "layout only":
         reason += f"; {LAYOUT_ONLY}"
     elif r.work_changes == []:
@@ -643,6 +728,169 @@ def failure_reason(r: Row) -> str:
     elif r.work_changes:
         reason += f"; Python work changed per repetition: {', '.join(r.work_changes)}"
     return f"{r.name}: {kind}, {reason}"
+
+
+def _band(band: tuple[float, ...]) -> str:
+    return f"{_pct(band[0])} to {_pct(band[1])}"
+
+
+def not_python_or_text(files: list[str]) -> list[str]:
+    """The paths of *files* that are not Python sources or text (PYTHON_OR_TEXT;
+    ci.yml holds the perf-gate job)."""
+    return [
+        f
+        for f in files
+        if f == ".github/workflows/ci.yml"
+        or not any(fnmatch.fnmatchcase(f, p) for p in PYTHON_OR_TEXT)
+    ]
+
+
+def _git(*args: str) -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(ROOT), *args], capture_output=True, text=True, timeout=120
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None if out.returncode else out.stdout
+
+
+def changed_files(commit: str, head: str = "HEAD") -> list[str] | None:
+    """The paths that differ between *commit* and *head* (a rename lists
+    both), or None if git cannot say."""
+    out = _git("diff", "--name-only", "--no-renames", commit, head, "--")
+    return None if out is None else [line for line in out.splitlines() if line]
+
+
+def build_inputs(rev: str) -> str | None:
+    """What the perf-gate job reads of pyproject.toml and uv.lock at *rev*:
+    the build tables, and the locked packages of the project's dependencies
+    and its build group (uv sync --no-default-groups --group build): every
+    entry of a package's name, since a lock split by Python version may
+    lock a name more than once."""
+    try:
+        py = tomllib.loads(_git("show", f"{rev}:pyproject.toml") or "")
+        lock = tomllib.loads(_git("show", f"{rev}:uv.lock") or "")
+    except tomllib.TOMLDecodeError:
+        return None
+    tool = py.get("tool", {})
+    keep: dict[str, Any] = {
+        "build-system": py.get("build-system"),
+        "build": py.get("dependency-groups", {}).get("build"),
+        **{k: tool.get(k) for k in ("uv", "scikit-build", "setuptools_scm")},
+    }
+    packages: dict[str, list[dict[str, Any]]] = {}
+    for p in lock.get("package", []):
+        packages.setdefault(p["name"], []).append(p)
+    root = [p for p in lock.get("package", []) if p.get("source", {}).get("virtual") == "."]
+    todo = [
+        d["name"]
+        for p in root
+        for d in p.get("dependencies", []) + p.get("dev-dependencies", {}).get("build", [])
+    ]
+    seen: set[str] = set()
+    while todo:
+        name = todo.pop()
+        if name not in seen and name in packages:
+            seen.add(name)
+            todo += [d["name"] for p in packages[name] for d in p.get("dependencies", [])]
+    keep["locked"] = [p for n in sorted(seen) for p in packages[n]]
+    return json.dumps(keep, sort_keys=True, default=str)
+
+
+def measured_scope(commit: str | None, head: str = "HEAD") -> str:
+    """Why this tree is not judged against the layout bands: the paths in
+    which it differs from the baseline's commit that are measured code, or
+    that git cannot compare; "" when it has the baseline's measured code."""
+    if not commit:
+        return "the baseline names no commit"
+    files = changed_files(commit, head)
+    if files is None:
+        return f"git cannot compare this tree with the baseline's commit {commit[:8]}"
+    others = not_python_or_text(files)
+    if set(others) & set(BUILD_FILES):
+        before, after = build_inputs(commit), build_inputs(head)
+        if before is not None and before == after:
+            others = [f for f in others if f not in BUILD_FILES]
+    if not others:
+        return ""
+    more = f" and {len(others) - 3} more" if len(others) > 3 else ""
+    return f"the measured code differs from the baseline's: {', '.join(others[:3])}{more}"
+
+
+def layout_draws(layout: dict[str, Any]) -> dict[str, list[float]]:
+    """Each case's layout draws, from the runs of a layout file: a run's
+    count, shifted by the moves of the measured-code changes its tree is
+    carried across ("across"). A case that one of them did not carry
+    (its move is missing or null) takes no draw from the run."""
+    moves = {c.get("commit"): c.get("moves", {}) for c in layout.get("carried", [])}
+    draws: dict[str, list[float]] = {}
+    for run in layout.get("runs", []):
+        for case, count in run.get("counts", {}).items():
+            shifts = [moves.get(change, {}).get(case) for change in run.get("across", [])]
+            if None not in shifts:
+                draws.setdefault(case, []).append(count + sum(shifts))
+    return draws
+
+
+def fences(draws: list[float], base: float) -> Band | None:
+    """A case's layout band from its draws, as changes from *base*: Tukey's
+    fences of the distinct draws, FENCE interquartile ranges beyond the
+    quartiles, within LAYOUT_SHIFT; None below MIN_DRAWS distinct draws."""
+    distinct = sorted(set(draws))
+    n = len(distinct)
+    if not base or n < MIN_DRAWS:
+        return None
+    # The medians of the lower and upper halves: rustc-perf's quartiles for
+    # an odd count (for an even one it leaves out the two middle draws).
+    q1, q3 = statistics.median(distinct[: n // 2]), statistics.median(distinct[(n + 1) // 2 :])
+    return (
+        max((q1 - FENCE * (q3 - q1)) / base - 1, -LAYOUT_SHIFT),
+        min((q3 + FENCE * (q3 - q1)) / base - 1, LAYOUT_SHIFT),
+        distinct[0] / base - 1,
+        distinct[-1] / base - 1,
+    )
+
+
+def _baseline_id(source: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return source.get("run"), source.get("attempt", 1), source.get("commit")
+
+
+def layout_bands(layout: dict[str, Any], baseline: dict[str, Any]) -> tuple[dict[str, Band], str]:
+    """Each case's layout band, as changes from the baseline, and why there
+    are none: no draws, draws of another format, or taken for another
+    baseline (another run, attempt or commit)."""
+    if not layout:
+        return {}, "there are no layout draws"
+    if layout.get("format") != LAYOUT_FORMAT:
+        return {}, f"the layout draws are of format {layout.get('format')!r}, not {LAYOUT_FORMAT}"
+    if _baseline_id(layout.get("baseline", {})) != _baseline_id(baseline.get("source", {})):
+        return (
+            {},
+            "the layout draws are for another baseline: take them again (--help, layout bands)",
+        )
+    cases = baseline.get("cases", {})
+    bands = {}
+    for name, draws in layout_draws(layout).items():
+        band = fences(draws, cases.get(name, {}).get("instructions") or 0)
+        if band is not None:
+            bands[name] = band
+    return bands, ""
+
+
+def layout_notes(rows: list[Row]) -> list[str]:
+    """One line for each row that passed as layout, within its band."""
+    notes = []
+    for r in rows:
+        if r.verdict != "layout" or r.band is None or r.delta is None:
+            continue
+        limit = f"+{100 * r.tolerance:g}%" if r.delta > 0 else f"-{100 * IMPROVEMENT:g}%"
+        beyond = "" if r.band[2] <= r.delta <= r.band[3] else ", beyond every draw so far"
+        notes.append(
+            f"{r.name}: layout, {_pct(r.delta)} instructions (limit {limit}; layout band "
+            f"{_band(r.band)}, draws {_band(r.band[2:])}{beyond})"
+        )
+    return notes
 
 
 def failure_counts(rows: list[Row]) -> str:
@@ -915,6 +1163,7 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--baseline", type=Path, default=BASELINE)
+    parser.add_argument("--layout", type=Path, default=LAYOUT, help="the cases' layout draws")
     parser.add_argument("--update", action="store_true", help="rewrite the baseline")
     parser.add_argument("--out", type=Path, help="write this run in the baseline's format")
     parser.add_argument("--summary", type=Path, help="append a Markdown report to this file")
@@ -936,6 +1185,9 @@ def main() -> int:
     pythonpath = str((ROOT / args.pythonpath).resolve())
     baseline = json.loads(args.baseline.read_text()) if args.baseline.exists() else {}
     environment = _environment(args.python)
+    layout = json.loads(args.layout.read_text()) if args.layout.exists() else {}
+    bands, bands_note = layout_bands(layout, baseline)
+    scope = measured_scope(baseline.get("source", {}).get("commit"))
     # Instruction counts that cannot be right fail the gate in every mode.
     problems: list[str] = []
     differences: list[Difference] = []
@@ -970,7 +1222,9 @@ def main() -> int:
                 )
                 python_work, work_note = measure_python_work(args.python, env)
 
-    rows = compare(baseline, sizes, instructions, python_work)
+    rows = compare(baseline, sizes, instructions, python_work, bands, scope)
+    notes = layout_notes(rows)
+    unapplied = scope or bands_note
     # Counts that failed the checks are reported but never become a baseline.
     measured = as_baseline(
         environment,
@@ -1032,6 +1286,17 @@ def main() -> int:
         print(f"\n{work_note}")
     for line in spread_lines + dump_warnings:
         print(f"::warning title=Perf gate::{line}")
+    if os.environ.get("GITHUB_ACTIONS"):
+        for line in notes:
+            print(f"::notice title=Perf gate::{line}: {IN_BAND}")
+    if notes:
+        print(
+            "\nLayout, within the band:\n"
+            + "".join(f"  {line}\n" for line in notes)
+            + f"  ({IN_BAND})"
+        )
+    if unapplied and instructions is not None:
+        print(f"\nLayout bands not applied: {unapplied}; every row is judged by the limits.")
     if bootstrapped and not problems:
         print(
             "\nBOOTSTRAP MODE: the baseline has no instruction counts for "
@@ -1115,12 +1380,26 @@ def main() -> int:
                     + f" To inspect: {dumps_hint}.\n\n"
                 )
             f.write(render(rows, markdown=True) + "\n\n")
+            if notes:
+                f.write(
+                    "> [!NOTE]\n"
+                    f"> **Layout, within the band ({len(notes)}).** "
+                    + " ".join(f"{line}." for line in notes)
+                    + f" In each, {IN_BAND} (`benchmarks/baselines/perf_gate_layout.json`; "
+                    "`python tools/perf-gate.py --help`, layout bands).\n\n"
+                )
+            elif unapplied and instructions is not None:
+                f.write(
+                    f"Layout bands not applied: {unapplied}; every row is judged by the limits.\n\n"
+                )
             own = ", ".join(f"{n} +{100 * t:g}%" for n, t in sorted(tolerances.items()))
             f.write(
                 f"Fails above +{100 * REGRESSION:.1f}% "
                 + (f"(own tolerances: {own}) " if own else "")
                 + f"or below -{100 * IMPROVEMENT:.1f}% "
-                "instructions per repetition, or on any change in program size. "
+                "instructions per repetition, or on any change in program size; a row "
+                "with the baseline's Python work, on the baseline's measured code, passes "
+                "within its case's layout band (verdict layout). "
                 f"Spread: largest difference between {args.processes} identical runs. "
                 "Python work: the bytecodes, Python calls and C calls of a repetition, "
                 "counted natively, against the baseline's; it labels a failure, and "
@@ -1157,7 +1436,9 @@ def main() -> int:
     if bootstrapped:
         print("\nPerf gate passed in bootstrap mode: instruction counts were not gated.")
     else:
-        print("\nPerf gate passed.")
+        print(
+            "\nPerf gate passed" + (f" ({len(notes)} layout, within the band)." if notes else ".")
+        )
     return 0
 
 

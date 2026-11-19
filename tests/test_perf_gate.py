@@ -512,19 +512,25 @@ def fake_gate(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(gate.platform, "machine", lambda: "x86_64")
     environment = gate._environment(sys.executable)
 
-    def run(instructions, work, baseline_work=_WORK, form=2):
+    def run(instructions, work, baseline_work=_WORK, form=2, source=None, layout=None):
         case = {"op_count": 15, "instructions": 1_000_000}
         if baseline_work is not None:
             case["python_work"] = baseline_work
         baseline = tmp_path / "perf_gate.json"
-        baseline.write_text(
-            json.dumps({"format": form, "environment": environment, "cases": {"c": case}})
-        )
+        taken = {"format": form, "environment": environment, "cases": {"c": case}}
+        if source is not None:
+            taken["source"] = source
+        baseline.write_text(json.dumps(taken))
+        draws = tmp_path / "perf_gate_layout.json"
+        draws.unlink(missing_ok=True)
+        if layout is not None:
+            draws.write_text(json.dumps(layout))
         (bin_dir / "instructions.json").write_text(json.dumps({"c": instructions}))
         (tmp_path / "python_work.json").write_text(json.dumps({"c": work}))
         summary, out = tmp_path / "summary.md", tmp_path / "out.json"
         summary.unlink(missing_ok=True)
-        argv = ["perf-gate.py", "--baseline", str(baseline), "--python", sys.executable]
+        argv = ["perf-gate.py", "--baseline", str(baseline), "--layout", str(draws)]
+        argv += ["--python", sys.executable]
         argv += ["--pythonpath", str(tmp_path), "--summary", str(summary), "--out", str(out)]
         monkeypatch.setattr(sys, "argv", argv)
         code = gate.main()
@@ -694,3 +700,421 @@ def test_the_workload_op_counts_agree_with_compile_time_json():
     workloads = json.loads((_ROOT / "benchmarks" / "baselines" / "compile_time.json").read_text())
     for name, entry in workloads.items():
         assert BASELINE["cases"][f"compile_{name}"]["op_count"] == entry["op_count"], name
+
+
+# Layout bands. The recorded rows of CI runs against the baseline of run
+# 44179125553 (commit 933e24f5), for the cases they concern, and the distinct
+# counts its era's runs on its measured code gave each case (52 runs).
+_B0_RUN, _B0_COMMIT = 44179125553, "933e24f5528663f07b305d41e6762fe5cdab700b"
+_AMP = {"bytecodes": 439.6, "python_calls": 16.0, "c_calls": 16.1}
+_WAIT = {"bytecodes": 640.6, "python_calls": 22.0, "c_calls": 37.1}
+_CTRL = {"bytecodes": 1339.0, "python_calls": 29.0, "c_calls": 74.667}
+_SAMPLED = {"bytecodes": 5266.0, "python_calls": 40.0, "c_calls": 161.667}
+_B0 = {
+    "format": 2,
+    "source": {"run": _B0_RUN, "commit": _B0_COMMIT},
+    "cases": {
+        "specialize_amplitude": {"mlir_bytes": 1303, "instructions": 409188, "python_work": _AMP},
+        "specialize_wait": {
+            "schedule_cycles": 145,
+            "schedule_events": 3,
+            "instructions": 360385,
+            "python_work": _WAIT,
+        },
+        "export_to_controller": {
+            "export_bytes": 87794,
+            "instructions": 4725299,
+            "python_work": _CTRL,
+        },
+        "export_to_controller_sampled": {
+            "export_bytes": 49449,
+            "instructions": 1519377,
+            "python_work": _SAMPLED,
+        },
+    },
+}
+# fmt: off
+_B0_DRAWS = {
+    "specialize_amplitude": [
+        406094, 407132, 407753, 407754, 407837, 407873, 407951, 407976, 408019, 408115,
+        408243, 408506, 408919, 409188, 409420, 410053, 410644, 411144, 411731,
+    ],
+    "specialize_wait": [
+        356647, 356688, 357523, 357589, 357616, 357703, 357780, 357800, 357836, 357856,
+        358144, 358310, 358430, 358906, 358922, 359026, 359228, 360001, 360385,
+    ],
+    "export_to_controller": [4725299, 4728927, 4729579, 4732543, 4733822, 4734665, 4735729],
+    "export_to_controller_sampled": [1516389, 1517349, 1517430, 1517835, 1518095, 1518182, 1519377],
+}
+# fmt: on
+_CTRL_107 = {"bytecodes": 1358.0, "python_calls": 29.0, "c_calls": 75.667}
+_SAMPLED_107 = {"bytecodes": 5285.0, "python_calls": 40.0, "c_calls": 162.667}
+# PR: (run, its counts of the four cases; the export cases' Python work
+# is #107's, which merged before #98, #89 and #94 ran).
+_RECORDED = {
+    98: (44488536412, (411144, 357800, 4734947, 1519008), True),
+    63: (44258997277, (411731, 356647, 4734665, 1517430), False),
+    89: (44402542327, (410644, 358430, 4734348, 1519899), True),
+    94: (44410403238, (406094, 356688, 4731508, 1519372), True),
+    106: (44446239417, (408019, 357410, 4698206, 1512776), True),
+    107: (44446244619, (407971, 357571, 4788958, 1529702), True),
+    109: (44456030769, (409555, 357687, 4739186, 1520159), True),
+}
+# What each native change's tree differs from the baseline's in.
+_MEASURED = {
+    106: "core/mlir/include/cudaq-pulse/Analysis/LineTrace.h",
+    107: "core/mlir/bindings/ControllerProgram.h, core/mlir/bindings/bindings.cpp",
+    109: "core/mlir/bindings/ControllerProgram.h, core/mlir/bindings/bindings.cpp, "
+    "core/mlir/conversions/PulseToQOp/PulseToQOp.cpp and 10 more",
+}
+
+
+def _layout(draws=_B0_DRAWS, run=_B0_RUN, commit=_B0_COMMIT, **extra):
+    runs = [{"run": i, "counts": {c: v}} for c, vs in draws.items() for i, v in enumerate(vs)]
+    return {"format": 1, "baseline": {"run": run, "commit": commit}, "runs": runs, **extra}
+
+
+def _recorded(pr, scope="", amplitude=None, wait=None, amp_work=_AMP, layout=None):
+    run, counts, export_moved = _RECORDED[pr]
+    counts = (amplitude or counts[0], wait or counts[1], *counts[2:])
+    names = list(_B0["cases"])
+    work = [amp_work, _WAIT, *((_CTRL_107, _SAMPLED_107) if export_moved else (_CTRL, _SAMPLED))]
+    sizes = {
+        n: {k: v for k, v in c.items() if k not in gate.NOT_SIZES} for n, c in _B0["cases"].items()
+    }
+    runs = {n: gate.Measured([float(v)], [0.0]) for n, v in zip(names, counts, strict=True)}
+    bands, why = gate.layout_bands(_layout() if layout is None else layout, _B0)
+    rows = gate.compare(_B0, sizes, runs, dict(zip(names, work, strict=True)), bands, scope)
+    failures = [gate.failure_reason(r) for r in rows if r.verdict in gate.FAILING]
+    return failures, gate.layout_notes(rows), why
+
+
+def test_the_bands_of_the_recorded_draws():
+    bands, why = gate.layout_bands(_layout(), _B0)
+    assert why == "" and set(bands) == {"specialize_amplitude", "specialize_wait"}
+    shown = {n: (gate._band(b), gate._band(b[2:])) for n, b in bands.items()}
+    assert shown == {
+        "specialize_amplitude": ("-1.10% to +0.83%", "-0.76% to +0.62%"),
+        "specialize_wait": ("-1.49% to +0.32%", "-1.04% to +0.00%"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("pr", "notes"),
+    [
+        (98, ["specialize_amplitude: layout, +0.48% instructions (limit +0.4%; layout band "
+              "-1.10% to +0.83%, draws -0.76% to +0.62%)"]),
+        (63, ["specialize_amplitude: layout, +0.62% instructions (limit +0.4%; layout band "
+              "-1.10% to +0.83%, draws -0.76% to +0.62%)",
+              "specialize_wait: layout, -1.04% instructions (limit -1%; layout band "
+              "-1.49% to +0.32%, draws -1.04% to +0.00%)"]),
+        (94, ["specialize_wait: layout, -1.03% instructions (limit -1%; layout band "
+              "-1.49% to +0.32%, draws -1.04% to +0.00%)"]),
+        (89, []),
+    ],
+)  # fmt: skip
+def test_the_recorded_layout_shifts_pass_with_a_notice(pr, notes):
+    failures, shown, _ = _recorded(pr)
+    assert failures == [] and shown == notes
+    # Today's limits fail every one with a notice.
+    today, _, _ = _recorded(pr, layout={})
+    assert len(today) == len(notes)
+    assert all("layout only" in line for line in today)
+
+
+@pytest.mark.parametrize("pr", [98, 63, 94])
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "the measured code differs from the baseline's: core/mlir/transforms/PulseVerify.cpp",
+        "git cannot compare this tree with the baseline's commit 933e24f5",
+    ],
+)
+def test_a_recorded_layout_shift_fails_on_other_measured_code(pr, scope):
+    failures, notes, _ = _recorded(pr, scope)
+    assert failures and not notes
+    for line in failures:
+        assert ", within its layout band " in line and f"but {scope}: the limits apply;" in line
+
+
+def test_off_the_baselines_measured_code_a_row_outside_its_band_fails_as_today():
+    scope = "the measured code differs from the baseline's: core/mlir/lib/Foo.cpp"
+    amplitude = round(409188 * 1.010)
+    failures, notes, _ = _recorded(63, scope, amplitude=amplitude)
+    today, _, _ = _recorded(63, layout={}, amplitude=amplitude)
+    # Outside its band (not applied): today's text; within it: why it fails.
+    assert not notes and len(failures) == 2 and failures[0] == today[0]
+    assert failures[0].startswith("specialize_amplitude: layout only, +1.00% instructions")
+    assert ", within its layout band -1.49% to +0.32%, but " in failures[1]
+
+
+@pytest.mark.parametrize("pr", [106, 107, 109])
+def test_native_changes_are_judged_by_the_limits(pr):
+    scope = f"the measured code differs from the baseline's: {_MEASURED[pr]}"
+    failures, notes, _ = _recorded(pr, scope)
+    assert failures == _recorded(pr, layout={})[0] and not notes
+    if pr == 107:
+        assert failures == [
+            "export_to_controller: regression, +1.35% instructions (limit +0.4%); Python work "
+            "changed per repetition: bytecodes 1,339 -> 1,358 (+19), python_calls same, "
+            "c_calls 74.667 -> 75.667 (+1)",
+            "export_to_controller_sampled: regression, +0.68% instructions (limit +0.4%); "
+            "Python work changed per repetition: bytecodes 5,266 -> 5,285 (+19), "
+            "python_calls same, c_calls 161.667 -> 162.667 (+1)",
+        ]
+    else:
+        assert failures == []
+
+
+def test_a_shift_beyond_every_draw_but_in_the_band_says_so():
+    # The hole: native work behind the same Python work passes up to the edge.
+    failures, notes, _ = _recorded(98, amplitude=round(409188 * 1.008))
+    assert failures == []
+    assert notes == [
+        "specialize_amplitude: layout, +0.80% instructions (limit +0.4%; layout band "
+        "-1.10% to +0.83%, draws -0.76% to +0.62%, beyond every draw so far)"
+    ]
+
+
+@pytest.mark.parametrize(("amplitude", "wait"), [(1.010, None), (None, 0.981)])
+def test_a_shift_outside_the_band_fails_on_either_side(amplitude, wait):
+    failures, notes, _ = _recorded(
+        63,
+        amplitude=amplitude and round(409188 * amplitude),
+        wait=wait and round(360385 * wait),
+    )
+    assert len(failures) == 1 and len(notes) == 1
+    band = "-1.10% to +0.83%" if amplitude else "-1.49% to +0.32%"
+    assert (
+        f"(limit {'+0.4%' if amplitude else '-1%'}), outside its layout band {band};"
+        in (failures[0])
+    )
+
+
+def test_changed_python_work_keeps_the_limits():
+    failures, notes, _ = _recorded(98, amp_work={**_AMP, "bytecodes": 442.6})
+    assert not notes
+    assert failures == [
+        "specialize_amplitude: regression, +0.48% instructions (limit +0.4%); Python work "
+        "changed per repetition: bytecodes 439.6 -> 442.6 (+3), python_calls same, c_calls same"
+    ]
+
+
+def test_without_draws_for_the_baseline_the_limits_apply():
+    for layout, why in [
+        ({}, "there are no layout draws"),
+        (_layout(run=1), "the layout draws are for another baseline"),
+        (_layout(commit="b" * 40), "the layout draws are for another baseline"),
+        (
+            _layout(baseline={"run": _B0_RUN, "attempt": 2, "commit": _B0_COMMIT}),
+            "the layout draws are for another baseline",
+        ),
+        ({**_layout(), "format": 2}, "the layout draws are of format 2, not 1"),
+    ]:
+        failures, notes, shown = _recorded(63, layout=layout)
+        assert len(failures) == 2 and not notes and shown.startswith(why)
+
+
+def test_the_fences_are_tukeys_on_distinct_draws_within_the_layout_shift():
+    assert gate.FENCE == 2 and gate.MIN_DRAWS == 8
+    assert gate.fences([1000, 1001, 1002, 1003, 1004, 1005, 1006] * 3, 1000) is None
+    # Quartiles 1001.5 and 1005.5: fences 993.5 and 1013.5.
+    band = gate.fences([1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007], 1000)
+    assert band == pytest.approx((-0.0065, 0.0135, 0.0, 0.007))
+    wide = gate.fences([960, 970, 980, 990, 1010, 1020, 1030, 1040], 1000)
+    assert wide[:2] == (-gate.LAYOUT_SHIFT, gate.LAYOUT_SHIFT)
+
+
+def test_a_carried_draw_is_shifted_by_its_change_and_a_change_not_carried_drops_it():
+    layout = {
+        "carried": [{"commit": "c1", "moves": {"a": -10, "b": None}}],
+        "runs": [
+            {"run": 1, "counts": {"a": 100, "b": 200}},
+            {"run": 2, "across": ["c1"], "counts": {"a": 110, "b": 210, "c": 5}},
+            {"run": 3, "across": ["unknown"], "counts": {"a": 120}},
+        ],
+    }
+    assert gate.layout_draws(layout) == {"a": [100, 100], "b": [200]}
+
+
+def _git(repo, *args):
+    import subprocess
+
+    command = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    command += ["-c", "commit.gpgsign=false", *args]
+    return subprocess.run(command, check=True, capture_output=True, text=True).stdout.strip()
+
+
+_PYPROJECT = """\
+[build-system]
+requires = ["scikit-build-core"]
+[dependency-groups]
+build = ["numpy"]
+test = ["pytest"]
+"""
+_UV_LOCK = """\
+version = 1
+[[package]]
+name = "cudaq-pulse"
+source = {{ virtual = "." }}
+dependencies = [{{ name = "numpy" }}]
+[package.dev-dependencies]
+build = [{{ name = "numpy" }}]
+test = [{{ name = "pytest" }}]
+[[package]]
+name = "numpy"
+version = "{numpy}"
+[[package]]
+name = "pytest"
+version = "{pytest}"
+"""
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    """A repository whose first commit is the baseline's; commit(**files)
+    adds a commit (None removes a file) and returns its id."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q")
+
+    def commit(**files):
+        for name, text in files.items():
+            path = root / name.replace("__", "/")
+            if text is None:
+                _git(root, "rm", "-q", str(path))
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "--allow-empty", "-m", "c")
+        return _git(root, "rev-parse", "HEAD")
+
+    commit.root = root
+    commit.base = commit(
+        **{
+            "core__frontend__cudaq_pulse__k.py": "x = 1\n",
+            "core__mlir__lib__Foo.cpp": "int f();\n",
+            "pyproject.toml": _PYPROJECT,
+            "uv.lock": _UV_LOCK.format(numpy="2.0", pytest="8.0"),
+            "benchmarks__baselines__perf_gate.json": "{}\n",
+        }
+    )
+    # The gate's git runs in it; the environment is still this checkout's.
+    environment = gate._environment(sys.executable)
+    monkeypatch.setattr(gate, "_environment", lambda python: environment)
+    monkeypatch.setattr(gate, "ROOT", root)
+    return commit
+
+
+def test_python_sources_and_files_the_job_never_reads_keep_the_measured_code(repo):
+    repo(
+        **{
+            "core__frontend__cudaq_pulse__k.py": "x = 2\n",
+            "tests__test_k.py": "",
+            "docs__k.rst": "",
+            "CHANGELOG.md": "",
+            ".github__workflows__docs.yml": "",
+            "tools__check-k.py": "",
+        }
+    )
+    assert gate.measured_scope(repo.base) == ""
+    # A baseline commit, and one of its draws, leave the measured code.
+    repo(**{"benchmarks__baselines__perf_gate.json": '{"a": 1}\n'})
+    repo(**{"benchmarks__baselines__perf_gate_layout.json": "{}\n"})
+    assert gate.measured_scope(repo.base) == ""
+    # Dev dependencies and tool settings are not built.
+    repo(**{"uv.lock": _UV_LOCK.format(numpy="2.0", pytest="9.0")})
+    repo(**{"pyproject.toml": _PYPROJECT + "[tool.ruff]\nline-length = 99\n"})
+    assert gate.measured_scope(repo.base) == ""
+
+
+@pytest.mark.parametrize(
+    ("files", "paths"),
+    [
+        ({"core__mlir__lib__Foo.cpp": "int g();\n"}, "core/mlir/lib/Foo.cpp"),
+        ({".github__workflows__ci.yml": ""}, ".github/workflows/ci.yml"),
+        ({"tools__perf-gate.py": ""}, "tools/perf-gate.py"),
+        ({"benchmarks__perf_gate__cases.py": ""}, "benchmarks/perf_gate/cases.py"),
+        ({"core__frontend__cudaq_pulse__data.json": ""}, "core/frontend/cudaq_pulse/data.json"),
+        ({"uv.lock": _UV_LOCK.format(numpy="2.1", pytest="8.0")}, "uv.lock"),
+        ({"pyproject.toml": _PYPROJECT.replace('"numpy"', '"numpy", "cmake"')}, "pyproject.toml"),
+        # A rename into tests/ lists both paths.
+        (
+            {"core__mlir__lib__Foo.cpp": None, "tests__Foo.cpp": "int f();\n"},
+            "core/mlir/lib/Foo.cpp",
+        ),
+    ],
+)
+def test_any_other_path_is_measured_code(repo, files, paths):
+    repo(**files)
+    assert gate.measured_scope(repo.base) == (
+        f"the measured code differs from the baseline's: {paths}"
+    )
+
+
+def test_every_entry_of_a_package_locked_twice_is_measured(repo):
+    # A lock split by Python version locks numpy twice; either entry counts.
+    def lock(old):
+        entry = f'[[package]]\nname = "numpy"\nversion = "{old}"\n'
+        entry += "resolution-markers = [\"python_full_version < '3.11'\"]\n"
+        text = _UV_LOCK.format(numpy="2.0", pytest="8.0")
+        return text.replace('[[package]]\nname = "numpy"', entry + '[[package]]\nname = "numpy"')
+
+    split = repo(**{"uv.lock": lock("1.26")})
+    repo(**{"uv.lock": lock("1.25")})
+    assert gate.measured_scope(split) == "the measured code differs from the baseline's: uv.lock"
+
+
+def test_the_measured_code_fails_closed(repo, tmp_path, monkeypatch):
+    assert gate.measured_scope(None) == "the baseline names no commit"
+    missing = "0123456789abcdef0123456789abcdef01234567"
+    assert gate.measured_scope(missing) == (
+        "git cannot compare this tree with the baseline's commit 01234567"
+    )
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    assert gate.measured_scope(repo.base).startswith("git cannot compare")
+
+
+def _layout_for_c(commit, run=_B0_RUN):
+    draws = [990_000, 994_000, 997_000, 999_000, 1_000_000]
+    draws += [1_002_000, 1_004_000, 1_006_000, 1_008_000]
+    return _layout({"c": draws}, run, commit)
+
+
+def test_the_gate_passes_a_layout_shift_on_the_baselines_measured_code(fake_gate, repo):
+    repo(**{"core__frontend__cudaq_pulse__k.py": "x = 2\n"})
+    source = {"run": _B0_RUN, "commit": repo.base}
+    code, log, summary, _ = fake_gate(
+        1_005_000, _WORK, source=source, layout=_layout_for_c(repo.base)
+    )
+    note = (
+        "c: layout, +0.50% instructions (limit +0.4%; layout band -2.00% to +2.00%, draws "
+        "-1.00% to +0.80%)"
+    )
+    assert code == 0 and log.endswith("Perf gate passed (1 layout, within the band).\n")
+    assert f"Layout, within the band:\n  {note}\n  ({gate.IN_BAND})" in log
+    assert f"**Layout, within the band (1).** {note}. In each, {gate.IN_BAND}" in summary
+    assert "| same | layout |" in summary
+    assert "passes within its case's layout band (verdict layout)" in summary
+
+
+def test_the_gate_judges_a_layout_shift_on_other_measured_code_by_the_limits(fake_gate, repo):
+    repo(**{"core__mlir__lib__Foo.cpp": "int g();\n"})
+    source = {"run": _B0_RUN, "commit": repo.base}
+    code, log, summary, _ = fake_gate(
+        1_005_000, _WORK, source=source, layout=_layout_for_c(repo.base)
+    )
+    scope = "the measured code differs from the baseline's: core/mlir/lib/Foo.cpp"
+    assert code == 1 and "Perf gate failed (1 layout only):" in log
+    assert f"within its layout band -2.00% to +2.00%, but {scope}: the limits apply" in log
+    assert f"Layout bands not applied: {scope}; every row is judged by the limits." in summary
+
+
+def test_the_gate_without_git_judges_by_the_limits(fake_gate, repo, tmp_path, monkeypatch):
+    (tmp_path / "plain").mkdir()
+    monkeypatch.setattr(gate, "ROOT", tmp_path / "plain")
+    source = {"run": _B0_RUN, "commit": repo.base}
+    code, log, _, _ = fake_gate(1_005_000, _WORK, source=source, layout=_layout_for_c(repo.base))
+    assert code == 1 and "Perf gate failed (1 layout only):" in log
+    assert f"git cannot compare this tree with the baseline's commit {repo.base[:8]}" in log
