@@ -674,6 +674,69 @@ def test_a_kernel_with_float_parameters_is_checked_when_compiled():
 
 
 @pulse.kernel
+def long_train(q):
+    d = get_drive_line(q)
+    for _ in range(400):
+        drive(d, square(8, 0.1))
+        wait(d, 4)
+
+
+def test_events_without_branches_pair_without_testing_arms(monkeypatch):
+    # The spacing check pairs each pulse with the one before it on its line;
+    # with no branches, no pair needs the test for arms of one branch, at
+    # compile or at export.
+    tested = []
+    exclusive = controller_module._exclusive
+    monkeypatch.setattr(
+        controller_module, "_exclusive", lambda a, b: tested.append(1) or exclusive(a, b)
+    )
+    machine = ControlSystem(
+        controllers=[Controller(drive_lines=[0], instruction_cycles=4, min_idle_cycles=4)]
+    )
+    lowered = pulse.compile(long_train, control_system=machine, unroll_threshold=10**6).lower(Q[0])
+    assert len(lowered.export_to_controller()["events"]) == 800
+    assert tested == []
+
+
+def _scanned(events):
+    """``controller._pairs`` as a scan back from each event to the first it
+    can follow."""
+    ordered = sorted(events, key=lambda e: (e["start_cycles"], e["index"]))
+    pairs = []
+    for k in range(1, len(ordered)):
+        for j in range(k - 1, -1, -1):
+            if not controller_module._exclusive(ordered[j], ordered[k]):
+                pairs.append((ordered[j], ordered[k]))
+                break
+    return pairs
+
+
+@given(
+    st.lists(
+        st.tuples(
+            st.integers(0, 6),
+            st.integers(0, 1),
+            st.lists(st.tuples(st.integers(0, 2), st.integers(0, 1)), max_size=3),
+        ),
+        max_size=24,
+    )
+)
+@settings(max_examples=examples(200))
+def test_pairs_follow_the_latest_event_on_one_path(made):
+    events = [
+        {
+            "index": index,
+            "start_cycles": start,
+            "iteration": [iteration],
+            "conditions": [{"branch": b, "arm": arm} for b, arm in dict(conditions).items()],
+        }
+        for index, (start, iteration, conditions) in enumerate(made)
+    ]
+    found = [(a["index"], b["index"]) for a, b in controller_module._pairs(events)]
+    assert found == [(a["index"], b["index"]) for a, b in _scanned(events)]
+
+
+@pulse.kernel
 def retuned(q, shift: float):
     d = get_drive_line(q)
     drive(d, gaussian(40, 0.5, 10.0))

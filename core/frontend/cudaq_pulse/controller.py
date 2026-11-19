@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import copy
 import math
+import operator
 import os
 import sys
 import threading
@@ -2386,14 +2387,21 @@ def _exclusive(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     return False
 
 
+_STARTED = operator.itemgetter("start_cycles", "index")
+
+
 def _pairs(
     events: Sequence[Mapping[str, Any]],
 ) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
-    """Each event with the latest earlier event it can follow on one path."""
-    ordered = sorted(events, key=lambda e: (e["start_cycles"], e["index"]))
+    """Each event with the latest earlier event it can follow on one path:
+    for an event without conditions, the one before it."""
+    ordered = sorted(events, key=_STARTED)
     pairs = []
     for k in range(1, len(ordered)):
         event = ordered[k]
+        if not event["conditions"]:
+            pairs.append((ordered[k - 1], event))
+            continue
         for j in range(k - 1, -1, -1):
             if not _exclusive(ordered[j], event):
                 pairs.append((ordered[j], event))
