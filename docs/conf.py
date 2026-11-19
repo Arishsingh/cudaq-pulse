@@ -32,6 +32,7 @@ extensions = [
     "api_docs",
     "api_links",
     "related_pages",
+    "search_aliases",
     "dialect_pages",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
@@ -56,6 +57,10 @@ html_theme = "nvidia_sphinx_theme"
 html_static_path = ["_static"]
 html_css_files = ["tutorial-output.css", "header.css"]
 html_favicon = "_static/favicon.svg"
+# Sphinx opens this path as given, and the build runs from another directory.
+# The scorer is kept out of _static: Sphinx copies it into language_data.js,
+# and would publish a file under _static a second time, as it is.
+html_search_scorer = str(Path(__file__).parent / "_ext" / "search_scorer.js")
 
 html_theme_options = {
     "show_nav_level": 1,
