@@ -1045,8 +1045,9 @@ def carry(
     only a zero move carries), and the paths it changes, with their blobs
     before and after. A case's layouts are its distinct counts before the
     change: pairs on trees that differ only where the measured code is the
-    same draw one layout. A change to the gate or its cases carries only if it
-    moved no case. Or why it cannot be carried."""
+    same draw one layout. A change to the gate, its cases or the workloads
+    they load carries only if it moved no case. Or why it cannot be
+    carried."""
     changes: list[Change] = []
     for before, after in pairs:
         paths = measured_paths(before.rev, after.rev)
@@ -1127,11 +1128,11 @@ def _write_layout(path: Path, layout: dict[str, Any]) -> None:
 
 
 def _pull_request(r: CiRun) -> tuple[Any, ...]:
-    """Which pull request a run is of (its number, else its head branch)."""
+    """Which pull request a run is of, by its head repository and branch:
+    a run record may name no pull request, so a number would split one
+    pull request's runs."""
     if r.record.get("event") != "pull_request":
         return ("run", r.run)
-    if r.pr is not None:
-        return ("pr", r.pr)
     head = r.record.get("head_repository") or {}
     return ("branch", head.get("full_name"), r.record.get("head_branch"))
 
@@ -1202,14 +1203,24 @@ def take_layout_draws(
         else:
             eligible.append((r, counts, state))
     entries = []
-    latest = {_pull_request(r): r.run for r, _, _ in eligible}
+    # Each pull request's latest run, and its number from any run naming it.
+    latest: dict[tuple[Any, ...], int] = {}
+    numbers: dict[tuple[Any, ...], int] = {}
+    for r, _, _ in eligible:
+        latest[_pull_request(r)] = r.run
+        if r.pr is not None:
+            numbers[_pull_request(r)] = r.pr
+    merged: dict[tuple[Any, ...], bool] = {}
     for r, counts, state in eligible:
-        if r.record.get("event") == "pull_request" and latest[_pull_request(r)] != r.run:
-            if not _merged(repo, r.pr):
-                pr = f"#{r.pr}" if r.pr else "of this branch"
+        key = _pull_request(r)
+        if r.record.get("event") == "pull_request" and latest[key] != r.run:
+            if key not in merged:
+                merged[key] = _merged(repo, numbers.get(key))
+            if not merged[key]:
+                pr = f"#{numbers[key]}" if key in numbers else "of this branch"
                 print(
                     f"not a draw: run {r.run}: pull request {pr} is not merged: only its latest "
-                    f"run, {latest[_pull_request(r)]}, gives a draw"
+                    f"run, {latest[key]}, gives a draw"
                 )
                 continue
         entry = {

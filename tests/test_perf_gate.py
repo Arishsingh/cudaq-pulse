@@ -1254,7 +1254,7 @@ def test_an_unmerged_pull_request_gives_one_draw_from_its_latest_run(ci, repo, t
     merge = ci.merge(repo.base, head)
     ci.api["repos/o/r/pulls/9"] = {"number": 9, "merged_at": "2026-11-18T12:00:00Z"}
     paths = [
-        ci(run, "pull_request", merge, {"a": 1000 + run}, head=head, pr=pr)
+        ci(run, "pull_request", merge, {"a": 1000 + run}, head=head, branch=f"b{pr}", pr=pr)
         for run, pr in ((101, 8), (102, 8), (103, 9), (104, 9), (106, 8))
     ]
     code, layout = _take(tmp_path, _taken(repo.base), paths)
@@ -1262,6 +1262,25 @@ def test_an_unmerged_pull_request_gives_one_draw_from_its_latest_run(ci, repo, t
     log = capsys.readouterr().out
     for run in (101, 102):
         assert f"run {run}: pull request #8 is not merged: only its latest run, 106," in log
+
+
+def test_a_pull_requests_runs_that_do_not_name_it_are_still_its_runs(
+    ci, repo, tmp_path, monkeypatch, capsys
+):
+    head = ci.side(repo.base, **{"core__frontend__cudaq_pulse__y.py": "y = 3\n"})
+    merge = ci.merge(repo.base, head)
+    asked = []
+    monkeypatch.setattr(gate, "_merged", lambda repo, pr: asked.append(pr) or False)
+    # Run 103's record names no pull request, nor does the API for its head.
+    paths = [
+        ci(run, "pull_request", merge, {"a": 1000 + run}, head=head, branch="b8", pr=pr)
+        for run, pr in ((101, 8), (102, 8), (103, None))
+    ]
+    code, layout = _take(tmp_path, _taken(repo.base), paths)
+    assert code == 0 and [r["run"] for r in layout["runs"]] == [103] and asked == [8]
+    log = capsys.readouterr().out
+    for run in (101, 102):
+        assert f"run {run}: pull request #8 is not merged: only its latest run, 103," in log
 
 
 def test_a_run_on_other_measured_code_or_before_the_window_gives_no_draw(
