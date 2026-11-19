@@ -1791,6 +1791,7 @@ class _Parts:
         "played",
         "synced",
         "exported",
+        "program",
         "lock",
     )
 
@@ -1809,7 +1810,18 @@ class _Parts:
         self.played: list[list[dict[str, Any]]] = []
         self.synced: dict[int, dict[int, list[int]]] = {}
         self.exported: set[int] = set()
+        self.program: tuple[Any, Any] | None = None
         self.lock = threading.Lock()
+
+    def whole(self, lowered: ScheduledKernel) -> tuple[Any, Any]:
+        """What each part's emulation data reads of the whole program, its
+        segments and calls (``classical.wire._program``), found once."""
+        with self.lock:
+            if self.program is None:
+                from .classical.wire import _program
+
+                self.program = _program(lowered)
+            return self.program
 
     def calls(self) -> list[int]:
         """The controllers that take part in the program's calls."""
@@ -2014,7 +2026,7 @@ def _export_part(
     functions: frozenset[str] = frozenset(
         e["function"] for e in mine if e["kind"] in ("submit", "answer")
     )
-    base = emulation(lowered, False, (index, own, functions, ()))
+    base = emulation(lowered, False, (index, own, functions, ()), shared.whole(lowered))
     exported = {
         "format": FORMAT,
         "quantum_system": lowered.quantum_system.name,

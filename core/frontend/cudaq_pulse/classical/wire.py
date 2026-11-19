@@ -405,12 +405,15 @@ def _export_part(lowered: Any, controller: int | None) -> dict[str, Any]:
     return _export(lowered, True, (index, own, functions, takes_part))
 
 
-def _export(lowered: Any, with_events: bool, part: _Part | None = None) -> dict[str, Any]:
+def _export(
+    lowered: Any, with_events: bool, part: _Part | None = None, program: Any = None
+) -> dict[str, Any]:
     """``export``; without *with_events*, its ``events`` are left empty. With
     *part* (a controller's index and clock, the functions it calls or takes
     answers of, and whether it takes part in each scheduled event), only
-    that controller's part, in its cycles."""
-    segments, after = lowered._segments()
+    that controller's part, in its cycles. *program* is the program's
+    ``_segments()`` and its calls (``_program``), when the caller has them."""
+    segments, after = lowered._segments() if program is None else program[0]
     starts = [e.start_cycles for e in segments]
     segment_of = lowered._event_segments(syncs=False) if with_events else None
     takes = None
@@ -458,7 +461,7 @@ def _export(lowered: Any, with_events: bool, part: _Part | None = None) -> dict[
         "events": events,
         "calls": [
             _call_data(c)
-            for c in (_report(lowered) if lowered.classical else ())
+            for c in (_calls(lowered) if program is None else program[1])
             if part is None or (c.compiled_name in part[2] and c.controller in (None, part[0]))
         ],
         "manifest": _manifest(lowered),
@@ -475,6 +478,17 @@ def _export(lowered: Any, with_events: bool, part: _Part | None = None) -> dict[
         return data
     own = clocks.controllers[0] if part is None or part[1] is None else part[1]
     return _in_own_clock(data, events, clocks, own)
+
+
+def _program(lowered: Any) -> tuple[Any, Sequence[Any]]:
+    """What ``_export`` reads of the whole program, whichever part it
+    exports: its segments with the segment each follows (``_segments``), and
+    its calls. ``_export`` only reads them."""
+    return lowered._segments(), _calls(lowered)
+
+
+def _calls(lowered: Any) -> Sequence[Any]:
+    return _report(lowered) if lowered.classical else ()
 
 
 def _call_data(call: Any) -> dict[str, Any]:
