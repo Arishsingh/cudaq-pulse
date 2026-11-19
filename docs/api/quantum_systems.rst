@@ -41,19 +41,27 @@ could mean either.
 
 .. autoclass:: cudaq_pulse.Time
 
-One nanosecond, microsecond, millisecond and second:
+The units, each a ``Time``:
 
 .. autodata:: cudaq_pulse.ns
    :no-value:
 
+   One nanosecond.
+
 .. autodata:: cudaq_pulse.us
    :no-value:
+
+   One microsecond.
 
 .. autodata:: cudaq_pulse.ms
    :no-value:
 
+   One millisecond.
+
 .. autodata:: cudaq_pulse.s
    :no-value:
+
+   One second.
 
 Errors are on :doc:`errors`; what a quantum system is built from is on
 :doc:`quantum_system_components`.

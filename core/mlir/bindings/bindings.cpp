@@ -62,6 +62,7 @@
 
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ExecutionEngine/Orc/Mangling.h"
 #include "llvm/Support/TargetSelect.h"
@@ -913,10 +914,38 @@ struct ControllerEventWalk : ControllerExpressions {
   llvm::SmallVector<int64_t, 2> iteration;
   std::vector<Condition> branches;
   int64_t nextBranch = 0;
-  std::map<mlir::Operation *, Frame> frames;
+  llvm::DenseMap<mlir::Operation *, Frame> frames;
   // The time each line has reached (the end of its latest event), or none
   // when an event on it is not scheduled.
-  std::map<mlir::Operation *, std::optional<int64_t>> reached;
+  llvm::DenseMap<mlir::Operation *, std::optional<int64_t>> reached;
+  // While the arms of scf.ifs are walked (ifDepth of them): each change to
+  // frames and reached, with what it replaced, oldest first. A branch undoes
+  // the changes of its then arm before its else arm, and merges after it
+  // what either arm changed, instead of copying every tone's frame and every
+  // line's reach at each branch.
+  struct FrameUndo {
+    mlir::Operation *root;
+    bool had;
+    Frame old;
+  };
+  struct ReachedUndo {
+    mlir::Operation *allocation;
+    bool had;
+    std::optional<int64_t> old;
+  };
+  llvm::SmallVector<FrameUndo, 16> frameUndo;
+  llvm::SmallVector<ReachedUndo, 16> reachedUndo;
+  int ifDepth = 0;
+  /// What an arm left of what it changed (or, of what only the other arm
+  /// changed, what it had before), each root and allocation once, as notes
+  /// whose `had` and `old` say whether it left one and what. An arm changes
+  /// few as a rule, so these are lists, and small sets find a root or an
+  /// allocation in them by a linear search until they hold many.
+  struct ArmLeft {
+    llvm::SmallVector<FrameUndo, 4> frames;
+    llvm::SmallVector<ReachedUndo, 4> reached;
+    llvm::SmallPtrSet<mlir::Operation *, 8> roots, allocations;
+  };
 
   static Frame initialFrame(mlir::Operation *root) {
     if (!root)
@@ -935,12 +964,147 @@ struct ControllerEventWalk : ControllerExpressions {
     return {};
   }
 
-  Frame &frameOf(mlir::Value tone) {
+  /// The frame of `tone`'s root, from its initial frame. A caller that
+  /// changes it passes `change`, for an scf.if arm to undo.
+  Frame &frameOf(mlir::Value tone, bool change = false) {
     mlir::Operation *root = toneRoots(tone);
     auto [it, inserted] = frames.try_emplace(root);
-    if (inserted)
+    if (inserted) {
       it->second = initialFrame(root);
+      if (ifDepth > 0)
+        frameUndo.push_back({root, false, {}});
+    } else if (change && ifDepth > 0) {
+      frameUndo.push_back({root, true, it->second});
+    }
     return it->second;
+  }
+
+  /// Sets the frame of `root`, noting what it was within an scf.if arm.
+  void setFrame(mlir::Operation *root, const Frame &frame) {
+    auto [it, inserted] = frames.try_emplace(root, frame);
+    if (ifDepth > 0)
+      frameUndo.push_back({root, !inserted, inserted ? Frame() : it->second});
+    if (!inserted)
+      it->second = frame;
+  }
+
+  /// Sets the time `allocation`'s line has reached, noting what it was
+  /// within an scf.if arm.
+  void setReached(mlir::Operation *allocation, std::optional<int64_t> time) {
+    auto [it, inserted] = reached.try_emplace(allocation, time);
+    reachedTo(it, inserted, time);
+  }
+
+  /// Sets the time the line at `it` has reached, which `inserted` says was
+  /// added just now, noting what it was within an scf.if arm.
+  void reachedTo(
+      llvm::DenseMap<mlir::Operation *, std::optional<int64_t>>::iterator it,
+      bool inserted, std::optional<int64_t> time) {
+    if (!inserted && it->second == time)
+      return;
+    if (ifDepth > 0)
+      reachedUndo.push_back(
+          {it->first, !inserted, inserted ? std::nullopt : it->second});
+    it->second = time;
+  }
+
+  /// Undoes the changes to frames and reached since the marks, newest
+  /// first, and returns what they had come to.
+  ArmLeft undoArm(size_t frameMark, size_t reachedMark) {
+    ArmLeft left;
+    while (frameUndo.size() > frameMark) {
+      FrameUndo undo = frameUndo.pop_back_val();
+      auto found = frames.find(undo.root);
+      bool has = found != frames.end();
+      if (left.roots.insert(undo.root).second)
+        left.frames.push_back({undo.root, has, has ? found->second : Frame()});
+      if (!undo.had) {
+        if (has)
+          frames.erase(found);
+      } else if (has) {
+        found->second = undo.old;
+      } else {
+        frames.try_emplace(undo.root, undo.old);
+      }
+    }
+    while (reachedUndo.size() > reachedMark) {
+      ReachedUndo undo = reachedUndo.pop_back_val();
+      auto found = reached.find(undo.allocation);
+      bool has = found != reached.end();
+      if (left.allocations.insert(undo.allocation).second)
+        left.reached.push_back(
+            {undo.allocation, has, has ? found->second : std::nullopt});
+      if (!undo.had) {
+        if (has)
+          reached.erase(found);
+      } else if (has) {
+        found->second = undo.old;
+      } else {
+        reached.try_emplace(undo.allocation, undo.old);
+      }
+    }
+    return left;
+  }
+
+  /// After both arms of an scf.if: a frame both leave alike stays, and one
+  /// they leave apart is unknown from here on, a frame an arm has none of
+  /// being its initial frame; a line has reached the later of the two
+  /// times, or none if either arm leaves it none. Only what either arm
+  /// changed can differ: `then` is what the then arm left of its changes,
+  /// and the else arm's changes are noted from the marks on.
+  void mergeArms(const ArmLeft &then, size_t frameMark, size_t reachedMark) {
+    // Where the then arm changed nothing, it left what the else arm's
+    // oldest note of a change has from before the branch.
+    ArmLeft before;
+    for (size_t i = frameMark; i < frameUndo.size(); ++i)
+      if (!then.roots.contains(frameUndo[i].root) &&
+          before.roots.insert(frameUndo[i].root).second)
+        before.frames.push_back(frameUndo[i]);
+    for (size_t i = reachedMark; i < reachedUndo.size(); ++i)
+      if (!then.allocations.contains(reachedUndo[i].allocation) &&
+          before.allocations.insert(reachedUndo[i].allocation).second)
+        before.reached.push_back(reachedUndo[i]);
+    if (ifDepth == 0) {
+      frameUndo.resize(frameMark);
+      reachedUndo.resize(reachedMark);
+    }
+    auto mergeFrame = [&](const FrameUndo &theirs) {
+      auto found = frames.find(theirs.root);
+      bool has = found != frames.end();
+      if (!has && !theirs.had)
+        return;
+      Frame ours = has ? found->second : initialFrame(theirs.root);
+      Frame other = theirs.had ? theirs.old : initialFrame(theirs.root);
+      if (!(other == ours))
+        ours = {kUnknown, kUnknown, kUnknown, ours.timeNs};
+      else
+        ours.timeNs = std::max(ours.timeNs, other.timeNs);
+      if (!has)
+        return setFrame(theirs.root, ours);
+      if (ifDepth > 0)
+        frameUndo.push_back({theirs.root, true, found->second});
+      found->second = ours;
+    };
+    for (const FrameUndo &left : then.frames)
+      mergeFrame(left);
+    for (const FrameUndo &was : before.frames)
+      mergeFrame(was);
+    auto mergeReached = [&](const ReachedUndo &theirs) {
+      if (!theirs.had)
+        return;
+      auto [it, inserted] = reached.try_emplace(theirs.allocation, theirs.old);
+      if (inserted)
+        return reachedTo(it, true, theirs.old);
+      std::optional<int64_t> ours = it->second;
+      reachedTo(it, false,
+                ours && theirs.old
+                    ? std::optional<int64_t>(std::max(*ours, *theirs.old))
+                    : std::nullopt);
+    };
+    for (const ReachedUndo &left : then.reached)
+      mergeReached(left);
+    for (const ReachedUndo &was : before.reached)
+      mergeReached(was);
   }
 
   /// Whether `value` depends on a readout or an answer.
@@ -1244,8 +1408,8 @@ struct ControllerEventWalk : ControllerExpressions {
     double frequency = kUnknown, phase = kUnknown;
     if (!mlir::isa<pulse::WaitOp>(op)) {
       waveform(op->getOperand(1), nodes);
-      Frame &frame = frameOf(op->getOperand(2));
       bool drive = mlir::isa<pulse::DriveOp>(op);
+      Frame &frame = frameOf(op->getOperand(2), drive);
       double offset = 0.0;
       if (drive) {
         if (auto shift = mlir::dyn_cast_or_null<mlir::FloatAttr>(
@@ -1298,11 +1462,12 @@ struct ControllerEventWalk : ControllerExpressions {
     }
     if (mlir::isa<pulse::ReadoutOp>(op))
       latest[op] = static_cast<int64_t>(result.size());
-    auto line = reached.try_emplace(allocation, 0).first;
-    if (start && duration && line->second)
-      line->second = std::max(*line->second, *start + *duration);
-    else
-      line->second = std::nullopt;
+    auto [line, inserted] = reached.try_emplace(allocation, 0);
+    reachedTo(line, inserted,
+              start && duration && line->second
+                  ? std::optional<int64_t>(
+                        std::max(*line->second, *start + *duration))
+                  : std::nullopt);
     if constexpr (RunTime)
       if (detail)
         runTime(op, nodes);
@@ -1395,7 +1560,7 @@ struct ControllerEventWalk : ControllerExpressions {
     }
     if (time)
       for (mlir::Value value : op.getLines())
-        reached[trace(value)] = time;
+        setReached(trace(value), time);
     if (track) {
       dependencies.emplace_back();
       natives.push_back(-1);
@@ -1479,7 +1644,7 @@ struct ControllerEventWalk : ControllerExpressions {
         frame.retuned |= !phase;
       }
       double value = numberOf(op->getOperand(1));
-      Frame &frame = frameOf(op->getOperand(0));
+      Frame &frame = frameOf(op->getOperand(0), true);
       if constexpr (RunTime)
         if (!tracked.empty())
           frameChange(op, name.drop_front(6));
@@ -1522,8 +1687,8 @@ struct ControllerEventWalk : ControllerExpressions {
           test = "answer";
       }
       int64_t id = nextBranch++;
-      auto framesBefore = frames;
-      auto reachedBefore = reached;
+      size_t frameMark = frameUndo.size(), reachedMark = reachedUndo.size();
+      ++ifDepth;
       bool tracking = RunTime && !tracked.empty();
       if (tracking)
         enterBranch();
@@ -1531,11 +1696,8 @@ struct ControllerEventWalk : ControllerExpressions {
       branches.emplace_back(id, 1, std::move(readouts), std::move(answers),
                             std::move(test));
       block<RunTime>(*branch.thenBlock());
-      auto framesThen = std::move(frames);
-      auto reachedThen = std::move(reached);
+      ArmLeft thenLeft = undoArm(frameMark, reachedMark);
       auto dependenciesThen = std::move(frameDependencies);
-      frames = std::move(framesBefore);
-      reached = std::move(reachedBefore);
       if (tracking)
         enterElse();
       frameDependencies = std::move(dependenciesBefore);
@@ -1545,7 +1707,8 @@ struct ControllerEventWalk : ControllerExpressions {
       if (tracking)
         leaveBranch(branches.back());
       branches.pop_back();
-      mergeFrames(framesThen);
+      --ifDepth;
+      mergeArms(thenLeft, frameMark, reachedMark);
       // After the branch, a frame depends on what either arm set.
       for (auto &[root, theirs] : dependenciesThen) {
         auto &ours = frameDependencies[root];
@@ -1554,36 +1717,11 @@ struct ControllerEventWalk : ControllerExpressions {
         merge(ours.phase, theirs.phase);
         ours.retuned |= theirs.retuned;
       }
-      for (auto &[allocation, time] : reachedThen) {
-        auto [it, inserted] = reached.try_emplace(allocation, time);
-        if (inserted)
-          continue;
-        if (!time || !it->second)
-          it->second = std::nullopt;
-        else
-          it->second = std::max(*it->second, *time);
-      }
       return;
     }
     for (mlir::Region &region : op->getRegions())
       for (mlir::Block &nested : region)
         block<RunTime>(nested);
-  }
-
-  /// The frames after a branch: those both arms leave the same, else
-  /// unknown from here on.
-  void mergeFrames(const std::map<mlir::Operation *, Frame> &other) {
-    for (auto &[root, frame] : other)
-      if (!frames.count(root))
-        frames[root] = initialFrame(root);
-    for (auto &[root, frame] : frames) {
-      auto found = other.find(root);
-      Frame theirs = found == other.end() ? initialFrame(root) : found->second;
-      if (!(theirs == frame))
-        frame = {kUnknown, kUnknown, kUnknown, frame.timeNs};
-      else
-        frame.timeNs = std::max(frame.timeNs, theirs.timeNs);
-    }
   }
 
   /// With `segmentWalk` (a module with classical calls): the segment of each
@@ -1769,7 +1907,8 @@ struct ControllerEventWalk : ControllerExpressions {
   /// its own period, which iteration 2 moved it by.
   LLVM_ATTRIBUTE_NOINLINE void summarizeUnsynced(
       Mark two, Mark three, int64_t trips,
-      const std::map<mlir::Operation *, std::optional<int64_t>> &reachedOne,
+      const llvm::DenseMap<mlir::Operation *, std::optional<int64_t>>
+          &reachedOne,
       const std::map<int64_t, int64_t> &periods) {
     int64_t copies = trips - 2;
     int64_t stride = three.branch - two.branch;
@@ -1867,12 +2006,13 @@ struct ControllerEventWalk : ControllerExpressions {
   /// shifted by one iteration; its period, or 0 with nothing scheduled.
   /// With `unsynced`, -1 when its lines repeat at the `periods` of their
   /// own (periodsOf).
-  std::optional<int64_t> repeating(
-      Mark zero, Mark one, Mark two, Mark three,
-      const std::map<mlir::Operation *, Frame> &framesOne,
-      const std::map<mlir::Operation *, std::optional<int64_t>> &reachedOne,
-      const llvm::DenseMap<mlir::Operation *, int64_t> &latestOne,
-      std::map<int64_t, int64_t> &periods) {
+  std::optional<int64_t>
+  repeating(Mark zero, Mark one, Mark two, Mark three,
+            const llvm::DenseMap<mlir::Operation *, Frame> &framesOne,
+            const llvm::DenseMap<mlir::Operation *, std::optional<int64_t>>
+                &reachedOne,
+            const llvm::DenseMap<mlir::Operation *, int64_t> &latestOne,
+            std::map<int64_t, int64_t> &periods) {
     const int64_t len = static_cast<int64_t>(two.event - one.event);
     const int64_t stride = two.branch - one.branch;
     if (three.event - two.event != two.event - one.event ||

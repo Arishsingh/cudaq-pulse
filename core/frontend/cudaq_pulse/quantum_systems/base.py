@@ -1132,8 +1132,8 @@ class _Description:
         set_(self, "model", model)
         set_(self, "attribution", attribution)
         set_(self, "clock_ghz", clock_ghz)
-        # Every problem with the target's entries, each at its path in it.
-        problems = _entries_problems(self)
+        # Every problem with the target's qudits and entries, each at its path in it.
+        problems = _qudits_problems(self.qudits) + _entries_problems(self)
         if problems:
             raise QuantumSystemDefinitionError(
                 f"{_count(len(problems), 'problem')} in the quantum system {self.name!r}",
@@ -1328,6 +1328,86 @@ def _entries_problems(target: _Description) -> list[Problem]:
             problems += found
             if pair is not None:
                 pairs[pair] = i
+    return problems
+
+
+# What the checks read of every qudit at once.
+_QUDIT_VALUES = attrgetter(
+    "frequency_hz", "t1_us", "t2_star_us", "t2_echo_us", "thermal_population"
+)
+
+
+def _qudits_problems(qudits: Mapping[int, Any]) -> list[Problem]:
+    """Every problem with the values of *qudits*, a system's qudits by index.
+    Checks every qudit at once first, so the common case, where all of them
+    are fine, stays cheap."""
+    if not qudits:
+        return []
+    values = list(qudits.values())
+    if set(map(type, values)) == {PhysicalQudit}:
+        frequencies, t1s, t2_stars, t2_echoes, thermals = zip(
+            *map(_QUDIT_VALUES, values), strict=True
+        )
+        if (
+            _finite_floats(frequencies)
+            and min(frequencies) > 0.0
+            and _finite_floats(t1s + t2_stars)
+            and min(t1s + t2_stars) >= 0.0
+            and _finite_floats(t2_echoes, optional=True)
+            and min(filter(None, t2_echoes), default=0.0) >= 0.0
+            and _finite_floats(thermals)
+            and min(thermals) >= 0.0
+            and max(thermals) < 1.0
+        ):
+            return []
+    problems: list[Problem] = []
+    for index, qudit in qudits.items():
+        if isinstance(qudit, PhysicalQudit):
+            problems += _qudit_value_problems(qudit, f"qudits[{index}]")
+    return problems
+
+
+def _qudit_value_problems(qudit: PhysicalQudit, where: str) -> list[Problem]:
+    """The problems with the values of *qudit*, the qudit at *where*."""
+    problems: list[Problem] = []
+
+    def check(field: str, ok: bool, message: str, fix: str) -> None:
+        if not ok:
+            value = getattr(qudit, field)
+            problems.append(
+                Problem(f"{value!r} {message}", path=f"{where}.{field}", value=value, fix=fix)
+            )
+
+    frequency = qudit.frequency_hz
+    check(
+        "frequency_hz",
+        _finite(frequency) and frequency > 0,
+        "is not a positive, finite number of Hz",
+        "give the 0-1 frequency in Hz, more than 0",
+    )
+    for field, name in (("t1_us", "T1"), ("t2_star_us", "T2*")):
+        value = getattr(qudit, field)
+        check(
+            field,
+            _finite(value) and value >= 0,
+            "is not a finite number of microseconds, 0 or more",
+            f"give {name} in microseconds, 0 or more (0 is no decay)",
+        )
+    echo = qudit.t2_echo_us
+    check(
+        "t2_echo_us",
+        echo is None or (_finite(echo) and echo >= 0),
+        "is not a finite number of microseconds, 0 or more",
+        "give the Hahn-echo T2 in microseconds, 0 or more, or None (null in a file) if it "
+        "is not measured",
+    )
+    thermal = qudit.thermal_population
+    check(
+        "thermal_population",
+        _finite(thermal) and 0 <= thermal < 1,
+        "is not a finite number in [0, 1)",
+        "give the excited-state population as a fraction, 0 or more and less than 1",
+    )
     return problems
 
 

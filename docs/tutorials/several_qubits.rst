@@ -16,11 +16,15 @@ What you'll learn:
 - how two scheduling policies place the same pulses;
 - how a coupled neighbour shifts a qubit's frequency.
 
+All the code on this page is also one Python script,
+:download:`several_qubits.py <scripts/several_qubits.py>`.
+
 A register of qubits
 --------------------
 
 Slicing the quantum system's qudits gives a *register*, which a kernel
-iterates like a list. Take D1, D2 and D3:
+iterates like a list. Take D1, D2 and D3, and a kernel that plays a π
+pulse on each qubit of the register:
 
 .. code-block:: python
 
@@ -29,9 +33,6 @@ iterates like a list. Take D1, D2 and D3:
    system = pulse.quantum_system("transmon_surface17")
    data = system.qudits[0:3]
 
-This kernel plays a π pulse on each qubit of the register:
-
-.. code-block:: python
 
    @pulse.kernel
    def flip_all(qudits):
@@ -98,10 +99,10 @@ Pulses on different lines are independent until ``sync`` ties them
 together. Every line it names waits for the latest of them.
 
 Here one qubit gets three π pulses and the other one, and both are read
-out together afterwards. The kernel first finds its lines and pulses:
+out together afterwards. The kernel finds its lines and pulses, plays the
+pulses, lines everything up, and reads both qubits:
 
 .. code-block:: python
-   :class: continues
 
    @pulse.kernel
    def uneven(first, second):
@@ -113,10 +114,6 @@ out together afterwards. The kernel first finds its lines and pulses:
        second_flip = second_drive.get_calibration(pulse.gates.X)
        first_measure = first_readout.get_calibration(pulse.gates.READOUT)
        second_measure = second_readout.get_calibration(pulse.gates.READOUT)
-
-Then it plays the pulses, lines everything up, and reads both qubits:
-
-.. code-block:: python
 
        for _ in range(3):
            drive(first_drive, first_flip)
@@ -208,10 +205,11 @@ A Ramsey sequence sees it
 -------------------------
 
 A Ramsey sequence on D1 can see the shift: excite X2 first or don't, and
-compare. The kernel takes both qubits and the wait:
+compare. The kernel takes both qubits and the wait. It sets the
+neighbour's state, then plays the two π/2 pulses of the Ramsey sequence
+around the wait:
 
 .. code-block:: python
-   :class: continues
 
    @pulse.kernel
    def ramsey_next_to(qubit, neighbour, excite: int, tau_ns: float):
@@ -221,11 +219,6 @@ compare. The kernel takes both qubits and the wait:
        half_flip = qubit_drive.get_calibration(pulse.gates.X90)
        neighbour_flip = neighbour_drive.get_calibration(pulse.gates.X)
        measurement = qubit_readout.get_calibration(pulse.gates.READOUT)
-
-It sets the neighbour's state, then plays the two π/2 pulses of the Ramsey
-sequence around the wait:
-
-.. code-block:: python
 
        if excite:
            drive(neighbour_drive, neighbour_flip)

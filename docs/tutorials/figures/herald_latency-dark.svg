@@ -455,7 +455,7 @@ L 488.09 109.44
     <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #4dd0c4" x="132.31" y="101.15" transform="rotate(-0 132.31 101.15)">link 4 ns</text>
    </g>
    <g id="text_16">
-    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #4dd0c4" x="197.93" y="113.01" transform="rotate(-0 197.93 113.01)">herald ≤ 40 ns</text>
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #4dd0c4" x="197.93" y="91.44" transform="rotate(-0 197.93 91.44)">herald ≤ 40 ns</text>
    </g>
    <g id="text_17">
     <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #4dd0c4" x="274.99" y="101.15" transform="rotate(-0 274.99 101.15)">feedback 8 ns</text>

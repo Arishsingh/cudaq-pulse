@@ -22,6 +22,9 @@ What you'll learn:
    this page needs Linux and an NVIDIA GPU, and the tests run it only there.
    Its CPU parts run anywhere.
 
+All the code on this page is also one Python script,
+:download:`gpu_simulation.py <scripts/gpu_simulation.py>`.
+
 Install and check
 -----------------
 
@@ -29,16 +32,19 @@ GPU support comes as an extra of the same package, for CUDA 12 or CUDA 13.
 The CUDA libraries come from PyPI too, so the NVIDIA driver is the only
 thing the machine needs.
 
-Install the extra for your CUDA version, then run the doctor:
+Install one CUDA extra, unless the environment already has one, then run
+the doctor:
 
 .. code-block:: bash
 
-   pip install "cudaq-pulse[cu13]"
+   pip install "cudaq-pulse[cu12]"
    python -m cudaq_pulse.doctor
 
-Use ``cudaq-pulse[cu12]`` for CUDA 12. The doctor reports the GPU runtime
-it loaded, the driver version and the number of GPUs. It exits with an
-error when GPU execution doesn't work.
+``cu12`` needs NVIDIA driver 525.60.13 or newer. ``cudaq-pulse[cu13]``
+installs the CUDA 13 libraries instead and needs driver 580 or newer. Never
+install both. The doctor reports the GPU runtime it loaded, the driver
+version and the number of GPUs. It exits with an error when GPU execution
+doesn't work.
 
 The same check from Python raises an error that says what is missing:
 
@@ -53,7 +59,8 @@ A coupled pair on the CPU
 -------------------------
 
 The ancilla X1 and the data qubit D2 of ``transmon_surface17`` are coupled,
-about 2.1 GHz apart:
+about 2.1 GHz apart. Their coupling carries its CZ calibration, whose
+duration sets the slot a CZ gate takes:
 
 .. code-block:: python
 
@@ -64,11 +71,6 @@ about 2.1 GHz apart:
    system = pulse.quantum_system("transmon_surface17")
    x1 = system.qudit("X1")
    d2 = system.qudit("D2")
-
-Their coupling carries its CZ calibration, whose duration sets the slot a
-CZ gate takes:
-
-.. code-block:: python
 
    coupling = system.coupling(x1, d2)
    cz = coupling.get_calibration(pulse.gates.CZ)
@@ -141,7 +143,9 @@ The step, ``dt_ns=0.02``, resolves the coupling, which turns at the pair's
 The same call on the GPU
 ------------------------
 
-``backend="gpu"`` runs the same compiled program through cuDensityMat:
+``backend="gpu"`` runs the same compiled program through cuDensityMat. The
+result has the same layout as the CPU's, so the two density matrices can be
+compared entry by entry:
 
 .. code-block:: python
    :class: gpu
@@ -156,12 +160,6 @@ The same call on the GPU
    for name, qudit in (("X1", x1), ("D2", d2)):
        excited = gpu.level_populations(qudit)[1]
        print(f"{name} excited: {excited:.4f}")
-
-The result has the same layout as the CPU's, so the two density matrices
-can be compared entry by entry:
-
-.. code-block:: python
-   :class: gpu
 
    difference = np.abs(gpu.density_matrix - cpu.density_matrix)
    print("largest difference:", difference.max())

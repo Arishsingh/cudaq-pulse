@@ -276,13 +276,30 @@ def _groups(
     return [(line, frozenset(handles)) for line, handles in found.items()]
 
 
-def _timed(event: Mapping[str, Any], handles: frozenset[int]) -> bool:
-    return (
+def _sharing(
+    shared: Mapping[tuple[str, int], Physical], lines: Sequence[Mapping[str, Any]]
+) -> tuple[list[Physical], dict[int, int]]:
+    """The shared lines of ``_groups`` that two or more handles play, and the
+    position in that list of each of their handles."""
+    found: list[Physical] = []
+    of: dict[int, int] = {}
+    for line, handles in _groups(shared, lines):
+        if len(handles) > 1:
+            of.update(dict.fromkeys(handles, len(found)))
+            found.append(line)
+    return found, of
+
+
+def _timed_on(event: Mapping[str, Any], of: Mapping[int, int]) -> int | None:
+    """The position (``_sharing``) of the shared line a drive or readout
+    *event* with known times plays on; ``None`` for any other event."""
+    if (
         event["kind"] in _PLAYED
-        and event["line"] in handles
         and event["start_cycles"] is not None
         and event["end_cycles"] is not None
-    )
+    ):
+        return of.get(event["line"])
+    return None
 
 
 class _AtOnce:
@@ -393,10 +410,13 @@ def violations(
     shared = physical(system)
     assert shared is not None
     found: list[str] = []
-    for line, handles in _groups(shared, lines):
-        played = [e for e in events if _timed(e, handles)]
-        if len(handles) < 2:
-            continue
+    sharing, of = _sharing(shared, lines)
+    each: list[list[Mapping[str, Any]]] = [[] for _ in sharing]
+    for e in events:
+        k = _timed_on(e, of)
+        if k is not None:
+            each[k].append(e)
+    for line, played in zip(sharing, each, strict=True):
         at_once = _AtOnce(line)
         at_once.sweep(
             sorted(((e["start_cycles"], e["end_cycles"], e, 0) for e in played), key=_first)
@@ -442,10 +462,10 @@ def summarized(
     tree, _ = _loops._tree(events, repeats)
     budget = _loops._Budget()
     found: list[str] = []
-    for line, handles in _groups(shared, lines):
-        if len(handles) < 2:
-            continue
-        nodes = _loops._keep(tree, lambda i: _timed(events[i], handles))  # noqa: B023
+    sharing, of = _sharing(shared, lines)
+    split = _loops._split(tree, lambda i: _timed_on(events[i], of))
+    for k, line in enumerate(sharing):
+        nodes = split.get(k, [])
         at_once = _AtOnce(line)
         try:
             _count_copies(at_once, events, nodes, 0, (), 1, budget)
