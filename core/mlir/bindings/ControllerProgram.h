@@ -37,6 +37,8 @@
 #include <utility>
 #include <vector>
 
+#include "llvm/ADT/SmallPtrSet.h"
+
 #include "ControllerExpressions.h"
 
 struct ControllerRecord {
@@ -294,13 +296,15 @@ struct ControllerWalk : ControllerExpressions {
   llvm::SmallVector<FrameUndo, 16> frameUndo;
   llvm::SmallVector<ReachedUndo, 16> reachedUndo;
   int ifDepth = 0;
-  /// What a then arm left of what it changed, by root and by allocation:
-  /// whether it left one, and what.
+  /// What an arm left of what it changed (or, of what only the other arm
+  /// changed, what it had before), each root and allocation once, as notes
+  /// whose `had` and `old` say whether it left one and what. An arm changes
+  /// few as a rule, so these are lists, and small sets find a root or an
+  /// allocation in them by a linear search until they hold many.
   struct ArmLeft {
-    llvm::SmallDenseMap<mlir::Operation *, std::pair<bool, Frame>, 4> frames;
-    llvm::SmallDenseMap<mlir::Operation *,
-                        std::pair<bool, std::optional<int64_t>>, 4>
-        reached;
+    llvm::SmallVector<FrameUndo, 4> frames;
+    llvm::SmallVector<ReachedUndo, 4> reached;
+    llvm::SmallPtrSet<mlir::Operation *, 8> roots, allocations;
   };
   // Sampled: the sampled loops open now.
   std::vector<std::pair<int64_t, int8_t>> sampling;
@@ -357,13 +361,20 @@ struct ControllerWalk : ControllerExpressions {
   /// within an scf.if arm.
   void setReached(mlir::Operation *allocation, std::optional<int64_t> time) {
     auto [it, inserted] = reached.try_emplace(allocation, time);
+    reachedTo(it, inserted, time);
+  }
+
+  /// Sets the time the line at `it` has reached, which `inserted` says was
+  /// added just now, noting what it was within an scf.if arm.
+  void reachedTo(
+      llvm::DenseMap<mlir::Operation *, std::optional<int64_t>>::iterator it,
+      bool inserted, std::optional<int64_t> time) {
     if (!inserted && it->second == time)
       return;
     if (ifDepth > 0)
       reachedUndo.push_back(
-          {allocation, !inserted, inserted ? std::nullopt : it->second});
-    if (!inserted)
-      it->second = time;
+          {it->first, !inserted, inserted ? std::nullopt : it->second});
+    it->second = time;
   }
 
   /// Undoes the changes to frames and reached since the marks, newest
@@ -372,29 +383,34 @@ struct ControllerWalk : ControllerExpressions {
     ArmLeft left;
     while (frameUndo.size() > frameMark) {
       FrameUndo undo = frameUndo.pop_back_val();
-      if (!left.frames.count(undo.root)) {
-        auto found = frames.find(undo.root);
-        left.frames.try_emplace(undo.root, found != frames.end(),
-                                found != frames.end() ? found->second
-                                                      : Frame());
+      auto found = frames.find(undo.root);
+      bool has = found != frames.end();
+      if (left.roots.insert(undo.root).second)
+        left.frames.push_back({undo.root, has, has ? found->second : Frame()});
+      if (!undo.had) {
+        if (has)
+          frames.erase(found);
+      } else if (has) {
+        found->second = undo.old;
+      } else {
+        frames.try_emplace(undo.root, undo.old);
       }
-      if (undo.had)
-        frames[undo.root] = undo.old;
-      else
-        frames.erase(undo.root);
     }
     while (reachedUndo.size() > reachedMark) {
       ReachedUndo undo = reachedUndo.pop_back_val();
-      if (!left.reached.count(undo.allocation)) {
-        auto found = reached.find(undo.allocation);
-        left.reached.try_emplace(undo.allocation, found != reached.end(),
-                                 found != reached.end() ? found->second
-                                                        : std::nullopt);
+      auto found = reached.find(undo.allocation);
+      bool has = found != reached.end();
+      if (left.allocations.insert(undo.allocation).second)
+        left.reached.push_back(
+            {undo.allocation, has, has ? found->second : std::nullopt});
+      if (!undo.had) {
+        if (has)
+          reached.erase(found);
+      } else if (has) {
+        found->second = undo.old;
+      } else {
+        reached.try_emplace(undo.allocation, undo.old);
       }
-      if (undo.had)
-        reached[undo.allocation] = undo.old;
-      else
-        reached.erase(undo.allocation);
     }
     return left;
   }
@@ -410,52 +426,54 @@ struct ControllerWalk : ControllerExpressions {
     // oldest note of a change has from before the branch.
     ArmLeft before;
     for (size_t i = frameMark; i < frameUndo.size(); ++i)
-      before.frames.try_emplace(frameUndo[i].root, frameUndo[i].had,
-                                frameUndo[i].old);
+      if (!then.roots.contains(frameUndo[i].root) &&
+          before.roots.insert(frameUndo[i].root).second)
+        before.frames.push_back(frameUndo[i]);
     for (size_t i = reachedMark; i < reachedUndo.size(); ++i)
-      before.reached.try_emplace(reachedUndo[i].allocation, reachedUndo[i].had,
-                                 reachedUndo[i].old);
+      if (!then.allocations.contains(reachedUndo[i].allocation) &&
+          before.allocations.insert(reachedUndo[i].allocation).second)
+        before.reached.push_back(reachedUndo[i]);
     if (ifDepth == 0) {
       frameUndo.resize(frameMark);
       reachedUndo.resize(reachedMark);
     }
-    auto mergeFrame = [&](mlir::Operation *root,
-                          const std::pair<bool, Frame> &theirs) {
-      auto found = frames.find(root);
-      if (found == frames.end() && !theirs.first)
+    auto mergeFrame = [&](const FrameUndo &theirs) {
+      auto found = frames.find(theirs.root);
+      bool has = found != frames.end();
+      if (!has && !theirs.had)
         return;
-      Frame ours = found != frames.end() ? found->second : initialFrame(root);
-      Frame other = theirs.first ? theirs.second : initialFrame(root);
+      Frame ours = has ? found->second : initialFrame(theirs.root);
+      Frame other = theirs.had ? theirs.old : initialFrame(theirs.root);
       if (!(other == ours))
         ours = {kUnknown, kUnknown, kUnknown, ours.timeNs};
       else
         ours.timeNs = std::max(ours.timeNs, other.timeNs);
-      setFrame(root, ours);
+      if (!has)
+        return setFrame(theirs.root, ours);
+      if (ifDepth > 0)
+        frameUndo.push_back({theirs.root, true, found->second});
+      found->second = ours;
     };
-    for (auto &[root, left] : then.frames)
-      mergeFrame(root, left);
-    for (auto &[root, was] : before.frames)
-      if (!then.frames.count(root))
-        mergeFrame(root, was);
-    auto mergeReached =
-        [&](mlir::Operation *allocation,
-            const std::pair<bool, std::optional<int64_t>> &theirs) {
-          if (!theirs.first)
-            return;
-          auto found = reached.find(allocation);
-          if (found == reached.end())
-            return setReached(allocation, theirs.second);
-          std::optional<int64_t> ours = found->second;
-          setReached(allocation, ours && theirs.second
-                                     ? std::optional<int64_t>(
-                                           std::max(*ours, *theirs.second))
-                                     : std::nullopt);
-        };
-    for (auto &[allocation, left] : then.reached)
-      mergeReached(allocation, left);
-    for (auto &[allocation, was] : before.reached)
-      if (!then.reached.count(allocation))
-        mergeReached(allocation, was);
+    for (const FrameUndo &left : then.frames)
+      mergeFrame(left);
+    for (const FrameUndo &was : before.frames)
+      mergeFrame(was);
+    auto mergeReached = [&](const ReachedUndo &theirs) {
+      if (!theirs.had)
+        return;
+      auto [it, inserted] = reached.try_emplace(theirs.allocation, theirs.old);
+      if (inserted)
+        return reachedTo(it, true, theirs.old);
+      std::optional<int64_t> ours = it->second;
+      reachedTo(it, false,
+                ours && theirs.old
+                    ? std::optional<int64_t>(std::max(*ours, *theirs.old))
+                    : std::nullopt);
+    };
+    for (const ReachedUndo &left : then.reached)
+      mergeReached(left);
+    for (const ReachedUndo &was : before.reached)
+      mergeReached(was);
   }
 
   // ── Run-time values ──────────────────────────────────────────────────
@@ -1055,13 +1073,12 @@ struct ControllerWalk : ControllerExpressions {
       latest[op] = static_cast<int64_t>(result.size());
     if (persistent && !mlir::isa<pulse::WaitOp>(op))
       playedOn[toneRoots(op->getOperand(2))] = lineOf(allocation);
-    auto line = reached.find(allocation);
-    std::optional<int64_t> was =
-        line == reached.end() ? std::optional<int64_t>(0) : line->second;
-    setReached(allocation,
-               start && duration && was
-                   ? std::optional<int64_t>(std::max(*was, *start + *duration))
-                   : std::nullopt);
+    auto [line, inserted] = reached.try_emplace(allocation, 0);
+    reachedTo(line, inserted,
+              start && duration && line->second
+                  ? std::optional<int64_t>(
+                        std::max(*line->second, *start + *duration))
+                  : std::nullopt);
     int32_t knownIndex = runTime && detail ? runTimeOf(op) : -1;
     const char *kind = mlir::isa<pulse::DriveOp>(op)     ? "drive"
                        : mlir::isa<pulse::ReadoutOp>(op) ? "readout"
