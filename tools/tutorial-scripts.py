@@ -136,7 +136,13 @@ def script(page: Path) -> str:
         if guards:
             code = f"if {' and '.join(guards)}:\n" + textwrap.indent(code, "    ")
         if shown:
-            code += "\n\n# Prints:\n" + "\n".join(f"#   {line}".rstrip() for line in shown)
+            # An abridged block is not the printout line for line.
+            says = (
+                "Prints, wrapped here, with ... for text left out"
+                if "abridged" in classes
+                else "Prints"
+            )
+            code += f"\n\n# {says}:\n" + "\n".join(f"#   {line}".rstrip() for line in shown)
         if section != last_section:
             code = f"# %% {section}\n{code}"
             last_section = section

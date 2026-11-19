@@ -10,6 +10,10 @@ must print that comment's first words (``# 3.885, its 0-1 transition``
 checks ``3.885``); a block that prints from a loop instead lists what it
 prints as comment lines after its last line of code.
 
+An output block with ``:class: output abridged`` shows a long printout
+rewrapped to fit the page, with ``...`` where it leaves out part of a line: it
+must be what the block prints once white space is ignored.
+
 A ``literalinclude`` of Python, cut by ``:start-after:`` and
 ``:end-before:``, runs like a code block, so code a page shows from an
 example file runs as the page shows it. One cut any other way (such as by
@@ -29,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import itertools
 import re
 import textwrap
 from pathlib import Path
@@ -55,7 +60,8 @@ def included(page: Path, target: str, options: dict[str, str]) -> str:
 def code_blocks(page: Path) -> list[tuple[frozenset[str], str, list[str] | None]]:
     """Each ``.. code-block:: python`` and Python ``literalinclude`` of *page*,
     in order: its classes, its code, and the lines of the output block that
-    follows it (``.. code-block:: text`` with ``:class: output``), if any."""
+    follows it (``.. code-block:: text`` with ``:class: output``), if any.
+    An output block that is ``abridged`` adds that class to its code block's."""
     lines = page.read_text().splitlines()
     blocks: list[list] = []
     i = 0
@@ -69,15 +75,20 @@ def code_blocks(page: Path) -> list[tuple[frozenset[str], str, list[str] | None]
                 option = lines[i].split(maxsplit=1)
                 if option[:1] == [":class:"]:
                     classes = frozenset(option[1].split())
-                elif option and option[0].startswith(":") and option[0].endswith(":"):
+                # An option has a name between its colons; a lone colon starts a
+                # body line, such as the types of a wrapped MLIR operation.
+                elif option and option[0].strip(":") and option[0][0] == option[0][-1] == ":":
                     options[option[0].strip(":")] = option[1].strip() if len(option) > 1 else ""
                 else:
                     body.append(lines[i])
                 i += 1
             if block and block[1] == "text":
+                if "abridged" in classes and "output" not in classes:
+                    raise ValueError(f"{page.name}: an abridged block needs the class output")
                 if "output" in classes and blocks and blocks[-1][2] is None:
                     shown = textwrap.dedent("\n".join(body)).strip("\n").splitlines()
                     blocks[-1][2] = [line.rstrip() for line in shown]
+                    blocks[-1][0] |= classes & {"abridged"}
                 continue
             if include:
                 if options.get("language") != "python":
@@ -132,6 +143,37 @@ def _matches(expected: str, printed: str) -> bool:
     return expected == printed or expected.startswith((printed + ",", printed + " ", printed + ":"))
 
 
+def _abridges(shown: list[str], printed: list[str]) -> bool:
+    """Whether *shown* is *printed* rewrapped, with ``...`` where text is left out.
+
+    White space is ignored, so a page may break a long line anywhere. What
+    *shown* keeps must be in *printed* in the same order, from its first
+    character to its last, and what one ``...`` leaves out must lie within
+    one printed line: a page may shorten a line, not drop lines. A piece
+    between two ``...`` is taken where it first occurs, so show enough of
+    it to occur only there.
+    """
+    lines = ["".join(line.split()) for line in printed]
+    text = "".join(lines)
+    first, *rest = "".join("".join(shown).split()).split("...")
+    if not rest:
+        return first == text
+    if not text.startswith(first) or not (first or any(rest)):
+        return False
+    ends = set(itertools.accumulate(len(line) for line in lines))
+    at = len(first)
+    for number, piece in enumerate(rest, 1):
+        if number == len(rest):
+            found = len(text) - len(piece) if text.endswith(piece) else -1
+        else:
+            found = text.find(piece, at)
+        # What is left out is text[at:found]: no line may end inside it.
+        if found < at or any(at < end < found for end in ends):
+            return False
+        at = found + len(piece)
+    return True
+
+
 def _gpu_available() -> bool:
     from cudaq_pulse.runtime import require_gpu_runtime
 
@@ -166,6 +208,48 @@ def test_an_output_block_belongs_to_the_code_block_before_it(tmp_path):
     ]
 
 
+def test_an_abridged_output_block_is_the_printout_rewrapped(tmp_path):
+    page = tmp_path / "page.rst"
+    page.write_text(
+        ".. code-block:: python\n\n   print(module)\n\n"
+        ".. code-block:: text\n   :class: output abridged\n\n"
+        "   module {...} {\n     op %x\n         : i64\n   }\n"
+    )
+    assert code_blocks(page) == [
+        (
+            frozenset({"abridged"}),
+            "print(module)",
+            ["module {...} {", "  op %x", "      : i64", "}"],
+        ),
+    ]
+
+    printed = ["module {a = 1, b = 2} {", "  %0 = op %x, %y : i64, f64", "}"]
+    rewrapped = ["module {a = 1, b = 2} {", "  %0 = op %x, %y", "      : i64, f64", "}"]
+    assert _abridges(printed, printed)
+    assert _abridges(rewrapped, printed)
+    assert _abridges(["module {...} {", "  %0 = op %x, %y : i64, f64", "}"], printed)
+    assert _abridges(["module {a = 1, ...} {", *printed[1:]], printed)
+    assert _abridges(["module {...} {", "  %0 = op ... f64", "}"], printed)
+    assert _abridges(["module {a = 1, b = 2} {", "  %0 = op %x, ...", "}"], printed)
+    # A changed value, a dropped end, a reordered piece and a doubled piece
+    # are not the printout.
+    assert not _abridges(["module {a = 1, b = 3} {", *printed[1:]], printed)
+    assert not _abridges(printed[:2], printed)
+    assert not _abridges(
+        ["module {...", "  %0 = op %x, %y : i64, f64", "... b = 2} {", "}"], printed
+    )
+    assert not _abridges(["module {a = 1, b = 2} {", "...", "{", *printed[1:]], printed)
+    # With text left out, the start, the end and the order still count.
+    assert not _abridges(["modul {...} {", *printed[1:]], printed)
+    assert not _abridges(["module {...} {", "  %0 = op %x, %y : i64, f32", "}"], printed)
+    assert not _abridges(["module {...} {", "  %0 = op %x, %y : i64, f64"], printed)
+    assert not _abridges(["module {a = 1, b = 2} {", "  %0 = op ... %y ... %x ...", "}"], printed)
+    # What is left out stays within a line: no line is dropped behind it.
+    assert not _abridges(["module {a = 1, ...", "}"], printed)
+    assert not _abridges(["module {...} {", "}"], printed)
+    assert not _abridges(["..."], printed)
+
+
 def test_there_are_tutorials():
     if not _TUTORIALS.exists():
         pytest.skip("needs the source tree")
@@ -194,7 +278,8 @@ def test_tutorial_runs_and_prints_its_comments(page, tmp_path, monkeypatch):
             exec(code_object, namespace)
         printed = [line.rstrip() for line in out.getvalue().splitlines()]
         if shown is not None:
-            assert printed == shown, (
+            same = _abridges(shown, printed) if "abridged" in classes else printed == shown
+            assert same, (
                 f"{page.name}, block {number}: printed {printed!r}, "
                 f"its output block shows {shown!r}"
             )
