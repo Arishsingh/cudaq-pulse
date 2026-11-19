@@ -1152,6 +1152,34 @@ def _timed_by_controller(
     return timed, answers
 
 
+def _on_buses(
+    controllers: Sequence[Controller],
+    events: Sequence[dict[str, Any]],
+    owners: Sequence[int | None],
+) -> list[list[dict[str, Any]] | None]:
+    """For each of *controllers* with update buses that lists its lines, the
+    frame updates, drives and readouts of *events* on its lines, in order:
+    every event its update-bus check reads (``controller._updates``). ``None``
+    for any other, whose check reads every event as it sees them
+    (``_SeenBy``): a controller that lists no lines has every line on its
+    buses."""
+    from .controller import _PLAYED as TIMED
+
+    found: list[list[dict[str, Any]] | None] = [
+        [] if c.update_buses and c._all_lines else None for c in controllers
+    ]
+    for e in events:
+        if e["kind"] == "frame_update" or e["kind"] in TIMED:
+            line = e["line"]
+            if line is not None:
+                owner = owners[line]
+                if owner is not None:
+                    mine = found[owner]
+                    if mine is not None:
+                        mine.append(e)
+    return found
+
+
 def _cycles_text(cycles: Fraction) -> str:
     return str(cycles.numerator) if cycles.denominator == 1 else f"{float(cycles):g}"
 
@@ -1885,6 +1913,11 @@ class ControlSystem:
                     )
                 )
             timed, answers = _timed_by_controller(events, owners, len(self.controllers))
+            buses = (
+                _on_buses(self.controllers, events, owners)
+                if any(c.update_buses for c in self.controllers)
+                else [None] * len(self.controllers)
+            )
             for index, controller in enumerate(self.controllers):
                 label = _label(index, controller)
                 found.extend(
@@ -1903,6 +1936,7 @@ class ControlSystem:
                         held=False,
                         timed=timed[index],
                         answers=answers,
+                        updates=buses[index],
                     )
                 )
             found.extend(needs)
