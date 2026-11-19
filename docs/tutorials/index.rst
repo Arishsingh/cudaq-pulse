@@ -7,6 +7,7 @@ Tutorials
 
 Each tutorial builds one idea from a few short snippets you can run on a
 laptop, and ends by pointing to the example files that take it further.
+Each page's code is also one Python script you can download from the page.
 Start with the first; the rest can be read in any order once you have it.
 
 .. toctree::
@@ -37,7 +38,7 @@ Start with the first; the rest can be read in any order once you have it.
 
 .. toctree::
    :maxdepth: 1
-   :caption: Experimental
+   :caption: Extending CUDA-Q Pulse
 
    isa_lowering
    isa_limits

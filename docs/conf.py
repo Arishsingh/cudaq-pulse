@@ -20,6 +20,7 @@ extensions = [
     "themed_figure",
     "pulse_visual",
     "data_figures",
+    "a11y",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
@@ -41,7 +42,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "nvidia_sphinx_theme"
 html_static_path = ["_static"]
-html_css_files = ["tutorial-output.css"]
+html_css_files = ["tutorial-output.css", "header.css"]
 html_favicon = "_static/favicon.svg"
 
 html_theme_options = {

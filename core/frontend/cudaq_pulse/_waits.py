@@ -5,6 +5,7 @@ values. Only a kernel with a wait whose length a float sets loads them."""
 
 from __future__ import annotations
 
+import functools
 import marshal
 import math
 from collections.abc import Sequence
@@ -20,6 +21,33 @@ _MAX_WAIT_CYCLES = MAX_CYCLES
 # ``PulseModule.program_length()``, with the loops and ifs around the waits
 # when one is in an if.
 _Length = tuple[int, int, int, Sequence[int]] | tuple[int, int, int, Sequence[int], Sequence[int]]
+
+# Python compiles a chain of ``+`` one level deeper per term, and fails with
+# a RecursionError past some thousands of terms: a longer sum adds its terms
+# in groups of this many.
+_SUM_TERMS = 32
+
+
+def _summed(terms: Sequence[str]) -> str:
+    """The sum of *terms*, expressions of the call's values ``a``, added left
+    to right as ``t0 + t1 + ...`` adds them, as an expression that nests no
+    deeper with more terms: past ``_SUM_TERMS`` terms, each group after the
+    first adds its terms to the sum so far, held in ``_s``."""
+    if len(terms) <= _SUM_TERMS:
+        return " + ".join(terms)
+    more = _SUM_TERMS - 1
+    groups = [" + ".join(terms[:_SUM_TERMS])]
+    groups.extend(
+        " + ".join(["_s", *terms[at : at + more]]) for at in range(_SUM_TERMS, len(terms), more)
+    )
+    return f"({', '.join(f'_s := {group}' for group in groups)})[-1]"
+
+
+@functools.lru_cache(maxsize=1024)
+def _computed(source: str) -> Any:
+    """The length *source* computes from the call's values ``a``, compiled
+    once for all its waits: every wait of one float has the same source."""
+    return eval(f"lambda a: {source}", {"__builtins__": {}})
 
 
 class _WaitLength:
@@ -46,7 +74,7 @@ class _WaitLength:
         from .kernel.ir_builder import arithmetic_source, arithmetic_text
 
         self.source = arithmetic_source(expression)
-        self.length = eval(f"lambda a: {self.source}", {"__builtins__": {}})
+        self.length = _computed(self.source)
         self.lowest = lowest
         self.highest = None if highest < 0 else highest
         self.text = arithmetic_text(expression) if text is None else text
@@ -118,7 +146,8 @@ class _WaitLengths:
         # own unless the waits' bounds already keep it there, or the one
         # wait it depends on has a highest length that does.
         highest = {id(w): _highest(w) for w in self.waits}
-        longer = None
+        # The program's length with the call's lengths, when it is tested.
+        lasts = None
         timed = self._timed()
         if timed:
             assert length is not None
@@ -127,32 +156,37 @@ class _WaitLengths:
             runs = [(w, w.lowest or 0, r) for w, r in zip(timed, repeats, strict=True) if r]
             if sum(r * (highest[id(w)] - lowest) for w, lowest, r in runs) > spare:
                 if len(length) > 4:
-                    longer = _longer_in_ifs(timed, length[4])
+                    lasts = _longer_in_ifs(timed, length[4], cycles)
                 elif len(runs) == 1:
                     ((w, lowest, r),) = runs
                     highest[id(w)] = lowest + spare // r
                 else:
-                    longer = " + ".join(
-                        f"{r} * (({w.source} + 0.5) // 1 - {w.lowest})"
-                        for w, r in zip(timed, repeats, strict=True)
+                    lasts = _summed(
+                        [str(cycles)]
+                        + [
+                            f"{r} * (({w.source} + 0.5) // 1 - {w.lowest})"
+                            for w, r in zip(timed, repeats, strict=True)
+                        ]
                     )
         # floor(x + 0.5) is in [lowest, highest] exactly when
         # lowest <= x + 0.5 < highest + 1, which NaN fails; without a lowest,
         # -1e400 (minus infinity) < x + 0.5 also fails for minus infinity.
-        tests = " and ".join(
+        tests = [
             f"{'-1e400 <' if w.lowest is None else f'{w.lowest} <='} {w.source} + 0.5 < "
             f"{highest[id(w)] + 1}"
             for w in self.waits
-        )
+        ]
         if grids:
-            tests += "".join(
-                f" and ({w.source} + 0.5) // 1 % {grid} == 0"
+            tests.extend(
+                f"({w.source} + 0.5) // 1 % {grid} == 0"
                 for w, grid in zip(self.waits, grids, strict=True)
                 if w.lowest is not None and grid > 1
             )
-        if longer is not None:
-            tests += f" and {cycles} + {longer} <= {most}"
-        self.ok = eval(f"lambda a: {tests}", {"__builtins__": {}})
+        if lasts is not None:
+            tests.append(f"{lasts} <= {most}")
+        # Each test once, where it first comes: waits of one length and
+        # bounds pass or fail it together, so the others add nothing.
+        self.ok = eval(f"lambda a: {' and '.join(dict.fromkeys(tests))}", {"__builtins__": {}})
 
     def _timed(self) -> tuple[_WaitLength, ...]:
         """The waits the program's length counts at their lowest length."""
@@ -231,13 +265,17 @@ def _highest(wait: _WaitLength) -> int:
     return _MAX_WAIT_CYCLES if wait.highest is None else wait.highest
 
 
-def _longer_in_ifs(timed: Sequence[_WaitLength], excess: Sequence[int]) -> str:
+def _longer_in_ifs(
+    timed: Sequence[_WaitLength], excess: Sequence[int], cycles: int | None = None
+) -> str:
     """The cycles the lengths of *timed* add to the program's with each at
     its lowest, as an expression of the call's values ``a``, from the loops
     and ifs around them (``PulseModule.program_length()``): a loop adds its
     trips times its body's, an if what its longer arm lasts past the longer
-    arm with the lowest lengths. Each region is a name assigned in turn, so
-    the expression nests no deeper with the program."""
+    arm with the lowest lengths. Each region is a name assigned in turn, and
+    each sum adds its terms in groups, so the expression nests no deeper
+    with the program. With *cycles*, the program's length: *cycles* and
+    those cycles, added in the order the length test adds them."""
     steps: list[str] = []
     at = 1
 
@@ -245,7 +283,7 @@ def _longer_in_ifs(timed: Sequence[_WaitLength], excess: Sequence[int]) -> str:
         if not terms:
             return "0"
         k = len(steps)
-        steps.append(f"(_v{k} := {' + '.join(terms)}) == _v{k}")
+        steps.append(f"(_v{k} := {_summed(terms)}) == _v{k}")
         return f"_v{k}"
 
     def body() -> list[str]:
@@ -280,8 +318,13 @@ def _longer_in_ifs(timed: Sequence[_WaitLength], excess: Sequence[int]) -> str:
                 terms.append(f"(_t{k} if _t{k} >= _e{k} else _e{k}) - {max(then, other)}")
         return terms
 
-    total = " + ".join(body()) or "0"
-    return f"({' and '.join(steps)} and {total})" if steps else total
+    terms = body()
+    if steps:
+        longer = f"({' and '.join(steps)} and {_summed(terms) or '0'})"
+        return longer if cycles is None else f"{cycles} + {longer}"
+    if cycles is None:
+        return _summed(terms) or "0"
+    return _summed([str(cycles), *(terms or ["0"])])
 
 
 def wait_lengths(
@@ -305,7 +348,7 @@ def _rebuilt_wait(
 ) -> _WaitLength:
     wait = _WaitLength.__new__(_WaitLength)
     wait.source = source
-    wait.length = eval(f"lambda a: {source}", {"__builtins__": {}})
+    wait.length = _computed(source)
     wait.lowest = lowest
     wait.highest = highest
     wait.text = text
