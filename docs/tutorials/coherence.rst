@@ -16,6 +16,9 @@ What you'll learn:
 - how a Ramsey sequence records a detuning;
 - how a spin echo cancels it.
 
+All the code on this page is also one Python script,
+:download:`coherence.py <scripts/coherence.py>`.
+
 What the model knows
 --------------------
 
@@ -230,10 +233,11 @@ A π pulse halfway through the wait reverses the phase the qubit has
 gathered, so in the second half it unwinds again. Any detuning that stays
 the same during the sequence cancels.
 
-The kernel finds the same lines and pulses as ``ramsey``, plus a π pulse:
+The kernel finds the same lines and pulses as ``ramsey``, plus a π pulse.
+The only change in the sequence is that π pulse, which splits the wait in
+two:
 
 .. code-block:: python
-   :class: continues
 
    @pulse.kernel
    def echo(qudit, tau_ns: float):
@@ -242,11 +246,6 @@ The kernel finds the same lines and pulses as ``ramsey``, plus a π pulse:
        half_flip = drive_line.get_calibration(pulse.gates.X90)
        flip = drive_line.get_calibration(pulse.gates.X)
        measurement = readout_line.get_calibration(pulse.gates.READOUT)
-
-The only change in the sequence is that π pulse, which splits the wait in
-two:
-
-.. code-block:: python
 
        shift_frequency(drive_line.tone, 1e6)
        drive(drive_line, half_flip)

@@ -16,6 +16,9 @@ What you'll learn:
 - how to simulate it, sweep its amplitude and take shots;
 - how to see the schedule the compiler made.
 
+All the code on this page is also one Python script,
+:download:`first_pulse_program.py <scripts/first_pulse_program.py>`.
+
 Install
 -------
 
