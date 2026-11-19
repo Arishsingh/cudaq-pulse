@@ -798,20 +798,29 @@ def build_inputs(rev: str) -> str | None:
     return json.dumps(keep, sort_keys=True, default=str)
 
 
+def measured_paths(commit: str, head: str = "HEAD") -> list[str] | None:
+    """The paths of measured code in which *head* differs from *commit*, or
+    None if git cannot compare them."""
+    files = changed_files(commit, head)
+    if files is None:
+        return None
+    others = not_python_or_text(files)
+    if set(others) & set(BUILD_FILES):
+        before, after = build_inputs(commit), build_inputs(head)
+        if before is not None and before == after:
+            others = [f for f in others if f not in BUILD_FILES]
+    return others
+
+
 def measured_scope(commit: str | None, head: str = "HEAD") -> str:
     """Why this tree is not judged against the layout bands: the paths in
     which it differs from the baseline's commit that are measured code, or
     that git cannot compare; "" when it has the baseline's measured code."""
     if not commit:
         return "the baseline names no commit"
-    files = changed_files(commit, head)
-    if files is None:
+    others = measured_paths(commit, head)
+    if others is None:
         return f"git cannot compare this tree with the baseline's commit {commit[:8]}"
-    others = not_python_or_text(files)
-    if set(others) & set(BUILD_FILES):
-        before, after = build_inputs(commit), build_inputs(head)
-        if before is not None and before == after:
-            others = [f for f in others if f not in BUILD_FILES]
     if not others:
         return ""
     more = f" and {len(others) - 3} more" if len(others) > 3 else ""
@@ -891,6 +900,340 @@ def layout_notes(rows: list[Row]) -> list[str]:
             f"{_band(r.band)}, draws {_band(r.band[2:])}{beyond})"
         )
     return notes
+
+
+# The gate, its cases and the workloads they load: a carried change to
+# them must leave every count.
+MEASURING = (
+    "tools/perf-gate.py",
+    "benchmarks/perf_gate/*",
+    "benchmarks/compiler/compile_time.py",
+    "benchmarks/classical/classical_calls.py",
+)
+WORKFLOW = ".github/workflows/ci.yml"
+
+
+def draw_event(record: dict[str, Any], baseline: dict[str, Any]) -> bool:
+    """Whether a CI run may give layout draws, by its run record: a push to
+    main, the baseline's own dispatch, or a pull request's run, forks
+    included, since the gate keeps the extremes of a layout off main until
+    they pass. Its tree is checked apart, and an unmerged pull request
+    gives one draw (``take_layout_draws``)."""
+    event = record.get("event")
+    if event == "push":
+        return record.get("head_branch") == "main"
+    if event == "workflow_dispatch":
+        return record.get("id") == baseline.get("source", {}).get("run")
+    return event == "pull_request"
+
+
+def _gh_api(path: str) -> Any:
+    """A read-only GitHub API call, or None."""
+    try:
+        out = subprocess.run(["gh", "api", path], capture_output=True, text=True, timeout=120)
+        return json.loads(out.stdout) if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+@dataclass
+class CiRun:
+    run: int
+    record: dict[str, Any]
+    artifact: dict[str, Any]
+    # The commit it measured, what git reads of it (the commit, or the
+    # tree of a pull request's merge rebuilt from its parents), and for a
+    # pull request's run the measured code its own change touches.
+    commit: str
+    rev: str
+    own: list[str] | None = None
+
+    @property
+    def pr(self) -> int | None:
+        return next((p.get("number") for p in self.record.get("pull_requests") or []), None)
+
+
+def ci_run(path: Path, repo: str) -> CiRun | str:
+    """A downloaded perf-gate-baseline artifact, in a directory named by its
+    run (``gh run download RUN -D DIR/RUN``), with the commit it measured;
+    or why it cannot be used. The commit comes from the run record and git,
+    never from the artifact alone: a push's or dispatch's head, or a merge
+    whose second parent is the head of the pull request's run (if this
+    clone lacks it, its tree is rebuilt from its parents and must be the
+    one the commits API gives)."""
+    if not path.name.isdigit():
+        return f"{path}: not a directory named by its run"
+    run = int(path.name)
+    try:
+        artifact = json.loads((path / BASELINE.name).read_text())
+    except (OSError, ValueError):
+        return f"run {run}: no {BASELINE.name} in {path}"
+    record = _gh_api(f"repos/{repo}/actions/runs/{run}")
+    if not isinstance(record, dict):
+        return f"run {run}: no run record"
+    if record.get("path") != WORKFLOW:
+        return f"run {run}: a run of {record.get('path')}, not of {WORKFLOW}"
+    claimed = str(artifact.get("source", {}).get("commit", ""))
+    head = str(record.get("head_sha", ""))
+    rev, local = claimed, _git("cat-file", "-e", f"{claimed}^{{commit}}") is not None
+    if record.get("event") != "pull_request":
+        if claimed != head:
+            return f"run {run}: its artifact names {claimed[:8]}, the run measured {head[:8]}"
+        if not local:
+            return f"run {run}: {claimed[:8]} is not in this clone (git fetch origin {claimed})"
+        return CiRun(run, record, artifact, claimed, rev)
+    merge = _gh_api(f"repos/{repo}/commits/{claimed}") if claimed else None
+    parents = [p.get("sha") for p in (merge or {}).get("parents", [])]
+    if len(parents) != 2 or parents[1] != head:
+        return f"run {run}: {claimed[:8]} is not a merge of the run's head {head[:8]}"
+    if not local:
+        tree = (merge.get("commit") or {}).get("tree", {}).get("sha")
+        rebuilt = (_git("merge-tree", "--write-tree", parents[0], head) or "").split("\n")[0]
+        if not tree or rebuilt != tree:
+            return (
+                f"run {run}: {claimed[:8]} is not in this clone and its parents do not rebuild "
+                f"it (git fetch origin {head} {parents[0]})"
+            )
+        rev = tree
+    base = (_git("merge-base", parents[0], head) or "").strip()
+    own = measured_paths(base, head) if base else None
+    if not record.get("pull_requests"):
+        # A merged pull request's runs no longer name it; its head commit does.
+        pulls = _gh_api(f"repos/{repo}/commits/{head}/pulls")
+        record["pull_requests"] = pulls if isinstance(pulls, list) else []
+    return CiRun(run, record, artifact, claimed, rev, own)
+
+
+def _blobs(rev: str, paths: list[str]) -> dict[str, str | None]:
+    out = (_git("ls-tree", "-r", rev, "--", *paths) or "") if paths else ""
+    found = {line.split("\t", 1)[1]: line.split()[2] for line in out.splitlines() if "\t" in line}
+    return {p: found.get(p) for p in paths}
+
+
+def usable_count(r: CiRun, case: str, baseline: dict[str, Any]) -> float | None:
+    """The run's count of *case*, if it was measured in the baseline's
+    environment with the baseline's Python work for the case."""
+    entry = r.artifact.get("cases", {}).get(case, {})
+    expected = baseline.get("cases", {}).get(case, {})
+    if r.artifact.get("environment") != baseline.get("environment"):
+        return None
+    if "python_work" not in expected or entry.get("python_work") != expected["python_work"]:
+        return None
+    count = entry.get("instructions")
+    return count if isinstance(count, (int, float)) else None
+
+
+Change = dict[str, tuple[str | None, str | None]]
+
+
+def carry(
+    pairs: list[tuple[CiRun, CiRun]], baseline: dict[str, Any]
+) -> tuple[dict[str, Any], Change] | str:
+    """A change of measured code to carry the draws across, from pairs of
+    runs before and after it (its pull request's run and its base's run;
+    main's push run of it and of its parent): each case's move, where every
+    pair moved the case by the same count, on two layouts or more (on one,
+    only a zero move carries), and the paths it changes, with their blobs
+    before and after. A case's layouts are its distinct counts before the
+    change: pairs on trees that differ only where the measured code is the
+    same draw one layout. A change to the gate or its cases carries only if it
+    moved no case. Or why it cannot be carried."""
+    changes: list[Change] = []
+    for before, after in pairs:
+        paths = measured_paths(before.rev, after.rev)
+        if not paths:
+            return f"runs {before.run} and {after.run} measured the same measured code"
+        old, new = _blobs(before.rev, paths), _blobs(after.rev, paths)
+        changes.append({p: (old[p], new[p]) for p in paths})
+    if any(c != changes[0] for c in changes):
+        return "its pairs of runs do not make the same change of measured code"
+    moves: dict[str, int | None] = {}
+    layouts: dict[str, int] = {}
+    for case in sorted(baseline.get("cases", {})):
+        shifts = set()
+        for b, a in pairs:
+            x, y = usable_count(b, case, baseline), usable_count(a, case, baseline)
+            shifts.add(None if x is None or y is None else round(y - x))
+        move = shifts.pop() if len(shifts) == 1 else None
+        layouts[case] = len({usable_count(b, case, baseline) for b, _ in pairs} - {None})
+        moves[case] = move if move == 0 or layouts[case] > 1 else None
+    if any(fnmatch.fnmatchcase(p, m) for p in changes[0] for m in MEASURING):
+        if set(moves.values()) != {0}:
+            moves = dict.fromkeys(moves)
+    # Named by main's merge of it where a pair has it, else by the last one.
+    on_main = [a for _, a in pairs if draw_event(a.record, {}) and a.record.get("event") == "push"]
+    after = (on_main or [pairs[-1][1]])[0]
+    entry = {
+        "commit": after.commit,
+        "pr": next((a.pr for _, a in pairs if a.pr is not None), None),
+        "runs": [[b.run, a.run] for b, a in pairs],
+        "layouts": layouts,
+        "moves": moves,
+    }
+    return entry, changes[0]
+
+
+Chain = list[tuple[dict[str, Any], Change]]
+
+
+def carried_states(chain: Chain, commit: str) -> list[dict[str, str | None]] | str:
+    """The blobs of each state of measured code the draws are carried from,
+    on the paths the carried changes touch: state 0 is the baseline's, and
+    state i lacks the last i changes. Or why the changes do not lead to the
+    baseline's code."""
+    blobs = _blobs(commit, sorted({p for _, change in chain for p in change}))
+    states = [dict(blobs)]
+    for entry, change in reversed(chain):
+        if any(blobs[p] != after for p, (_, after) in change.items()):
+            return f"the change of {entry['commit'][:8]} does not lead to the baseline's code"
+        blobs.update({p: before for p, (before, _) in change.items()})
+        states.append(dict(blobs))
+    return states
+
+
+def carried_state(
+    r: CiRun, commit: str, chain: Chain, states: list[dict[str, str | None]]
+) -> int | None:
+    """Which of the ``carried_states`` the run measured, or None."""
+    others = measured_paths(commit, r.rev)
+    if others is None:
+        return None
+    blobs = _blobs(r.rev, sorted(states[0]))
+    for i, state in enumerate(states):
+        lacking = {p for _, change in chain[len(chain) - i :] for p in change}
+        if set(others) <= lacking and all(blobs[p] == state[p] for p in lacking):
+            return i
+    return None
+
+
+def _write_layout(path: Path, layout: dict[str, Any]) -> None:
+    """The layout file, one line for each carried change and each run."""
+    lines = ["{", f'  "format": {layout["format"]},']
+    lines.append(f'  "baseline": {json.dumps(layout["baseline"])},')
+    for key in ("carried", "runs"):
+        items = [f"    {json.dumps(x)}" for x in layout[key]]
+        lines.append(f'  "{key}": [' + ("\n" + ",\n".join(items) + "\n  " if items else ""))
+        lines[-1] += "]" + ("," if key == "carried" else "")
+    path.write_text("\n".join(lines) + "\n}\n")
+
+
+def _pull_request(r: CiRun) -> tuple[Any, ...]:
+    """Which pull request a run is of (its number, else its head branch)."""
+    if r.record.get("event") != "pull_request":
+        return ("run", r.run)
+    if r.pr is not None:
+        return ("pr", r.pr)
+    head = r.record.get("head_repository") or {}
+    return ("branch", head.get("full_name"), r.record.get("head_branch"))
+
+
+def _merged(repo: str, pr: int | None) -> bool:
+    """Whether pull request *pr* is merged (False if GitHub cannot say)."""
+    found = _gh_api(f"repos/{repo}/pulls/{pr}") if pr is not None else None
+    return isinstance(found, dict) and bool(found.get("merged_at"))
+
+
+def take_layout_draws(
+    baseline: dict[str, Any], paths: list[Path], since: str, carries: list[str], out: Path
+) -> int:
+    """--layout-draws: the layout draws for *baseline* from the downloaded
+    artifacts of CI runs created on or after *since*, carried across the
+    changes of measured code in *carries* (each "BEFORE:AFTER,..." runs);
+    prints each case's fences before and after, and each new draw's run.
+    An unmerged pull request gives one draw, from its latest run, so that
+    one refresh takes at most one draw of its code."""
+    source = baseline.get("source", {})
+    repo, commit = source.get("repository"), source.get("commit")
+    if not repo or not commit or not source.get("run"):
+        print("The baseline names no repository, commit or run: take it from a CI run.")
+        return 1
+    runs: dict[int, CiRun] = {}
+    for path in paths:
+        found = ci_run(path, repo)
+        if isinstance(found, str):
+            print(f"not a draw: {found}")
+        else:
+            runs.setdefault(found.run, found)
+    chain: Chain = []
+    for spec in carries:
+        try:
+            pairs = [
+                (runs[int(b)], runs[int(a)]) for b, a in (p.split(":") for p in spec.split(","))
+            ]
+        except (KeyError, ValueError):
+            print(f"--carry {spec}: name pairs BEFORE:AFTER of the runs given")
+            return 1
+        carried = carry(pairs, baseline)
+        if isinstance(carried, str):
+            print(f"--carry {spec}: {carried}")
+            return 1
+        chain.append(carried)
+    states = carried_states(chain, commit)
+    if isinstance(states, str):
+        print(f"--carry: {states}")
+        return 1
+    eligible: list[tuple[CiRun, dict[str, float | None], int | None]] = []
+    for run, r in sorted(runs.items()):
+        counts = {c: usable_count(r, c, baseline) for c in baseline.get("cases", {})}
+        state = None
+        if not draw_event(r.record, baseline):
+            why = "not a push to main, the baseline's dispatch or a pull request's run"
+        elif str(r.record.get("created_at", ""))[:10] < since:
+            why = f"created before {since}"
+        elif r.record.get("event") == "pull_request" and r.own != []:
+            why = f"its pull request changes measured code: {', '.join(r.own or ['unknown'])}"
+        elif (state := carried_state(r, commit, chain, states)) is None:
+            why = "its measured code is neither the baseline's nor carried to it"
+        elif not any(n is not None for n in counts.values()):
+            why = "no count in the baseline's environment with the baseline's Python work"
+        else:
+            why = ""
+        if why:
+            print(f"not a draw: run {run}: {why}")
+        else:
+            eligible.append((r, counts, state))
+    entries = []
+    latest = {_pull_request(r): r.run for r, _, _ in eligible}
+    for r, counts, state in eligible:
+        if r.record.get("event") == "pull_request" and latest[_pull_request(r)] != r.run:
+            if not _merged(repo, r.pr):
+                pr = f"#{r.pr}" if r.pr else "of this branch"
+                print(
+                    f"not a draw: run {r.run}: pull request {pr} is not merged: only its latest "
+                    f"run, {latest[_pull_request(r)]}, gives a draw"
+                )
+                continue
+        entry = {
+            "run": r.run,
+            "attempt": r.record.get("run_attempt"),
+            "event": r.record.get("event"),
+        }
+        entry |= {"pr": r.pr, "commit": r.commit}
+        if state:
+            entry["across"] = [c["commit"] for c, _ in chain[len(chain) - state :]]
+        entries.append(entry | {"counts": {c: n for c, n in counts.items() if n is not None}})
+    layout = {
+        "format": LAYOUT_FORMAT,
+        "baseline": {"run": source["run"], "attempt": source.get("attempt", 1), "commit": commit},
+        "carried": [c for c, _ in chain],
+        "runs": entries,
+    }
+    old = json.loads(out.read_text()) if out.exists() else {}
+    known = {r.get("run") for r in old.get("runs", [])}
+    print(f"{len(entries)} runs give draws; fences (k={FENCE:g}), before -> after:")
+    before, after = layout_draws(old), layout_draws(layout)
+    for case, entry in sorted(baseline.get("cases", {}).items()):
+        base = entry.get("instructions") or 0
+        shown = [fences(d.get(case, []), base) for d in (before, after)]
+        text = [_band(b) if b else "no band" for b in shown]
+        print(f"  {case}: {text[0]} -> {text[1]} ({len(set(after.get(case, [])))} distinct)")
+    for e in entries:
+        if e["run"] not in known:
+            pr = f" #{e['pr']}" if e["pr"] else ""
+            print(f"  new: run {e['run']} ({e['event']}{pr}, {e['commit'][:8]})")
+    _write_layout(out, layout)
+    print(f"Wrote {out}")
+    return 0
 
 
 def failure_counts(rows: list[Row]) -> str:
@@ -1164,6 +1507,21 @@ def main() -> int:
     )
     parser.add_argument("--baseline", type=Path, default=BASELINE)
     parser.add_argument("--layout", type=Path, default=LAYOUT, help="the cases' layout draws")
+    parser.add_argument(
+        "--layout-draws",
+        action="store_true",
+        help="take the layout draws for the baseline from CI artifacts (--help, layout bands)",
+    )
+    parser.add_argument("--since", help="--layout-draws: from runs created on or after DATE")
+    parser.add_argument(
+        "--carry",
+        action="append",
+        default=[],
+        metavar="BEFORE:AFTER,...",
+        help="--layout-draws: carry the draws across a change of measured code, from the "
+        "runs before and after it (in merge order; repeat for each change)",
+    )
+    parser.add_argument("artifacts", nargs="*", type=Path, help="--layout-draws: DIR/RUN ...")
     parser.add_argument("--update", action="store_true", help="rewrite the baseline")
     parser.add_argument("--out", type=Path, help="write this run in the baseline's format")
     parser.add_argument("--summary", type=Path, help="append a Markdown report to this file")
@@ -1181,6 +1539,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.dumps and args.dumps.exists() and any(args.dumps.iterdir()):
         parser.error(f"--dumps {args.dumps} is not empty")
+    if args.layout_draws:
+        if not args.since or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.since):
+            parser.error("--layout-draws needs --since YYYY-MM-DD")
+        baseline = json.loads(args.baseline.read_text())
+        return take_layout_draws(baseline, args.artifacts, args.since, args.carry, args.layout)
+    if args.artifacts or args.carry or args.since:
+        parser.error("artifacts, --carry and --since go with --layout-draws")
 
     pythonpath = str((ROOT / args.pythonpath).resolve())
     baseline = json.loads(args.baseline.read_text()) if args.baseline.exists() else {}
@@ -1318,6 +1683,8 @@ def main() -> int:
             return 1
         args.baseline.write_text(json.dumps(measured, indent=2) + "\n")
         print(f"\nWrote {args.baseline}")
+        if instructions is not None:
+            print("Take its layout draws in the same commit (--help, layout bands).")
         if instructions is None:
             print("Only the program sizes were updated: " + note)
         return 0

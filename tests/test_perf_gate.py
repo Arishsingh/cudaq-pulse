@@ -1118,3 +1118,330 @@ def test_the_gate_without_git_judges_by_the_limits(fake_gate, repo, tmp_path, mo
     code, log, _, _ = fake_gate(1_005_000, _WORK, source=source, layout=_layout_for_c(repo.base))
     assert code == 1 and "Perf gate failed (1 layout only):" in log
     assert f"git cannot compare this tree with the baseline's commit {repo.base[:8]}" in log
+
+
+# --layout-draws: CI runs as the run record and git show them, with their
+# perf-gate-baseline artifacts.
+_ENV = {"python": "3.12.15", "machine": "x86_64"}
+_W = {"bytecodes": 10.0, "python_calls": 1.0, "c_calls": 1.0}
+
+
+@pytest.fixture
+def ci(repo, tmp_path, monkeypatch):
+    """ci(run, event, commit, counts, ...) records a run and its artifact
+    and returns its directory; ci.merge(onto, head) makes a merge commit."""
+    api = {}
+    monkeypatch.setattr(gate, "_gh_api", api.get)
+    branch = _git(repo.root, "rev-parse", "--abbrev-ref", "HEAD")
+
+    def run(
+        number,
+        event,
+        commit,
+        counts,
+        head=None,
+        branch="main",
+        env=_ENV,
+        work=_W,
+        pr=None,
+        workflow=".github/workflows/ci.yml",
+    ):
+        record = {"id": number, "event": event, "head_sha": head or commit, "head_branch": branch}
+        record |= {"path": workflow}
+        record |= {"run_attempt": 1, "created_at": "2026-11-18T10:00:00Z"}
+        record["pull_requests"] = [{"number": pr}] if pr else []
+        api[f"repos/o/r/actions/runs/{number}"] = record
+        cases = {c: {"instructions": n, "python_work": work} for c, n in counts.items()}
+        path = tmp_path / "draws" / str(number)
+        path.mkdir(parents=True)
+        artifact = {"environment": env, "source": {"run": number, "commit": commit}, "cases": cases}
+        (path / "perf_gate.json").write_text(json.dumps(artifact))
+        return path
+
+    def merge(onto, head):
+        _git(repo.root, "checkout", "-q", "--detach", onto)
+        _git(repo.root, "merge", "-q", "--no-ff", "-m", "m", head)
+        made = _git(repo.root, "rev-parse", "HEAD")
+        _git(repo.root, "checkout", "-q", branch)
+        api[f"repos/o/r/commits/{made}"] = {"parents": [{"sha": onto}, {"sha": head}]}
+        return made
+
+    def side(base, **files):
+        _git(repo.root, "checkout", "-q", "--detach", base)
+        made = repo(**files)
+        _git(repo.root, "checkout", "-q", branch)
+        return made
+
+    run.merge, run.side, run.api = merge, side, api
+    return run
+
+
+def _taken(baseline_commit, run=100, cases=("a", "b", "c")):
+    case = {"instructions": 1000, "python_work": _W}
+    source = {"repository": "o/r", "run": run, "commit": baseline_commit}
+    return {"environment": _ENV, "source": source, "cases": dict.fromkeys(cases, case)}
+
+
+def _take(tmp_path, baseline, paths, carries=(), since="2026-11-01"):
+    out = tmp_path / "perf_gate_layout.json"
+    code = gate.take_layout_draws(baseline, list(paths), since, list(carries), out)
+    return code, json.loads(out.read_text()) if code == 0 else None
+
+
+def test_draws_come_from_the_run_record_and_git_never_from_the_artifact(ci, repo, tmp_path, capsys):
+    python = repo(**{"core__frontend__cudaq_pulse__k.py": "x = 2\n"})
+    head = ci.side(repo.base, **{"core__frontend__cudaq_pulse__y.py": "y = 3\n"})
+    gate_change = ci.side(repo.base, **{"tools__perf-gate.py": "forged\n"})
+    paths = [
+        ci(100, "workflow_dispatch", repo.base, {"a": 1000}, branch="b"),
+        ci(101, "push", python, {"a": 1001, "b": 1002}),
+        ci(102, "pull_request", ci.merge(python, head), {"a": 1003}, head=head, pr=7),
+        # A pull request that changed the gate writes what it likes.
+        ci(103, "pull_request", ci.merge(python, gate_change), {"a": 900}, head=gate_change),
+        # Not a merge of the run's head.
+        ci(104, "pull_request", ci.merge(python, head), {"a": 901}, head=gate_change),
+        ci(105, "workflow_dispatch", repo.base, {"a": 902}, branch="b"),
+        ci(106, "push", python, {"a": 903}, head=repo.base),
+        ci(107, "push", python, {"a": 904}, branch="feature"),
+        ci(108, "push", python, {"a": 905}, env={**_ENV, "python": "3.12.16"}),
+        ci(109, "push", python, {"a": 906, "b": 907}, work={**_W, "bytecodes": 11.0}),
+        # Another workflow's artifact of the same name.
+        ci(110, "push", python, {"a": 908}, workflow=".github/workflows/other.yml"),
+    ]
+    paths.append(paths[1])
+    code, layout = _take(tmp_path, _taken(repo.base), paths)
+    assert code == 0
+    assert layout["runs"] == [
+        {"run": 100, "attempt": 1, "event": "workflow_dispatch", "pr": None, "commit": repo.base,
+         "counts": {"a": 1000}},
+        {"run": 101, "attempt": 1, "event": "push", "pr": None, "commit": python,
+         "counts": {"a": 1001, "b": 1002}},
+        {"run": 102, "attempt": 1, "event": "pull_request", "pr": 7,
+         "commit": layout["runs"][2]["commit"], "counts": {"a": 1003}},
+    ]  # fmt: skip
+    log = capsys.readouterr().out
+    assert "run 103: its pull request changes measured code: tools/perf-gate.py" in log
+    assert "run 104: " in log and "is not a merge of the run's head" in log
+    assert "run 105: not a push to main, the baseline's dispatch" in log
+    assert f"run 106: its artifact names {python[:8]}, the run measured {repo.base[:8]}" in log
+    assert "run 107: not a push to main" in log
+    for run in (108, 109):
+        assert f"run {run}: no count in the baseline's environment" in log
+    assert "run 110: a run of .github/workflows/other.yml, not of .github/workflows/ci.yml" in log
+    assert "  new: run 102 (pull_request #7, " in log
+    assert gate.layout_bands(layout, _taken(repo.base))[1] == ""
+    assert gate.layout_draws(layout) == {"a": [1000, 1001, 1003], "b": [1002]}
+
+
+def test_a_merge_this_clone_lacks_is_rebuilt_from_its_parents(ci, repo, tmp_path, capsys):
+    python = repo(**{"core__frontend__cudaq_pulse__k.py": "x = 2\n"})
+    head = ci.side(repo.base, **{"core__frontend__cudaq_pulse__y.py": "y = 3\n"})
+    tree = _git(repo.root, "rev-parse", f"{ci.merge(python, head)}^{{tree}}")
+    for gone, claimed in (("e" * 40, tree), ("f" * 40, python)):
+        merge = {"parents": [{"sha": python}, {"sha": head}], "commit": {"tree": {"sha": claimed}}}
+        ci.api[f"repos/o/r/commits/{gone}"] = merge
+    paths = [ci(102, "pull_request", "e" * 40, {"a": 1003}, head=head)]
+    paths.append(ci(103, "pull_request", "f" * 40, {"a": 1004}, head=head))
+    code, layout = _take(tmp_path, _taken(repo.base), paths)
+    assert [r["commit"] for r in layout["runs"]] == ["e" * 40]
+    assert "run 103: ffffffff is not in this clone and its parents do not rebuild it" in (
+        capsys.readouterr().out
+    )
+
+
+def test_an_unmerged_pull_request_gives_one_draw_from_its_latest_run(ci, repo, tmp_path, capsys):
+    head = ci.side(repo.base, **{"core__frontend__cudaq_pulse__y.py": "y = 3\n"})
+    merge = ci.merge(repo.base, head)
+    ci.api["repos/o/r/pulls/9"] = {"number": 9, "merged_at": "2026-11-18T12:00:00Z"}
+    paths = [
+        ci(run, "pull_request", merge, {"a": 1000 + run}, head=head, pr=pr)
+        for run, pr in ((101, 8), (102, 8), (103, 9), (104, 9), (106, 8))
+    ]
+    code, layout = _take(tmp_path, _taken(repo.base), paths)
+    assert code == 0 and [r["run"] for r in layout["runs"]] == [103, 104, 106]
+    log = capsys.readouterr().out
+    for run in (101, 102):
+        assert f"run {run}: pull request #8 is not merged: only its latest run, 106," in log
+
+
+def test_a_run_on_other_measured_code_or_before_the_window_gives_no_draw(
+    ci, repo, tmp_path, capsys
+):
+    native = repo(**{"core__mlir__lib__Foo.cpp": "int g();\n"})
+    paths = [ci(101, "push", native, {"a": 1001}), ci(102, "push", repo.base, {"a": 1002})]
+    code, layout = _take(tmp_path, _taken(repo.base), paths, since="2026-11-19")
+    assert code == 0 and layout["runs"] == []
+    log = capsys.readouterr().out
+    assert "run 101: created before 2026-11-19" in log
+    _take(tmp_path, _taken(repo.base), paths[:1])
+    assert "run 101: its measured code is neither the baseline's nor carried to it" in (
+        capsys.readouterr().out
+    )
+
+
+@pytest.fixture
+def native(ci, repo):
+    """A change of native code between the draws' epoch and the baseline,
+    measured on two layouts (a pull request's pair of runs, main's pair)."""
+    pr_base = ci.side(repo.base, **{"core__frontend__cudaq_pulse__y.py": "y = 1\n"})
+    pr_after = ci.side(pr_base, **{"core__mlir__lib__Foo.cpp": "int g();\n"})
+    after = repo(**{"core__mlir__lib__Foo.cpp": "int g();\n"})
+    baseline = repo(**{"core__frontend__cudaq_pulse__k.py": "x = 2\n"})
+    return pr_base, pr_after, after, baseline
+
+
+def test_draws_are_carried_across_a_change_that_moved_a_case_alike_on_two_layouts(
+    ci, repo, tmp_path, native
+):
+    pr_base, pr_after, after, baseline = native
+    paths = [
+        ci(1, "push", pr_base, {"a": 1000, "b": 1000, "c": 1000}, branch="pr"),
+        ci(2, "push", pr_after, {"a": 1010, "b": 1005, "c": 1000}, branch="pr"),
+        ci(3, "push", repo.base, {"a": 990, "b": 990, "c": 990}),
+        ci(4, "push", after, {"a": 1000, "b": 996, "c": 990}),
+        ci(100, "workflow_dispatch", baseline, {"a": 1001, "b": 1001, "c": 1001}),
+    ]
+    code, layout = _take(tmp_path, _taken(baseline), paths, ["1:2,3:4"])
+    assert code == 0
+    assert layout["carried"] == [
+        {"commit": after, "pr": None, "runs": [[1, 2], [3, 4]],
+         "layouts": {"a": 2, "b": 2, "c": 2}, "moves": {"a": 10, "b": None, "c": 0}},
+    ]  # fmt: skip
+    # Run 3 measured main before the change: carried; 1 is not on main.
+    assert [(r["run"], r.get("across")) for r in layout["runs"]] == [
+        (3, [after]),
+        (4, None),
+        (100, None),
+    ]
+    assert gate.layout_draws(layout) == {
+        "a": [1000, 1000, 1001],
+        "b": [996, 1001],
+        "c": [990, 990, 1001],
+    }
+
+
+def test_on_one_layout_only_a_zero_move_carries(ci, repo, tmp_path, native):
+    _, _, after, baseline = native
+    paths = [
+        ci(3, "push", repo.base, {"a": 990, "c": 990}),
+        ci(4, "push", after, {"a": 1000, "c": 990}),
+        ci(5, "pull_request", ci.merge(repo.base, after), {"a": 1000, "c": 990}, head=after),
+    ]
+    code, layout = _take(tmp_path, _taken(baseline), paths, ["3:4,3:5"])
+    assert layout["carried"][0]["layouts"] == {"a": 1, "b": 0, "c": 1}
+    assert layout["carried"][0]["moves"] == {"a": None, "b": None, "c": 0}
+
+
+def test_pairs_on_trees_that_differ_only_in_files_never_measured_are_one_layout(
+    ci, repo, tmp_path, native
+):
+    _, _, after, baseline = native
+    docs = ci.side(repo.base, **{"README.md": "docs\n"})
+    docs_after = ci.side(docs, **{"core__mlir__lib__Foo.cpp": "int g();\n"})
+    paths = [
+        ci(3, "push", repo.base, {"a": 990, "c": 990}),
+        ci(4, "push", after, {"a": 1027, "c": 990}),
+        ci(5, "push", docs, {"a": 990, "c": 990}, branch="pr"),
+        ci(6, "push", docs_after, {"a": 1027, "c": 990}, branch="pr"),
+    ]
+    code, layout = _take(tmp_path, _taken(baseline), paths, ["3:4,5:6"])
+    assert code == 0 and layout["carried"][0]["layouts"] == {"a": 1, "b": 0, "c": 1}
+    assert layout["carried"][0]["moves"] == {"a": None, "b": None, "c": 0}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tools/perf-gate.py",
+        "benchmarks/perf_gate/cases.py",
+        "benchmarks/compiler/compile_time.py",
+        "benchmarks/classical/classical_calls.py",
+    ],
+)
+def test_a_change_to_the_gate_or_its_workloads_carries_only_if_it_moved_no_case(
+    ci, repo, tmp_path, path
+):
+    fixed = repo(**{path.replace("/", "__"): "fixed\n"})
+    for moved, moves in ((0, {"a": 0, "b": 0, "c": 0}), (1, dict.fromkeys("abc"))):
+        before, run = 3 + moved, 100 + moved
+        paths = [
+            ci(before, "push", repo.base, {"a": 990, "b": 990, "c": 990}),
+            ci(run, "workflow_dispatch", fixed, {"a": 990 + moved, "b": 990, "c": 990}),
+        ]
+        code, layout = _take(tmp_path, _taken(fixed, run), paths, [f"{before}:{run}"])
+        assert code == 0 and layout["carried"][0]["moves"] == moves
+
+
+def test_carried_changes_must_lead_to_the_baselines_code(ci, repo, tmp_path, native, capsys):
+    pr_base, pr_after, after, baseline = native
+    later = repo(**{"core__mlir__lib__Bar.cpp": "int h();\n"})
+    paths = [
+        ci(1, "push", pr_base, {"a": 1000}, branch="pr"),
+        ci(2, "push", pr_after, {"a": 1010}, branch="pr"),
+        ci(3, "push", repo.base, {"a": 990}),
+        ci(4, "push", after, {"a": 1000}),
+    ]
+    # Bar.cpp's change is not carried: the draws before it cannot be.
+    code, layout = _take(tmp_path, _taken(later), paths, ["1:2,3:4"])
+    assert code == 0 and layout["runs"] == []
+    capsys.readouterr()
+    # A pair of runs of the same measured code makes no change.
+    code, _ = _take(tmp_path, _taken(later), paths, ["1:2,3:3"])
+    assert code == 1 and "runs 3 and 3 measured the same measured code" in capsys.readouterr().out
+    # Pairs of runs that make different changes are not one change.
+    other = ci.side(repo.base, **{"core__mlir__lib__Foo.cpp": "int h();\n"})
+    paths.append(ci(5, "push", other, {"a": 1000}, branch="pr"))
+    code, _ = _take(tmp_path, _taken(later), paths, ["1:2,3:5"])
+    assert (
+        code == 1
+        and ("--carry 1:2,3:5: its pairs of runs do not make the same change of measured code")
+        in capsys.readouterr().out
+    )
+    # The change must lead to the baseline's code: here Foo.cpp moved on.
+    moved_on = repo(**{"core__mlir__lib__Foo.cpp": "int h();\n"})
+    code, _ = _take(tmp_path, _taken(moved_on), paths, ["1:2,3:4"])
+    assert (
+        code == 1
+        and (f"--carry: the change of {after[:8]} does not lead to the baseline's code")
+        in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize("spec", ["1-2", "1:2:3", "1:9", "x:2"])
+def test_a_carry_names_pairs_of_the_runs_given(ci, repo, tmp_path, native, capsys, spec):
+    pr_base, pr_after, _, baseline = native
+    paths = [ci(1, "push", pr_base, {"a": 1000}, branch="pr")]
+    paths.append(ci(2, "push", pr_after, {"a": 1010}, branch="pr"))
+    code, _ = _take(tmp_path, _taken(baseline), paths, [spec])
+    assert code == 1
+    assert f"--carry {spec}: name pairs BEFORE:AFTER of the runs given" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("missing", ["repository", "commit", "run"])
+def test_draws_need_a_baseline_taken_from_a_ci_run(tmp_path, capsys, missing):
+    baseline = _taken("a" * 40)
+    del baseline["source"][missing]
+    code, _ = _take(tmp_path, baseline, [])
+    assert code == 1 and capsys.readouterr().out == (
+        "The baseline names no repository, commit or run: take it from a CI run.\n"
+    )
+
+
+def test_the_draws_file_is_one_line_per_run_and_reads_as_json(tmp_path):
+    layout = {
+        "format": 1,
+        "baseline": {"run": 1, "commit": "c"},
+        "carried": [],
+        "runs": [{"run": 2}],
+    }
+    gate._write_layout(tmp_path / "l.json", layout)
+    text = (tmp_path / "l.json").read_text()
+    assert json.loads(text) == layout and '    {"run": 2}\n' in text
+
+
+def test_the_checked_in_draws_belong_to_the_checked_in_baseline():
+    if not gate.LAYOUT.exists():
+        pytest.skip("no layout draws are checked in")
+    layout = json.loads(gate.LAYOUT.read_text())
+    assert gate.layout_bands(layout, BASELINE)[1] == ""
+    assert layout["baseline"]["commit"] == BASELINE["source"]["commit"]
