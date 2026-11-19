@@ -165,6 +165,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- On one controller whose clock is not the program's, `rcp` and `alap_rcp`
+  waited the feedback latency in the controller's cycles as if they were the
+  program's: they failed their own check (100 cycles at 0.5 GHz are 400 of
+  a 2 GHz program, not 100), and a request sending a readout's outcome could
+  leave before it was there. Simulation and classical emulation schedule
+  again with the same latency as `compile()`.
 - A kernel called with its own `schedule=` could hand out a tone whose phase
   a measured `if` changed (on a bit it read, was passed, or carried from an
   earlier trip of a loop) as if unchanged, so the caller's drive started

@@ -370,6 +370,52 @@ def test_rcp_waits_each_readers_feedback_latency_in_program_cycles():
     assert drive.start >= readout.end + 40
 
 
+@pulse.classical(max_latency_ns=100)
+def echo_bit(bits: pulse.Bits) -> pulse.Bits:
+    return [bits[0]]
+
+
+@pulse.kernel
+def call_then_branch(q):
+    d = get_drive_line(q)
+    r = get_readout_line(q)
+    m = readout(r, square(400, 0.05))
+    fix = echo_bit.submit([m]).result()
+    if fix[0]:
+        drive(d, square(40, 0.3))
+
+
+def _one_controller_at(clock_ghz):
+    """One controller at *clock_ghz* with 100 cycles of its own feedback
+    latency, under a 2 GHz program."""
+    controller = pulse.Controller(
+        drive_lines=[0, 1], readout_lines=[0, 1], clock_ghz=clock_ghz, feedback_latency_cycles=100
+    )
+    return _device(system=pulse.ControlSystem(controllers=[controller]), clock_ghz=2.0)
+
+
+@pytest.mark.parametrize("schedule", ["rcp", "alap_rcp"])
+@pytest.mark.parametrize(("clock_ghz", "latency"), [(0.5, 400), (1.0, 200), (2.0, 100)])
+def test_one_controller_at_another_clock_waits_its_feedback_latency_in_program_cycles(
+    clock_ghz, latency, schedule
+):
+    # 100 cycles at 0.5 GHz are 400 of the 2 GHz program's. Before, they
+    # were waited as 100 program cycles, and rcp failed its own check.
+    qpu = _one_controller_at(clock_ghz)
+    lowered = pulse.compile(feedback, schedule=schedule, quantum_system=qpu).lower(qpu.qudits[0])
+    readout, drive = (e for e in lowered.schedule if e.kind in ("readout", "drive"))
+    assert drive.start - readout.end == latency
+    assert pulse.controller.check(lowered) == []
+    # A request on the outcome leaves once the latency has passed.
+    lowered = pulse.compile(call_then_branch, schedule=schedule, quantum_system=qpu).lower(
+        qpu.qudits[0]
+    )
+    [call] = lowered.classical_report()
+    readout = next(e for e in lowered.schedule if e.kind == "readout")
+    assert call.submit_cycles >= readout.end + latency
+    assert pulse.controller.check(lowered) == []
+
+
 def test_each_lines_delay_is_split_by_its_own_controllers_fine_delay():
     controllers = [
         pulse.Controller(drive_lines=[0, 1], readout_lines=[0, 1], max_fine_delay_ns=1.0),

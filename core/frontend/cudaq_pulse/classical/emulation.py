@@ -478,7 +478,9 @@ def emulate(
     machine = lowered.options.machine
     if transport is not None and not isinstance(transport, Transport):
         _check_transport(transport, machine)
-    schedule_args = lowered.options.schedule_args()
+    from .._programs import _schedule_args
+
+    schedule_args = _schedule_args(lowered.options, lowered.clocks)
     base = lowered._concrete().simulation_module(*schedule_args)
     due_ns = base.call_due_ns()
     clock = lowered.quantum_system.clock_ghz

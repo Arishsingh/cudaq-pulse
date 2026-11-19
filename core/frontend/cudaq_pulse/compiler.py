@@ -10,6 +10,7 @@ that pick passes and a schedule, the native build of one specialization, and
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import sys
 import threading
@@ -1393,6 +1394,14 @@ def _clocked_builder(
         clocks = None
     else:
         clocks = _clocks.plan(controller, target.clock_ghz, machine.reference_clock_ghz)
+        if clocks is not None and controller is not None:
+            # The controller counts its feedback latency in its own cycles;
+            # the scheduler waits it in the program's (a new plan: plans
+            # are cached).
+            from fractions import Fraction
+
+            latency = Fraction(machine.readout_latency_cycles) / clocks.controllers[0].ratio
+            clocks = dataclasses.replace(clocks, readout_latency_cycles=math.ceil(latency))
     if clocks is not None:
         builder.line_grid = clocks.grid_of
         builder.wait_grid = clocks.lcm
