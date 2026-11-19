@@ -114,3 +114,44 @@ for event in scheduled.schedule:
 if VIZ:
     figure = scheduled.timeline()
     figure.savefig("rabi_schedule.svg")
+
+
+# %% The same program as MLIR
+print(scheduled.mlir())
+
+# Prints, wrapped here, with ... for text left out:
+#   module @rabi attributes {...} {
+#     func.func @main()
+#         attributes {pulse.schedule_state = #pulse.schedule_state<timed>} {
+#       %cst = arith.constant 1.600000e-01 : f64
+#       %cst_0 = arith.constant 0.000000e+00 : f64
+#       %cst_1 = arith.constant 5.000000e-02 : f64
+#       %c600_i64 = arith.constant 600 : i64
+#       %cst_2 = arith.constant 1.600000e+01 : f64
+#       %c64_i64 = arith.constant 64 : i64
+#       %0 = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+#       %line, %tone = pulse.get_drive_line %0
+#           {frequency_hz = 3.885000e+09 : f64}
+#           : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+#       %line_3, %tone_4 = pulse.get_readout_line %0
+#           {frequency_hz = 6.769000e+09 : f64}
+#           : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
+#       %1 = pulse.gaussian %c64_i64, %cst, %cst_2
+#           : i64, f64, f64 -> !pulse.waveform
+#       %updated_line, %updated_tone = pulse.drive %line, %1, %tone
+#           <{duration_cycles = 64 : i64, start_cycles = 0 : i64}>
+#           : !pulse.drive_line, !pulse.waveform, !pulse.tone
+#           -> !pulse.drive_line, !pulse.tone
+#       %2:2 = pulse.sync %updated_line, %line_3
+#           : !pulse.drive_line, !pulse.readout_line
+#           -> !pulse.drive_line, !pulse.readout_line
+#       %3 = pulse.square %c600_i64, %cst_1, %cst_0
+#           : i64, f64, f64 -> !pulse.waveform
+#       %updated_line_5, %updated_tone_6, %result =
+#           pulse.readout %2#1, %3, %tone_4, iq
+#           <{duration_cycles = 600 : i64, start_cycles = 64 : i64}>
+#           : !pulse.readout_line, !pulse.waveform, !pulse.tone
+#           -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+#       return
+#     }
+#   }
