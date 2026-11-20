@@ -343,7 +343,7 @@ void QuantumSystemAttr::print(AsmPrinter &printer) const {
 LogicalResult LineAttr::verify(function_ref<InFlightDiagnostic()> emitError,
                                LineKind kind, ArrayRef<int64_t> qudits,
                                int64_t maxConcurrentTones, int64_t delayCycles,
-                               int64_t controller) {
+                               int64_t controller, int64_t fineCycles) {
   if (qudits.empty())
     return emitError() << "a line reaches at least one qudit";
   llvm::SmallSet<int64_t, 4> seen;
@@ -359,6 +359,8 @@ LogicalResult LineAttr::verify(function_ref<InFlightDiagnostic()> emitError,
   if (controller < 0)
     return emitError() << "controller " << controller
                        << " is not a controller index";
+  if (fineCycles < 0)
+    return emitError() << "fine_cycles is 0 or more, got " << fineCycles;
   return success();
 }
 
@@ -374,7 +376,7 @@ Attribute LineAttr::parse(AsmParser &parser, Type) {
     return {};
   }
   SmallVector<int64_t> qudits;
-  int64_t tones = 1, delay = 0, controller = 0;
+  int64_t tones = 1, delay = 0, controller = 0, fine = 0;
   FieldParser fields{parser, "line"};
   if (succeeded(parser.parseOptionalComma())) {
     if (fields.parseRest({
@@ -382,13 +384,14 @@ Attribute LineAttr::parse(AsmParser &parser, Type) {
             {"max_concurrent_tones", [&] { return fields.integer(tones); }},
             {"delay_cycles", [&] { return fields.integer(delay); }},
             {"controller", [&] { return fields.integer(controller); }},
+            {"fine_cycles", [&] { return fields.integer(fine); }},
         }))
       return {};
   } else if (parser.parseGreater()) {
     return {};
   }
   return parser.getChecked<LineAttr>(parser.getContext(), *kind, qudits, tones,
-                                     delay, controller);
+                                     delay, controller, fine);
 }
 
 void LineAttr::print(AsmPrinter &printer) const {
@@ -401,6 +404,8 @@ void LineAttr::print(AsmPrinter &printer) const {
     fields.integer("delay_cycles", getDelayCycles());
   if (getController() != 0)
     fields.integer("controller", getController());
+  if (getFineCycles() != 0)
+    fields.integer("fine_cycles", getFineCycles());
   printer << '>';
 }
 

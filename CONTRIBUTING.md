@@ -220,7 +220,8 @@ on two measures:
   on Linux x86-64. A case fails at more than 0.4% above its baseline. It
   also fails at more than 1% below, so that a speedup is recorded in the
   baseline instead of hiding a later regression. A failure says whether it
-  is a regression, a gain or layout only (below).
+  is a regression, a gain or layout only (below). Layout only that the
+  change itself caused passes (below).
 - **Program sizes**: op count, packed program bytes and export bytes. Any
   change fails. These are the same on every platform, and
   `tests/test_perf_gate.py` checks them in the regular test suite too.
@@ -305,6 +306,23 @@ instructions says its kind, and the summary counts them by kind:
 A regression or a gain lists each counter of Python work that changed, or,
 with the same work, says the change is in native code. Every kind fails. A
 baseline without Python work tells only regressions from gains.
+
+**Base comparison.** A count also moves with the code merged before a
+change, so the job compares a layout only row with the change's base (a
+pull request's base, or the previous tip of a push to main). If the change
+keeps the base's measured code, it touches only the package's Python
+sources and files the job never reads (tests, docs, examples, other
+workflows than `ci.yml`, the baselines; `pyproject.toml` and `uv.lock` only
+outside what the job builds), the gate checks out the base's
+`core/frontend` over the tree's and measures it on the same build. A row
+whose case ran the same Python work there, and whose count the change moved
+by at most 0.95% either way from the base's, passes as `layout`, with a
+notice. Native code, build files, `ci.yml`, the gate and its cases are
+measured code: such a change, or one git cannot compare, is judged by the
+limits. A gain that passes this way isn't kept, and hidden native work
+behind the same Python calls passes below 0.95% per change (up to 2% from
+the baseline). `python tools/perf-gate.py --help` (base comparison) has the
+details.
 
 Wall-clock times are informational only: shared runners are too noisy to
 block on. The test job still reports `tests/test_perf_guard.py`'s
@@ -493,6 +511,35 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   branch, so the schedule tests `main`; a manual dispatch tests the branch it
   is dispatched on.
 
+### Which jobs a change runs
+
+`ci.yml`, `docs.yml` and `sanitizers.yml` each start with a `changes` job
+that classes the change by the paths it touches (`tools/ci-changes.py`):
+
+| The change touches | Class | What runs |
+| --- | --- | --- |
+| `core/mlir`, `core/runtime`, CMake files, `cmake/`, `packaging/`, `test/`, `.github/workflows` or `.github/actions`, or a path the tool does not name | native | every job |
+| `core/frontend`, `tests/`, `examples/`, `benchmarks/`, `tools/`, `pyproject.toml`, `pyrightconfig.json`, `uv.lock`, `.pre-commit-config.yaml` | python | every job but `old-compilers` |
+| `docs/`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, the license and notice files | docs | lint, the docs build and `test-docs`, one job with the tests that read these files |
+| only files no test reads (`CITATION.cff`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, issue templates) | none | lint |
+
+A change takes the widest class of its paths. A path the tool does not name
+runs every job, so a new directory is tested in full until it is placed in
+the tool. Only a pull request is classed: a push to `main`, a manual run
+and a run whose base cannot be compared run every job. The perf gate runs
+for the native and python classes, which is every change that can move it.
+`tests/test_ci_changes.py` holds the classes, the condition on each job, the
+tests that `test-docs` runs and the summary.
+
+One gap: `editor-types` type-checks the Python code blocks of the pages and
+does not run for a change to the pages alone; it runs on `main` after the
+merge.
+
+`ci-ok` is the summary of `ci.yml`: it always runs, fails when a job that
+ran failed or was cancelled, and passes when the jobs a change does not need
+were skipped. Require it on `main`, with `docs (build)` and
+`sanitizers (address+undefined)`, whose skipped runs count as passed.
+
 ### GPU CI
 
 The GPU tests run on NVIDIA's shared GitHub Actions GPU runners, through
@@ -678,7 +725,7 @@ Add `--repository testpypi` for TestPyPI.
    tests the wheels and the sdist, publishes them as a GitHub pre-release and,
    with index publishing enabled, uploads the wheels to TestPyPI.
 2. Date the version's section in `CHANGELOG.md` (`## [0.1.0] - YYYY-MM-DD`)
-   in a pull request to `main`. The next release's section,
+   and update `version` and `date-released` in `CITATION.cff` in a pull request to `main`. The next release's section,
    `## [X.Y.Z] - Unreleased`, starts with the first change after the tag.
 3. Tag `v0.1.0` on `main`; with index publishing enabled, its wheels go to
    PyPI.

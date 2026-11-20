@@ -610,26 +610,23 @@ Its ``run`` plays listings on an emulator of the toy controllers.
 Validate it
 ~~~~~~~~~~~
 
-The test programs compile with the default schedule, which doesn't wait
-out feedback latency. So validate against a controller without it:
+The test programs compile with the default schedule, which waits out the
+toy controller's feedback latency. So validate against the toy controller
+itself:
 
 .. code-block:: python
 
    from cudaq_pulse import backends
    from toy_isa import ToyBackend
 
-   no_latency = pulse.controller(
-       "toy_sequencer.toml",
-       feedback_latency_cycles=0,
-   )
-   report = backends.validate(ToyBackend(), controller=no_latency)
+   report = backends.validate(ToyBackend())
    lines = str(report).splitlines()
    print(lines[-1])
 
 .. code-block:: text
    :class: output
 
-   backend 'toy': 16 passed, 2 skipped
+   backend 'toy': 27 passed, 2 skipped
 
 The test programs cover:
 
@@ -660,7 +657,7 @@ description doesn't support that, so the compiler turns them away.
 Check your own programs
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Check your own programs against their ``rcp`` schedule the same way:
+Check your own programs against their schedule the same way:
 
 .. code-block:: python
 

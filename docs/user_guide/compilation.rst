@@ -123,9 +123,11 @@ Options, all keyword-only:
 ``schedule`` *(str, optional)*
    Scheduling policy of the compiled kernel itself: ``"asap"``, ``"alap"``,
    ``"rcp"`` or ``"alap_rcp"``; by default the kernel's own ``schedule=``,
-   else ``"alap"``. ASAP and ALAP preserve data and physical-line
-   dependencies, including the order of pulses that play on the same tone;
-   the RCP variants also enforce the ``ControlSystem``'s lanes. Kernels
+   else ``"alap"``. Every policy preserves data and physical-line
+   dependencies, including the order of pulses that play on the same tone,
+   and starts an operation that depends on a readout once the controller's
+   ``feedback_latency_cycles`` have passed after the readout ends; the RCP
+   variants also enforce the ``ControlSystem``'s lanes. Kernels
    it calls keep their own ``schedule=`` (see `Per-kernel schedules`_).
 
 ``flatten_schedules`` *(bool, default False)*
