@@ -538,7 +538,8 @@ def test_a_controller_without_loop_gets_its_loops_unrolled_for_it_only():
     a, b = _two_boxes(max_pulses=4)
     a = pulse.Controller(drive_lines=[0, 1], model="box.a", max_pulses=4, supports=no_loop)
     qpu = _qpu(a, b)
-    assert "scf.for" in two_loops.lower(qpu.qudits[0], qpu.qudits[2]).mlir()
+    roomy = _qpu(pulse.Controller(drive_lines=[0, 1], supports=no_loop), b)
+    assert "scf.for" in two_loops.lower(roomy.qudits[0], roomy.qudits[2]).mlir()
     # Without loop, box.a plays all 60 drives of its loop, naming it; box.b
     # holds its loop's body once.
     with pytest.raises(ControllerLimitError) as raised:

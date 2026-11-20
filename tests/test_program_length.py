@@ -233,3 +233,76 @@ def test_a_call_checks_twenty_thousand_waits_of_one_float(shape):
     assert len({id(w.length) for w in waits.waits}) == len({id(w.length) for w in again.waits}) == 1
     compares = [op for op in dis.get_instructions(waits.ok) if op.opname == "COMPARE_OP"]
     assert len(compares) < 10
+
+
+# ── The scheduled program ────────────────────────────────────────────────────
+
+
+@pulse.kernel
+def drive_in_if(q):
+    d = get_drive_line(q)
+    r = get_readout_line(q)
+    bit = readout(r, square(400, 0.05))
+    if bit:
+        drive(d, square(40, 0.3))
+
+
+@pulse.kernel
+def repeat_until_success(q):
+    d = get_drive_line(q)
+    r = get_readout_line(q)
+    m = readout(r, square(400, 0.05))
+    for _ in range(100):
+        if m:
+            drive(d, square(360, 0.5))
+            sync(d, r)
+            m = readout(r, square(400, 0.05))
+
+
+def _latency_system(limit_ns):
+    controller = Controller(feedback_latency_cycles=400, max_program_duration=limit_ns)
+    return ControlSystem(controllers=[controller])
+
+
+@pytest.mark.parametrize("schedule", ["rcp", "alap_rcp"])
+@pytest.mark.parametrize(
+    ("kernel", "limit_ns", "length"),
+    [(drive_in_if, 300, 840), (repeat_until_success, 40_000, 116_400)],
+)
+def test_a_schedule_that_waits_for_feedback_past_the_longest_program_is_an_error(
+    kernel, limit_ns, length, schedule
+):
+    # Played op after op the programs fit (440 and 76,400 cycles of 600 and
+    # 80,000); each waits 400 cycles after every readout it branches on.
+    # Before, the schedule was not checked and both compiled.
+    machine = _latency_system(limit_ns)
+    with pytest.raises(CompilationError) as caught:
+        pulse.compile(kernel, schedule=schedule, control_system=machine).lower(Q[0])
+    assert str(caught.value) == (
+        f"kernel '{kernel.__name__}' lasts {length} cycles, more than controllers[0]'s "
+        f"max_program_duration of {limit_ns} ns ({2 * limit_ns} cycles), waiting 400 cycles "
+        "of feedback latency after the readouts its operations depend on; let its operations "
+        "overlap, shorten them or raise max_program_duration"
+    )
+    # Long enough, it compiles.
+    longer = _latency_system(length / 2)
+    lowered = pulse.compile(kernel, schedule=schedule, control_system=longer).lower(Q[0])
+    assert max(e.start_cycles + e.duration_cycles for e in lowered.schedule) == length
+
+
+def test_each_controllers_longest_program_bounds_the_lines_it_plays():
+    # Nothing checks several controllers as the module is built.
+    controllers = [
+        Controller(drive_lines=[0], readout_lines=[0], max_program_duration=100),
+        Controller(drive_lines=[1], readout_lines=[1]),
+    ]
+    machine = ControlSystem(controllers=controllers)
+    waits = _waits(3, 100)
+    assert pulse.compile(waits, control_system=machine).lower(Q[1]) is not None
+    with pytest.raises(CompilationError) as caught:
+        pulse.compile(waits, control_system=machine).lower(Q[0])
+    assert str(caught.value) == (
+        "kernel 'waits' lasts 300 cycles, more than controllers[0]'s max_program_duration "
+        "of 100 ns (200 cycles); let its operations overlap, shorten them or raise "
+        "max_program_duration"
+    )

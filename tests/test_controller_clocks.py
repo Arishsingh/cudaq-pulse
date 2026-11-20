@@ -370,6 +370,52 @@ def test_rcp_waits_each_readers_feedback_latency_in_program_cycles():
     assert drive.start >= readout.end + 40
 
 
+@pulse.classical(max_latency_ns=100)
+def echo_bit(bits: pulse.Bits) -> pulse.Bits:
+    return [bits[0]]
+
+
+@pulse.kernel
+def call_then_branch(q):
+    d = get_drive_line(q)
+    r = get_readout_line(q)
+    m = readout(r, square(400, 0.05))
+    fix = echo_bit.submit([m]).result()
+    if fix[0]:
+        drive(d, square(40, 0.3))
+
+
+def _one_controller_at(clock_ghz):
+    """One controller at *clock_ghz* with 100 cycles of its own feedback
+    latency, under a 2 GHz program."""
+    controller = pulse.Controller(
+        drive_lines=[0, 1], readout_lines=[0, 1], clock_ghz=clock_ghz, feedback_latency_cycles=100
+    )
+    return _device(system=pulse.ControlSystem(controllers=[controller]), clock_ghz=2.0)
+
+
+@pytest.mark.parametrize("schedule", ["rcp", "alap_rcp"])
+@pytest.mark.parametrize(("clock_ghz", "latency"), [(0.5, 400), (1.0, 200), (2.0, 100)])
+def test_one_controller_at_another_clock_waits_its_feedback_latency_in_program_cycles(
+    clock_ghz, latency, schedule
+):
+    # 100 cycles at 0.5 GHz are 400 of the 2 GHz program's. Before, they
+    # were waited as 100 program cycles, and rcp failed its own check.
+    qpu = _one_controller_at(clock_ghz)
+    lowered = pulse.compile(feedback, schedule=schedule, quantum_system=qpu).lower(qpu.qudits[0])
+    readout, drive = (e for e in lowered.schedule if e.kind in ("readout", "drive"))
+    assert drive.start - readout.end == latency
+    assert pulse.controller.check(lowered) == []
+    # A request on the outcome leaves once the latency has passed.
+    lowered = pulse.compile(call_then_branch, schedule=schedule, quantum_system=qpu).lower(
+        qpu.qudits[0]
+    )
+    [call] = lowered.classical_report()
+    readout = next(e for e in lowered.schedule if e.kind == "readout")
+    assert call.submit_cycles >= readout.end + latency
+    assert pulse.controller.check(lowered) == []
+
+
 def test_each_lines_delay_is_split_by_its_own_controllers_fine_delay():
     controllers = [
         pulse.Controller(drive_lines=[0, 1], readout_lines=[0, 1], max_fine_delay_ns=1.0),
@@ -1045,12 +1091,24 @@ def _gap(qpu, schedule="rcp"):
 def test_an_outcome_sent_to_another_controller_is_budgeted_with_both_start_uncertainties():
     qpu = _forwarding()
     # Feedback 3 and peer 2 cycles at 1 GHz are 10 program cycles; the start
-    # uncertainty adds 2 + 4.
-    with pytest.raises(ControllerLimitError) as caught:
-        _gap(qpu, schedule="asap")
-    [message] = caught.value.violations
+    # uncertainty adds 2 + 4. Every schedule waits for it.
+    assert _gap(qpu, schedule="asap") == _gap(qpu, schedule="alap") == 16
+    # A schedule made for the same controllers without the latencies (the
+    # start uncertainty alone puts the drive at 108) is refused by this
+    # system's check.
+    from cudaq_pulse.controller import _compile_check
+
+    quick = [
+        dataclasses.replace(c, feedback_latency_cycles=0, peer_latency_cycles=0)
+        for c in qpu.control_system.controllers
+    ]
+    near = _device(system=pulse.ControlSystem(controllers=quick), clock_ghz=2.0)
+    lowered = pulse.compile(branch_across, schedule="asap", quantum_system=near).lower(
+        near.qudits[0], near.qudits[2]
+    )
+    [message], _ = _compile_check(lowered, None, qpu.control_system)
     assert message.startswith(
-        "controllers[1]: the drive on line 1 at 100 branches on the readout of controllers[0] "
+        "controllers[1]: the drive on line 1 at 108 branches on the readout of controllers[0] "
         "ending at 100, whose outcome reaches it 16 cycles later, at 116 (10 of feedback and "
         "peer latency, and 6 of the two controllers' start uncertainty, without a shared "
         "reference_clock_ghz); start it at 116 or later: schedule with rcp"
@@ -1082,12 +1140,13 @@ def test_rcp_waits_for_an_outcome_from_where_its_delayed_readout_ends(schedule):
     assert drive.start - readout.end == 6
 
 
-def test_an_outcome_used_on_its_own_controller_needs_only_its_feedback_latency():
+@pytest.mark.parametrize("schedule", ["asap", "alap", "rcp", "alap_rcp"])
+def test_an_outcome_used_on_its_own_controller_needs_only_its_feedback_latency(schedule):
+    # 3 cycles at 1 GHz: 6 of the program's, under every schedule.
     qpu = _forwarding()
-    with pytest.raises(ControllerLimitError) as caught:
-        pulse.compile(feedback, schedule="asap", quantum_system=qpu).lower(qpu.qudits[0])
-    [message] = caught.value.violations
-    assert "needs 3 cycles of feedback latency" in message
+    lowered = pulse.compile(feedback, schedule=schedule, quantum_system=qpu).lower(qpu.qudits[0])
+    readout, drive = (e for e in lowered.schedule if e.kind in ("readout", "drive"))
+    assert drive.start - readout.end == 6
 
 
 def _call_across(reference=None, reach_both=True):
@@ -1171,8 +1230,8 @@ def test_rcp_waits_for_an_outcome_a_pulse_computes_with_to_reach_its_controller(
     monkeypatch.setattr(pulse.compiler, "_can_select_at_runtime", lambda target, kind: True)
     qpu = _forwarding()
 
-    def gap(b):
-        lowered = pulse.compile(chosen_across, schedule="rcp", quantum_system=qpu).lower(
+    def gap(b, schedule="rcp"):
+        lowered = pulse.compile(chosen_across, schedule=schedule, quantum_system=qpu).lower(
             qpu.qudits[0], qpu.qudits[b]
         )
         readout, drive = (e for e in lowered.schedule if e.kind in ("readout", "drive"))
@@ -1180,10 +1239,23 @@ def test_rcp_waits_for_an_outcome_a_pulse_computes_with_to_reach_its_controller(
 
     assert gap(1) == 6
     assert gap(2) == 16
-    # Scheduled too early, the check names it.
-    early = pulse.compile(chosen_across, schedule="asap", quantum_system=qpu)
-    with pytest.raises(ControllerLimitError, match="computes with the readout of controllers"):
-        early.lower(qpu.qudits[0], qpu.qudits[2])
+    # Every schedule waits as long.
+    assert gap(1, "asap") == 6
+    assert gap(2, "asap") == 16
+    # Scheduled for the same controllers without the latencies, the check
+    # names it.
+    from cudaq_pulse.controller import _compile_check
+
+    quick = [
+        dataclasses.replace(c, feedback_latency_cycles=0, peer_latency_cycles=0)
+        for c in qpu.control_system.controllers
+    ]
+    near = _device(system=pulse.ControlSystem(controllers=quick), clock_ghz=2.0)
+    early = pulse.compile(chosen_across, schedule="asap", quantum_system=near).lower(
+        near.qudits[0], near.qudits[2]
+    )
+    [message], _ = _compile_check(early, None, qpu.control_system)
+    assert "computes with the readout of controllers" in message
 
 
 @pulse.kernel

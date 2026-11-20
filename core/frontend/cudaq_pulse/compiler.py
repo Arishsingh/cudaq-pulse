@@ -10,6 +10,7 @@ that pick passes and a schedule, the native build of one specialization, and
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import sys
 import threading
@@ -219,6 +220,11 @@ class _Links(dict[int, "Link"]):
     __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _readonly  # type: ignore[assignment]
 
 
+# The drives and readouts the rcp and alap_rcp schedules play at once when
+# the control system gives no limit.
+_RCP_DRIVES = 4
+_RCP_READOUTS = 2
+
 # Defaults of the mapping fields, read-only: __post_init__ replaces whatever
 # a field is given.
 _NO_DELAYS: Mapping[tuple[str, int], float] = MappingProxyType({})
@@ -228,8 +234,9 @@ _NO_LINKS: Mapping[int | str, Link] = MappingProxyType({})
 @dataclass(frozen=True)
 class _MachineModel:
     """What compiling for a ``ControlSystem`` (``ControlSystem._machine``)
-    needs of it: the lanes, readout latency and switch penalty of the
-    ``rcp`` and ``alap_rcp`` schedules; the links by id, a named link at
+    needs of it: the lanes and switch penalty of the ``rcp`` and
+    ``alap_rcp`` schedules, and the readout latency of every schedule; the
+    links by id, a named link at
     the lowest id no other link has, in the order given (a link id a
     program uses that is not listed gets ``Link()``; an unknown name is an
     error); the controller a program is for, when it is checked as one
@@ -239,8 +246,8 @@ class _MachineModel:
     ``_bare`` set, not a field: one more would cost every import.
     """
 
-    max_concurrent_drives: int = 4
-    max_concurrent_readouts: int = 2
+    max_concurrent_drives: int | None = None
+    max_concurrent_readouts: int | None = None
     readout_latency_cycles: int = 0
     line_switch_penalty_cycles: int = 0
     links: Mapping[int | str, Link] = _NO_LINKS
@@ -253,8 +260,16 @@ class _MachineModel:
     # capabilities every program is checked against.
     _system: ControlSystem | None = field(default=None, repr=False)
     _plain: bool = field(init=False, repr=False, compare=False)
+    if TYPE_CHECKING:
+        # The drives and readouts the rcp schedules play at once: the limits
+        # given, else _RCP_DRIVES and _RCP_READOUTS. Not fields, as _bare.
+        _drive_lanes: int = field(init=False)
+        _readout_lanes: int = field(init=False)
 
     def __post_init__(self) -> None:
+        drives, readouts = self.max_concurrent_drives, self.max_concurrent_readouts
+        object.__setattr__(self, "_drive_lanes", _RCP_DRIVES if drives is None else drives)
+        object.__setattr__(self, "_readout_lanes", _RCP_READOUTS if readouts is None else readouts)
         if self.controller is not None:
             from ._system import Controller
 
@@ -542,9 +557,10 @@ class CompileOptions:
                     "compile(control_system=) takes a pulse.ControlSystem or a "
                     f"pulse.Controller, got {control_system!r}"
                 ) from None
-            if machine.max_concurrent_drives <= 0:
+            drives, readouts = machine.max_concurrent_drives, machine.max_concurrent_readouts
+            if drives is not None and drives <= 0:
                 raise ValueError("ControlSystem.max_concurrent_drives must be positive")
-            if machine.max_concurrent_readouts <= 0:
+            if readouts is not None and readouts <= 0:
                 raise ValueError("ControlSystem.max_concurrent_readouts must be positive")
             if machine.readout_latency_cycles < 0:
                 raise ValueError("the readout latency cannot be negative")
@@ -567,8 +583,8 @@ class CompileOptions:
         m = self.machine
         return (
             self.schedule,
-            m.max_concurrent_drives,
-            m.max_concurrent_readouts,
+            m._drive_lanes,
+            m._readout_lanes,
             int(m.readout_latency_cycles),
             int(m.line_switch_penalty_cycles),
         )
@@ -1129,7 +1145,7 @@ def _rejected_literal(
     return located
 
 
-_BUDGETS = ("max_duration_cycles", "reaction_deadline_ns")
+_BUDGETS = ("max_duration_cycles", "reaction_deadline_ns", "max_program_duration")
 
 
 def build(
@@ -1302,6 +1318,11 @@ def build(
         at = text.find("the program lasts more than 2**60 cycles with its lines delayed")
         if at >= 0:
             raise CompilationError(text[at:].partition("\n")[0], code="limit_exceeded") from None
+        # A scheduled program longer than a controller runs.
+        at = text.find("'s max_program_duration of ")
+        if at >= 0:
+            at = text.rfind("kernel '", 0, at)
+            raise CompilationError(text[at:].partition("\n")[0], code="limit_exceeded") from None
         # A call over a per-controller link that uses several controllers
         # fails with any values too. The error names the function as the
         # kernel calls it, not the version of it the module holds.
@@ -1393,6 +1414,14 @@ def _clocked_builder(
         clocks = None
     else:
         clocks = _clocks.plan(controller, target.clock_ghz, machine.reference_clock_ghz)
+        if clocks is not None and controller is not None:
+            # The controller counts its feedback latency in its own cycles;
+            # the scheduler waits it in the program's (a new plan: plans
+            # are cached).
+            from fractions import Fraction
+
+            latency = Fraction(machine.readout_latency_cycles) / clocks.controllers[0].ratio
+            clocks = dataclasses.replace(clocks, readout_latency_cycles=math.ceil(latency))
     if clocks is not None:
         builder.line_grid = clocks.grid_of
         builder.wait_grid = clocks.lcm
@@ -1435,12 +1464,14 @@ def _clocked_module(
     fine_delays = None
     if machine._line_delays:
         shifts, fine_delays = _line_delays(machine, target, clocks)
-    lines = _lines(machine, shifts)
+    lines = _lines(machine, shifts, fine_delays, target.clock_ghz)
     system = machine._system
     if system is not None and machine.controller is None:
         controllers = system._controllers_attribute(target.clock_ghz, max_duration_cycles)
     else:
         controllers = _controller_attribute(machine.controller, clocks, max_duration_cycles)
+    if limits := _program_limits(machine, target.clock_ghz):
+        module.set_attributes(limits)
     if lines or controllers:
         text = "{pulse.control_system = #pulse.control_system<clock_period_fs = "
         text += _clocks.clock_period_fs(target.clock_ghz)
@@ -1450,6 +1481,31 @@ def _clocked_module(
             text += f", controllers = {controllers}"
         module.set_attributes(text + ">}")
     return fine_delays
+
+
+def _program_limits(machine: _MachineModel, program_ghz: float) -> str:
+    """``pulse.program_limits``: each controller's ``max_program_duration``,
+    which the scheduled program is checked against; empty for none."""
+    from ._system import _label
+
+    system = machine._system
+    controllers = (
+        [machine.controller]
+        if machine.controller is not None or system is None
+        else list(system.controllers)
+    )
+    entries = []
+    for index, controller in enumerate(controllers):
+        if controller is None or controller.max_program_duration is None:
+            continue
+        ns = controller.max_program_duration
+        cycles = max(1, math.floor(ns * program_ghz + 1e-9))
+        name = '"' + _label(index, controller).replace("\\", "\\\\").replace('"', '\\"') + '"'
+        entries.append(
+            f"{{controller = {index} : i64, cycles = {cycles} : i64, name = {name}, "
+            f'duration = "{ns:g} ns"}}'
+        )
+    return f"{{pulse.program_limits = [{', '.join(entries)}]}}" if entries else ""
 
 
 def _controller_attribute(
@@ -1473,19 +1529,33 @@ def _controller_attribute(
     return f"[#pulse.controller<{', '.join(fields)}>]" if fields else ""
 
 
-def _lines(machine: _MachineModel, shifts: Mapping[tuple[str, int], int]) -> str:
+def _lines(
+    machine: _MachineModel,
+    shifts: Mapping[tuple[str, int], int],
+    fine_delays: Mapping[tuple[str, int], float] | None = None,
+    program_ghz: float = 0.0,
+) -> str:
     """The ``lines`` of a program's control system: each line the system
     gives a controller of (on several) or that *shifts* moves, with its
-    controller and delay in program cycles; empty for none."""
+    controller and delay in program cycles, and each readout line's fine
+    delay (*fine_delays*, ns) rounded up to the program's cycles, when a
+    readout on it ends that much later; empty for none."""
     system = machine._system if machine.controller is None else None
     owners: Mapping[tuple[str, int], int] = {} if system is None else system._line_owners
+    fine = {
+        key: math.ceil(ns * program_ghz - 1e-9)
+        for key, ns in (fine_delays or {}).items()
+        if key[0] == "readout" and ns > 0
+    }
     lines = []
-    for role, qudit in sorted({*owners, *shifts}):
+    for role, qudit in sorted({*owners, *shifts, *fine}):
         line = f"#pulse.line<{role}, qudits = [{qudit}]"
         if shift := shifts.get((role, qudit)):
             line += f", delay_cycles = {shift}"
         if owner := owners.get((role, qudit)):
             line += f", controller = {owner}"
+        if cycles := fine.get((role, qudit)):
+            line += f", fine_cycles = {cycles}"
         lines.append(line + ">")
     return f"[{', '.join(lines)}]" if lines else ""
 
@@ -1524,6 +1594,17 @@ def _spaced(module: Any, machine: _MachineModel, target: QuantumSystem, args: An
     return spaced(module, spacing, target, args)
 
 
+def _over_concurrency(lowered: ScheduledKernel) -> tuple[list[str], bool]:
+    """The drives and readouts *lowered* plays at once past the limits its
+    control system gives (``_concurrency``), and whether that is exact."""
+    machine = lowered.options.machine
+    if machine.max_concurrent_drives is None and machine.max_concurrent_readouts is None:
+        return [], True
+    from ._concurrency import violations
+
+    return violations(lowered)
+
+
 def _check_controller(lowered: ScheduledKernel) -> ScheduledKernel:
     """*lowered*, checked against its controller limits: those it exceeds
     whatever its float values fail now, and when some values may exceed
@@ -1540,6 +1621,10 @@ def _check_controller(lowered: ScheduledKernel) -> ScheduledKernel:
     # without values is not one any call plays.
     if lowered.scheduled and lowered.waits is None:
         violations, exact = _compile_check(lowered, limits, system)
+        over, known = _over_concurrency(lowered)
+        if over:
+            violations = [*violations, *over]
+        exact = exact and known
         if violations:
             raise _limit_error(lowered, violations)
     if exact:
@@ -1574,7 +1659,7 @@ def with_line_delays(lowered: _Kernel, options: CompileOptions) -> _Kernel | Non
     try:
         with lowered._lock:
             module = lowered._module.with_line_delays(
-                _lines(options.machine, shifts), *schedule_args
+                _lines(options.machine, shifts, fine_delays, target.clock_ghz), *schedule_args
             )
     except Exception:
         return None
