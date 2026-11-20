@@ -21,8 +21,27 @@ permissions:
   contents: read
 
 jobs:
+  # Which jobs the change needs (tools/ci-changes.py): the pages are built
+  # for every change but one of the repository's own files (the license, the
+  # contributing guide and their like), which no page reads.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs: ${{ steps.kind.outputs.docs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: kind
+        uses: ./.github/actions/changes
+
   build:
     name: docs (build)
+    if: ${{ needs.changes.outputs.docs == 'true' }}
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -45,14 +64,21 @@ jobs:
       # the operations guide's waveform explorer prints must compile and play
       # its plot, the ISA tutorial's animation and gauges must place what
       # their data says, and the tutorials' animated figures must play what
-      # their data says and draw their committed stills.
-      - name: The in-page scripts match the library
+      # their data says and draw their committed stills. The docs extensions
+      # are tested here too, where their dependencies are installed: the
+      # search of the built site must list the documented names first, and its
+      # pages must hold what the extensions write into them. Without a built
+      # site these tests fail here; elsewhere they are skipped.
+      - name: The in-page scripts and the built site pass their tests
         env:
           PYTHONPATH: build/docs/python
           CUDAQ_PULSE_REQUIRE_NODE: "1"
+          CUDAQ_PULSE_REQUIRE_DOCS_SITE: "1"
         run: >-
           uv run --no-sync python -m pytest tests/test_waveform_explorer.py tests/test_toy_flow.py
-          tests/test_pulse_visual.py
+          tests/test_pulse_visual.py tests/test_docs_a11y.py tests/test_docs_api_links.py
+          tests/test_docs_dialect_pages.py tests/test_docs_related_pages.py tests/test_docs_search.py
+          tests/test_docs_built_html.py tests/test_api_docs.py tests/test_code_highlighting.py
           -q -p no:cacheprovider
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

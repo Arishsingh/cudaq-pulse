@@ -363,6 +363,21 @@ def _keep(nodes: list[Any], keep: Callable[[int], bool]) -> list[Any]:
     return kept
 
 
+def _split(nodes: list[Any], key: Callable[[int], Any]) -> dict[Any, list[Any]]:
+    """``_keep`` of *nodes* for each value *key* gives an event other than
+    ``None``, keeping the events it gives that value, in one pass."""
+    split: dict[Any, list[Any]] = {}
+    for node in nodes:
+        if type(node) is int:
+            found = key(node)
+            if found is not None:
+                split.setdefault(found, []).append(node)
+        else:
+            for found, body in _split(node.body, key).items():
+                split.setdefault(found, []).append(node.keeping(body))
+    return split
+
+
 def _count(nodes: list[Any]) -> int:
     return sum(1 if type(n) is int else n.copies * _count(n.body) for n in nodes)
 

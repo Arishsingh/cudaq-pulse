@@ -51,6 +51,8 @@ class TransmonCircuit:
     label: str = ""
 
     def ej_hz(self, flux: float) -> float:
+        """The Josephson energy E_J(Phi) at ``flux`` flux quanta, in Hz: E_J,max at
+        Phi = 0, down to abs(d) E_J,max at Phi = 1/2."""
         x = math.pi * flux
         return self.ej_max_hz * math.sqrt(math.cos(x) ** 2 + self.asymmetry**2 * math.sin(x) ** 2)
 
@@ -74,17 +76,23 @@ class TransmonCircuit:
         return energies - energies[0], charge
 
     def f01_hz(self, flux: float) -> float:
+        """The 0-1 transition frequency at ``flux`` flux quanta, in Hz."""
         return float(self.eigensystem(flux, 2)[0][1])
 
     def f12_hz(self, flux: float) -> float:
+        """The 1-2 transition frequency at ``flux`` flux quanta, in Hz."""
         e = self.eigensystem(flux, 3)[0]
         return float(e[2] - e[1])
 
     def anharmonicity_hz(self, flux: float) -> float:
+        """E_2 - 2 E_1 (f12 - f01) at ``flux`` flux quanta, in Hz; negative for a
+        transmon."""
         e = self.eigensystem(flux, 3)[0]
         return float(e[2] - 2.0 * e[1])
 
     def charge_matrix(self, flux: float, level_count: int = 5) -> npt.NDArray[np.float64]:
+        """The charge matrix ``<i|n|j>`` of the lowest ``level_count`` levels at
+        ``flux`` flux quanta (dimensionless), with the signs of ``eigensystem``."""
         return self.eigensystem(flux, level_count)[1]
 
     def flux_for_f01(self, f01_hz: float, tol: float = 1e-9) -> float:
@@ -137,6 +145,9 @@ class ChargeCoupledPair:
     level_count: int = 5
 
     def hamiltonian(self, flux_a: float, flux_b: float) -> npt.NDArray[np.float64]:
+        """The pair's Hamiltonian in Hz, in the product basis ``|i_a i_b>`` (row
+        i_a * level_count + i_b): each transmon's levels above its ground state
+        plus g_c n_a n_b, with fluxes in flux quanta."""
         ea, na = self.a.eigensystem(flux_a, self.level_count)
         eb, nb = self.b.eigensystem(flux_b, self.level_count)
         eye = np.eye(self.level_count)

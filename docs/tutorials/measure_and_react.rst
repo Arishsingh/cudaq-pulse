@@ -79,7 +79,7 @@ and about half of the shots read 1, as a π/2 pulse should give.
    :alt: The 1000 shots of measure_superposition, one square per shot in the order they were taken, 100 to a row. 496 read 1 and 504 read 0, with no pattern in which do.
    :width: 100%
 
-   The same 1000 shots, one square each. Rose squares read 1.
+   The same 1000 shots, one square each. The squares that stand out read 1.
 
 What to notice: each shot is a coin toss. Only the share that read 1 is
 fixed by the pulse.

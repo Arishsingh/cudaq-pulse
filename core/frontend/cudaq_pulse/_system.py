@@ -2930,6 +2930,8 @@ class _Reader:
         from .quantum_systems.base import Coupling, PhysicalQudit, ResidualZZ, _Description
 
         qudits: dict[int, Any] = {}
+        # Each qudit's position in the file's list, by its index.
+        positions: dict[int, int] = {}
         given = system.get("qudits")
         if not isinstance(given, Sequence) or isinstance(given, (str, bytes)):
             self.problem("qudits", f"must be a list of qudits, got {type(given).__name__}", given)
@@ -2949,6 +2951,7 @@ class _Reader:
                 qudit = self.build(where, PhysicalQudit, **entry)
                 if qudit is not None:
                     qudits[qudit.index] = qudit
+                    positions[qudit.index] = i
         # The entries read, each with its index in the file.
         entries: dict[str, list[tuple[int, Any]]] = {"couplings": [], "residual_zz": []}
         for i, item in enumerate(system.get("couplings", ())):
@@ -2990,10 +2993,14 @@ class _Reader:
         except QuantumSystemDefinitionError as error:
             # The path in the file of an entry's problem, which the system
             # gives as couplings[3]... by its own index: entries the file
-            # gives that could not be read are not in the system.
+            # gives that could not be read are not in the system. A qudit's
+            # problem is at qudits[i] by the qudit's index, so it is found
+            # by where that qudit is in the file's list.
             def in_file(entry_path: str) -> str:
                 kind, _, rest = entry_path.partition("[")
                 index, _, tail = rest.partition("]")
+                if kind == "qudits":
+                    return f"qudits[{positions[int(index)]}]{tail}"
                 return f"{kind}[{entries[kind][int(index)][0]}]{tail}"
 
             self.problems.extend(

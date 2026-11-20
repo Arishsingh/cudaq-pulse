@@ -16,7 +16,8 @@ from cudaq_pulse.controller import FORMAT, ControllerLimitError, check, sample_w
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tests._handles import Q
+from tests._handles import Q, ladder_target
+from tests._work import native_seconds
 from tests.classical.fake_cudaq_qec import qec
 from tests.property_settings import examples
 
@@ -380,6 +381,44 @@ def test_limits_report_instruction_spacing_detectors_and_feedback():
     assert check(lowered, limits) == []
 
 
+def _reset_each(n):
+    @pulse.kernel
+    def reset_each(qudits):
+        lines = [get_drive_line(q) for q in qudits]
+        probes = [get_readout_line(q) for q in qudits]
+        bits = []
+        for k in range(n):
+            sync(lines[k], probes[k])
+            bits.append(readout(probes[k], square(40, 0.05)))
+        for k in range(n):
+            if bits[k]:
+                drive(lines[k], square(16, 0.1))
+
+    return reset_each
+
+
+@pytest.mark.slow
+def test_a_branch_on_each_of_many_qudits_is_walked_in_linear_time():
+    # The controller check and the export walk the program: at a branch they
+    # undo and merge what its arms change, not every tone's frame and every
+    # line's time. The time, native, is of whole compiles and exports.
+    machine = ControlSystem(controllers=[Controller(feedback_latency_cycles=50)])
+    wide = ladder_target(512).qudits
+    timings = {}
+    for n in (64, 512):
+        kernel = _reset_each(n)
+
+        def run(kernel=kernel, n=n):
+            compiled = pulse.compile(kernel, schedule="rcp", control_system=machine)
+            compiled.lower(wide[0:n]).export_to_controller()
+
+        timings[n] = native_seconds(
+            run, methods=("controller_events", "controller_program"), repeats=3
+        )
+    # 8x the branches: 8x the time when linear, 64x when quadratic.
+    assert timings[512] < 24 * timings[64], timings
+
+
 def test_limits_report_clock_tones_memory_and_size():
     lowered = pulse.compile(drive_and_branch, schedule="asap").lower(Q[0], Q[1])
     clock = lowered.quantum_system.clock_ghz
@@ -671,6 +710,69 @@ def test_a_kernel_with_float_parameters_is_checked_when_compiled():
     machine = ControlSystem(controllers=[Controller(instruction_cycles=4, min_idle_cycles=40)])
     with pytest.raises(ControllerLimitError, match="starts 16 cycles after"):
         pulse.compile(ramsey, control_system=machine).lower(Q[0], 0.75)
+
+
+@pulse.kernel
+def long_train(q):
+    d = get_drive_line(q)
+    for _ in range(400):
+        drive(d, square(8, 0.1))
+        wait(d, 4)
+
+
+def test_events_without_branches_pair_without_testing_arms(monkeypatch):
+    # The spacing check pairs each pulse with the one before it on its line;
+    # with no branches, no pair needs the test for arms of one branch, at
+    # compile or at export.
+    tested = []
+    exclusive = controller_module._exclusive
+    monkeypatch.setattr(
+        controller_module, "_exclusive", lambda a, b: tested.append(1) or exclusive(a, b)
+    )
+    machine = ControlSystem(
+        controllers=[Controller(drive_lines=[0], instruction_cycles=4, min_idle_cycles=4)]
+    )
+    lowered = pulse.compile(long_train, control_system=machine, unroll_threshold=10**6).lower(Q[0])
+    assert len(lowered.export_to_controller()["events"]) == 800
+    assert tested == []
+
+
+def _scanned(events):
+    """``controller._pairs`` as a scan back from each event to the first it
+    can follow."""
+    ordered = sorted(events, key=lambda e: (e["start_cycles"], e["index"]))
+    pairs = []
+    for k in range(1, len(ordered)):
+        for j in range(k - 1, -1, -1):
+            if not controller_module._exclusive(ordered[j], ordered[k]):
+                pairs.append((ordered[j], ordered[k]))
+                break
+    return pairs
+
+
+@given(
+    st.lists(
+        st.tuples(
+            st.integers(0, 6),
+            st.integers(0, 1),
+            st.lists(st.tuples(st.integers(0, 2), st.integers(0, 1)), max_size=3),
+        ),
+        max_size=24,
+    )
+)
+@settings(max_examples=examples(200))
+def test_pairs_follow_the_latest_event_on_one_path(made):
+    events = [
+        {
+            "index": index,
+            "start_cycles": start,
+            "iteration": [iteration],
+            "conditions": [{"branch": b, "arm": arm} for b, arm in dict(conditions).items()],
+        }
+        for index, (start, iteration, conditions) in enumerate(made)
+    ]
+    found = [(a["index"], b["index"]) for a, b in controller_module._pairs(events)]
+    assert found == [(a["index"], b["index"]) for a, b in _scanned(events)]
 
 
 @pulse.kernel

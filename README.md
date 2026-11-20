@@ -3,6 +3,12 @@
        alt="CUDA-Q Pulse: a Python pulse kernel beside a timeline of drive, readout and GPU lanes. A readout result goes to a GPU decoder over NVQLink within a latency budget, and the answer conditions the next drive pulse." width="100%">
 </p>
 
+<p align="center">
+  <a href="https://github.com/NVIDIA/cudaq-pulse/actions/workflows/ci.yml"><img src="https://github.com/NVIDIA/cudaq-pulse/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://nvidia.github.io/cudaq-pulse/"><img src="https://github.com/NVIDIA/cudaq-pulse/actions/workflows/docs.yml/badge.svg?branch=main" alt="Docs"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"></a>
+</p>
+
 # CUDA-Q Pulse
 
 ## About
@@ -68,12 +74,21 @@ python -m venv .venv && source .venv/bin/activate
 # Compiler and CPU simulation: compile kernels, inspect the MLIR, simulate
 # with the NumPy reference, run cudaq-pulse-opt.
 pip install cudaq-pulse
+```
 
-# Plus GPU simulation (Linux), with the CUDA 12 or CUDA 13 libraries.
+For GPU simulation on Linux, also install one CUDA extra, never both:
+
+```bash
+# CUDA 12 libraries: NVIDIA driver 525.60.13 or newer.
 pip install "cudaq-pulse[cu12]"
-pip install "cudaq-pulse[cu13]"
 
-# Check what was installed and whether it works.
+# CUDA 13 libraries instead: NVIDIA driver 580 or newer.
+# pip install "cudaq-pulse[cu13]"
+```
+
+Then check what was installed and whether it works:
+
+```bash
 python -m cudaq_pulse.doctor
 ```
 

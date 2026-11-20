@@ -144,9 +144,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   Calibration moves its estimator's distribution from the prior to where
   a readout of 1, or of 0, takes it, and Simulating on a GPU steps through
   its program's lowering one stage at a time. Each plays
-  once when scrolled into view, with Replay and step buttons, and its data
+  once while it is in view, with Pause and step buttons, and its data
   comes from what the page compiles and simulates. Readers without
   JavaScript, or who ask for reduced motion, see the still frame.
+
+- `UdpChannel` and `InProcess` print what they're set up with:
+  `UdpChannel(('127.0.0.1', 50123), slot_bytes=65536, timeout_s=2.0)` and
+  `<InProcess serving decode, estimate>`.
 
 ### Changed
 
@@ -161,6 +165,28 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
+  two inputs. A schedule block that yields one of its own arguments, passing
+  an input through, is inlined with that input as its result; the passes
+  used the argument after it was destroyed. And a module with no pulse
+  operation or type, such as one with only classical calls, is scheduled
+  like any other; the schedule passes wrote the pulse dialect's schedule
+  state without loading the dialect.
+- A program's constants are created in the same order on every platform.
+  The Linux x86_64 build created the constants of a waveform's literal
+  arguments, and of a loop's bounds, in the reverse order of the Linux
+  aarch64 and macOS builds, so `print(scheduled.mlir())` listed them in
+  another order under other `%cst` names; and of two rejected values in one
+  waveform (`gaussian(40, math.inf, 0.0)`) it named the last where the
+  others name the first. The programs were the same. Output on Linux aarch64
+  and macOS does not change.
+- A quantum system's qudits are checked when it is built, as its couplings
+  are: a 0-1 frequency that is not positive, a negative T1, T2* or Hahn-echo
+  T2, a thermal population outside [0, 1), or a value that is not a finite
+  number raises `QuantumSystemDefinitionError`, which lists every problem
+  at its path (`qudits[0].t1_us`) with the value. Such values used to build
+  without an error, and a negative T1 or T2 was taken as 0 (no decay) when
+  simulating.
 - A frame change made after a wait on its tone's line acted where the
   tone's previous drive or readout ended, before the wait:
   `shift_frequency(tone, +d)`, a wait of `T` and `shift_frequency(tone, -d)`
