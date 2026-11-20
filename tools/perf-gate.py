@@ -20,8 +20,9 @@ Runs the cases of ``benchmarks/perf_gate/cases.py`` and compares them with
   calls), counted with ``sys.monitoring`` in two native runs after the
   Callgrind runs, so it does not touch their counts. It does not gate: it
   says what kind of failure a case's instructions are (``failure_kind``).
-  With the same work as the baseline's and a change within
-  ``LAYOUT_SHIFT`` either way, it is ``layout only``: the count moved
+  With the same work as the baseline's (or, for a slower row compared
+  with its base, as the base's) and a change within ``LAYOUT_SHIFT``
+  either way, it is ``layout only``: the count moved
   below Python, as when one new type at import renumbers the interpreter's
   type version tags and so its method cache's collisions; the case still
   fails, to be judged before re-baselining, unless its own change moved
@@ -32,12 +33,17 @@ Runs the cases of ``benchmarks/perf_gate/cases.py`` and compares them with
   labels only regressions and gains.
 
 With ``--base-commit``, the commit a change is applied to (CI passes a
-pull request's base, or a push's previous tip), a ``layout only`` row is
-compared with its base: if the change keeps the base's measured code (it
-touches only the package's Python sources and files this job never
-reads, as git says), the gate measures the base's Python sources on the
-same build, and a row whose own change moved it by at most ``OWN_SHIFT``,
-with the base's Python work, passes as ``layout``.
+pull request's base, or a push's previous tip), a failure within
+``LAYOUT_SHIFT`` either way, with the baseline's Python work recorded, is
+compared with its base: if the change
+keeps the base's measured code (it touches only the package's Python
+sources and files this job never reads, as git says), the gate measures
+the base's Python sources on the same build, and a row that ran the
+base's Python work, and whose own change moved it by at most
+``OWN_SHIFT``, passes as ``layout``. For a slower row the base's work is
+the one compared, not the baseline's: code merged since the baseline can
+change a case's work, and the change did not. A gain needs the
+baseline's work too, so that a gain from changed work is kept.
 
 The instruction counts repeat exactly only in the environment they were
 measured in, so a baseline is versioned by it: the baseline holds the
@@ -160,7 +166,7 @@ BUILD_FILES = ("pyproject.toml", "uv.lock")
 FRONTEND = "core/frontend"
 AS_BASE = (
     "the change keeps its base's measured code, the case ran the same numbers of "
-    "bytecodes, Python calls and C calls per repetition as the baseline and the base, "
+    "bytecodes, Python calls and C calls per repetition as on the base, "
     "and the change moved its count by layout only: reported, not failed, and not a gain "
     "to keep"
 )
@@ -674,12 +680,12 @@ def compare(
                     row.verdict = "faster"
             row.scope = scope
             count, base_work = (base or {}).get(name, (None, None))
-            if count and row.measured and base_work is not None and base_work == work:
+            if count and row.measured and work is not None and base_work == work:
                 row.own = row.measured / count - 1
             if (
                 scope == ""
-                and failure_kind(row) == "layout only"
                 and row.own is not None
+                and failure_kind(row) == "layout only"
                 and abs(row.own) <= OWN_SHIFT
             ):
                 row.verdict = "layout"
@@ -692,13 +698,30 @@ FAILING = {"slower", "improved", "sizes", "new", "removed", "no baseline"}
 
 def failure_kind(r: Row) -> str | None:
     """What a failure on instructions is: ``layout only`` (the same Python
-    work as the baseline's, and a change within ``LAYOUT_SHIFT`` either
-    way), else a ``regression`` or a ``gain``; None for other failures."""
+    work as the baseline's, or as its base's where the row was compared
+    with its base, and a change within ``LAYOUT_SHIFT`` either way), else a
+    ``regression`` or a ``gain``; None for other failures."""
     if r.verdict not in ("slower", "improved"):
         return None
-    if r.work_changes == [] and r.delta is not None and abs(r.delta) <= LAYOUT_SHIFT:
+    if may_be_layout(r) and (r.work_changes == [] or r.own is not None):
         return "layout only"
     return "regression" if r.verdict == "slower" else "gain"
+
+
+def may_be_layout(r: Row) -> bool:
+    """Whether its base could judge a failure on instructions: within
+    ``LAYOUT_SHIFT`` either way, with the Python work of both the baseline
+    and this run. A slower row is judged on its base's work, not the
+    baseline's (code merged after the baseline can change a case's work);
+    a gain only with the baseline's work, so that a gain from changed work
+    is kept by a new baseline."""
+    return (
+        r.verdict in ("slower", "improved")
+        and r.delta is not None
+        and abs(r.delta) <= LAYOUT_SHIFT
+        and r.work_changes is not None
+        and (r.work_changes == [] or r.verdict == "slower")
+    )
 
 
 def failure_reason(r: Row) -> str:
@@ -721,6 +744,9 @@ def failure_reason(r: Row) -> str:
         reason += ": update the baseline to keep the gain"
     if kind == "layout only":
         reason += f"; {LAYOUT_ONLY}"
+        if r.work_changes:
+            merged = ", ".join(r.work_changes)
+            reason += f"; the same Python work as its base's, not the baseline's: {merged}"
         if r.scope:
             reason += f"; not compared with its base: {r.scope}"
         elif r.scope == "" and r.own is None:
@@ -1115,7 +1141,8 @@ regressions, gains and "layout only":
   - gain: more than 1% below. Take a new baseline to keep it, so that a
     later regression cannot hide in it.
   - layout only: the same Python work as the baseline's (its "Python
-    work" column says "same") and a change of at most 2% either way. The
+    work" column says "same"), or as its base's where the row was
+    compared with its base, and a change of at most 2% either way. The
     case ran the same bytecodes and calls, so its count moved below
     Python, most likely in the layout of the interpreter's caches and
     memory, which a change elsewhere can shift (one new class at import
@@ -1140,17 +1167,23 @@ base comparison:
   A row's count also moves with the code merged before the change, so CI
   gives the gate the commit the change was applied to (--base-commit: a
   pull request's base, or a push's previous tip, which must be the tree's
-  first parent). A layout only row is then compared with its base, if the
-  change keeps the base's measured code: it touches only the package's
-  Python sources and files this job never reads (pyproject.toml and
-  uv.lock only outside what the job builds), as git says. Native code,
+  first parent). A failure of at most 2% either way is then compared with
+  its base, if the change keeps the base's measured code: it touches only
+  the package's Python sources and files this job never reads
+  (pyproject.toml and uv.lock only outside what the job builds), as git
+  says. Native code,
   the build, ci.yml, the gate and its cases are measured code; if git
   cannot tell, the limits apply. The gate then checks out the base's
   core/frontend over the tree's, so that the same build, paths and
   environment run it, measures it as it measured the tree, and restores
   the tree's. A row whose case ran the same Python work on the base, and
   whose count the change moved by at most 0.95% either way from the
-  base's, passes as "layout", with a notice. Layout shifts of a change's
+  base's, passes as "layout", with a notice. For a slower row the base's
+  Python work is compared, not the baseline's: code merged after the
+  baseline was taken can change a case's work, and a change on top of it
+  ran the same. A gain needs the baseline's work as well, so that a gain
+  from changed work is kept, and a baseline without Python work (format
+  1) is not compared with the base. Layout shifts of a change's
   own were seen up to 0.93%; hidden native work behind the same calls
   passes below 0.95% per change, and up to 2% from the baseline in all.
   A gain that passes this way is not kept: a later change can give it
@@ -1169,8 +1202,8 @@ def main() -> int:
     parser.add_argument(
         "--base-commit",
         metavar="SHA",
-        help="the commit this tree's change was applied to: a layout only row is compared "
-        "with it (--help, base comparison)",
+        help="the commit this tree's change was applied to: a failure it could judge is "
+        "compared with it (--help, base comparison)",
     )
     parser.add_argument("--update", action="store_true", help="rewrite the baseline")
     parser.add_argument("--out", type=Path, help="write this run in the baseline's format")
@@ -1232,8 +1265,9 @@ def main() -> int:
                 if (
                     args.base_commit
                     and not problems
+                    and python_work is not None
                     and any(
-                        failure_kind(r) == "layout only"
+                        may_be_layout(r)
                         for r in compare(baseline, sizes, instructions, python_work)
                     )
                 ):
@@ -1414,7 +1448,7 @@ def main() -> int:
                 + (f"(own tolerances: {own}) " if own else "")
                 + f"or below -{100 * IMPROVEMENT:.1f}% "
                 "instructions per repetition, or on any change in program size; a row with "
-                "the baseline's Python work whose count the change moved by at most "
+                "its base's Python work whose count the change moved by at most "
                 f"{100 * OWN_SHIFT:g}% from its base's passes (verdict layout). "
                 f"Spread: largest difference between {args.processes} identical runs. "
                 "Python work: the bytecodes, Python calls and C calls of a repetition, "
