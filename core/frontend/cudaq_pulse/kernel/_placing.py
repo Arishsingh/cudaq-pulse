@@ -93,17 +93,16 @@ class _Placing(_Dispatcher):
     def _key(self, target: QuantumSystem, values: tuple[Any, ...]) -> Any:
         kernel = self.kernel
         static = kernel._split[0]
+        # With the control system (the identity holds it): compiled for no
+        # control system, a kernel is scheduled and checked for the one of
+        # its qudits.
         fingerprint = (
-            (target._structure or _structure(target)) if kernel._slotted else target.fingerprint
+            (target._structure or _structure(target), target.control_system)
+            if kernel._slotted
+            else target._identity
         )
         lengths = [len(values[i]) for i in kernel._shaped]
-        return (
-            fingerprint,
-            self._machine_key(target),
-            static,
-            *[_static_key(values[i]) for i in static],
-            *lengths,
-        )
+        return (fingerprint, static, *[_static_key(values[i]) for i in static], *lengths)
 
     def lookup(self, values: tuple[Any, ...]) -> _Entry:
         kernel = self.kernel

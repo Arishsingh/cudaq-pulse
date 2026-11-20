@@ -1375,15 +1375,16 @@ private:
   /// not known), as the flat schedule finds each op's.
   llvm::ArrayRef<int64_t> playersOf(pulse::ScheduleBlockOp block) {
     auto [it, inserted] = blockPlayers.try_emplace(block.getOperation());
+    auto &players = it->second;
     if (inserted)
       block.getBody().walk([&](mlir::Operation *op) {
         if (!isTimedOp(op))
           return;
         int64_t owner = controllerOf(op);
-        if (!llvm::is_contained(it->second, owner))
-          it->second.push_back(owner);
+        if (!llvm::is_contained(players, owner))
+          players.push_back(owner);
       });
-    return it->second;
+    return players;
   }
 
   /// On several controllers, the outcomes block input `input` carries (a
