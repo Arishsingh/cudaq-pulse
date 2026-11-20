@@ -65,11 +65,15 @@ jobs:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
         NVIDIA_DRIVER_CAPABILITIES: compute,utility
     steps:
+      # The package servers can be out of a runner's reach for minutes. With
+      # the apt.conf.d line, every apt-get retries a failed download up to 5
+      # times (3 by default).
       - name: Install the image's missing packages
         env:
           PACKAGES: ${{ matrix.packages }}
         run: |
           read -ra packages <<< "$PACKAGES"
+          echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,7 +100,7 @@ jobs:
       # The source build: the image's toolkit supplies the CUDA headers, the
       # extra's wheels in the environment supply cuDensityMat.
       - if: inputs.source == 'build'
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
       - if: inputs.source == 'build'

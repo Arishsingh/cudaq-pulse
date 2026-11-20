@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: changes
+description: >-
+  Say which jobs a change needs, from the paths it touches
+  (tools/ci-changes.py). A pull request is compared with its base. Anything
+  else (a push, a manual run) and a comparison that cannot be made ask for
+  every job: a run on main also stands for the runs it cancelled.
+outputs:
+  native:
+    description: "true when the change can reach the compiler, the runtime, the build or the workflows"
+    value: ${{ steps.kind.outputs.native }}
+  python:
+    description: "true when it can reach the Python package, its tests, the examples, the benchmarks or the tools"
+    value: ${{ steps.kind.outputs.python }}
+  docs:
+    description: "true when it can reach the built pages or the tests that read them"
+    value: ${{ steps.kind.outputs.docs }}
+runs:
+  using: composite
+  steps:
+    - id: kind
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE: ${{ github.event.pull_request.base.sha }}
+      run: |
+        # The checkout must hold the history (fetch-depth: 0). A rename is
+        # listed under both names: the tree it left lost a file.
+        if [[ "$EVENT" != pull_request ]] ||
+          ! files=$(git diff --name-only --no-renames "$BASE" "$GITHUB_SHA" --); then
+          python3 tools/ci-changes.py --all | tee -a "$GITHUB_OUTPUT"
+        else
+          printf '%s\n' "$files"
+          python3 tools/ci-changes.py <<<"$files" | tee -a "$GITHUB_OUTPUT"
+        fi

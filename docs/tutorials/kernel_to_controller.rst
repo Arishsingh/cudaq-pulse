@@ -18,6 +18,9 @@ What you'll learn:
 - how to write, register and validate a small backend;
 - how one program splits across two controllers.
 
+All the code on this page is also one Python script,
+:download:`kernel_to_controller.py <scripts/kernel_to_controller.py>`.
+
 The exported program
 --------------------
 
@@ -25,7 +28,7 @@ The export gives a scheduled program as JSON-ready data: every drive,
 readout, wait and sync, with its line and its time in clock cycles.
 
 Start with one qudit at 5 GHz and a 1 GHz clock, so one cycle is one
-nanosecond:
+nanosecond, and a kernel that drives it and reads it out:
 
 .. code-block:: python
 
@@ -45,9 +48,6 @@ nanosecond:
        clock_ghz=1.0,
    )
 
-The kernel drives it and reads it out:
-
-.. code-block:: python
 
    @pulse.kernel
    def drive_and_measure(qudit):

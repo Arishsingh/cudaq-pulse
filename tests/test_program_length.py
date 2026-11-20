@@ -8,7 +8,9 @@ again with the lengths its floats give its waits.
 
 from __future__ import annotations
 
+import dis
 import math
+import pickle
 
 import cudaq_pulse as pulse
 import pytest
@@ -177,3 +179,57 @@ def test_waits_whose_bounds_keep_the_program_short_test_no_length():
     waits = pulse.compile(_sweep(3, None), **_ROLLED).lower(Q[0], 4.0, 4.0).generic.waits
     assert waits.length is not None and waits.length[3] == [3]
     assert 2**60 not in waits.ok.__code__.co_consts
+
+
+# Unrolled, each trip's wait is a wait of its own, as each of a surface-code
+# round's thousands of waits is: past about ten thousand of them, a check
+# whose expression nested a level deeper per wait no longer compiled.
+_MANY = 20_000
+
+
+def _many_waits(shape):
+    @pulse.kernel
+    def many(q, tau: float):
+        d = get_drive_line(q)
+        r = get_readout_line(q)
+        m = readout(r, square(100, 0.05))
+        sync(d, r)
+        if shape == "in an if":
+            if m:
+                for _ in range(_MANY):
+                    wait(d, tau)
+                    drive(d, square(8, 0.1))
+        else:
+            for _ in range(_MANY):
+                wait(d, tau)
+                drive(d, square(8, 0.1))
+
+    return many
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("shape", ["in sequence", "in an if"])
+def test_a_call_checks_twenty_thousand_waits_of_one_float(shape):
+    # 1 ms on the 2 GHz clock of Q's quantum system: 2,000,000 cycles.
+    machine = ControlSystem(controllers=[Controller(max_program_duration=10**6)])
+    # Its loop unrolled: 20,000 trips of three calls (wait, drive, square).
+    compiled = pulse.compile(_many_waits(shape), control_system=machine, unroll_threshold=3 * _MANY)
+    waits = compiled.lower(Q[0], 4.0).generic.waits
+    assert len(waits.waits) == len(waits.length[3]) == _MANY
+    assert len(waits.length) == (5 if shape == "in an if" else 4)
+    # With each wait k cycles long the program lasts its cycles + 20,000 k.
+    cycles, most = waits.length[:2]
+    k = (most - cycles) // _MANY
+    again = pickle.loads(pickle.dumps(waits))
+    assert again.ok.__code__.co_code == waits.ok.__code__.co_code
+    for checked in (waits, again):
+        checked.check([k + 0.49])
+        with pytest.raises(ValueError, match=r"Controller\.max_program_duration"):
+            checked.check([k + 0.5])
+    assert compiled.lower(Q[0], k + 0.49) is not None
+    with pytest.raises(ValueError, match=r"Controller\.max_program_duration"):
+        compiled.lower(Q[0], k + 0.5)
+    # One length for the waits of one float, and one test of their bounds.
+    assert len({id(w.length) for w in waits.waits}) == len({id(w.length) for w in again.waits}) == 1
+    compares = [op for op in dis.get_instructions(waits.ok) if op.opname == "COMPARE_OP"]
+    assert len(compares) < 10

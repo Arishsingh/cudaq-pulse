@@ -88,6 +88,9 @@ class Transport:
     jitter_ns: float = 0.0
 
     def delay_ns(self, byte_count: int, rng: np.random.Generator) -> float:
+        """The delay in ns of *byte_count* bytes in this direction: ``fixed_ns``,
+        plus ``byte_count / bytes_per_ns`` if ``bytes_per_ns`` is positive, plus
+        a jitter drawn from *rng* if ``jitter_ns`` is."""
         delay = self.fixed_ns
         if self.bytes_per_ns > 0:
             delay += byte_count / self.bytes_per_ns
@@ -118,6 +121,10 @@ class InProcess:
             for name, handler in handlers.items()
             if getattr(handler, "takes_history", False)
         }
+
+    def __repr__(self) -> str:
+        names = sorted(self._handlers.keys() | self._stateful.keys())
+        return f"<InProcess serving {', '.join(names) or 'nothing'}>"
 
     def call(self, function: ClassicalFunction[..., Any], request: bytes) -> tuple[bytes, float]:
         """Deliver *request*; returns the answer bytes and the service's time in ns."""
@@ -153,7 +160,8 @@ class InProcess:
         return wire.encode_answer(function, answer, request_id, timestamp), service_ns
 
     def close(self) -> None:
-        pass
+        """Nothing to release: the services run in this process. It is here so
+        that every channel can be closed alike."""
 
 
 def _reply(
@@ -309,7 +317,17 @@ class UdpChannel:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.settimeout(timeout_s)
 
+    def __repr__(self) -> str:
+        return (
+            f"UdpChannel({self._address!r}, slot_bytes={self._slot_bytes!r}, "
+            f"timeout_s={self._sock.gettimeout()!r})"
+        )
+
     def call(self, function: ClassicalFunction[..., Any], request: bytes) -> tuple[bytes, float]:
+        """Send *request* and wait for the answer; returns the answer bytes and
+        the service's time in ns (the measured round trip if the server sends
+        none). No answer within the channel's timeout raises an error that
+        names the function and the address."""
         t0 = time.perf_counter_ns()
         self._sock.sendto(request, self._address)
         try:
@@ -332,6 +350,7 @@ class UdpChannel:
         return data[:end], float(round_trip_ns)
 
     def close(self) -> None:
+        """Close the channel's socket."""
         self._sock.close()
 
 
@@ -388,6 +407,8 @@ class EmulationResult:
 
     @property
     def calls_per_second(self) -> float:
+        """The calls of every shot per second of the run's wall-clock time;
+        infinite when no wall time was measured."""
         n = sum(len(shot) for shot in self.calls)
         return n / self.wall_s if self.wall_s > 0 else math.inf
 

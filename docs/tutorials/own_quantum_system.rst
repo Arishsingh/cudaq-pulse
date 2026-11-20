@@ -26,11 +26,16 @@ What you'll learn:
 A quantum system of your own is described the same way, qudit by qudit and
 coupling by coupling.
 
+All the code on this page is also one Python script,
+:download:`own_quantum_system.py <scripts/own_quantum_system.py>`.
+
 Qudits and a coupling
 ---------------------
 
 A quantum system is built from its qudits and the couplings between them.
-Start with the imports:
+Each qudit takes its index, its 0-1 frequency in Hz, its T1 and T2* in
+microseconds, and the rest by keyword. Both share the shape of their π
+pulse, and the second sits 200 MHz higher, with shorter coherence times:
 
 .. code-block:: python
 
@@ -44,12 +49,6 @@ Start with the imports:
        PhysicalQudit,
    )
 
-Each qudit takes its index, its 0-1 frequency in Hz, its T1 and T2* in
-microseconds, and the rest by keyword. Both share the shape of their π
-pulse:
-
-.. code-block:: python
-
    x_pulse = {pulse.gates.X: DragPulse(duration_ns=40.0, sigma_ns=10.0)}
 
    qudit_0 = PhysicalQudit(
@@ -60,11 +59,6 @@ pulse:
        anharmonicity_hz=-2.2e8,
        calibrations=x_pulse,
    )
-
-The second qudit sits 200 MHz higher, with shorter coherence times:
-
-.. code-block:: python
-
    qudit_1 = PhysicalQudit(
        index=1,
        frequency_hz=5.3e9,
@@ -124,7 +118,7 @@ from the shape and the qudit's drive strength:
    40.0 ns DRAG, amplitude 0.1313
 
 .. themed-figure:: figures/calibrated_x.svg
-   :alt: The calibrated pi pulse of qudit 0 on its drive line: a 40 ns DRAG pulse of amplitude 0.1313, one smooth bump that starts and ends at zero.
+   :alt: The calibrated pi pulse of qudit 0 on its drive line: a 40 ns DRAG pulse of amplitude 0.1313, one smooth bump cut off at each end at about 14% of its peak.
    :width: 100%
 
    Qudit 0's calibrated π pulse, as its drive line plays it.
@@ -139,7 +133,7 @@ Run a kernel on it
 ------------------
 
 Kernels run on whichever quantum system their qudits come from, with no
-other change:
+other change. Run this one on each qudit of the pair:
 
 .. code-block:: python
 
@@ -153,9 +147,6 @@ other change:
        sync(drive_line, readout_line)
        return readout(readout_line, square(300 * pulse.ns, 0.05))
 
-Run it on each qudit of the pair:
-
-.. code-block:: python
 
    for qudit in pair.qudits:
        result = pulse.simulate(excite, qudit)
@@ -185,7 +176,8 @@ Annotate the qudit parameter with ``pulse.Qudit``, and the compiled program
 takes the qudit as an argument. Then one compile serves every qudit.
 
 Such a kernel can't read a calibration, since the qudit is known only when
-it is called. So the host reads it and passes the amplitude in:
+it is called. So the host reads it and passes each qudit's calibrated
+amplitude in:
 
 .. code-block:: python
 
@@ -202,9 +194,6 @@ it is called. So the host reads it and passes the amplitude in:
        sync(drive_line, readout_line)
        return readout(readout_line, square(300 * pulse.ns, 0.05))
 
-Run it on both qudits, each with its own calibrated amplitude:
-
-.. code-block:: python
 
    for qudit in pair.qudits:
        amplitude = qudit.get_calibration(pulse.gates.X).amplitude
@@ -237,7 +226,8 @@ Follow a recalibration
 Measured values drift. ``replace`` makes a new quantum system with some
 values changed and the rest kept, the way ``dataclasses.replace`` does.
 
-Move qudit 0 up by 2 MHz:
+Move qudit 0 up by 2 MHz. The same kernel follows it: export it for both
+systems and compare the drive's frequency:
 
 .. code-block:: python
 
@@ -245,11 +235,6 @@ Move qudit 0 up by 2 MHz:
    new_qudit = old_qudit.replace(frequency_hz=5.102e9)
    qudits = {**pair.physical_qudits, 0: new_qudit}
    recalibrated = pair.replace(qudits=qudits)
-
-The same kernel follows it. Export it for both systems and compare the
-drive's frequency:
-
-.. code-block:: python
 
    systems = {"before": pair, "after": recalibrated}
    for label, quantum_system in systems.items():

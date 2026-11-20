@@ -5,8 +5,12 @@
 // memory, waveform memory and oscillators, each against the limit the
 // controller's description states. docs/tutorials/figures/isa_limits.py
 // measures each from the export and the toy listing, and records whether the
-// compiler refuses the program. tests/test_toy_flow.py runs the functions this
-// file exports under Node and checks them against the data and the compiler.
+// compiler refuses the program. The gauges fill once by themselves while they
+// are in the window, and one button pauses, resumes or replays them; readers
+// who ask for reduced motion get them full, with no button.
+// tests/test_toy_flow.py runs the functions this file exports under Node,
+// checks them against the data and the compiler, and presses the button on a
+// stand-in page.
 "use strict";
 
 (function () {
@@ -184,60 +188,150 @@
     }
   }
 
+  // ── Playback ───────────────────────────────────────────────────────────
+
+  // What a gauge and its button are called together: its columns. The
+  // picture's own title is the same for every gauge of a page.
+  function groupLabel(data, columns) {
+    const text = `${columns.map((key) => COLUMNS[key].title).join(" and ")} of a ${data.model}`;
+    return text[0].toUpperCase() + text.slice(1);
+  }
+
   function mount(root) {
     const data = JSON.parse(document.getElementById(root.dataset.source).textContent);
     const byName = new Map(data.rows.map((row) => [row.name, row]));
     const rows = root.dataset.rows.split(" ").map((name) => byName.get(name));
     const columns = root.dataset.columns.split(" ");
     const svg = el("svg", { role: "img", class: "mg-svg" });
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "mg-button";
-    button.textContent = "Replay";
-    root.replaceChildren(svg, button);
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "mg-button";
+    const bar = document.createElement("div");
+    bar.className = "pulse-mem-gauge-controls";
+    bar.append(toggle);
+    root.replaceChildren(svg, bar);
     const bars = build(svg, data, rows, columns);
     const fallback = root.parentElement.querySelector(".pulse-fallback");
     if (fallback) fallback.hidden = true;
 
-    const all = (f) => rows.forEach((_, r) => show(bars, r, f));
     // Each row fills in turn, ROW_MS after the one above it.
-    const at = (elapsed) => rows.forEach((_, r) => show(bars, r, (elapsed - r * ROW_MS) / ROW_MS));
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      all(1);
-      button.hidden = true;
-      return;
-    }
-
+    const total = rows.length * ROW_MS;
+    const calm = window.matchMedia("(prefers-reduced-motion: reduce)");
+    // How far the filling has come, in ms.
+    let elapsed = 0;
     let raf = 0;
-    const play = () => {
-      cancelAnimationFrame(raf);
-      all(0);
-      const begin = performance.now();
-      const frame = (now) => {
-        const elapsed = now - begin;
-        at(elapsed);
-        raf = elapsed < (rows.length + 1) * ROW_MS ? requestAnimationFrame(frame) : 0;
-      };
-      raf = requestAnimationFrame(frame);
+    let started = null;
+    // The gauges still fill by themselves: until they have, the reader has
+    // used the button, or reduced motion has shown them full.
+    let owed = true;
+    // Half of the figure, and half of its button, are in the window.
+    let half = false;
+    let reach = false;
+
+    const fill = (ms) => {
+      elapsed = Math.max(0, Math.min(total, ms));
+      rows.forEach((_, r) => show(bars, r, (elapsed - r * ROW_MS) / ROW_MS));
     };
-    button.onclick = play;
-    all(0);
-    // Fills once, the first time most of it is in view.
-    const seen = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          seen.disconnect();
-          play();
-        }
-      },
-      { threshold: 0.6 }
-    );
-    seen.observe(root);
-    // For screenshots: stop, and draw the moment *elapsed* ms into playing.
-    root.memGaugeShow = (elapsed) => {
-      seen.disconnect();
+    const sync = () => {
+      toggle.textContent = raf ? "Pause" : elapsed < total ? "Play" : "Replay";
+      // Reduced motion leaves nothing to play, so no button; and a picture
+      // by itself needs no group around it.
+      bar.hidden = calm.matches;
+      if (calm.matches) {
+        root.removeAttribute("role");
+        root.removeAttribute("aria-label");
+      } else {
+        root.setAttribute("role", "group");
+        root.setAttribute("aria-label", groupLabel(data, columns));
+      }
+    };
+    const stop = () => {
       cancelAnimationFrame(raf);
-      at(elapsed);
+      raf = 0;
+    };
+    const frame = (time) => {
+      // The first frame sets the clock, to go on from what is on screen.
+      if (started === null) started = time - elapsed;
+      fill(time - started);
+      raf = elapsed < total ? requestAnimationFrame(frame) : 0;
+      if (!raf) {
+        owed = false;
+        sync();
+      }
+    };
+    const play = () => {
+      stop();
+      started = null;
+      raf = requestAnimationFrame(frame);
+      sync();
+    };
+    const pause = () => {
+      stop();
+      sync();
+    };
+    // The reader's button. Using it ends the filling by itself for good.
+    toggle.onclick = () => {
+      owed = false;
+      if (raf) {
+        pause();
+      } else {
+        if (elapsed >= total) fill(0);
+        play();
+      }
+    };
+
+    // The gauges fill by themselves once. They start with half of the figure
+    // and half of its button in the window. Any filling stops when the
+    // figure leaves that half, or the tab is hidden; filling by itself then
+    // goes on when the figure is back.
+    const auto = (away) => {
+      if (away) {
+        if (raf) pause();
+      } else if (owed && !raf && half && reach && !document.hidden && !calm.matches) {
+        play();
+      }
+    };
+    const watch = new IntersectionObserver(
+      (entries) => {
+        let left = false;
+        for (const e of entries) {
+          const most = e.intersectionRatio >= 0.5;
+          if (e.target === bar) {
+            reach = most;
+          } else {
+            left = half && !most;
+            half = most;
+          }
+        }
+        auto(left);
+      },
+      { threshold: 0.5 }
+    );
+    watch.observe(root);
+    watch.observe(bar);
+    document.addEventListener("visibilitychange", () => auto(document.hidden));
+
+    // Reduced motion shows the gauges full, which stands in for the filling,
+    // and never fills them. The setting may change while the page is open.
+    const settle = () => {
+      if (calm.matches) {
+        stop();
+        owed = false;
+        fill(total);
+      }
+      sync();
+      auto(false);
+    };
+    if (calm.addEventListener) calm.addEventListener("change", settle);
+    fill(0);
+    settle();
+
+    // For screenshots: stop, and draw the moment *ms* into filling.
+    root.memGaugeShow = (ms) => {
+      owed = false;
+      stop();
+      fill(ms);
+      sync();
     };
   }
 
