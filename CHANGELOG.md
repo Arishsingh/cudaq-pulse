@@ -172,8 +172,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   the limits, and an `asap` or `alap` program past them compiled without
   a word. They are counted as the `rcp` schedules count them, so a program
   those schedules place fits; pulses in different arms of one branch never
-  count together, and a long rolled loop is counted from one iteration
-  where its iterations repeat, as the other limits are.
+  count together. A long rolled loop is never counted iteration by
+  iteration: alone, from one iteration; beside other pulses, from the
+  iterations near where they start or end. Rolled loops of different
+  periods that could pass a limit together and are not settled that way
+  are counted one iteration at a time up to 65536 iterations. Past that,
+  a count over the limit near where they start or end is reported at its
+  cycle (not claimed as the first), and with none there compiling stops
+  with an `UnsupportedError` saying to sync their lines, give them fewer
+  iterations or use `rcp`.
   Both now default to `None`, not given: the `rcp` schedules still play at
   most 4 drives and 2 readouts at once, and nothing else checks them. A
   system file written by an earlier version holds 4 and 2, which now count

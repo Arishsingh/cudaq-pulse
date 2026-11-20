@@ -295,3 +295,48 @@ def test_a_limit_not_given_is_none_and_stays_none_in_copies_and_files():
         assert pickle.loads(pickle.dumps(control)) == control
         system = pulse.quantum_system("transmon_surface17", control_system=control)
         assert pulse.QuantumSystem.from_dict(system.as_dict()).control_system == control
+
+
+def _drifting(trips, tail=None):
+    # Loops of periods 100 and 101 cycles: their pulses first meet at 4800.
+    # With *tail*, a third line plays a long pulse from that cycle.
+    @pulse.kernel
+    def drifting(q, r, s):
+        a = get_drive_line(q)
+        b = get_drive_line(r)
+        wait(b, 50)
+        for _ in range(trips):
+            drive(a, square(4, 0.1))
+            wait(a, 96)
+        for _ in range(trips):
+            drive(b, square(4, 0.1))
+            wait(b, 97)
+        if tail is not None:
+            c = get_drive_line(s)
+            wait(c, tail)
+            drive(c, square(400, 0.1))
+
+    return drifting
+
+
+def test_loops_of_different_periods_are_counted_copy_by_copy_up_to_a_bound():
+    system = _system(max_concurrent_drives=1)
+    qudits = system.qudits[:3]
+    with pytest.raises(ControllerLimitError, match="2 drives play at once from cycle 4800;"):
+        _lower(_drifting(100), system, "asap", *qudits)
+    # A pulse where the loops are, later: still the first cycle, from every copy.
+    with pytest.raises(ControllerLimitError, match="2 drives play at once from cycle 4800;"):
+        _lower(_drifting(100, 9800), system, "asap", *qudits)
+    # Far more copies than it plays one by one: a count found near the pulse
+    # is named at its cycle, not as the first ...
+    with pytest.raises(ControllerLimitError) as caught:
+        _lower(_drifting(10**15, 9800), system, "asap", *qudits)
+    assert caught.value.violations[0].startswith(
+        "2 drives play at once at cycle 9800 (rolled loops of different periods, too many "
+        "copies to count one by one for the first such cycle);"
+    )
+    # ... and with none found there, an error rather than a walk of every copy.
+    with pytest.raises(pulse.UnsupportedError, match="more than 65536 copies of rolled loops"):
+        _lower(_drifting(10**15), system, "asap", *qudits)
+    system = _system(max_concurrent_drives=2)
+    _lower(_drifting(10**15), system, "asap", *system.qudits[:3])
