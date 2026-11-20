@@ -172,6 +172,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   operation or type, such as one with only classical calls, is scheduled
   like any other; the schedule passes wrote the pulse dialect's schedule
   state without loading the dialect.
+- `python -m cudaq_pulse --quantum-system NAME -m MODULE args` passes the
+  arguments after the module name to the module, dashes included, as
+  `python -m` does. The launcher used to reject them (`give either a script
+  path or -m MODULE`) or take them as its own options (`--quiet`,
+  `unrecognized arguments: --sort-keys`), so only a module without arguments
+  could run.
 - A program's constants are created in the same order on every platform.
   The Linux x86_64 build created the constants of a waveform's literal
   arguments, and of a loop's bounds, in the reverse order of the Linux
