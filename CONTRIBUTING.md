@@ -493,6 +493,35 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   branch, so the schedule tests `main`; a manual dispatch tests the branch it
   is dispatched on.
 
+### Which jobs a change runs
+
+`ci.yml`, `docs.yml` and `sanitizers.yml` each start with a `changes` job
+that classes the change by the paths it touches (`tools/ci-changes.py`):
+
+| The change touches | Class | What runs |
+| --- | --- | --- |
+| `core/mlir`, `core/runtime`, CMake files, `cmake/`, `packaging/`, `test/`, `.github/workflows` or `.github/actions`, or a path the tool does not name | native | every job |
+| `core/frontend`, `tests/`, `examples/`, `benchmarks/`, `tools/`, `pyproject.toml`, `pyrightconfig.json`, `uv.lock`, `.pre-commit-config.yaml` | python | every job but `old-compilers` |
+| `docs/`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, the license and notice files | docs | lint, the docs build and `test-docs`, one job with the tests that read these files |
+| only files no test reads (`CITATION.cff`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, issue templates) | none | lint |
+
+A change takes the widest class of its paths. A path the tool does not name
+runs every job, so a new directory is tested in full until it is placed in
+the tool. Only a pull request is classed: a push to `main`, a manual run
+and a run whose base cannot be compared run every job. The perf gate runs
+for the native and python classes, which is every change that can move it.
+`tests/test_ci_changes.py` holds the classes, the condition on each job, the
+tests that `test-docs` runs and the summary.
+
+One gap: `editor-types` type-checks the Python code blocks of the pages and
+does not run for a change to the pages alone; it runs on `main` after the
+merge.
+
+`ci-ok` is the summary of `ci.yml`: it always runs, fails when a job that
+ran failed or was cancelled, and passes when the jobs a change does not need
+were skipped. Require it on `main`, with `docs (build)` and
+`sanitizers (address+undefined)`, whose skipped runs count as passed.
+
 ### GPU CI
 
 The GPU tests run on NVIDIA's shared GitHub Actions GPU runners, through
