@@ -126,19 +126,24 @@ def test_a_control_system_reports_every_wiring_problem_at_once():
         pulse.ControlSystem(controllers=[a], links={0: pulse.Link()})
 
 
-def test_a_controller_listed_again_names_every_earlier_copy():
-    a, b = pulse.Controller(model="a"), pulse.Controller(model="b")
+@pytest.mark.parametrize("count", [2, 10])
+def test_a_controller_listed_again_names_every_earlier_copy(count):
+    # Few controllers are checked pair by pair, many by id: the same errors.
+    boxes = [pulse.Controller(model=f"box{i}") for i in range(count)]
+    a, b = boxes[0], boxes[1]
     with pytest.raises(QuantumSystemDefinitionError) as raised:
-        pulse.ControlSystem(controllers=[a, b, a, b, a])
+        pulse.ControlSystem(controllers=[*boxes, a, b, a])
     assert [str(p) for p in raised.value.problems] == [
         f"controllers[{i}]: is the same Controller as controllers[{j}]; "
         "give each controller of the system its own Controller"
-        for i, j in ((2, 0), (3, 1), (4, 0), (4, 2))
+        for i, j in ((count, 0), (count + 1, 1), (count + 2, 0), (count + 2, count))
     ]
     # A link may list an equal Controller; it stands for the first equal one.
     twin = dataclasses.replace(b)
-    system = pulse.ControlSystem(controllers=[a, b], links={"f": pulse.Link(controllers=[twin, a])})
+    system = pulse.ControlSystem(controllers=boxes, links={"f": pulse.Link(controllers=[twin, a])})
     assert system.as_dict()["links"]["f"]["controllers"] == [1, 0]
+    with pytest.raises(QuantumSystemDefinitionError, match="not a controller of the system"):
+        pulse.ControlSystem(controllers=boxes, links={"f": pulse.Link(controllers=[Controller()])})
 
 
 def test_wiring_names_carriers_of_the_quantum_system():
@@ -237,24 +242,32 @@ def test_the_readout_latency_of_many_controllers_is_their_slowest_pair(peers):
         assert plan.readout_latency_cycles == _slowest_outcome(system, plan)
 
 
-def test_a_copied_or_unpickled_system_finds_its_own_controllers():
-    boxes = [pulse.Controller(drive_lines=[i], model=f"box{i}") for i in range(5)]
+@pytest.mark.parametrize("count", [5, 12])
+def test_a_copied_or_unpickled_system_finds_its_own_controllers(count):
+    boxes = [pulse.Controller(drive_lines=[i], model=f"box{i}") for i in range(count)]
     system = pulse.ControlSystem(
-        controllers=boxes, links={"f": pulse.Link(controllers=[boxes[4], boxes[1]])}
+        controllers=boxes, links={"f": pulse.Link(controllers=[boxes[-1], boxes[1]])}
     )
-    assert [system._index(c) for c in boxes] == [0, 1, 2, 3, 4]
+    everyone = list(range(count))
+    assert [system._index(c) for c in boxes] == everyone
     for other in (
         pickle.loads(pickle.dumps(system)),
         copy.deepcopy(system),
         copy.copy(system),
         dataclasses.replace(system),
     ):
-        assert [other._index(c) for c in other.controllers] == [0, 1, 2, 3, 4]
+        # Many controllers are found by id: each system by its own, never the original's.
+        found = vars(other).get("_index")
+        assert (found is None) == (count <= 8)
+        if found is not None:
+            assert found.__self__ is not vars(system)["_index"].__self__
+            assert found.__self__._controllers is other.controllers
+        assert [other._index(c) for c in other.controllers] == everyone
         assert other.as_dict() == system.as_dict()
-    reversed_ = list(reversed(boxes))
-    swapped = dataclasses.replace(system, controllers=reversed_)
-    assert [swapped._index(c) for c in boxes] == [4, 3, 2, 1, 0]
-    assert swapped.as_dict()["links"]["f"]["controllers"] == [0, 3]
+    swapped = dataclasses.replace(system, controllers=boxes[::-1])
+    assert [swapped._index(c) for c in boxes] == everyone[::-1]
+    assert swapped.as_dict()["links"]["f"]["controllers"] == [0, count - 2]
+    assert system._index(dataclasses.replace(boxes[2])) == 2
     with pytest.raises(ValueError):
         system._index(pulse.Controller(model="elsewhere"))
 

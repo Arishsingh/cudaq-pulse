@@ -241,9 +241,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   system file written by an earlier version holds 4 and 2, which now count
   as given; to leave them unchecked, set them to `null` in the file.
 - **Control systems of many controllers build and compile faster.** Checking
-  that no `Controller` is listed twice, placing a link's controllers and
-  finding the readout latency no longer take time in the square of the
-  number of controllers; programs and errors are as before.
+  that no `Controller` is listed twice and placing a link's controllers take
+  time in proportion to the number of controllers, not its square, and so
+  does finding the readout latency when controllers give one
+  `peer_latency_cycles` to all others (a controller with a mapping is still
+  compared with every other). Programs and errors are as before.
 
 ### Fixed
 
