@@ -1533,18 +1533,37 @@ class ControlSystem:
         ] or everyone
         uncertainty = self._start_uncertainty(clocks) if len(controllers) > 1 else None
         longest = Fraction(0)
+        if uncertainty is None:
+            for reader in readers:
+                ratio = Fraction(1) if clocks is None else clocks.controllers[reader].ratio
+                longest = max(longest, controllers[reader].feedback_latency_cycles / ratio)
+            return math.ceil(longest)
+        # A reader's outcome reaches each user its peer latency mapping lists
+        # after that user's latency, and every other user after one latency:
+        # of those, latest on the one with the largest start uncertainty, the
+        # first in this order that is neither the reader nor listed.
+        ranked = sorted(users, key=uncertainty.__getitem__, reverse=True)
+        using = set(users)
         for reader in readers:
             source = controllers[reader]
             ratio = Fraction(1) if clocks is None else clocks.controllers[reader].ratio
-            longest = max(longest, source.feedback_latency_cycles / ratio)
-            if uncertainty is None:
-                continue
+            feedback = source.feedback_latency_cycles
+            own = uncertainty[reader]
+            longest = max(longest, feedback / ratio)
             peers = source.peer_latency_cycles
-            for user in users:
-                if user != reader:
-                    peer = peers.get(user, 0) if isinstance(peers, Mapping) else peers
-                    latency = (source.feedback_latency_cycles + peer) / ratio
-                    longest = max(longest, latency + uncertainty[reader] + uncertainty[user])
+            if isinstance(peers, Mapping):
+                for user, peer in peers.items():
+                    if user != reader and user in using:
+                        latency = (feedback + peer) / ratio
+                        longest = max(longest, latency + own + uncertainty[user])
+                peer, given = 0, peers
+            else:
+                peer, given = peers, ()
+            for user in ranked:
+                if user != reader and user not in given:
+                    latency = (feedback + peer) / ratio
+                    longest = max(longest, latency + own + uncertainty[user])
+                    break
         return math.ceil(longest)
 
     def _start_uncertainty(self, clocks: _clocks.ClockPlan | None) -> list[Fraction]:
@@ -1846,10 +1865,17 @@ class ControlSystem:
         return found
 
     def _index(self, controller: Controller) -> int:
-        for index, candidate in enumerate(self.controllers):
-            if candidate is controller:
-                return index
-        return self.controllers.index(controller)
+        # By id, the position of each controller: made once, as the system
+        # holds its controllers and is frozen (a copy or an unpickled system
+        # is built again, without it).
+        found: dict[int, int] | None = self.__dict__.get("_positions")
+        if found is None:
+            found = {}
+            for index, candidate in enumerate(self.controllers):
+                found.setdefault(id(candidate), index)
+            object.__setattr__(self, "_positions", found)
+        index = found.get(id(controller))
+        return self.controllers.index(controller) if index is None else index
 
     # ── Checks of a compiled program ────────────────────────────────────────
 
@@ -2342,16 +2368,19 @@ def _structure_problems(system: ControlSystem, prefix: str, repeated: bool) -> l
     in it, links that reach controllers it does not have."""
     problems: list[Problem] = []
     controllers = system.controllers
-    for index, controller in enumerate(controllers):
-        for other in range(index):
-            if controllers[other] is controller:
-                problems.append(
-                    Problem(
-                        f"is the same Controller as controllers[{other}]",
-                        path=f"{prefix}controllers[{index}]",
-                        fix="give each controller of the system its own Controller",
+    ids = set(map(id, controllers))
+    if len(ids) < len(controllers):
+        # A Controller listed more than once: each copy names every earlier one.
+        for index, controller in enumerate(controllers):
+            for other in range(index):
+                if controllers[other] is controller:
+                    problems.append(
+                        Problem(
+                            f"is the same Controller as controllers[{other}]",
+                            path=f"{prefix}controllers[{index}]",
+                            fix="give each controller of the system its own Controller",
+                        )
                     )
-                )
     if system._shares:
         from ._shared_lines import reach_problems
 
@@ -2389,7 +2418,7 @@ def _structure_problems(system: ControlSystem, prefix: str, repeated: bool) -> l
                     )
     for name, link in system.links.items():
         for position, controller in enumerate(link.controllers or ()):
-            if controller not in controllers:
+            if id(controller) not in ids and controller not in controllers:
                 problems.append(
                     Problem(
                         "is not a controller of the system",
