@@ -4178,18 +4178,107 @@ static mlir::Value indexConstant(mlir::OpBuilder &builder, mlir::Location loc,
   return mlir::arith::ConstantIndexOp::create(builder, loc, value);
 }
 
+// ── The kernel's numbers of readouts ────────────────────────────────────
+//
+// Peeling and unrolling copy a loop's readouts. Each keeps the number and
+// the loop iteration the kernel gave it (pulse::kernelReadoutKey): a module
+// built from a kernel numbers its readouts (`pulse.readout_number`) before
+// any pass runs; in one that does not, the readouts of a function are
+// numbered in walk order before the first of them is copied here. A readout
+// in a loop being peeled or unrolled carries how its iterations map to the
+// kernel's (`pulse.readout_iteration`).
+
+static bool isReadoutOp(mlir::Operation *op) {
+  return mlir::isa<pulse::ReadoutOp>(op) ||
+         op->getName().getStringRef() == "pulse.iq_acquire";
+}
+
+static llvm::SmallVector<mlir::Operation *>
+readoutsIn(llvm::ArrayRef<mlir::Operation *> ops) {
+  llvm::SmallVector<mlir::Operation *> readouts;
+  for (mlir::Operation *op : ops)
+    op->walk([&](mlir::Operation *inner) {
+      if (isReadoutOp(inner))
+        readouts.push_back(inner);
+    });
+  return readouts;
+}
+
+/// The readouts in `loop`, each with its iteration map written out, its
+/// function's readouts numbered first if they are not.
+static llvm::SmallVector<mlir::Operation *>
+loopReadouts(mlir::scf::ForOp loop) {
+  llvm::SmallVector<mlir::Operation *> ops;
+  for (mlir::Operation &op : loop.getBody()->without_terminator())
+    ops.push_back(&op);
+  llvm::SmallVector<mlir::Operation *> readouts = readoutsIn(ops);
+  if (readouts.empty())
+    return readouts;
+  mlir::MLIRContext *ctx = loop->getContext();
+  if (!readouts.front()->hasAttr(pulse::kReadoutNumberAttr)) {
+    mlir::Operation *scope = loop->getParentOfType<mlir::func::FuncOp>();
+    if (!scope)
+      for (scope = loop; scope->getParentOp();)
+        scope = scope->getParentOp();
+    pulse::numberReadouts(scope);
+  }
+  for (mlir::Operation *op : readouts) {
+    if (op->hasAttr(pulse::kReadoutIterationAttr))
+      continue;
+    llvm::SmallVector<int64_t> map;
+    for (size_t depth = 0, n = pulse::enclosingLoops(op).size(); depth < n;
+         ++depth)
+      map.append({static_cast<int64_t>(depth), 1, 0});
+    op->setAttr(pulse::kReadoutIterationAttr,
+                mlir::DenseI64ArrayAttr::get(ctx, map));
+  }
+  return readouts;
+}
+
+/// Rewrite the iteration maps of `readouts` for the loop at `depth`: its
+/// iteration t now was its iteration scale * t + offset before; or, with
+/// `outside`, the readouts are copies of its iteration `offset` out of it.
+static void remapReadouts(llvm::ArrayRef<mlir::Operation *> readouts,
+                          int64_t depth, int64_t scale, int64_t offset,
+                          bool outside) {
+  for (mlir::Operation *op : readouts) {
+    llvm::SmallVector<int64_t> map(
+        op->getAttrOfType<mlir::DenseI64ArrayAttr>(pulse::kReadoutIterationAttr)
+            .asArrayRef());
+    for (size_t i = 0; i + 2 < map.size(); i += 3) {
+      if (map[i] == depth) {
+        map[i + 2] += map[i + 1] * offset;
+        map[i + 1] = outside ? 0 : map[i + 1] * scale;
+        if (outside)
+          map[i] = -1;
+      } else if (outside && map[i] > depth) {
+        --map[i];
+      }
+    }
+    op->setAttr(pulse::kReadoutIterationAttr,
+                mlir::DenseI64ArrayAttr::get(op->getContext(), map));
+  }
+}
+
 /// Execute the first iteration of `loop` before it.
 static void peelFront(mlir::scf::ForOp loop) {
   int64_t lb = *pulse::constantIndex(loop.getLowerBound());
   int64_t step = *pulse::constantIndex(loop.getStep());
+  auto readouts = loopReadouts(loop);
+  int64_t depth = static_cast<int64_t>(pulse::enclosingLoops(loop).size());
   mlir::OpBuilder builder(loop);
   mlir::IRMapping map;
   map.map(loop.getInductionVar(), loop.getLowerBound());
   for (auto [arg, init] :
        llvm::zip(loop.getRegionIterArgs(), loop.getInitArgs()))
     map.map(arg, init);
+  llvm::SmallVector<mlir::Operation *> clones;
   for (mlir::Operation &op : loop.getBody()->without_terminator())
-    builder.clone(op, map);
+    clones.push_back(builder.clone(op, map));
+  if (!readouts.empty()) {
+    remapReadouts(readoutsIn(clones), depth, 1, 0, true);
+    remapReadouts(readouts, depth, 1, 1, false);
+  }
   llvm::SmallVector<mlir::Value> next;
   for (mlir::Value value : loop.getBody()->getTerminator()->getOperands())
     next.push_back(map.lookupOrDefault(value));
@@ -4206,6 +4295,7 @@ static void peelBack(mlir::scf::ForOp loop) {
   int64_t lb = *pulse::constantIndex(loop.getLowerBound());
   int64_t step = *pulse::constantIndex(loop.getStep());
   int64_t trips = *pulse::constantTripCount(loop);
+  auto readouts = loopReadouts(loop);
   mlir::OpBuilder builder(loop->getContext());
   builder.setInsertionPointAfter(loop);
   mlir::IRMapping map;
@@ -4217,6 +4307,10 @@ static void peelBack(mlir::scf::ForOp loop) {
   llvm::SmallPtrSet<mlir::Operation *, 8> clones;
   for (mlir::Operation &op : loop.getBody()->without_terminator())
     clones.insert(builder.clone(op, map));
+  if (!readouts.empty())
+    remapReadouts(readoutsIn(llvm::to_vector(clones)),
+                  static_cast<int64_t>(pulse::enclosingLoops(loop).size()), 1,
+                  trips - 1, true);
   for (auto [result, value] : llvm::zip(
            loop.getResults(), loop.getBody()->getTerminator()->getOperands())) {
     mlir::Value last = map.lookupOrDefault(value);
@@ -4249,6 +4343,8 @@ static void unrollBy(mlir::scf::ForOp loop, int64_t factor) {
   llvm::SmallVector<mlir::Operation *> ops;
   for (mlir::Operation &op : body->without_terminator())
     ops.push_back(&op);
+  auto readouts = loopReadouts(loop);
+  int64_t depth = static_cast<int64_t>(pulse::enclosingLoops(loop).size());
   llvm::SmallVector<mlir::Value> yielded(yield->getOperands());
   llvm::SmallVector<mlir::Value> carried = yielded;
   mlir::OpBuilder builder(yield);
@@ -4261,11 +4357,15 @@ static void unrollBy(mlir::scf::ForOp loop, int64_t factor) {
                       indexConstant(builder, loop.getLoc(), copy * step)));
     for (auto [arg, value] : llvm::zip(loop.getRegionIterArgs(), carried))
       map.map(arg, value);
+    llvm::SmallVector<mlir::Operation *> clones;
     for (mlir::Operation *op : ops)
-      builder.clone(*op, map);
+      clones.push_back(builder.clone(*op, map));
+    if (!readouts.empty())
+      remapReadouts(readoutsIn(clones), depth, factor, copy, false);
     for (auto [value, original] : llvm::zip(carried, yielded))
       value = map.lookupOrDefault(original);
   }
+  remapReadouts(readouts, depth, factor, 0, false);
   yield->setOperands(carried);
   mlir::OpBuilder bounds(loop);
   loop.setStep(indexConstant(bounds, loop.getLoc(), step * factor));
