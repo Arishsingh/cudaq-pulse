@@ -495,8 +495,9 @@ class CompileMetrics:
     #: Milliseconds spent tracing the kernel's bytecode into the packed
     #: operation buffer (stage 1).
     trace_ms: float = 0.0
-    #: Milliseconds spent sending the packed buffer to C++ and building the
-    #: MLIR module from it (stage 2, "FFI to C++").
+    #: Milliseconds spent sending the packed buffer to C++, building the MLIR
+    #: module from it and setting the module's link attributes and clocks
+    #: (stage 2, "FFI to C++").
     ffi_ms: float = 0.0
     #: Milliseconds spent lowering runtime selects and running the compiler
     #: passes on the module (stage 3).
@@ -504,8 +505,8 @@ class CompileMetrics:
     #: Milliseconds spent scheduling the module (stage 4). A module that is only
     #: scheduled again for other line delays reports just this stage.
     schedule_ms: float = 0.0
-    #: Milliseconds for the whole compilation: the sum of ``trace_ms``,
-    #: ``ffi_ms``, ``passes_ms`` and ``schedule_ms``.
+    #: Milliseconds for the sum of the four stages: ``trace_ms``, ``ffi_ms``,
+    #: ``passes_ms`` and ``schedule_ms``.
     total_ms: float = 0.0
     #: The number of pulse-program operations the kernel recorded, not counting
     #: qudit binding or region yields.
