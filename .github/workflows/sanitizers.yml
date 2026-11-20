@@ -30,8 +30,27 @@ permissions:
   contents: read
 
 jobs:
+  # Which jobs the change needs (tools/ci-changes.py): the sanitizers run for
+  # a change that can reach the compiler, the runtime or the Python suite
+  # they run, not for one to the pages alone.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.kind.outputs.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: kind
+        uses: ./.github/actions/changes
+
   sanitizers:
     name: sanitizers (${{ matrix.name }})
+    if: ${{ needs.changes.outputs.python == 'true' }}
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     continue-on-error: ${{ matrix.sanitizers == 'thread' }}

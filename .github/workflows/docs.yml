@@ -21,8 +21,27 @@ permissions:
   contents: read
 
 jobs:
+  # Which jobs the change needs (tools/ci-changes.py): the pages are built
+  # for every change but one of the repository's own files (the license, the
+  # contributing guide and their like), which no page reads.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs: ${{ steps.kind.outputs.docs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: kind
+        uses: ./.github/actions/changes
+
   build:
     name: docs (build)
+    if: ${{ needs.changes.outputs.docs == 'true' }}
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
