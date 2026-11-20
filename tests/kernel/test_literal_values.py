@@ -110,6 +110,28 @@ def test_a_rejected_value_names_the_line(body, message):
     assert 'File "<kernel>", line 4, in k' in _note(info.value)
 
 
+# Two values of one waveform that are both rejected: the message names the
+# first, whichever C++ compiler built the package. The native builder once
+# checked them in the order that compiler evaluated a call's arguments, which
+# the Linux x86_64 build took right to left.
+FIRST_OF_TWO = [
+    ("drive(d, gaussian(40, inf, 0.0))", "gaussian amplitude must be finite, got inf"),
+    ("drive(d, square(8, [nan, inf]))", "square amplitude must be finite, got nan"),
+    ("drive(d, drag(40, nan, -1.0, inf))", "drag amplitude must be finite, got nan"),
+    ("drive(d, drag(40, 0.1, -1.0, inf))", "drag sigma must be positive, got -1.0"),
+    ("drive(d, tanh_ramp(40, inf, 0))", "tanh_ramp amplitude must be finite, got inf"),
+    ("drive(d, gaussian_square(64, nan, 0.0, 32))", "gaussian_square amplitude must be finite"),
+]
+
+
+@pytest.mark.parametrize(("body", "message"), FIRST_OF_TWO, ids=[body for body, _ in FIRST_OF_TWO])
+def test_the_first_of_two_rejected_values_is_the_one_named(body, message):
+    kernel = _kernel(body)
+    kernel.__wrapped__.__globals__.update(nan=NAN, inf=INF)
+    with pytest.raises(CompilationError, match=message):
+        kernel.lower(Q[0])
+
+
 @pytest.mark.parametrize("passes", [None, ()])
 def test_the_line_is_named_with_or_without_passes(passes):
     kernel = _kernel("drive(d, gaussian(40, 0.1, 0.0))")

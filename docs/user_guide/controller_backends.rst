@@ -526,9 +526,10 @@ controller's limits in its own cycles. A sync, and a wait whose length
 comes from a classical answer, meet where every line's timesteps do. So do
 the lines of a runtime qudit, so that the kernel's one schedule fits
 whichever qudits a call binds. A line's delay is split by its own
-controller's fine delay, and ``rcp`` keeps a branch on a readout for the
-reading controller's ``feedback_latency_cycles`` converted to program
-cycles, counted from where the readout ends on its delayed line.
+controller's fine delay, and every schedule keeps an operation that depends
+on a readout for the reading controller's ``feedback_latency_cycles``
+converted to program cycles, counted from where the readout ends on its
+delayed line (its fine delay rounded up to a cycle).
 ``custom(duration, f)`` samples ``f`` at the rate of the line that plays
 it, the waveforms made from it too; samples given to
 ``custom_samples`` play only on lines of the rate they were made for, and
@@ -586,10 +587,10 @@ known: its ``clock_skew_cycles``, plus one of its own cycles without a
 another controller's readout starts once the outcome can reach it: the
 reader's ``feedback_latency_cycles`` and its ``peer_latency_cycles`` to the
 user, in the reader's cycles, and both controllers' start uncertainty.
-``rcp`` and ``alap_rcp`` wait that long for each pair of reader and user,
-and a pulse on the reader's own controller waits its feedback latency
-alone; a program that starts the pulse sooner fails to compile with the
-cycle it may start at. An answer taken on another controller than the one
+Every schedule waits that long for each pair of reader and user, and a
+pulse on the reader's own controller waits its feedback latency alone; a
+program scheduled for other controllers that starts the pulse sooner fails
+their check with the cycle it may start at. An answer taken on another controller than the one
 that sent the request is budgeted with the two controllers' start
 uncertainty, and ``due_cycles`` includes it; one controller sending and
 taking it adds none. When the scheduler cannot tell which controllers they
@@ -1038,20 +1039,15 @@ A backend that accepted the unknown event would instead report ``FAIL
 unsupported_event: emit() accepted 'forward_outcome'; it should raise
 IncompatibleBackendError``.
 
-``branch`` plays its pulse on the readout's outcome as soon as the readout
-ends, so on a controller with a ``feedback_latency_cycles`` it is skipped.
-``feedback_gap_cycles=`` waits that many cycles of the controller's clock
-before that pulse; set it to the feedback latency, or more, to check
-branches on controllers with long feedback latency. A backend may declare
-its own ``feedback_gap_cycles`` attribute, which the argument overrides;
-without either it is 0, and the other programs are the same for any gap.
+``branch`` plays its pulse on the readout's outcome once the controller's
+``feedback_latency_cycles`` have passed after the readout ends: every
+schedule waits for it, so a controller with long feedback latency runs
+``branch`` too.
 
 .. code-block:: python
 
    slow = Controller(clock_ghz=1.0, feedback_latency_cycles=2000)  # 2 us
    backends.validate(backend, controller=slow)
-   # SKIP branch: exceeds the controller's limits: ... 2000 cycles of feedback latency ...
-   backends.validate(backend, controller=slow, feedback_gap_cycles=2000)
    # PASS branch
 
 Two optional methods make the checks stronger. With ``events(artifact)``,

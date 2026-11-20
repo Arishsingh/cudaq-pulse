@@ -912,7 +912,11 @@ def _simulate_compiled(
     if functions:
         # Calls are bound one execution at a time, on the concrete module
         # with loops that hold calls unrolled.
-        module = compiled._concrete().simulation_module(*compiled.options.schedule_args())
+        from .._programs import _schedule_args
+
+        module = compiled._concrete().simulation_module(
+            *_schedule_args(compiled.options, compiled.clocks)
+        )
         arguments = []
         lock = threading.RLock()
     elif backend == "gpu" or compiled.waits is not None:
@@ -1198,6 +1202,7 @@ def _simulate_tree(
 
     Without *t_end* each path runs to the end of its own schedule, which
     variable waits make path-dependent."""
+    from .._programs import _schedule_args
     from ..classical import _handlers_for
     from ._calls import IQModel, ReadoutModel, simulate_tree, takes_iq
 
@@ -1218,7 +1223,7 @@ def _simulate_tree(
         rng,
         functions,
         chosen,
-        compiled.options.schedule_args(),
+        _schedule_args(compiled.options, compiled.clocks),
         model,
         latency_branching,
         clock_ghz,

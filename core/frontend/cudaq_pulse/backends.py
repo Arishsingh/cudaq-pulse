@@ -198,7 +198,6 @@ def validate(
     *,
     shots_count: int = 1000,
     tolerance: float = 0.05,
-    feedback_gap_cycles: int | None = None,
 ) -> _Report:
     """Run the export test corpus through *backend* (a ``Backend`` or the
     name of one) and report what it does wrong.
@@ -223,14 +222,9 @@ def validate(
     that the controllers play: on their lines' timestep and no shorter than
     their ``min_pulse_cycles``; as written wherever they play it so.
 
-    ``branch`` plays its pulse on the readout's outcome as soon as the
-    readout ends, so it is skipped on a controller with a
-    ``feedback_latency_cycles``. *feedback_gap_cycles* (by default the
-    backend's ``feedback_gap_cycles`` attribute, else 0) is a wait of that
-    many cycles of the controller's clock before that pulse; set it to the
-    controller's feedback latency, or more, to check branches on
-    controllers with long feedback latency. The other programs are the same
-    for any gap.
+    ``branch`` plays its pulse on the readout's outcome once the
+    controller's ``feedback_latency_cycles`` have passed after the readout
+    ends: every schedule waits for it.
 
     A backend may offer two more methods, which make the checks stronger.
     ``events(artifact)`` gives back the emitted programs, one list per
@@ -260,4 +254,4 @@ def validate(
         )
     from . import _validation
 
-    return _validation.validate(found, controller, shots_count, tolerance, feedback_gap_cycles)
+    return _validation.validate(found, controller, shots_count, tolerance)

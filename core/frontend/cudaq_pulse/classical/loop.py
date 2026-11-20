@@ -89,9 +89,15 @@ class ParameterStore:
         return len(self._values)
 
     def values(self, *names: str) -> tuple[float, ...]:
+        """The current values of *names*, in that order, as a kernel's float
+        arguments take them. A name the store does not have raises
+        ``NotFoundError``."""
         return tuple(self[name] for name in names)
 
     def set(self, name: str, value: float, *, iteration: int | None = None) -> None:
+        """Set *name* to *value*, bump ``version`` and add the change, with the
+        loop *iteration* that made it, to ``history``. A non-finite value
+        raises ``InvalidValueError`` and changes nothing."""
         value = float(value)
         if not math.isfinite(value):
             raise InvalidValueError(f"{name} must be finite, got {value}")
@@ -100,6 +106,9 @@ class ParameterStore:
         self.history.append(Update(name, value, self.version, iteration))
 
     def update(self, values: Mapping[str, float], *, iteration: int | None = None) -> None:
+        """``set`` each of *values* in turn, all with the same *iteration*; each
+        bumps ``version``. A non-finite value raises ``InvalidValueError``,
+        and the values before it stay set."""
         for name, value in values.items():
             self.set(name, value, iteration=iteration)
 
@@ -167,12 +176,15 @@ class EstimateLog:
         truth: float | None = None,
         time_s: float | None = None,
     ) -> None:
+        """Add an ``Estimate`` of *name* made at *iteration*, with its
+        *uncertainty*, *truth* and *time_s* if given."""
         self.entries.append(Estimate(iteration, name, float(value), uncertainty, truth, time_s))
 
     def __len__(self) -> int:
         return len(self.entries)
 
     def series(self, name: str) -> list[Estimate]:
+        """The estimates of *name*, in the order they were recorded."""
         return [e for e in self.entries if e.name == name]
 
     def tracking_error(self, name: str) -> float:
@@ -184,15 +196,19 @@ class EstimateLog:
         return math.sqrt(sum(x * x for x in errors) / len(errors))
 
     def to_json(self) -> str:
+        """The log as a JSON array with an object of fields per estimate, which
+        ``from_json`` reads back."""
         return json.dumps([asdict(e) for e in self.entries])
 
     @classmethod
     def from_json(cls, text: str) -> EstimateLog:
+        """A log of the estimates in *text*, a JSON array as ``to_json`` writes."""
         log = cls()
         log.entries = [Estimate(**e) for e in json.loads(text)]
         return log
 
     def extend(self, entries: Iterable[Estimate]) -> None:
+        """Add *entries*, such as another log's, after the estimates already here."""
         self.entries.extend(entries)
 
     def __repr__(self) -> str:

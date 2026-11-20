@@ -433,3 +433,188 @@ def test_a_block_with_a_float_length_wait_keeps_its_shape_when_called():
         ("drive", 0, 960),
         ("drive", 1, 923),
     ]
+
+
+# ── A measured bit and a block ───────────────────────────────────────
+
+
+def _after_readouts(compiled):
+    """Each drive's start and the end of the readout before it."""
+    readouts = sorted(
+        e.start_cycles + e.duration_cycles for e in compiled.schedule if e.kind == "readout"
+    )
+    drives = sorted(e.start_cycles for e in compiled.schedule if e.kind == "drive")
+    return readouts, drives
+
+
+def _phase_on_bit(policy):
+    @pulse.kernel(schedule=policy)
+    def phase_on_bit(q, m):
+        d = get_drive_line(q)
+        if m:
+            shift_phase(d.tone, 3.14)
+        drive(d, square(40, 0.3))
+
+    return phase_on_bit
+
+
+def _phase_then_branch(policy):
+    @pulse.kernel(schedule=policy)
+    def phase_then_branch(q, q2, m):
+        d = get_drive_line(q)
+        d2 = get_drive_line(q2)
+        if m:
+            shift_phase(d.tone, 3.14)
+        drive(d, square(40, 0.3))
+        wait(d2, 504)
+        if m:
+            drive(d2, square(40, 0.3))
+
+    return phase_then_branch
+
+
+@pytest.mark.parametrize("flatten", [False, True])
+@pytest.mark.parametrize("caller", ["asap", "alap", None])
+@pytest.mark.parametrize("callee", ["asap", "alap"])
+def test_a_tone_changed_on_a_bit_passed_in_waits_for_the_readout(callee, caller, flatten):
+    block = _phase_on_bit(callee)
+
+    @pulse.kernel
+    def top(qs):
+        m = readout(get_readout_line(qs[0]), square(400, 0.05))
+        block(qs[1], m)
+
+    options = {"schedule": caller} if caller else {}
+    compiled = pulse.compile(top, flatten_schedules=flatten, **options).lower(Q[0:2])
+    # The drive plays the phase the bit chose: the readout must have ended.
+    assert _after_readouts(compiled) == ([400], [400])
+
+
+# Only an asap block plays the changed tone at its start: an alap block
+# moves that drive next to the later branch, so it cannot show the bug.
+@pytest.mark.parametrize("flatten", [False, True])
+@pytest.mark.parametrize("caller", ["asap", "alap", None])
+@pytest.mark.parametrize("callee", ["asap"])
+def test_a_bit_passed_in_and_branched_on_later_bounds_its_first_use(callee, caller, flatten):
+    block = _phase_then_branch(callee)
+
+    @pulse.kernel
+    def top(qs):
+        m = readout(get_readout_line(qs[0]), square(400, 0.05))
+        block(qs[1], qs[0], m)
+
+    options = {"schedule": caller} if caller else {}
+    compiled = pulse.compile(top, flatten_schedules=flatten, **options).lower(Q[0:2])
+    (end,), drives = _after_readouts(compiled)
+    # Before, the drive on the phase-changed tone kept its place at the
+    # block's start, ahead of the readout, because the later branch was
+    # taken as the bit's first use.
+    assert min(drives) >= end
+
+
+@pytest.mark.parametrize("flatten", [False, True])
+@pytest.mark.parametrize("caller", ["asap", "alap", None])
+@pytest.mark.parametrize("callee", ["asap", "alap"])
+def test_a_tone_a_block_changes_on_its_own_readout_is_handed_out_after_it(callee, caller, flatten):
+    @pulse.kernel(schedule=callee)
+    def flip_phase_on_bit(q):
+        d = get_drive_line(q)
+        m = readout(get_readout_line(q), square(400, 0.05))
+        if m:
+            shift_phase(d.tone, 3.14)
+
+    @pulse.kernel
+    def top(qs):
+        flip_phase_on_bit(qs[0])
+        drive(get_drive_line(qs[0]), square(40, 0.3))
+
+    @pulse.kernel(unroll_threshold=0)
+    def rounds(qs):
+        for _ in range(20):
+            flip_phase_on_bit(qs[0])
+            drive(get_drive_line(qs[0]), square(40, 0.3))
+
+    options = {"schedule": caller} if caller else {}
+    assert _after_readouts(
+        pulse.compile(top, flatten_schedules=flatten, **options).lower(Q[0:1])
+    ) == ([400], [400])
+    ends, drives = _after_readouts(
+        pulse.compile(rounds, flatten_schedules=flatten, **options).lower(Q[0:1])
+    )
+    assert len(ends) == len(drives) == 20
+    assert all(start >= end for end, start in zip(ends, drives, strict=True))
+
+
+@pytest.mark.parametrize("caller", ["asap", "alap"])
+def test_a_block_that_waits_for_a_bit_counts_toward_the_budget(caller):
+    # Placed after the readout, the block ends at 440: a budget of 420 that
+    # the early placement met is now exceeded.
+    block = _phase_on_bit("asap")
+
+    def program(budget: int):
+        @pulse.kernel(max_duration_cycles=budget)
+        def top(qs):
+            m = readout(get_readout_line(qs[0]), square(400, 0.05))
+            block(qs[1], m)
+
+        return pulse.compile(top, schedule=caller)
+
+    assert _after_readouts(program(440).lower(Q[0:2])) == ([400], [400])
+    with pytest.raises(RuntimeError, match=r"kernel 'top' takes 440 cycles, more than"):
+        program(420).lower(Q[0:2])
+
+
+def _carried(policy, depth):
+    """A loop that branches on the readout made `depth` trips before."""
+
+    @pulse.kernel(schedule=policy, unroll_threshold=0)
+    def two_deep(q, q2):
+        d = get_drive_line(q2)
+        r = get_readout_line(q)
+        a = readout(r, square(40, 0.05))
+        b = readout(r, square(40, 0.05))
+        for _ in range(8):
+            if a:
+                shift_phase(d.tone, 3.14)
+            a = b
+            b = readout(r, square(400, 0.05))
+
+    @pulse.kernel(schedule=policy, unroll_threshold=0)
+    def three_deep(q, q2):
+        d = get_drive_line(q2)
+        r = get_readout_line(q)
+        a = readout(r, square(40, 0.05))
+        b = readout(r, square(40, 0.05))
+        c = readout(r, square(40, 0.05))
+        for _ in range(8):
+            if a:
+                shift_phase(d.tone, 3.14)
+            a = b
+            b = c
+            c = readout(r, square(400, 0.05))
+
+    return two_deep if depth == 2 else three_deep
+
+
+@pytest.mark.parametrize("caller", ["asap", "alap", None])
+@pytest.mark.parametrize("callee", ["asap", "alap"])
+@pytest.mark.parametrize("depth", [2, 3])
+def test_a_measurement_carried_trips_deep_in_a_block_is_waited_for(depth, callee, caller):
+    block = _carried(callee, depth)
+
+    @pulse.kernel
+    def top(qs):
+        block(qs[0], qs[1])
+        drive(get_drive_line(qs[1]), square(40, 0.3))
+
+    options = {"schedule": caller} if caller else {}
+    ends, (drive_start,) = _after_readouts(pulse.compile(top, **options).lower(Q[0:2]))
+    flat_ends, (flat_start,) = _after_readouts(
+        pulse.compile(top, flatten_schedules=True, **options).lower(Q[0:2])
+    )
+    # The last trip branches on the readout of trip 7 - depth, the eighth
+    # readout (after the depth before the loop); the drive after the block
+    # plays the phase it chose. Before, the block took that condition from
+    # the first trips and the drive started at 480 or 120 (asap).
+    assert flat_start >= flat_ends[7]
+    assert drive_start >= ends[7]
