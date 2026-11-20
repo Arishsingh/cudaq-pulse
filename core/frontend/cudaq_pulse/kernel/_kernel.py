@@ -46,7 +46,13 @@ from .._device import (
     Register,
 )
 from .._errors import InvalidTypeError
-from ..compiler import CompileOptions, ScheduledKernel, build, with_line_delays
+from ..compiler import (
+    _DEFAULT_MACHINE,
+    CompileOptions,
+    ScheduledKernel,
+    build,
+    with_line_delays,
+)
 from ._guard import Guard, build_guard
 from ._schedule_blocks import root_schedule, validate_kernel_schedule, validate_max_duration
 from ._unroll import resolve_unroll_threshold
@@ -504,7 +510,9 @@ class _Dispatcher:
         kernel = self.kernel
         target = self._device(values, kernel)
         static = kernel._split[0]
-        key = (target.fingerprint, static, *[_static_key(values[i]) for i in static])
+        # The identity, not the fingerprint: compiled for no control system,
+        # a kernel is scheduled and checked for the one of its qudits.
+        key = (target._identity, static, *[_static_key(values[i]) for i in static])
         entry = self._entries.get(key)
         if entry is not None and entry.guard.check():
             entry.tick = next(_ticks)
@@ -525,7 +533,7 @@ class _Dispatcher:
             self.misses += 1
             # Tracing may have made float parameters static.
             static = kernel._split[0]
-            key = (target.fingerprint, static, *[_static_key(values[i]) for i in static])
+            key = (target._identity, static, *[_static_key(values[i]) for i in static])
             if target._drift:
                 # Kept for the twin: no cached program plays another system's drift.
                 from ..quantum_systems.drift import _kept
@@ -776,6 +784,10 @@ class Kernel[**P]:
         return out
 
     def _specialize(self, values: tuple[Any, ...], target: Any, options: CompileOptions) -> _Entry:
+        if target.control_system is not None and options.machine is _DEFAULT_MACHINE:
+            # Compiled for no control system: scheduled and checked for the
+            # one of the qudits it is lowered on.
+            options = replace(options, machine=target.control_system._machine)
         if options.machine._line_delays or self._traced:
             found = self._retimed(values, target, options)
             if found is not None:

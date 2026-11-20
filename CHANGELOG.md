@@ -110,13 +110,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   checked, with 16-cycle pulses lasting 64. On a controller that plays the
   corpus as written, the corpus, its exports and every report are as
   before.
-- **Validating branches on slow feedback.**
-  `backends.validate(..., feedback_gap_cycles=n)` waits `n` cycles of the
-  controller's clock between the readout of the corpus's `branch` program
-  and the pulse on its outcome, so a controller with long feedback latency
-  (`feedback_latency_cycles`) runs `branch` instead of skipping it. A
-  backend may declare its own `feedback_gap_cycles` attribute, which the
-  argument overrides. The default, 0, runs the corpus as before.
+- **Validating branches on slow feedback.** `backends.validate` runs the
+  corpus's `branch` program on a controller with a feedback latency
+  (`feedback_latency_cycles`) instead of skipping it: the pulse on the
+  readout's outcome waits for the latency, as every schedule now does.
 
 - **Where exported samples are taken, and what `phase_rad` counts.** The
   controller backends guide states that sample `k` of a shape is its
@@ -162,6 +159,29 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **Every schedule waits for readouts.** `asap` and `alap` (the default)
+  now start an operation that depends on a readout (an arm of a branch on
+  it, a pulse on a tone whose frame a branch on it changed, a value computed
+  from it, a measured value carried out of an `if` or a loop, a classical
+  request that sends it) only once the readout has ended on its line and
+  the controller's feedback latency (and, on another controller, its peer
+  latency and both start uncertainties) has passed, as `rcp` and `alap_rcp`
+  do. Programs that failed with "... schedule with rcp ..." compile;
+  programs in which nothing depends on a readout schedule as before. The
+  latency can make a program exceed a budget it declares
+  (`max_duration_cycles`, `reaction_deadline_ns`,
+  `Controller.max_program_duration`); the error names it. For backend
+  authors: `backends.validate` counts change on a controller with a
+  feedback latency (`branch` passes instead of being skipped), and its
+  `feedback_gap_cycles` argument, new in this release, is gone.
+- **A kernel compiled without a quantum system takes its qudits' control
+  system.** `lower()` and calls of a kernel compiled without
+  `quantum_system=` or `control_system=` now schedule and check the program
+  for the control system of the qudits it is lowered on: its feedback
+  latency, line delays and controller limits apply. Such a call can now
+  raise `ControllerLimitError`, or start its operations later by a line's
+  delay, where it compiled before. Qudits of quantum systems that differ
+  only in their control system get a program each.
 - **Schedule plots look different.** `viz.plot_schedule`, `viz.save_schedule`
   and `timeline()` draw in the style of the documentation's figures: drives
   green, readouts rose, waits hatched grey and classical calls teal (colors
@@ -180,6 +200,24 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   operation or type, such as one with only classical calls, is scheduled
   like any other; the schedule passes wrote the pulse dialect's schedule
   state without loading the dialect.
+- On one controller whose clock is not the program's, `rcp` and `alap_rcp`
+  waited the feedback latency in the controller's cycles as if they were the
+  program's: they failed their own check (100 cycles at 0.5 GHz are 400 of
+  a 2 GHz program, not 100), and a request sending a readout's outcome could
+  leave before it was there. Simulation and classical emulation schedule
+  again with the same latency as `compile()`.
+- A schedule longer than `Controller.max_program_duration` compiled when
+  waiting for feedback, a line or a link made it longer than its operations
+  played one after another (on several controllers nothing was checked at
+  all); it is now an error that names the controller, and the feedback
+  latency when the program waits one.
+- A kernel called with its own `schedule=` could hand out a tone whose phase
+  a measured `if` changed (on a bit it read, was passed, or carried from an
+  earlier trip of a loop) as if unchanged, so the caller's drive started
+  before the readout ended; and a loop in such a kernel that passes tones
+  from one iteration argument to another could hand out a tone it was still
+  playing on. `alap` and `alap_rcp` could move the readout before a loop past
+  the first branch on the measurement the loop carries.
 - A program's constants are created in the same order on every platform.
   The Linux x86_64 build created the constants of a waveform's literal
   arguments, and of a loop's bounds, in the reverse order of the Linux
@@ -242,7 +280,8 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   waited its feedback latency from where the readout was scheduled to end,
   not from where the delayed line ends it, so the program failed its own
   check (on the reading controller or, across controllers, on the one that
-  plays the pulse). The wait now starts where the readout ends on its line.
+  plays the pulse). The wait now starts where the readout ends on its line,
+  under every schedule, the controller's fine delay rounded up to a cycle.
   Programs without a readout delay schedule as before.
 - A call over a per-controller link (`Link(per_controller=True)`) whose
   measurements and answer are on two controllers failed with a bare
