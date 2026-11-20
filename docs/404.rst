@@ -1,0 +1,17 @@
+..
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
+
+:orphan:
+:nosearch:
+
+Page not found
+==============
+
+That page does not exist, or it moved. Try one of these:
+
+* :doc:`Home <index>`
+* :doc:`Getting started <getting_started>`
+* :doc:`Tutorials <tutorials/index>`
+* :doc:`API reference <api/index>`
+* :ref:`Search the documentation <search>`

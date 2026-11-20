@@ -41,6 +41,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   control system. The default, 0, is no limit, and the export lists the key
   among the limits only when it is set, so existing programs and exports
   are unchanged.
+- **Maximum pulse length.** `Controller(max_pulse_cycles=...)` states the
+  longest drive or readout a controller plays, in its own cycles, as some
+  instruments cap a pulse's length. It is checked wherever the minimum is:
+  a longer pulse is a `ControllerLimitError` naming its line, start and
+  length, also in rolled loops and on each controller of a control system.
+  The default, `None`, is no limit, it may not be below `min_pulse_cycles`,
+  and the export lists it among the limits only when it is set, so existing
+  programs and exports are unchanged.
 - **Reading calibrations.** `PhysicalQudit.calibrations` and
   `Coupling.calibrations` give the calibrations a qudit or coupling
   publishes, read-only and keyed as `calibrations=` takes them (by
@@ -86,6 +94,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   probabilities divided by the kept total, which is the new result's
   `acceptance`, and the shots that took them in `records`. Every other
   result has an `acceptance` of 1.0.
+- **Validating controllers with long minimum pulses.** `backends.validate`
+  makes every pulse and wait of its corpus the fewest whole times as long
+  that the controller plays: no shorter than its `min_pulse_cycles`, and
+  on its lines' timestep and sample rate. A controller whose shortest pulse
+  is 64 cycles had 14 of the 16 programs skipped; it now has them all
+  checked, with 16-cycle pulses lasting 64. On a controller that plays the
+  corpus as written, the corpus, its exports and every report are as
+  before.
 - **Validating branches on slow feedback.**
   `backends.validate(..., feedback_gap_cycles=n)` waits `n` cycles of the
   controller's clock between the readout of the corpus's `branch` program
@@ -94,6 +110,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   backend may declare its own `feedback_gap_cycles` attribute, which the
   argument overrides. The default, 0, runs the corpus as before.
 
+- **Where exported samples are taken, and what `phase_rad` counts.** The
+  controller backends guide states that sample `k` of a shape is its
+  envelope at the start of that sample, and a `custom()` envelope's at its
+  middle, so a backend whose instrument evaluates shapes at the middle of
+  each sample knows to delay them by half a sample. The Conventions page
+  states that an event's `phase_rad` is the tone's phase in the frame that
+  turns at the line's own frequency from the start of the shot, so it
+  includes the phase a detuned tone gains, not only the phase shifts
+  before it. Nothing changes in the export.
 - **Waveform explorer.** The operations guide has an interactive plot of
   the built-in waveforms next to its waveform table: sliders for each
   constructor's arguments, the `wf_*` combinations, an optional modulated
@@ -119,9 +144,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   Calibration moves its estimator's distribution from the prior to where
   a readout of 1, or of 0, takes it, and Simulating on a GPU steps through
   its program's lowering one stage at a time. Each plays
-  once when scrolled into view, with Replay and step buttons, and its data
+  once while it is in view, with Pause and step buttons, and its data
   comes from what the page compiles and simulates. Readers without
   JavaScript, or who ask for reduced motion, see the still frame.
+
+- `UdpChannel` and `InProcess` print what they're set up with:
+  `UdpChannel(('127.0.0.1', 50123), slot_bytes=65536, timeout_s=2.0)` and
+  `<InProcess serving decode, estimate>`.
 
 ### Changed
 
@@ -136,6 +165,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- A program's constants are created in the same order on every platform.
+  The Linux x86_64 build created the constants of a waveform's literal
+  arguments, and of a loop's bounds, in the reverse order of the Linux
+  aarch64 and macOS builds, so `print(scheduled.mlir())` listed them in
+  another order under other `%cst` names; and of two rejected values in one
+  waveform (`gaussian(40, math.inf, 0.0)`) it named the last where the
+  others name the first. The programs were the same. Output on Linux aarch64
+  and macOS does not change.
+- A quantum system's qudits are checked when it is built, as its couplings
+  are: a 0-1 frequency that is not positive, a negative T1, T2* or Hahn-echo
+  T2, a thermal population outside [0, 1), or a value that is not a finite
+  number raises `QuantumSystemDefinitionError`, which lists every problem
+  at its path (`qudits[0].t1_us`) with the value. Such values used to build
+  without an error, and a negative T1 or T2 was taken as 0 (no decay) when
+  simulating.
 - A frame change made after a wait on its tone's line acted where the
   tone's previous drive or readout ended, before the wait:
   `shift_frequency(tone, +d)`, a wait of `T` and `shift_frequency(tone, -d)`
@@ -246,6 +290,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `controller.unroll()` keeps it. Other answers export as before.
   `backends.validate` runs one more program, `timeout_function`, which
   branches on such an answer.
+- A kernel with more than about 10,000 waits whose length a `float`
+  argument sets failed to compile with `RecursionError: maximum recursion
+  depth exceeded during compilation` (about 25,000 on Python 3.14 and
+  3.15): the check that a call's wait lengths keep the program within the
+  most it may last added one term per wait to a single Python expression.
+  A rotated surface-code round with a `float` CZ length has about 13,000
+  such waits at distance 41. The check now compiles for any number of
+  waits and accepts and refuses the same calls as before; waits of one
+  length and bounds share one test.
 
 ## [0.1.0] - 2026-11-13
 

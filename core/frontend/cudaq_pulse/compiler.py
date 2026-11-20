@@ -1750,7 +1750,7 @@ def compile[**P](
         frequency far below the quantum system's carriers (one probably in
         MHz or kHz rather than Hz). Off by default. The warnings are
         issued when the kernel traces; they do not change the program.
-    quantum system:
+    quantum_system:
         Pin the compiled kernel to one quantum system: a call with handles of
         another raises ``QuantumSystemMismatchError``, and a call without handles
         runs on it. A pinned kernel without static parameters is built now.

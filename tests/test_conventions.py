@@ -351,6 +351,35 @@ def test_an_exported_frame_phase_multiplies_the_samples_by_exp_minus_i_phase():
     assert played == pytest.approx(_rho(_x90_phase_pulse, phi), abs=1e-9)
 
 
+@pulse.kernel
+def _detuned_pulses(q, delta_hz: float):
+    d = get_drive_line(q)
+    drive(d, square(16, 0.1))
+    shift_frequency(d.tone, delta_hz)
+    shift_phase(d.tone, 0.3)
+    wait(d, 984)
+    drive(d, square(16, 0.1))
+    wait(d, 984)
+    drive(d, square(16, 0.1))
+
+
+def test_an_exported_frame_phase_counts_the_detuning_from_the_line_frequency():
+    delta = 250e3
+    program = _export(_detuned_pulses, delta)
+    (line,) = program["lines"]
+    assert line["native_frequency_hz"] == F
+    first, second, third = _drives(program)
+    assert first["phase_rad"] == 0.0
+    # The frame turns at the line's frequency from the start of the shot, so
+    # the tone gains 2 pi delta per ns from the shift, made as the first pulse ends.
+    shifted = first["end_cycles"] / QS.clock_ghz
+    for event in (second, third):
+        assert event["frequency_hz"] == F + delta
+        elapsed_ns = event["start_cycles"] / QS.clock_ghz - shifted
+        detuned = 2.0 * math.pi * delta * 1.0e-9 * elapsed_ns
+        assert event["phase_rad"] == pytest.approx(0.3 + detuned)
+
+
 def test_a_readout_result_is_the_level_and_if_takes_level_1():
     qs = pulse.quantum_system("transmon_surface17")
 

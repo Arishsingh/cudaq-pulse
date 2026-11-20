@@ -4,7 +4,7 @@
 -->
 <svg role="img" aria-labelledby="title desc" xmlns:xlink="http://www.w3.org/1999/xlink" width="468.86pt" height="97.00pt" viewBox="0 0 468.86 97.00" xmlns="http://www.w3.org/2000/svg" version="1.1">
  <title id="title">The kernel's drive pulse</title>
- <desc id="desc">The drive pulse of the rabi kernel at amplitude 0.16: a Gaussian 32 ns long, climbing from zero to its peak in the middle and back.</desc>
+ <desc id="desc">The drive pulse of the rabi kernel at amplitude 0.16: a Gaussian 32 ns long, peaking in the middle and cut off at each end at about 14% of its peak.</desc>
  <defs>
   <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
  </defs>
