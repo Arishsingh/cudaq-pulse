@@ -206,7 +206,7 @@ def calibrated_x(page) -> None:
     alt = (
         "The calibrated pi pulse of qudit 0 on its drive line: a "
         f"{drive.end_ns - drive.start_ns:g} ns DRAG pulse of amplitude {amplitude:.4f}, one "
-        "smooth bump that starts and ends at zero."
+        "smooth bump cut off at each end at about 14% of its peak."
     )
     save_themed(figure, "calibrated_x", title="The calibrated π pulse", desc=alt)
 

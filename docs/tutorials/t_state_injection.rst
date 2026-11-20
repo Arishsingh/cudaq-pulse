@@ -24,6 +24,9 @@ seconds on a laptop CPU.
 
 The page builds on :doc:`measure_and_react` and :doc:`classical_calls`.
 
+All the code on this page is also one Python script,
+:download:`t_state_injection.py <scripts/t_state_injection.py>`.
+
 Why T states
 ------------
 
@@ -77,7 +80,7 @@ This tutorial uses D5, the middle data qubit of the 17-qubit model:
    VirtualZ(phase_rad=0.7853981633974483)
 
 Preparing ``|T>`` takes a π/2 pulse about Y, which turns the ground state
-into ``|+>``, and then the T gate:
+into ``|+>``, and then the T gate. List what the schedule plays:
 
 .. code-block:: python
 
@@ -91,9 +94,6 @@ into ``|+>``, and then the T gate:
        drive(drive_line, y90)
        drive(drive_line, t_gate)
 
-List what the schedule plays:
-
-.. code-block:: python
 
    print(f"{'kind':8} {'start':>6} {'length':>6}")
    for event in inject.lower(qubit).schedule:
@@ -127,7 +127,8 @@ The frame lives on the control side. It changes what later pulses do,
 never the qubit's state itself.
 
 So the state that ``pulse.simulate`` returns is the same with and without
-the T gate. Compare it with a kernel that stops at ``|+>``:
+the T gate. Compare it with a kernel that stops at ``|+>``, simulating both
+from ``|0>`` in the three levels simulated per transmon:
 
 .. code-block:: python
 
@@ -137,9 +138,6 @@ the T gate. Compare it with a kernel that stops at ``|+>``:
        y90 = drive_line.get_calibration(pulse.gates.Y90)
        drive(drive_line, y90)
 
-Simulate both from ``|0>``, in the three levels simulated per transmon:
-
-.. code-block:: python
 
    ground = [1.0, 0.0, 0.0]
 
@@ -162,10 +160,14 @@ doesn't change the populations a readout measures. What does see it is the
 next pulse.
 
 State tomography uses that: a pulse turns the X, Y or Z axis onto Z, and a
-readout measures it. This kernel prepares ``|T>`` and measures one axis:
+readout measures it. This kernel prepares ``|T>`` and measures one axis.
+After the state, one pulse picks the axis:
+
+- a -90 degree Y rotation turns +X onto +Z;
+- a +90 degree X rotation turns +Y onto +Z;
+- Z needs no pulse.
 
 .. code-block:: python
-   :class: continues
 
    X_AXIS, Y_AXIS, Z_AXIS = 0, 1, 2
 
@@ -178,14 +180,6 @@ readout measures it. This kernel prepares ``|T>`` and measures one axis:
        t_gate = drive_line.get_calibration(pulse.gates.T)
        x90 = drive_line.get_calibration(pulse.gates.X90)
        measurement = readout_line.get_calibration(pulse.gates.READOUT)
-
-After the state, one pulse picks the axis:
-
-- a -90 degree Y rotation turns +X onto +Z;
-- a +90 degree X rotation turns +Y onto +Z;
-- Z needs no pulse.
-
-.. code-block:: python
 
        drive(drive_line, y90)
        drive(drive_line, t_gate)
@@ -211,7 +205,8 @@ From readouts to fidelity
 -------------------------
 
 Each simulation is exact: its branches hold every outcome of the readout
-with its probability. An axis reads ⟨Z⟩ = 1 - 2 P(nonzero):
+with its probability. An axis reads ⟨Z⟩ = 1 - 2 P(nonzero). The three axes
+make the Bloch vector, and its overlap with ``|T>``'s gives the fidelity:
 
 .. code-block:: python
 
@@ -223,10 +218,6 @@ with its probability. An axis reads ⟨Z⟩ = 1 - 2 P(nonzero):
                excited += branch.probability
        return 1 - 2 * excited
 
-The three axes make the Bloch vector, and its overlap with ``|T>``'s gives
-the fidelity:
-
-.. code-block:: python
 
    T_BLOCH = np.array([1.0, 1.0, 0.0]) / math.sqrt(2)
 
@@ -397,7 +388,7 @@ herald answer was true:
 
 .. pulse-visual:: figures/t_state_injection.json
    :scene: herald_branches
-   :alt: What post-selection keeps. Every shot starts in D5's thermal mixture. The herald readout splits the shots: it reads 0 on 97.2%, 1 on 2.7%, 2 on 7.5e-4. Post-selection keeps the branches herald accepts, the 97.2% that read 0. The rest are dropped. Of the kept shots, Z reads 0 on 49.1% and 1 or 2 on 48.1%, as |T⟩ gives.
+   :alt: What post-selection keeps. Every shot starts in D5's thermal mixture. The herald readout splits the shots: it reads 0 on 97.2%, 1 on 2.7%, 2 on 7.5e-4. Post-selection keeps the branches herald accepts, the 97.2% that read 0. The rest are dropped. The kept shots split about equally: Z reads 0 on 49.1% of all shots and 1 or 2 on 48.1%, as |T⟩ gives.
 
    The branches of one attempt, measured on Z, one readout at a time.
 

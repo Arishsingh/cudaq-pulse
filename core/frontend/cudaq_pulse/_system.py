@@ -696,6 +696,11 @@ class Controller:
     no limit), as some instruments require a minimum pulse length; a
     shorter one is a violation naming its line. Exports list it among the
     limits only when it is set.
+    ``max_pulse_cycles``: the longest drive or readout its lines play
+    (``None``: no limit), as some instruments cap a pulse's length; a longer
+    one is a violation naming its line. It may not be below
+    ``min_pulse_cycles``. Exports list it among the limits only when it is
+    set.
     ``sample_rate_ghz``: the rate its lines play samples at (``None``: one
     per cycle of its clock). Its ratio to the clock may be a fraction, and
     every operation on its lines must start and last a whole number of
@@ -793,6 +798,7 @@ class Controller:
     instruction_cycles: int = 1
     min_idle_cycles: int = 0
     min_pulse_cycles: int = 0
+    max_pulse_cycles: int | None = None
     sample_rate_ghz: float | None = None
     waveform_memory_samples: int | None = None
     max_frequencies_per_line: int | None = None
@@ -853,6 +859,14 @@ class Controller:
         if isinstance(least, bool) or not isinstance(least, int) or least < 0:
             raise InvalidValueError(
                 f"Controller.min_pulse_cycles must be an int of at least 0, got {least!r}"
+            )
+        most = self.max_pulse_cycles
+        if most is not None and (
+            isinstance(most, bool) or not isinstance(most, int) or most < max(least, 1)
+        ):
+            raise InvalidValueError(
+                "Controller.max_pulse_cycles must be None or an int of at least 1 and at "
+                f"least min_pulse_cycles ({least}), got {most!r}"
             )
         object.__setattr__(self, "max_fine_delay_ns", as_nanoseconds(self.max_fine_delay_ns))
         if self.max_program_duration is not None:
@@ -981,7 +995,12 @@ class Controller:
         # Every field in order: the class has none that fields() would leave out.
         data = {name: getattr(self, name) for name in self.__dataclass_fields__}
         data["detectors"] = {str(k): v for k, v in sorted(self.detectors.items())}
-        for name in ("max_amplitude", "max_instructions", "max_program_duration"):
+        for name in (
+            "max_amplitude",
+            "max_instructions",
+            "max_program_duration",
+            "max_pulse_cycles",
+        ):
             if data[name] is None:
                 del data[name]
         if not self.min_pulse_cycles:
@@ -1131,6 +1150,34 @@ def _timed_by_controller(
         elif kind == "answer":
             answers.append(e)
     return timed, answers
+
+
+def _on_buses(
+    controllers: Sequence[Controller],
+    events: Sequence[dict[str, Any]],
+    owners: Sequence[int | None],
+) -> list[list[dict[str, Any]] | None]:
+    """For each of *controllers* with update buses that lists its lines, the
+    frame updates, drives and readouts of *events* on its lines, in order:
+    every event its update-bus check reads (``controller._updates``). ``None``
+    for any other, whose check reads every event as it sees them
+    (``_SeenBy``): a controller that lists no lines has every line on its
+    buses."""
+    from .controller import _PLAYED as TIMED
+
+    found: list[list[dict[str, Any]] | None] = [
+        [] if c.update_buses and c._all_lines else None for c in controllers
+    ]
+    for e in events:
+        if e["kind"] == "frame_update" or e["kind"] in TIMED:
+            line = e["line"]
+            if line is not None:
+                owner = owners[line]
+                if owner is not None:
+                    mine = found[owner]
+                    if mine is not None:
+                        mine.append(e)
+    return found
 
 
 def _cycles_text(cycles: Fraction) -> str:
@@ -1866,6 +1913,11 @@ class ControlSystem:
                     )
                 )
             timed, answers = _timed_by_controller(events, owners, len(self.controllers))
+            buses = (
+                _on_buses(self.controllers, events, owners)
+                if any(c.update_buses for c in self.controllers)
+                else [None] * len(self.controllers)
+            )
             for index, controller in enumerate(self.controllers):
                 label = _label(index, controller)
                 found.extend(
@@ -1884,6 +1936,7 @@ class ControlSystem:
                         held=False,
                         timed=timed[index],
                         answers=answers,
+                        updates=buses[index],
                     )
                 )
             found.extend(needs)
@@ -2873,6 +2926,8 @@ class _Reader:
         from .quantum_systems.base import Coupling, PhysicalQudit, ResidualZZ, _Description
 
         qudits: dict[int, Any] = {}
+        # Each qudit's position in the file's list, by its index.
+        positions: dict[int, int] = {}
         given = system.get("qudits")
         if not isinstance(given, Sequence) or isinstance(given, (str, bytes)):
             self.problem("qudits", f"must be a list of qudits, got {type(given).__name__}", given)
@@ -2892,6 +2947,7 @@ class _Reader:
                 qudit = self.build(where, PhysicalQudit, **entry)
                 if qudit is not None:
                     qudits[qudit.index] = qudit
+                    positions[qudit.index] = i
         # The entries read, each with its index in the file.
         entries: dict[str, list[tuple[int, Any]]] = {"couplings": [], "residual_zz": []}
         for i, item in enumerate(system.get("couplings", ())):
@@ -2933,10 +2989,14 @@ class _Reader:
         except QuantumSystemDefinitionError as error:
             # The path in the file of an entry's problem, which the system
             # gives as couplings[3]... by its own index: entries the file
-            # gives that could not be read are not in the system.
+            # gives that could not be read are not in the system. A qudit's
+            # problem is at qudits[i] by the qudit's index, so it is found
+            # by where that qudit is in the file's list.
             def in_file(entry_path: str) -> str:
                 kind, _, rest = entry_path.partition("[")
                 index, _, tail = rest.partition("]")
+                if kind == "qudits":
+                    return f"qudits[{positions[int(index)]}]{tail}"
                 return f"{kind}[{entries[kind][int(index)][0]}]{tail}"
 
             self.problems.extend(

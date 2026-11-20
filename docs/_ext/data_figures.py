@@ -14,6 +14,10 @@ script hides them once it draws; its content is the caption::
 
        The caption.
 
+Without ``:fallback:``, the figure holds what the scene plays as text: each
+outcome and its moments in order. Readers without JavaScript see that text
+where the animation would be, and the script hides it once it draws.
+
 ``.. memory-gauge:: figures/controller_memory.json`` draws the rows and
 columns it names with ``mem-gauge.js``, over a table of the same numbers
 for readers without JavaScript::
@@ -52,33 +56,58 @@ def _data_id(path: Path) -> str:
     return f"pulse-data-{path.stem.replace('_', '-')}"
 
 
+def story(scene: dict) -> str:
+    """What *scene* plays, as HTML for a page without its script: the title,
+    then each outcome and its moments in order. ``toy-flow.js`` gives the
+    picture the same words as its description."""
+
+    # An apostrophe written as an entity would enter the search index as a
+    # word, and the line breaks keep one block's last word from the next's.
+    def text(words: str) -> str:
+        return html.escape(words, quote=False)
+
+    parts = [f"<p><strong>{text(scene['title'])}</strong></p>"]
+    for shot in scene["shots"]:
+        parts.append(f"<p>{text(shot['label'])}</p>")
+        moments = "\n".join(f"<li>{text(line)}</li>" for _, line in shot["moments"])
+        parts.append(f"<ol>\n{moments}\n</ol>")
+    body = "\n".join(parts)
+    return f'<div class="pulse-fallback tf-story">\n{body}\n</div>'
+
+
 class _DataFigure(Directive):
     required_arguments = 1
     has_content = True
     root_class = ""
 
-    def data(self) -> tuple[str, dict, list[nodes.Node]]:
-        """The JSON file's element id, its data, and the script that
-        inlines it, the first time the page uses the file."""
+    def data(self) -> tuple[str, dict, str]:
+        """The JSON file's element id, its data, and the script element that
+        inlines it, the first time the page uses the file ("" after that)."""
         env = self.state.document.settings.env
         relative, path = env.relfn2path(self.arguments[0], env.docname)
         env.note_dependency(relative)
         text = Path(path).read_text()
         data_id = _data_id(Path(path))
         inlined = env.temp_data.setdefault("pulse_data_inlined", set())
-        script = []
+        script = ""
         if data_id not in inlined:
             inlined.add(data_id)
             # "</" would end the script element early; JSON reads "<\/" as "</".
             body = json.dumps(json.loads(text), separators=(",", ":")).replace("</", "<\\/")
-            raw = f'<script type="application/json" id="{data_id}">{body}</script>'
-            script.append(nodes.raw("", raw, format="html"))
+            script = f'<script type="application/json" id="{data_id}">{body}</script>\n'
         return data_id, json.loads(text), script
 
-    def root(self, data_id: str, **attributes: str) -> nodes.raw:
+    def root(self, data_id: str, **attributes: str) -> str:
         attrs = "".join(f' data-{k}="{html.escape(v)}"' for k, v in attributes.items())
-        raw = f'<div class="{self.root_class}" data-source="{data_id}"{attrs}></div>'
-        return nodes.raw("", raw, format="html")
+        return f'<div class="{self.root_class}" data-source="{data_id}"{attrs}></div>'
+
+    def figure(self, *markup: str) -> nodes.figure:
+        """The figure, with *markup* as one node. docutils ends a caption in
+        any figure of more than one node, so a figure that has none keeps
+        its script element, its root and a fallback written as HTML together."""
+        figure = nodes.figure(classes=["pulse-data-figure"])
+        figure += nodes.raw("", "".join(markup), format="html")
+        return figure
 
     def caption(self) -> list[nodes.Node]:
         if not self.content:
@@ -103,13 +132,13 @@ class ToyFlow(_DataFigure):
 
     def run(self) -> list[nodes.Node]:
         data_id, data, script = self.data()
-        scene = self.options["scene"]
-        if scene not in {s["name"] for s in data["scenes"]}:
-            raise self.error(f"{self.arguments[0]} has no scene {scene!r}")
-        figure = nodes.figure(classes=["pulse-data-figure"])
-        figure += script
-        figure += self.root(data_id, scene=scene)
+        name = self.options["scene"]
+        scenes = {s["name"]: s for s in data["scenes"]}
+        if name not in scenes:
+            raise self.error(f"{self.arguments[0]} has no scene {name!r}")
+        root = self.root(data_id, scene=name)
         if "fallback" in self.options:
+            figure = self.figure(script, root)
             light = PurePosixPath(self.options["fallback"])
             dark = light.with_name(f"{light.stem}-dark{light.suffix}")
             box = nodes.container(classes=["themed-figure", "pulse-fallback"])
@@ -117,6 +146,8 @@ class ToyFlow(_DataFigure):
             box += nodes.image(uri=str(light), alt=alt, classes=["only-light"], width="100%")
             box += nodes.image(uri=str(dark), alt=alt, classes=["only-dark"], width="100%")
             figure += box
+        else:
+            figure = self.figure(script, root, "\n", story(scenes[name]))
         figure += self.caption()
         return [figure]
 
@@ -138,23 +169,25 @@ class MemoryGauge(_DataFigure):
             raise self.error(f"{self.arguments[0]} has no row or column {', '.join(unknown)}")
 
         # The same numbers as a table, which the script hides once it draws.
-        head = "".join(f"<th>{html.escape(_COLUMNS[c])}</th>" for c in columns)
-        limits = "".join(f"<td>{data['limits'][c]:,}</td>" for c in columns)
-        body = [f"<tr><th>the controller holds</th>{limits}</tr>"]
+        # The line breaks keep one cell's last word from the next's in the
+        # search index.
+        head = "\n".join(f"<th>{html.escape(_COLUMNS[c])}</th>" for c in columns)
+        limits = "\n".join(f"<td>{data['limits'][c]:,}</td>" for c in columns)
+        body = [f"<tr>\n<th>the controller holds</th>\n{limits}\n</tr>"]
         for name in rows:
             row = by_name[name]
-            cells = "".join(f"<td>{row[c]:,}</td>" for c in columns)
+            cells = "\n".join(f"<td>{row[c]:,}</td>" for c in columns)
             label = html.escape(row["label"]) + (" (refused)" if row["refused"] else "")
-            body.append(f"<tr><th>{label}</th>{cells}</tr>")
+            body.append(f"<tr>\n<th>{label}</th>\n{cells}\n</tr>")
+        lines = "\n".join(body)
         table = (
-            '<table class="pulse-fallback mg-table">'
-            f"<thead><tr><th></th>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+            '<table class="pulse-fallback mg-table">\n'
+            f"<thead>\n<tr>\n<th></th>\n{head}\n</tr>\n</thead>\n"
+            f"<tbody>\n{lines}\n</tbody>\n</table>"
         )
 
-        figure = nodes.figure(classes=["pulse-data-figure"])
-        figure += script
-        figure += self.root(data_id, rows=" ".join(rows), columns=" ".join(columns))
-        figure += nodes.raw("", table, format="html")
+        root = self.root(data_id, rows=" ".join(rows), columns=" ".join(columns))
+        figure = self.figure(script, root, table)
         figure += self.caption()
         return [figure]
 
@@ -174,4 +207,6 @@ def setup(app):
     app.add_directive("toy-flow", ToyFlow)
     app.add_directive("memory-gauge", MemoryGauge)
     app.connect("html-page-context", _add_assets)
-    return {"parallel_read_safe": True, "parallel_write_safe": True}
+    # Raise env_version when the markup a directive writes changes: a build
+    # directory from before then reads every page again.
+    return {"env_version": 2, "parallel_read_safe": True, "parallel_write_safe": True}

@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
-// The waveform explorer of the operations guide: sliders for the arguments of
-// each built-in envelope, its I and Q drawn as SVG, and the call that makes it.
+// The waveform explorer of the operations guide: a slider and a number field
+// for each argument of each built-in envelope, its I and Q drawn as SVG, and
+// the call that makes it.
 // The envelopes are evaluateEnvelope's (core/mlir/include/cudaq-pulse/Runtime/
 // WaveformCallback.h), sampled at t = 0, 1, 2, ... clock cycles as
 // cudaq_pulse.controller.sample_waveform samples them. The modulated drive is
@@ -211,6 +212,25 @@
     return -1 / ((2 * Math.PI * anharmonicityMhz * 1e6) / (CLOCK_GHZ * 1e9));
   }
 
+  // A typed value as its slider would give it: within [min, max], at the
+  // nearest step from min, with the step's decimals. The code line then
+  // prints only values the slider can reach.
+  function snap(value, min, max, step) {
+    const digits = (String(step).split(".")[1] || "").length;
+    const steps = Math.round((Math.min(max, Math.max(min, value)) - min) / step);
+    return +(min + steps * step).toFixed(digits);
+  }
+
+  // Where a curve is largest in size: that sample with its sign, the first
+  // cycle that has it, and whether the next cycle has it too (a flat top).
+  function peak(values) {
+    let at = 0;
+    values.forEach((v, k) => {
+      if (Math.abs(v) > Math.abs(values[at])) at = k;
+    });
+    return { value: values[at], cycle: at, flat: Math.abs(values[at + 1]) === Math.abs(values[at]) };
+  }
+
   // Every shape at its defaults and with each slider at both ends, each
   // combination, and the modulated drive: what the drift test checks.
   function cases() {
@@ -248,14 +268,18 @@
     return out;
   }
 
-  const api = { CLOCK_GHZ, SHAPES, COMBINE, defaultState, cases, codeLines, samples, suggestedBeta };
+  const api = { CLOCK_GHZ, SHAPES, RANGES, COMBINE, defaultState, cases, codeLines, samples, suggestedBeta, snap, peak };
   if (typeof module === "object" && module.exports) module.exports = api;
   if (typeof document === "undefined") return;
 
   // ── The widget ─────────────────────────────────────────────────────────
 
   const SVG_NS = "http://www.w3.org/2000/svg";
+  // The plot is drawn in CSS pixels, as wide as its box, so that its 12px
+  // text is 12px on a phone too. W is its width until the box is measured,
+  // and MIN_W the narrowest it is drawn before it scales down instead.
   const W = 640;
+  const MIN_W = 200;
   const H = 260;
   const PAD = { left: 62, right: 12, top: 10, bottom: 34 };
   const LABELS = {
@@ -272,7 +296,7 @@
   };
 
   function el(tag, attrs, ...kids) {
-    const svg = ["svg", "g", "line", "polyline", "text", "title"].includes(tag);
+    const svg = ["svg", "g", "line", "polyline", "text"].includes(tag);
     const e = svg ? document.createElementNS(SVG_NS, tag) : document.createElement(tag);
     for (const [k, v] of Object.entries(attrs || {})) if (v !== false) e.setAttribute(k, v);
     e.append(...kids);
@@ -283,11 +307,22 @@
     return +(cycles / CLOCK_GHZ).toPrecision(6);
   }
 
+  // The unit after a value; a time also in ns at the program clock.
+  function unit(name, v) {
+    if (TIMES.has(name)) return `cycles (${ns(v)} ns)`;
+    if (name.endsWith("_mhz")) return "MHz";
+    if (name === "phase") return "rad";
+    return "";
+  }
+
   function shown(name, v) {
-    if (TIMES.has(name)) return `${fmt(v)} cycles (${ns(v)} ns)`;
-    if (name.endsWith("_mhz")) return `${fmt(v)} MHz`;
-    if (name === "phase") return `${fmt(v)} rad`;
-    return fmt(v);
+    return `${fmt(v)} ${unit(name, v)}`.trim();
+  }
+
+  // A curve's peak() in words: "Peak I: 0.3 at cycle 20 (10 ns)."
+  function peakText(name, p) {
+    if (p.value === 0) return `${name} is 0.`;
+    return `Peak ${name}: ${+p.value.toPrecision(3)} ${p.flat ? "from" : "at"} cycle ${p.cycle} (${ns(p.cycle)} ns).`;
   }
 
   // The y range: the curve's peak with 10% headroom, rounded up to a 1-1.2-
@@ -300,8 +335,9 @@
     return 10 * decade;
   }
 
-  function niceStep(span) {
-    for (const s of [2, 5, 10, 20, 25, 50, 100]) if (span / s <= 8) return s;
+  // The tick step along the time axis: at most `most` steps across the span.
+  function niceStep(span, most) {
+    for (const s of [2, 5, 10, 20, 25, 50, 100]) if (span / s <= most) return s;
     return 200;
   }
 
@@ -317,23 +353,36 @@
       return el("div", { class: "pwe-field" }, label, control, value || el("span", {}));
     }
 
+    // A slider and a number field for one value, under one label. The slider
+    // says the value with its unit; the unit beside the number field
+    // describes the field, and is hidden as text of its own so that a row is
+    // not read with its unit three times. A typed number counts when Enter
+    // or leaving the field commits it, so a half-typed one changes nothing.
     function slider(name, get, set, after, prefix = "") {
       const [min, max, step] = RANGES[name];
-      const inputId = `${id}-${name}-${Math.random().toString(36).slice(2, 7)}`;
-      const input = el("input", { type: "range", id: inputId, min, max, step, value: get() });
-      const out = el("output", { for: inputId });
+      const base = `${id}-${name}-${Math.random().toString(36).slice(2, 7)}`;
+      const label = el("label", { id: `${base}-label`, for: `${base}-number` }, prefix + LABELS[name]);
+      const range = el("input", { type: "range", min, max, step, "aria-labelledby": `${base}-label` });
+      const number = el("input", { type: "number", id: `${base}-number`, min, max, step, "aria-describedby": `${base}-unit` });
+      const suffix = el("span", { id: `${base}-unit`, "aria-hidden": "true" });
       const sync = () => {
-        out.value = shown(name, get());
-        input.setAttribute("aria-valuetext", out.value);
+        const v = get();
+        range.value = number.value = fmt(v);
+        suffix.textContent = unit(name, v);
+        range.setAttribute("aria-valuetext", shown(name, v));
       };
-      input.addEventListener("input", () => {
-        set(+input.value);
+      const changed = (v) => {
+        set(v);
         sync();
         (after || draw)();
+      };
+      range.addEventListener("input", () => changed(+range.value));
+      number.addEventListener("change", () => {
+        if (number.value === "") sync();
+        else changed(snap(+number.value, min, +number.max, step));
       });
       sync();
-      const label = el("label", { for: inputId }, prefix + LABELS[name]);
-      return { node: field(label, input, out), input };
+      return { node: field(label, range, el("span", { class: "pwe-entry" }, number, suffix)), range, number, sync };
     }
 
     function select(label, options, get, set) {
@@ -347,8 +396,10 @@
       return field(el("label", { for: selectId }, label), s);
     }
 
-    // Selects and the toggle stay in place, so they keep the keyboard focus;
-    // only the sliders of the chosen shapes are rebuilt. Groups lay their
+    // Selects and the toggle stay in place, so they keep the keyboard focus.
+    // The sliders of a shape are built when the shape is chosen and updated
+    // in place after that: a value typed into one field and committed with
+    // Tab must not remove the control the focus moves to. Groups lay their
     // controls out in the one grid of the explorer.
     const group = () => el("div", { class: "pwe-group" });
     const paramsA = group();
@@ -356,31 +407,37 @@
     const betaHelp = group();
     const factor = group();
     const modSliders = group();
+    const built = {};
 
     function shapeSliders(which, box) {
       const w = state[which];
       const params = w.params[w.shape];
-      box.replaceChildren(
-        ...SHAPES[w.shape].map((name) => {
-          if (name === "width") params.width = args(state, which).width;
-          const prefix = which === "b" ? "second " : "";
-          const s = slider(name, () => params[name], (v) => (params[name] = v), undefined, prefix);
-          if (name === "width") s.input.max = state.duration - 2;
-          return s.node;
-        })
-      );
+      if (!built[which] || built[which].shape !== w.shape) {
+        const prefix = which === "b" ? "second " : "";
+        const sliders = SHAPES[w.shape].map((name) => [
+          name,
+          slider(name, () => params[name], (v) => (params[name] = v), undefined, prefix),
+        ]);
+        box.replaceChildren(...sliders.map(([, s]) => s.node));
+        built[which] = { shape: w.shape, sliders };
+      }
+      for (const [name, s] of built[which].sliders) {
+        if (name === "width") {
+          params.width = args(state, which).width;
+          s.range.max = s.number.max = state.duration - 2;
+        }
+        s.sync();
+      }
     }
 
+    // The rule behind the button is on the page for every reader, under the
+    // button, and is the button's description.
     const suggestion = el("span", { class: "pwe-value" });
     const hint =
       "beta = -1 / alpha, for the anharmonicity alpha in radians per clock cycle, " +
       "minimizes leakage to the second excited level; it matters most for short pulses.";
     const hintId = `${id}-beta-hint`;
-    const useBeta = el(
-      "button",
-      { type: "button", class: "pwe-button", title: hint, "aria-describedby": hintId },
-      "Use suggested beta"
-    );
+    const useBeta = el("button", { type: "button", class: "pwe-button", "aria-describedby": hintId }, "Use suggested beta");
     useBeta.addEventListener("click", () => {
       const beta = +suggestedBeta(state.anharmonicity_mhz).toFixed(2);
       state.a.params.drag.beta = Math.max(RANGES.beta[0], Math.min(RANGES.beta[1], beta));
@@ -393,7 +450,7 @@
     betaHelp.append(
       slider("anharmonicity_mhz", () => state.anharmonicity_mhz, (v) => (state.anharmonicity_mhz = v), updateSuggestion).node,
       field(el("span", { class: "pwe-label" }, "suggested beta"), useBeta, suggestion),
-      el("span", { id: hintId, class: "pwe-hidden" }, hint)
+      el("p", { id: hintId, class: "pwe-note" }, hint)
     );
     factor.append(slider("factor", () => state.factor, (v) => (state.factor = v)).node);
     modSliders.append(
@@ -425,12 +482,17 @@
     const upper = el("polyline", { class: "pwe-env" });
     const lower = el("polyline", { class: "pwe-env" });
     const axes = el("g", { class: "pwe-axes" });
-    const title = el("title", {});
-    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-labelledby": `${id}-title` }, title, axes, upper, lower, iLine, qLine);
-    title.id = `${id}-title`;
+    // The plot is named by an attribute: a <title> element is also given as
+    // the plot's description, so its sentence would be read twice.
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" }, axes, upper, lower, iLine, qLine);
+    let width = W;
     const code = el("code", {});
+    // Where the curves peak, in sight under the code. The plot's name ends
+    // with the same sentence, so a screen reader is given it there only.
+    const facts = el("p", { class: "pwe-note", "aria-hidden": "true" });
     const units = el("p", { class: "pwe-note" });
     const status = el("span", { class: "pwe-note", "aria-live": "polite" });
+    const spoken = el("p", { class: "pwe-hidden", role: "status" });
     const copy = el("button", { type: "button", class: "pwe-button" }, "Copy");
     copy.addEventListener("click", () => {
       navigator.clipboard.writeText(code.textContent).then(() => (status.textContent = "Copied"));
@@ -440,10 +502,11 @@
     const keyQ = el("span", { class: "pwe-key pwe-key-q" }, "Q (imag)");
     const keyEnv = el("span", { class: "pwe-key pwe-key-env" }, "|envelope|");
 
-    function draw() {
+    // Draws the state and returns it in a sentence: the code, then where
+    // each curve peaks.
+    function render() {
       const lines = codeLines(state);
       code.textContent = lines.join("\n");
-      status.textContent = "";
       const times = [["duration", state.duration]];
       for (const which of BINARY.has(state.combine) ? ["a", "b"] : ["a"]) {
         const p = args(state, which);
@@ -457,12 +520,13 @@
       const { re, im } = samples(state);
       const env = envelopeSamples(state);
       const mag = env.re.map((x, k) => Math.hypot(x, env.im[k]));
-      const peak = Math.max(1e-9, ...re.map(Math.abs), ...im.map(Math.abs), ...mag);
-      const yMax = niceMax(peak);
+      const yMax = niceMax(Math.max(1e-9, ...re.map(Math.abs), ...im.map(Math.abs), ...mag));
       const n = re.length;
-      const x = (t) => PAD.left + (t / state.duration) * (W - PAD.left - PAD.right);
+      const right = width - PAD.right;
+      const x = (t) => PAD.left + (t / state.duration) * (right - PAD.left);
       const y = (v) => PAD.top + ((yMax - v) / (2 * yMax)) * (H - PAD.top - PAD.bottom);
       const pts = (vs) => vs.map((v, k) => `${x(k).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+      svg.setAttribute("viewBox", `0 0 ${width} ${H}`);
       iLine.setAttribute("points", pts(re));
       qLine.setAttribute("points", pts(im));
       upper.setAttribute("points", state.modulate ? pts(mag) : "");
@@ -470,27 +534,46 @@
       keyI.textContent = state.modulate ? "Re E(t)" : "I (real)";
       keyQ.textContent = state.modulate ? "Im E(t)" : "Q (imag)";
       keyEnv.hidden = !state.modulate;
-      title.textContent = `${state.modulate ? "Modulated drive" : "I and Q"} of ${lines[lines.length - 1]}, ${n} samples`;
+      const peaks = `${peakText(state.modulate ? "Re E(t)" : "I", peak(re))} ${peakText(state.modulate ? "Im E(t)" : "Q", peak(im))}`;
+      facts.textContent = peaks;
+      svg.setAttribute("aria-label", `${state.modulate ? "Modulated drive" : "I and Q"} of ${lines[lines.length - 1]}, ${n} samples. ${peaks}`);
 
       const parts = [
-        el("line", { x1: PAD.left, x2: W - PAD.right, y1: y(0), y2: y(0), class: "pwe-zero" }),
+        el("line", { x1: PAD.left, x2: right, y1: y(0), y2: y(0), class: "pwe-zero" }),
         el("line", { x1: PAD.left, x2: PAD.left, y1: y(yMax), y2: y(-yMax) }),
-        el("line", { x1: PAD.left, x2: W - PAD.right, y1: y(-yMax), y2: y(-yMax) }),
+        el("line", { x1: PAD.left, x2: right, y1: y(-yMax), y2: y(-yMax) }),
       ];
       for (const v of [-yMax, -yMax / 2, 0, yMax / 2, yMax]) {
-        if (v !== 0) parts.push(el("line", { x1: PAD.left, x2: W - PAD.right, y1: y(v), y2: y(v), class: "pwe-gridline" }));
+        if (v !== 0) parts.push(el("line", { x1: PAD.left, x2: right, y1: y(v), y2: y(v), class: "pwe-gridline" }));
         parts.push(el("line", { x1: PAD.left - 4, x2: PAD.left, y1: y(v), y2: y(v) }));
         parts.push(el("text", { x: PAD.left - 7, y: y(v) + 4, "text-anchor": "end" }, String(+v.toPrecision(3))));
       }
       const mid = (y(yMax) + y(-yMax)) / 2;
       parts.push(el("text", { x: 12, y: mid, "text-anchor": "middle", transform: `rotate(-90 12 ${mid})` }, "amplitude"));
-      const step = niceStep(state.duration);
+      // A narrow plot has fewer time ticks, 36px apart or more, and the
+      // short axis label; the last note of the explorer gives the times in ns.
+      const span = right - PAD.left;
+      const step = niceStep(state.duration, Math.min(8, Math.floor(span / 36)));
       for (let t = 0; t <= state.duration; t += step) {
         parts.push(el("line", { x1: x(t), x2: x(t), y1: y(-yMax), y2: y(-yMax) + 4 }));
         parts.push(el("text", { x: x(t), y: y(-yMax) + 16, "text-anchor": "middle" }, String(t)));
       }
-      parts.push(el("text", { x: (PAD.left + W - PAD.right) / 2, y: H - 4, "text-anchor": "middle" }, `time (clock cycles; 1 cycle = ${ns(1)} ns)`));
+      const cycle = span >= 210 ? `; 1 cycle = ${ns(1)} ns` : "";
+      parts.push(el("text", { x: (PAD.left + right) / 2, y: H - 4, "text-anchor": "middle" }, `time (clock cycles${cycle})`));
       axes.replaceChildren(...parts);
+      return `${lines.join("; ")}. ${peaks}`;
+    }
+
+    // A change is said once, 400 ms after the last one: the slider and the
+    // number field say their own value at each step, and the code and the
+    // peaks follow when the reader pauses.
+    let pending = 0;
+    function draw() {
+      const sentence = render();
+      status.textContent = "";
+      spoken.textContent = "";
+      clearTimeout(pending);
+      pending = setTimeout(() => (spoken.textContent = sentence), 400);
     }
 
     root.setAttribute("role", "group");
@@ -512,10 +595,27 @@
       ),
       svg,
       el("div", { class: "pwe-legend" }, keyI, keyQ, keyEnv),
-      el("div", { class: "pwe-code" }, el("pre", { "aria-live": "polite" }, code), el("div", {}, copy, status)),
-      units
+      el("div", { class: "pwe-code" }, el("pre", {}, code), el("div", {}, copy, status)),
+      facts,
+      units,
+      spoken
     );
     layout();
+    // Nothing is said until the reader changes something.
+    clearTimeout(pending);
+
+    // The plot follows the width of its box. Its height is fixed, so that a
+    // redraw never changes the box it was measured from.
+    if (typeof ResizeObserver === "function") {
+      svg.style.height = `${H}px`;
+      new ResizeObserver(([entry]) => {
+        const measured = Math.max(MIN_W, Math.floor(entry.contentRect.width));
+        if (entry.contentRect.width > 0 && measured !== width) {
+          width = measured;
+          render();
+        }
+      }).observe(svg);
+    }
   }
 
   function start() {

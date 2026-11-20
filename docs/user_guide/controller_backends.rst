@@ -110,7 +110,13 @@ Drives and readouts also have:
     With ``export_to_controller(sample_rate_ghz=...)``, a whole multiple of the
     clock, the envelope sampled at that rate, ``{"re": [...], "im":
     [...]}``. ``cudaq_pulse.controller.sample_waveform`` computes the same
-    samples for one waveform.
+    samples for one waveform. Sample ``k`` of a shape (``gaussian``,
+    ``drag``, ...) is its envelope at the start of that sample, ``k``
+    samples from the pulse's start, as the simulator plays it; a
+    ``custom()`` envelope was sampled at the middle of each sample when the
+    kernel was traced, and ``custom_samples`` are played as given. An
+    instrument that evaluates a shape at the middle of each sample plays
+    these samples with the shape delayed by half a sample.
 ``frequency_hz``, ``phase_rad``
     The tone's frequency and its frame phase as the event starts, with every
     frame change and virtual Z before it applied and the phase a detuned
@@ -784,7 +790,12 @@ Some instruments require a minimum pulse length.
 than 16 of the controller's cycles a violation naming its line, its start
 and its length; on a control system of several controllers, each checks
 its own lines. It is 0, no limit, by default, and the export lists it
-among the limits only when it is set.
+among the limits only when it is set. Likewise, an instrument that caps a
+pulse's length declares ``Controller(max_pulse_cycles=4095)``: every drive
+and readout longer than 4095 of the controller's cycles is a violation
+naming its line, its start and its length. It is ``None``, no limit, by
+default, may not be below ``min_pulse_cycles``, and is listed among the
+limits only when it is set.
 
 A controller that plays nothing while one of its classical calls is out
 declares ``Controller(blocks_on_calls=True)``. Each call then holds every
@@ -1000,7 +1011,13 @@ own in format ``/1`` (``several_controllers[0]``, ``several_controllers[1]``),
 and is not compared with ``emulate``. Each must be emitted or refused with
 ``IncompatibleBackendError``, and a program with an event kind no format
 has, or in a newer format, must be refused. A program that exceeds the
-controller's limits is skipped.
+controller's limits is skipped. The corpus's pulses and waits last 16 to 200
+cycles, all multiples of 4; on a controller with a longer
+``min_pulse_cycles``, or a timestep or sample rate those lengths are off,
+every one of them lasts the fewest whole times as long that the controller
+plays (16 cycles become 64 for a ``min_pulse_cycles`` of 64), so its
+programs are checked rather than skipped. On every other controller the
+corpus is as written.
 
 .. code-block:: python
 

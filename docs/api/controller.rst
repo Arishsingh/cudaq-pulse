@@ -17,6 +17,9 @@ Export and limits
 
 .. autodata:: cudaq_pulse.controller.FORMAT
 
+   The ``format`` of the program that ``export_to_controller()`` returns by
+   default: the schema's name and, after the slash, its major version.
+
 .. autoclass:: cudaq_pulse.controller.DriveLine
    :members: qudits, qudit, delay_ns, max_concurrent_tones
 
@@ -100,6 +103,9 @@ Backends
 --------
 
 .. autodata:: cudaq_pulse.backends.GROUP
+
+   The entry-point group in which a backend's distribution registers it,
+   under the backend's name.
 
 .. autoclass:: cudaq_pulse.backends.Backend
    :members:

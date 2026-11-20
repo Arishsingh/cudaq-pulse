@@ -7,9 +7,10 @@
 // play on them, windows whose length the program doesn't know, messages
 // between lanes, the cases a branch can take with the share of shots each
 // gets, and snapshots to move between. This file computes no schedule. It
-// places what the data says at the time the playhead is on, plays once when
-// the figure scrolls into view, and shows its still frame to readers who ask
-// for reduced motion. The model functions at the top are pure;
+// places what the data says at the time the playhead is on. A figure plays
+// once while it is in view, and its buttons pause it and step through it; it
+// shows its still frame to readers who ask for reduced motion. The model
+// functions at the top are pure;
 // tests/test_pulse_visual.py runs them under Node, and
 // tools/render-pulse-visual.js draws the no-script fallback with the same
 // drawing code.
@@ -159,6 +160,25 @@
     return out;
   }
 
+  // The stop a frame has reached: its snapshot, or the last moment of its
+  // case that its time has come to.
+  function stopAt(scene, frame) {
+    if (scene.snapshots) return snapshotIndex(scene, frame);
+    let k = -1;
+    stops(scene).forEach((s, i) => {
+      if (s.c === frame.c && (k < 0 || s.t <= frame.t + 1e-6)) k = i;
+    });
+    return Math.max(k, 0);
+  }
+
+  // How far into the run a stop is, in ms, so that playing goes on from it.
+  // The last frame, and a case the run doesn't play, are at its end.
+  function startOf(scene, stop) {
+    if (scene.snapshots) return stop.step + 1 < scene.snapshots.length ? stop.step * (STILL_MS + MORPH_MS) : totalMs(scene);
+    const f = visual(scene, stop.t) / drawnSpan(scene);
+    return Math.min(totalMs(scene), stop.c * (CASE_MS + HOLD_MS) + (f < 1 ? f * CASE_MS : CASE_MS + HOLD_MS));
+  }
+
   // The snapshot a move into step + 1 starts from: its "from", or the one
   // before it.
   function source(scene, frame) {
@@ -256,7 +276,7 @@
 
   const api = {
     CASE_MS, HOLD_MS, STILL_MS, MORPH_MS, PLAYED,
-    applies, inCase, visual, real, beats, totalMs, frameAt, lastFrame, restFrame, stops, spansAt,
+    applies, inCase, visual, real, beats, totalMs, frameAt, lastFrame, restFrame, stops, stopAt, startOf, spansAt,
     snapshotAt, snapshotIndex, covered, live, captionAt, headerAt, description, ticks, ease,
   };
 
@@ -270,6 +290,8 @@
   const LANE = 32;
   const BAR = 12;
   const BAR_H = 16;
+  // The width the layout allows each character of a small label.
+  const CHAR = 6.4;
 
   function maker(doc) {
     return function el(tag, attrs, parent, text) {
@@ -282,7 +304,7 @@
   }
 
   function pill(el, parent, x, y, text, cls) {
-    const w = 10 + text.length * 6.4;
+    const w = 10 + text.length * 7;
     const g = el("g", { class: `pv-pill ${cls || ""}` }, parent);
     el("rect", { x: x - w / 2, y: y - 8, width: w, height: 16, rx: 8 }, g);
     el("text", { x, y: y + 4, "text-anchor": "middle" }, g, text);
@@ -334,17 +356,19 @@
         const end = endOf(scene);
         const snap = snapshotAt(scene, frame);
         // A label that doesn't fit in its bar sits above it, right of the
-        // last label above that lane.
+        // last label above that lane. Above the first lane it sits a unit
+        // lower, clear of the axis numbers.
         const taken = {};
         const above = el("g", {});
         const label = (lane, x0, x1, text, cls, over = "") => {
-          const w = text.length * 5.6;
+          const w = text.length * CHAR;
           if (w < x1 - x0 - 8) {
             el("text", { x: (x0 + x1) / 2, y: rows[lane] + BAR + 12, "text-anchor": "middle", class: `pv-small ${cls}` }, layer, text);
             return;
           }
           const at = Math.min(Math.max((x0 + x1) / 2 - w / 2, taken[lane] || 0), W - PAD - w);
-          el("text", { x: at, y: rows[lane] + BAR - 3, class: `pv-small pv-halo ${over}` }, above, text);
+          const up = lane === scene.lanes[0].id ? 2 : 3;
+          el("text", { x: at, y: rows[lane] + BAR - up, class: `pv-small pv-halo ${over}` }, above, text);
           taken[lane] = at + w + 6;
         };
         const windows = snap ? (frame.f === 0 ? snap.windows || [] : []) : inCase(scene, scene.windows, frame.c);
@@ -382,8 +406,8 @@
           if (fill > 0) el("rect", { ...shape, width: fill, class: `pv-fill pv-${s.role}` }, layer);
           const text = labels[s.id] || (s.arm ? (s.arm === "answer" ? "from the answer" : "fallback") : s.label);
           // A label inside the bar shows once the fill has passed it.
-          const inside = text && text.length * 5.6 < shape.width - 8;
-          const ready = inside ? fill >= (shape.width + text.length * 5.6) / 2 : t >= s.a;
+          const inside = text && text.length * CHAR < shape.width - 8;
+          const ready = inside ? fill >= (shape.width + text.length * CHAR) / 2 : t >= s.a;
           if (text && (snap || ready)) label(s.lane, shape.x, shape.x + shape.width, text, "pv-on-bar");
         }
         // A snapshot's own marks show while it stands still.
@@ -395,7 +419,7 @@
             el("path", { d: `M ${x(m.t)} ${Math.min(...ys) + BAR - 2} V ${Math.max(...ys) + BAR + BAR_H + 2}`, class: "pv-sync" }, layer);
           } else if (m.role === "due") {
             el("path", { d: `M ${x(m.t)} ${y + BAR - 3} V ${y + LANE + 1}`, class: "pv-due" }, layer);
-            const near = x(m.t) > W - PAD - m.label.length * 3;
+            const near = x(m.t) > W - PAD - (m.label.length * CHAR) / 2;
             el("text", { x: near ? W - PAD : x(m.t), y: y + LANE + 11, "text-anchor": near ? "end" : "middle", class: "pv-small pv-classical-text" }, layer, m.label);
           } else if (m.role === "frame" && (snap || t >= m.t)) {
             // A frame update takes no time: a diamond on the lane's baseline.
@@ -432,7 +456,7 @@
         el("text", { x: PAD, y: y + 14, class: "pv-lane" }, g, scene.cases ? "every case" : "every step");
         const cellX = LABEL_W + 210;
         const barX = cellX + cond.length * 52 + 8;
-        const barW = W - PAD - barX - 60;
+        const barW = W - PAD - barX - 68;
         const bands = [];
         rows.forEach((row, c) => {
           const yy = y + 24 + c * ROW;
@@ -661,6 +685,14 @@
     return b;
   }
 
+  // Writes an attribute, or with null removes it, only when that changes it:
+  // a frame is drawn sixty times a second.
+  function attr(e, name, value) {
+    if (e.getAttribute(name) === value) return;
+    if (value === null) e.removeAttribute(name);
+    else e.setAttribute(name, value);
+  }
+
   function mount(root) {
     const data = JSON.parse(document.getElementById(root.dataset.source).textContent);
     const scene = data.scenes.find((s) => s.name === root.dataset.scene);
@@ -668,111 +700,191 @@
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("role", "img");
     svg.setAttribute("class", "pv-svg");
-    svg.setAttribute("aria-labelledby", `${id}-title ${id}-desc`);
+    // The title names the picture and the long text describes it, so a screen
+    // reader says the title once and the rest on request.
+    svg.setAttribute("aria-labelledby", `${id}-title`);
+    svg.setAttribute("aria-describedby", `${id}-desc`);
     const el = maker(document);
     el("title", { id: `${id}-title` }, svg, scene.title);
     el("desc", { id: `${id}-desc` }, svg, description(scene));
-    const caption = document.createElement("p");
-    caption.className = "pv-caption";
+    // The line under the picture: which step is on show and what it says. The
+    // picture's heading names the case a step belongs to; the line holds that
+    // too, for screen readers only.
+    const status = document.createElement("p");
+    status.className = "pulse-visual-status";
+    status.setAttribute("role", "status");
+    const which = document.createElement("span");
+    which.className = "pv-spoken";
     const bar = document.createElement("div");
-    bar.className = "pv-bar";
-    root.replaceChildren(svg, caption, bar);
+    bar.className = "pulse-visual-controls";
+    root.replaceChildren(svg, status, bar);
+    root.setAttribute("role", "group");
+    root.setAttribute("aria-label", scene.title);
     const draw = build(svg, scene, document);
     const figure = root.closest("figure");
     const fallback = figure && figure.querySelector(".pulse-fallback");
     if (fallback) fallback.hidden = true;
 
-    const show = (frame) => {
-      caption.textContent = draw(frame);
-    };
     const list = stops(scene);
-    let at = list.length - 1;
+    const total = totalMs(scene);
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)");
+    // A scene with autoplay false waits for the reader.
+    const plays = scene.autoplay !== false;
+    // The frame on show, the step it is at, and the line that says so.
+    let on = null;
+    let at = 0;
+    let line = "";
     let raf = 0;
+    // How far the run has played, in ms, and the time of the frame before.
+    let elapsed = 0;
+    let last = 0;
+    // Once the reader uses a control, the figure no longer plays by itself.
+    let touched = false;
+
+    const toggle = button("", () => {
+      touched = true;
+      if (raf) {
+        stop();
+        show(on, at, true);
+      } else play();
+    });
+    toggle.classList.add("pv-toggle");
+    const prev = button("Previous step", () => go(at - 1));
+    const next = button("Next step", () => go(at + 1));
+    // One button per snapshot; a click jumps there without moving.
+    const jumps = (scene.snapshots || []).map((s, k) => button(s.short || s.label, () => go(k)));
+    bar.append(toggle, prev, next, ...jumps);
+
+    // The first button says what it does now, a step button whether there
+    // is a step to go to, and a snapshot's button whether it is on show.
+    const sync = () => {
+      const name = raf ? "Pause" : elapsed < total ? "Play" : "Replay";
+      if (toggle.textContent !== name) toggle.textContent = name;
+      attr(toggle, "hidden", plays && !still.matches ? null : "");
+      attr(prev, "aria-disabled", at ? null : "true");
+      attr(next, "aria-disabled", at + 1 < list.length ? null : "true");
+      jumps.forEach((b, k) => attr(b, "aria-current", k === at ? "step" : null));
+    };
+    // Draws a frame. The line under it is written when it changes, with the
+    // status off, so nothing talks over the page while the figure plays or
+    // settles. With *say* it is written with the status on: the step the
+    // reader takes, or pauses on, is said once.
+    const show = (frame, k, say) => {
+      const text = draw(frame);
+      on = frame;
+      at = k === undefined ? stopAt(scene, frame) : k;
+      sync();
+      const head = `Step ${at + 1} of ${list.length}${text && ": "}`;
+      if (!say && head + text === line) return;
+      line = head + text;
+      attr(status, "aria-live", say ? null : "off");
+      const kase = (scene.cases || [])[frame.c];
+      which.textContent = kase ? `${text ? "" : ": "}${kase.label} ` : "";
+      status.replaceChildren(head, which, text);
+    };
     const stop = () => {
       cancelAnimationFrame(raf);
       raf = 0;
     };
-    const step = (by) => {
+    const pause = () => {
       stop();
-      at = (at + by + list.length) % list.length;
-      show(list[at]);
+      sync();
     };
-    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let started = 0;
     const tick = (now) => {
-      if (!started) started = now;
-      const frame = frameAt(scene, now - started);
-      show(frame);
+      elapsed += last ? now - last : 0;
+      last = now;
+      const frame = frameAt(scene, elapsed);
       raf = frame.done ? 0 : requestAnimationFrame(tick);
+      show(frame);
     };
     const play = () => {
       stop();
-      started = 0;
+      if (elapsed >= total) elapsed = 0;
+      last = 0;
+      attr(status, "aria-live", "off");
       raf = requestAnimationFrame(tick);
+      sync();
+    };
+    // The reader's own step: the run stops, and playing goes on from there.
+    const go = (k) => {
+      touched = true;
+      stop();
+      const to = Math.max(0, Math.min(list.length - 1, k));
+      elapsed = startOf(scene, list[to]);
+      show(list[to], to, to !== at);
+    };
+    // The still frame stands for the whole run, so the run counts as played.
+    const rest = () => {
+      stop();
+      elapsed = total;
+      show(restFrame(scene));
     };
 
-    if (scene.snapshots) {
-      // One button per snapshot; a click jumps there without moving.
-      scene.snapshots.forEach((s, k) => bar.append(button(s.short || s.label, () => {
-        at = k;
-        stop();
-        show(list[k]);
-      })));
-    } else {
-      bar.append(button("Previous", () => step(-1)), button("Next", () => step(1)));
-    }
-    // A scene with autoplay false waits for the reader.
-    const autoplay = !still && scene.autoplay !== false;
-    if (autoplay) bar.prepend(button("Replay", play));
-    root.tabIndex = 0;
-    root.setAttribute("aria-label", `${scene.title}. Arrow keys step through it.`);
-    root.addEventListener("keydown", (e) => {
-      if (e.key === "ArrowRight") step(1);
-      else if (e.key === "ArrowLeft") step(-1);
-      else return;
+    // Left and right step while a control has focus. With a modifier held
+    // they stay the browser's: Alt goes back a page, Shift selects text.
+    bar.addEventListener("keydown", (e) => {
+      const by = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (!by || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
       e.preventDefault();
+      go(at + by);
     });
 
-    // A step-through starts on its first snapshot; reduced motion shows the
-    // still frame, and the buttons step; otherwise it plays once when in view.
-    const rest = restFrame(scene);
-    if (!autoplay && !still) {
-      at = 0;
-      show(list[0]);
-    } else if (still) {
-      at = list.findIndex((f) => f.c === rest.c && f.t === rest.t && f.step === rest.step);
-      show(rest);
-    } else {
-      show(frameAt(scene, 0));
-      const seen = new IntersectionObserver(
-        (entries) => {
-          if (entries.some((e) => e.isIntersecting)) {
-            seen.disconnect();
-            play();
+    // Reduced motion shows the still frame, and a step-through its first
+    // step; otherwise the figure waits at its start to come into view.
+    if (still.matches) rest();
+    else if (plays) show(frameAt(scene, 0));
+    else show(list[0], 0);
+
+    // By itself the figure plays once: it starts with half of it and half of
+    // its controls in the window, and never under reduced motion or after
+    // the reader has used a control. Any run waits when the figure leaves
+    // the window or the tab is hidden.
+    let half = false;
+    let reach = false;
+    const auto = (away) => {
+      if (away) {
+        if (raf) pause();
+      } else if (!touched && !raf && plays && !still.matches && half && reach && !document.hidden && elapsed < total) play();
+    };
+    const seen = new IntersectionObserver(
+      (entries) => {
+        let left = false;
+        for (const e of entries) {
+          const most = e.intersectionRatio >= 0.5;
+          if (e.target === bar) reach = most;
+          else {
+            left = half && !most;
+            half = most;
           }
-        },
-        { threshold: 0.5 }
-      );
-      seen.observe(root);
-      root.pulseVisualSeen = seen;
+        }
+        auto(left);
+      },
+      { threshold: 0.5 }
+    );
+    seen.observe(root);
+    seen.observe(bar);
+    document.addEventListener("visibilitychange", () => auto(document.hidden));
+    // Reduced motion can change while the page is open: turned on, a figure
+    // that plays, or that the reader has not stepped, goes to its still frame.
+    if (still.addEventListener) {
+      still.addEventListener("change", () => {
+        if (still.matches && (raf || !touched)) rest();
+        else sync();
+        auto();
+      });
     }
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden && raf) {
-        stop();
-        show(rest);
-      }
-    });
+
     // For screenshots and tests: stop, and draw one frame.
     root.pulseVisual = {
       show(frame) {
-        if (root.pulseVisualSeen) root.pulseVisualSeen.disconnect();
+        touched = true;
         stop();
         show({ c: 0, t: endOf(scene), step: 0, f: 0, ...frame });
       },
       at(ms) {
         this.show(frameAt(scene, ms));
       },
-      total: totalMs(scene),
+      total,
       scene,
     };
   }

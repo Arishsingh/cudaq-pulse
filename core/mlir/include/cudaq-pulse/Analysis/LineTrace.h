@@ -74,6 +74,11 @@ inline mlir::Value linearPredecessor(mlir::Value value) {
   // A schedule block result continues the value its body yields.
   if (auto block = mlir::dyn_cast<ScheduleBlockOp>(op))
     return block.getBody().front().getTerminator()->getOperand(index);
+  // A sync's result continues the operand in its place (SyncOp::verify), the
+  // one the scan below finds: looked up directly, tracing every line of a
+  // sync of n lines takes n steps instead of n^2.
+  if (mlir::isa<SyncOp>(op))
+    return op->getOperand(index);
   if (mlir::isa<GetDriveLineOp, GetReadoutLineOp>(op) ||
       op->getName().getStringRef() == "classical.get_link")
     return {};

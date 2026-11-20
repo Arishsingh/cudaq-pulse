@@ -29,6 +29,7 @@ import numpy as np
 from _style import end_label, page_namespace, plot_axes, save_themed
 from _timeline import Timeline, busy_lanes, draw
 from _visual import Names, plays, program, write
+from matplotlib.patches import Rectangle
 
 AXES = ("X", "Y", "Z")
 
@@ -355,8 +356,8 @@ def herald_branches(page) -> dict:
         (
             "Z readout",
             "The tomography reads Z on the kept shots",
-            f"Of the kept shots, Z reads 0 on {_fmt(tomography[0])} and 1 or 2 on "
-            f"{_fmt(tomography[1])}, as |T⟩ gives.",
+            f"The kept shots split about equally: Z reads 0 on {_fmt(tomography[0])} of all "
+            f"shots and 1 or 2 on {_fmt(tomography[1])}, as |T⟩ gives.",
         ),
     ]
     return {
@@ -483,7 +484,7 @@ def herald_latency(timeline: Timeline) -> None:
     words = _herald_words(timeline)
 
     def figure(p):
-        return draw(
+        fig = draw(
             timeline,
             p,
             pulse_labels=words,
@@ -491,6 +492,15 @@ def herald_latency(timeline: Timeline) -> None:
             breakdown=True,
             only=busy_lanes(timeline, window),
         )
+        # The link is the lowest lane here, so the function's share, which is
+        # labelled under its bar, would lie on the time axis. Label it above the
+        # bar instead, with no gap: the lane line above is close.
+        (ax,) = fig.axes
+        (label,) = [t for t in ax.texts if t.get_text().startswith(f"{call.function} ≤")]
+        (bar,) = [b for b in ax.patches if isinstance(b, Rectangle) and b.get_x() == call.sent_ns]
+        label.set_y(bar.get_y() + bar.get_height())
+        label.set_va("bottom")
+        return fig
 
     link, feedback = call.link["fixed_ns"], call.link["feedback_ns"]
     budget = call.due_ns - call.submit_ns
