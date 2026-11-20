@@ -81,6 +81,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   The buses are wiring, given when a description is loaded. There are
   none by default and spacing is off, and the export lists both only when
   set, so existing programs and exports are unchanged.
+- **An error code for kernels with their own schedule.**
+  `ErrorCode.SCHEDULE_BLOCK` (`"schedule_block"`) is the code of the
+  `CompilationError` that `schedule="rcp"` or `"alap_rcp"` raises for a
+  program calling kernels with their own `schedule=`, and of the one
+  `flatten_schedules=True` raises for a called kernel's
+  `max_duration_cycles`. A tool that compiles programs it did not write
+  retries with `flatten_schedules=True` on the code instead of matching
+  the message. The messages read as before; `fix` holds their fix.
 - **Phase gates.** `pulse.gates.Z`, `S` and `T` are virtual Z rotations by
   pi, pi / 2 and pi / 4. `get_calibration` gives each as a `VirtualZ`
   (`cudaq_pulse.quantum_systems.VirtualZ(phase_rad=...)`), derived on every
@@ -209,6 +217,29 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   row above the plot. The rows, bars, labels and axis limits, and the
   functions' arguments, are as before, and matplotlib is still imported only
   when a plot is drawn.
+- **Concurrency limits hold under every schedule.** A control system with
+  controllers given `max_concurrent_drives` or `max_concurrent_readouts`
+  now has them checked whatever the schedule: a program that plays more
+  drives or readouts at once than the limit fails to compile with a
+  `ControllerLimitError` naming the count, the first cycle where it
+  exceeds the limit and the limit, and suggesting `schedule="rcp"` or
+  `"alap_rcp"`, which keep to it. Before, only those two schedules used
+  the limits, and an `asap` or `alap` program past them compiled without
+  a word. They are counted as the `rcp` schedules count them, so a program
+  those schedules place fits; pulses in different arms of one branch never
+  count together. A long rolled loop is never counted iteration by
+  iteration: alone, from one iteration; beside other pulses, from the
+  iterations near where they start or end. Rolled loops of different
+  periods that could pass a limit together and are not settled that way
+  are counted one iteration at a time up to 65536 iterations. Past that,
+  a count over the limit near where they start or end is reported at its
+  cycle (not claimed as the first), and with none there compiling stops
+  with an `UnsupportedError` saying to sync their lines, give them fewer
+  iterations or use `rcp`.
+  Both now default to `None`, not given: the `rcp` schedules still play at
+  most 4 drives and 2 readouts at once, and nothing else checks them. A
+  system file written by an earlier version holds 4 and 2, which now count
+  as given; to leave them unchecked, set them to `null` in the file.
 
 ### Fixed
 

@@ -9,6 +9,12 @@ counted where the loop's iterations do not repeat the one before. With
 on the scheduled programs of loops branching on answers, and on those
 programs with fewer slots, longer or earlier requests and periods off by a
 few cycles, which break the rules from some iteration on.
+
+The machine "two_slots" gives ``max_concurrent_drives=2``, which only the
+rcp schedules keep: in a test parametrized by schedule, its programs are
+scheduled ``rcp`` where the test id says ``asap`` and ``alap_rcp`` where it
+says ``alap`` (``_policy``); the default machine's programs run as the id
+says.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from tests.classical.test_answer_loops import (
     _kernels,
     _lowers_as_extrapolated,
     _machines,
+    _policy,
     _random_kernel,
     _saturating,
     decide,
@@ -83,7 +90,9 @@ def _variants(text: str, seed: int) -> Iterator[str]:
 
 
 def _scheduled(kernel: Any, schedule: str, options: dict[str, Any]) -> str | None:
-    program = pulse.compile(kernel, schedule=schedule, unroll_threshold=0, passes=(), **options)
+    program = pulse.compile(
+        kernel, schedule=_policy(schedule, options), unroll_threshold=0, passes=(), **options
+    )
     try:
         return program.lower(Q[0], Q[1], Q[2]).mlir("pulse")
     except RuntimeError:

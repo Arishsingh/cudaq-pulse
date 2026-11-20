@@ -9,6 +9,12 @@ the loop and keeps it rolled, so lowering costs the same at any trip count;
 loops of 10**6 iterations lower in a child process with a CPU, wall and
 memory limit. What it schedules is what scheduling every iteration does:
 the same kernel with its loops unrolled before scheduling, event by event.
+
+The machine "two_slots" gives ``max_concurrent_drives=2``, which only the
+rcp schedules keep: in a test parametrized by schedule, its programs are
+scheduled ``rcp`` where the test id says ``asap`` and ``alap_rcp`` where it
+says ``alap`` (``_policy``); the default machine's programs run as the id
+says.
 """
 
 from __future__ import annotations
@@ -387,12 +393,27 @@ def _machines() -> dict[str, dict[str, Any]]:
     }
 
 
+# Under asap and alap, the programs of a machine that gives concurrency
+# limits are scheduled by the rcp schedule of the same direction, which keeps
+# to them (any other schedule past them fails to compile).
+_KEEPING_LIMITS = {"asap": "rcp", "alap": "alap_rcp"}
+
+
+def _policy(schedule: str, options: dict[str, Any]) -> str:
+    """*schedule*, or the rcp one for a machine *options* with limits."""
+    return _KEEPING_LIMITS.get(schedule, schedule) if "control_system" in options else schedule
+
+
 def _events(kernel: Any, schedule: str, unroll_threshold: int, options: dict[str, Any]) -> Any:
     """The duration and events of *kernel*'s schedule, or the error that
     stops it, but for the op it notes (two slots can be too few under alap
     whether or not the loop is unrolled)."""
     program = pulse.compile(
-        kernel, schedule=schedule, unroll_threshold=unroll_threshold, passes=(), **options
+        kernel,
+        schedule=_policy(schedule, options),
+        unroll_threshold=unroll_threshold,
+        passes=(),
+        **options,
     )
     try:
         lowered = program.lower(Q[0], Q[1], Q[2])
