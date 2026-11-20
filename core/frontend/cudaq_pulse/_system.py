@@ -1235,17 +1235,13 @@ class _Controllers:
     It stays valid because the system is frozen and holds its controllers; a
     copy or an unpickled system is built again and makes its own."""
 
-    __slots__ = ("_controllers", "_positions")
+    __slots__ = ("_controllers", "_positions", "repeats")
 
     def __init__(self, controllers: tuple[Controller, ...]) -> None:
         self._controllers = controllers
         self._positions = dict(zip(map(id, controllers), range(len(controllers)), strict=True))
-
-    def __iter__(self) -> Iterator[Controller]:
-        # The controllers to check pair by pair for one listed twice: all of
-        # them when there are fewer ids than controllers, else none.
-        repeats = len(self._positions) < len(self._controllers)
-        return iter(self._controllers if repeats else ())
+        # Whether one is listed twice: fewer ids than controllers.
+        self.repeats = len(self._positions) < len(controllers)
 
     def __contains__(self, controller: object) -> bool:
         return id(controller) in self._positions or controller in self._controllers
@@ -1255,14 +1251,6 @@ class _Controllers:
             return self._positions[id(controller)]
         except KeyError:
             return self._controllers.index(controller)
-
-
-def _by_id(system: ControlSystem, controllers: tuple[Controller, ...]) -> _Controllers:
-    """The controllers of *system*, of many, by id; *system* then finds one
-    by id too (its ``_index``)."""
-    found = _Controllers(controllers)
-    object.__setattr__(system, "_index", found.index)
-    return found
 
 
 @dataclass(frozen=True)
@@ -1397,13 +1385,18 @@ class ControlSystem:
             "_line_delays",
             MappingProxyType(dict(sorted(delays.items()))) if delays else _NO_DELAYS,
         )
-        problems = _structure_problems(
-            self,
-            "",
-            repeated,
-            controllers,
-            _by_id(self, controllers) if count > _FEW_CONTROLLERS else controllers,
-        )
+        if count > _FEW_CONTROLLERS:
+            # Many controllers: found by id, and checked pair by pair only
+            # when one is listed twice.
+            members = _Controllers(controllers)
+            object.__setattr__(self, "_index", members.index)
+            problems = _structure_problems(
+                self, "", repeated, controllers, members, controllers if members.repeats else ()
+            )
+        else:
+            problems = _structure_problems(
+                self, "", repeated, controllers, controllers, controllers
+            )
         if problems:
             raise QuantumSystemDefinitionError(
                 f"{_count(len(problems), 'problem')} in the control system",
@@ -1931,7 +1924,8 @@ class ControlSystem:
         return found
 
     def _index(self, controller: Controller) -> int:
-        # A system of many controllers replaces this with _Controllers.index.
+        # A system of many controllers replaces this with _Controllers.index
+        # (__post_init__).
         for index, candidate in enumerate(self.controllers):
             if candidate is controller:
                 return index
@@ -2428,15 +2422,16 @@ def _structure_problems(
     repeated: bool,
     controllers: tuple[Controller, ...],
     members: tuple[Controller, ...] | _Controllers,
+    twice: tuple[Controller, ...],
 ) -> list[Problem]:
     """What is wrong with *system* on its own: lines on two controllers
     (*repeated*: some qudit has a line of a kind on two), peers that are not
     in it, links that reach controllers it does not have. *controllers* are
-    its controllers, and *members* them again, or of many, ``_Controllers``:
-    the controllers checked pair by pair for one listed twice, and those a
-    link's controllers are found among."""
+    its controllers; *members* those a link's controllers are found among
+    (them, or of many, ``_Controllers``); *twice* those checked pair by
+    pair for one listed twice (them, or none when no id repeats)."""
     problems: list[Problem] = []
-    for index, controller in enumerate(members):
+    for index, controller in enumerate(twice):
         for other in range(index):
             if controllers[other] is controller:
                 problems.append(
