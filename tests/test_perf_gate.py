@@ -887,6 +887,44 @@ def test_the_base_must_run_the_same_python_work():
     ]
 
 
+def test_python_work_merged_after_the_baseline_is_judged_on_the_base():
+    # Main changed the case's Python work after the baseline was taken; the
+    # change ran its base's, and its count moved by layout.
+    merged = {**_AMP, "bytecodes": 442.6}
+    on_base = {"specialize_amplitude": merged}
+    failures, notes = _recorded(98, amp_work=merged, base_work=on_base)
+    assert failures == [] and notes == [
+        "specialize_amplitude: layout, +0.48% instructions (limit +0.4%; +0.65% from its "
+        "base, within 0.95% either way)"
+    ]
+    # Beyond the own shift it fails as layout only, naming the work the
+    # baseline lacks.
+    failures, notes = _recorded(98, amplitude=1.01, amp_work=merged, base_work=on_base)
+    assert not notes
+    assert failures == [
+        "specialize_amplitude: layout only, +0.83% instructions (limit +0.4%); "
+        f"{gate.LAYOUT_ONLY}; the same Python work as its base's, not the baseline's: "
+        "bytecodes 439.6 -> 442.6 (+3), python_calls same, c_calls same; +1.00% from its "
+        "base, beyond the 0.95% either way that a change's own layout shift may take"
+    ]
+    # Without its base it keeps the limits: a regression with its work.
+    failures, _ = _recorded(98, scope=None, amp_work=merged)
+    assert failures == [
+        "specialize_amplitude: regression, +0.48% instructions (limit +0.4%); Python work "
+        "changed per repetition: bytecodes 439.6 -> 442.6 (+3), python_calls same, c_calls same"
+    ]
+
+
+def test_a_change_of_python_work_merged_after_the_baseline_and_its_own_fails():
+    # Main changed the work, and the change changed it again.
+    merged = {**_AMP, "bytecodes": 442.6}
+    failures, notes = _recorded(
+        98, amp_work={**merged, "bytecodes": 445.6}, base_work={"specialize_amplitude": merged}
+    )
+    assert not notes and len(failures) == 1
+    assert failures[0].startswith("specialize_amplitude: regression, +0.48% instructions")
+
+
 def test_a_row_beyond_the_layout_shift_from_the_baseline_fails():
     # Main moved +2% and the change +0.5% more: the change is in native code.
     head, base, moved = _RECORDED[98]
@@ -1080,6 +1118,35 @@ def test_the_gate_fails_when_the_base_ran_other_python_work(fake_gate, repo):
     base = _change(repo, 1_001_000, 1_005_000, base_work={**_WORK, "bytecodes": 450.6})
     code, log, _, _ = fake_gate(1_005_000, _WORK, base_commit=base)
     assert code == 1 and "; its base ran other Python work" in log
+
+
+def test_the_gate_measures_the_base_when_main_changed_the_python_work(fake_gate, repo):
+    # The baseline predates a merge that changed the case's work; the base
+    # and the change run the same work, and the change moved by layout.
+    base = _change(repo, 1_001_000, 1_005_000)
+    older = {**_WORK, "bytecodes": 440.6}
+    code, log, _, _ = fake_gate(1_005_000, _WORK, baseline_work=older, base_commit=base)
+    assert code == 0 and log.endswith("Perf gate passed (1 layout).\n")
+    # Without the base, the changed work is a regression.
+    code, log, _, _ = fake_gate(1_005_000, _WORK, baseline_work=older)
+    assert code == 1 and "c: regression, +0.50% instructions" in log
+
+
+def test_a_baseline_without_python_work_is_not_compared_with_the_base(fake_gate, repo, monkeypatch):
+    base = _change(repo, 1_001_000, 1_005_000)
+    monkeypatch.setattr(gate, "measure_base", None)
+    code, log, _, _ = fake_gate(1_005_000, _WORK, baseline_work=None, form=1, base_commit=base)
+    assert code == 1 and "c: regression, +0.50% instructions" in log
+
+
+def test_a_gain_from_python_work_the_baseline_lacks_is_kept(fake_gate, repo, monkeypatch):
+    # Main changed the work since the baseline; a gain on top of it is
+    # kept by a new baseline, not passed as layout.
+    base = _change(repo, 990_000, 985_000)
+    monkeypatch.setattr(gate, "measure_base", None)
+    older = {**_WORK, "bytecodes": 440.6}
+    code, log, _, _ = fake_gate(985_000, _WORK, baseline_work=older, base_commit=base)
+    assert code == 1 and "c: gain, -1.50% instructions" in log
 
 
 def test_the_gate_does_not_measure_the_base_of_a_change_to_measured_code(fake_gate, repo):
