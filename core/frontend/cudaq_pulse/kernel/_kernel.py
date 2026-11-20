@@ -487,12 +487,6 @@ class _Dispatcher:
         self.general: ScheduledKernel | None = None
         _dispatchers.add(self)
 
-    def _machine_key(self, target: QuantumSystem) -> Any:
-        """What of *target* beyond its fingerprint the lowering depends on:
-        compiled for no control system, the control system of its qudits,
-        which ``Kernel._specialize`` schedules and checks for."""
-        return target.control_system if self.options.machine is _DEFAULT_MACHINE else None
-
     def _device(self, values: tuple[Any, ...], kernel: Kernel[...]) -> QuantumSystem:
         found = None
         seen: set[int] = set()
@@ -516,12 +510,9 @@ class _Dispatcher:
         kernel = self.kernel
         target = self._device(values, kernel)
         static = kernel._split[0]
-        key = (
-            target.fingerprint,
-            self._machine_key(target),
-            static,
-            *[_static_key(values[i]) for i in static],
-        )
+        # The identity, not the fingerprint: compiled for no control system,
+        # a kernel is scheduled and checked for the one of its qudits.
+        key = (target._identity, static, *[_static_key(values[i]) for i in static])
         entry = self._entries.get(key)
         if entry is not None and entry.guard.check():
             entry.tick = next(_ticks)
@@ -542,12 +533,7 @@ class _Dispatcher:
             self.misses += 1
             # Tracing may have made float parameters static.
             static = kernel._split[0]
-            key = (
-                target.fingerprint,
-                self._machine_key(target),
-                static,
-                *[_static_key(values[i]) for i in static],
-            )
+            key = (target._identity, static, *[_static_key(values[i]) for i in static])
             if target._drift:
                 # Kept for the twin: no cached program plays another system's drift.
                 from ..quantum_systems.drift import _kept
@@ -798,7 +784,7 @@ class Kernel[**P]:
         return out
 
     def _specialize(self, values: tuple[Any, ...], target: Any, options: CompileOptions) -> _Entry:
-        if options.machine is _DEFAULT_MACHINE and target.control_system is not None:
+        if target.control_system is not None and options.machine is _DEFAULT_MACHINE:
             # Compiled for no control system: scheduled and checked for the
             # one of the qudits it is lowered on.
             options = replace(options, machine=target.control_system._machine)
