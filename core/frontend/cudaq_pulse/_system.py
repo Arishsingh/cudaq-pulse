@@ -1238,6 +1238,12 @@ class ControlSystem:
     link id a program uses that is not listed gets ``Link()``.
     ``Link.controllers`` says which controllers a link reaches. Their slots
     and latencies apply to every schedule, because they are hardware.
+    ``max_concurrent_drives`` and ``max_concurrent_readouts``, when given,
+    are the most drives and readouts the system plays at once, counted on
+    every controller: the ``rcp`` and ``alap_rcp`` schedules keep to them,
+    and a program whose schedule plays more at once fails to compile under
+    any schedule. ``None`` (not given): the ``rcp`` schedules play at most 4
+    drives and 2 readouts at once, and nothing else checks them.
     ``max_concurrent_drives``, ``max_concurrent_readouts`` and
     ``line_switch_penalty_cycles`` apply to the ``rcp`` and ``alap_rcp``
     schedules, which keep pulses of two controllers that follow each other on
@@ -1254,8 +1260,8 @@ class ControlSystem:
 
     controllers: Sequence[Controller] = ()
     links: Mapping[str, Link] = field(default_factory=dict)
-    max_concurrent_drives: int = 4
-    max_concurrent_readouts: int = 2
+    max_concurrent_drives: int | None = None
+    max_concurrent_readouts: int | None = None
     line_switch_penalty_cycles: int = 0
     reference_clock_ghz: float | None = None
     # Set by __post_init__, and declared for type checkers only: as fields
@@ -1451,7 +1457,7 @@ class ControlSystem:
     def as_dict(self) -> dict[str, Any]:
         """The control system as JSON-serializable data; links name the
         controllers they reach by index."""
-        data = {
+        data: dict[str, Any] = {
             "controllers": [c.as_dict() for c in self.controllers],
             "links": {
                 name: {

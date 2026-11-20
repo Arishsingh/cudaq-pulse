@@ -19,6 +19,8 @@
 #include "mlir/IR/Operation.h"
 
 #include <optional>
+#include <utility>
+#include <vector>
 
 namespace pulse {
 
@@ -191,6 +193,70 @@ scheduledStart(mlir::Operation *op, llvm::ArrayRef<int64_t> iteration) {
 
 inline std::optional<int64_t> scheduledDuration(mlir::Operation *op) {
   return durationCycles(op);
+}
+
+/// A readout's number in the kernel, written when the module is built from
+/// a kernel in which a pass can copy a readout (one in a loop, or one after
+/// an if or a select), or, in a module without it, when scheduling first
+/// copies a readout of its function; without it, its place among the
+/// readouts.
+inline constexpr llvm::StringLiteral kReadoutNumberAttr =
+    "pulse.readout_number";
+/// How a readout's loop iterations map to the kernel's, written when a loop
+/// around it is peeled or unrolled: per loop of the kernel around it,
+/// outermost first, three numbers (depth, scale, offset). Its iteration is
+/// scale * k + offset, k the iteration of its enclosing loop at `depth`
+/// (outermost 0), or offset where `depth` is -1 (that loop's iteration was
+/// copied out of it). Without it, its loops are the kernel's.
+inline constexpr llvm::StringLiteral kReadoutIterationAttr =
+    "pulse.readout_iteration";
+
+/// Number the readouts in `scope` in walk order from `first`, unless one of
+/// them is numbered already: before anything copies one (an op copied into
+/// both arms of an if, a peeled or unrolled loop), every copy then keeps
+/// the kernel's number.
+inline void numberReadouts(mlir::Operation *scope, int64_t first = 0) {
+  auto isReadout = [](mlir::Operation *op) {
+    return op->getName().getStringRef() == "pulse.readout" ||
+           op->getName().getStringRef() == "pulse.iq_acquire";
+  };
+  llvm::SmallVector<mlir::Operation *> readouts;
+  bool numbered = false;
+  scope->walk([&](mlir::Operation *op) {
+    if (isReadout(op)) {
+      readouts.push_back(op);
+      numbered = numbered || op->hasAttr(kReadoutNumberAttr);
+    }
+  });
+  if (numbered)
+    return;
+  auto i64 = mlir::IntegerType::get(scope->getContext(), 64);
+  for (mlir::Operation *op : readouts)
+    op->setAttr(kReadoutNumberAttr, mlir::IntegerAttr::get(i64, first++));
+}
+
+/// The number and loop iteration the kernel gave readout `op` executed in
+/// iteration `iteration` of its enclosing loops, `position` being its place
+/// among the readouts in walk order.
+inline std::pair<int64_t, std::vector<int64_t>>
+kernelReadoutKey(mlir::Operation *op, llvm::ArrayRef<int64_t> iteration,
+                 int64_t position) {
+  auto number = op->getAttrOfType<mlir::IntegerAttr>(kReadoutNumberAttr);
+  auto map = op->getAttrOfType<mlir::DenseI64ArrayAttr>(kReadoutIterationAttr);
+  std::pair<int64_t, std::vector<int64_t>> key{
+      number ? number.getInt() : position, {}};
+  if (!map) {
+    key.second.assign(iteration.begin(), iteration.end());
+    return key;
+  }
+  for (size_t i = 0; i + 2 < static_cast<size_t>(map.size()); i += 3) {
+    int64_t depth = map[i];
+    int64_t k = depth >= 0 && depth < static_cast<int64_t>(iteration.size())
+                    ? iteration[depth]
+                    : 0;
+    key.second.push_back(map[i + 1] * k + map[i + 2]);
+  }
+  return key;
 }
 
 } // namespace pulse
