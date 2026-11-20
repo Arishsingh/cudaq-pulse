@@ -33,6 +33,9 @@ struct ClockAttributes {
   llvm::SmallVector<int64_t> driveGrid, readoutGrid;
   /// By qudit, the delay of its drive and readout line; empty without one.
   llvm::SmallVector<int64_t> driveDelay, readoutDelay;
+  /// By qudit, how much later than scheduled a readout on its line ends as
+  /// played: the delay and the fine delay rounded up; empty without one.
+  llvm::SmallVector<int64_t> readoutReady;
   /// By qudit, the controller of its drive and readout line (-1: none), on
   /// several controllers.
   llvm::SmallVector<int64_t> driveOwner, readoutOwner;
@@ -55,6 +58,9 @@ struct ClockAttributes {
         if (line.getDelayCycles() != 0)
           set(drive ? driveDelay : readoutDelay, qudit, line.getDelayCycles(),
               0);
+        int64_t ready = line.getDelayCycles() + line.getFineCycles();
+        if (!drive && ready != 0)
+          set(readoutReady, qudit, ready, 0);
         if (gridded)
           set(drive ? driveGrid : readoutGrid, qudit,
               controllers[controller].getGridCycles(), 0);

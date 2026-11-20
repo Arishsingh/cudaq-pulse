@@ -24,11 +24,20 @@ Runs the cases of ``benchmarks/perf_gate/cases.py`` and compares them with
   ``LAYOUT_SHIFT`` either way, it is ``layout only``: the count moved
   below Python, as when one new type at import renumbers the interpreter's
   type version tags and so its method cache's collisions; the case still
-  fails, to be judged before re-baselining. Otherwise it is a
+  fails, to be judged before re-baselining, unless its own change moved
+  it by layout (below). Otherwise it is a
   ``regression`` or a ``gain`` (to keep by updating the baseline), with
   each counter's change if the work changed, or a note that the change is
   in native code if it did not. A baseline without the work (format 1)
   labels only regressions and gains.
+
+With ``--base-commit``, the commit a change is applied to (CI passes a
+pull request's base, or a push's previous tip), a ``layout only`` row is
+compared with its base: if the change keeps the base's measured code (it
+touches only the package's Python sources and files this job never
+reads, as git says), the gate measures the base's Python sources on the
+same build, and a row whose own change moved it by at most ``OWN_SHIFT``,
+with the base's Python work, passes as ``layout``.
 
 The instruction counts repeat exactly only in the environment they were
 measured in, so a baseline is versioned by it: the baseline holds the
@@ -55,6 +64,7 @@ Usage:
     python tools/perf-gate.py                 # compare with the baseline
     python tools/perf-gate.py --update        # rewrite the baseline from this run
     python tools/perf-gate.py --processes 5   # also show the spread of 5 runs
+    python tools/perf-gate.py --base-commit SHA   # in CI: compare with the base
 
 ``--out FILE`` writes this run's measurements in the baseline's format;
 CI uploads it, so a baseline can be taken from a CI run (CONTRIBUTING.md).
@@ -65,6 +75,7 @@ from __future__ import annotations
 import argparse
 import collections
 import concurrent.futures
+import fnmatch
 import json
 import os
 import platform
@@ -73,6 +84,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -105,6 +117,53 @@ NATIVE_ONLY = (
 # Fractions of the baseline's instructions per repetition.
 REGRESSION = 0.004
 IMPROVEMENT = 0.01
+
+# The largest change, either way, of a case's count from its base's that
+# a change keeping the base's measured code passes as layout: the change's
+# own layout shifts seen were up to 0.93% (#63's specialize_wait), and a
+# real +1% fails. A row's change from the baseline stays within
+# LAYOUT_SHIFT.
+OWN_SHIFT = 0.0095
+# The paths a change may touch and keep its base's measured code: the
+# package's Python sources, and files the perf-gate job never reads. Any
+# other path (native code, build files, pins, the job in ci.yml, the gate
+# and its cases, data files) is measured code. Fails closed.
+PYTHON_OR_TEXT = (
+    "core/frontend/*.py",
+    "core/frontend/*.pyi",
+    "tests/*",
+    "docs/*",
+    "examples/*",
+    "*.md",
+    "LICENSE",
+    "LICENSES/*",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES",
+    "REUSE.toml",
+    "CITATION.cff",
+    ".github/ISSUE_TEMPLATE/*",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/CODEOWNERS",
+    "test/*",
+    ".github/workflows/*",
+    ".pre-commit-config.yaml",
+    "pyrightconfig.json",
+    ".clang-format",
+    "tools/check-*.py",
+    "tools/stubtest-allowlist.txt",
+    "tools/tutorial-scripts.py",
+    "benchmarks/baselines/*",
+)
+# Read by the perf-gate job, but only through the parts build_inputs() takes.
+BUILD_FILES = ("pyproject.toml", "uv.lock")
+# The package's sources, which the build stages as links to them.
+FRONTEND = "core/frontend"
+AS_BASE = (
+    "the change keeps its base's measured code, the case ran the same numbers of "
+    "bytecodes, Python calls and C calls per repetition as the baseline and the base, "
+    "and the change moved its count by layout only: reported, not failed, and not a gain "
+    "to keep"
+)
 
 # Callgrind's cache model, fixed so the estimate does not depend on the
 # runner's CPU: 32 KiB 8-way L1 instruction and data caches, 8 MiB 16-way
@@ -411,6 +470,8 @@ def measure_instructions(
 
 
 PythonWork = dict[str, dict[str, float]]
+# Each case's count measured on the base, and its Python work there.
+Base = dict[str, tuple[float, dict[str, float] | None]]
 
 
 def measure_python_work(python: str, env: dict[str, str]) -> tuple[PythonWork | None, str]:
@@ -522,6 +583,11 @@ class Row:
     # How the case's Python work compares with the baseline's: None where
     # either has none, else each counter's change (empty if the same).
     work_changes: list[str] | None = None
+    # The change of the case's count from its base's, where the base ran
+    # the same Python work, and why the row is not compared with its base
+    # (None: no base was given; "": it is).
+    own: float | None = None
+    scope: str | None = None
 
     @property
     def work(self) -> str:
@@ -541,13 +607,19 @@ def compare(
     sizes: dict[str, dict[str, int]],
     instructions: dict[str, Measured] | None,
     python_work: PythonWork | None = None,
+    base: Base | None = None,
+    scope: str | None = None,
 ) -> list[Row]:
     """One row per case of the baseline or of this run, with its verdict:
     ``ok``, ``faster`` (within ``IMPROVEMENT``) or a failure: ``slower``,
     ``improved`` (update the baseline), ``sizes``, ``new``, ``removed``,
     ``no baseline``. In bootstrap mode a case without an instruction count
     is ``bootstrap``, which passes. Where this run and the baseline both
-    have the case's Python work, the row has its changes."""
+    have the case's Python work, the row has its changes. A ``layout
+    only`` row is ``layout``, which passes, when the change keeps its
+    base's measured code (*scope* is empty) and moved the case's count
+    from its *base*'s, measured with the same Python work, by at most
+    ``OWN_SHIFT``."""
     cases = baseline.get("cases", {})
     bootstrap = baseline.get("bootstrap") is True
     rows = []
@@ -600,6 +672,17 @@ def compare(
                     row.verdict = "improved"
                 elif row.delta < -tolerance:
                     row.verdict = "faster"
+            row.scope = scope
+            count, base_work = (base or {}).get(name, (None, None))
+            if count and row.measured and base_work is not None and base_work == work:
+                row.own = row.measured / count - 1
+            if (
+                scope == ""
+                and failure_kind(row) == "layout only"
+                and row.own is not None
+                and abs(row.own) <= OWN_SHIFT
+            ):
+                row.verdict = "layout"
         rows.append(row)
     return rows
 
@@ -638,11 +721,157 @@ def failure_reason(r: Row) -> str:
         reason += ": update the baseline to keep the gain"
     if kind == "layout only":
         reason += f"; {LAYOUT_ONLY}"
+        if r.scope:
+            reason += f"; not compared with its base: {r.scope}"
+        elif r.scope == "" and r.own is None:
+            reason += "; its base ran other Python work"
+        elif r.scope == "" and r.own is not None:
+            reason += (
+                f"; {_pct(r.own)} from its base, beyond the {100 * OWN_SHIFT:g}% either way "
+                "that a change's own layout shift may take"
+            )
     elif r.work_changes == []:
         reason += f"; {NATIVE_ONLY}"
     elif r.work_changes:
         reason += f"; Python work changed per repetition: {', '.join(r.work_changes)}"
     return f"{r.name}: {kind}, {reason}"
+
+
+def layout_notes(rows: list[Row]) -> list[str]:
+    """One line for each row that passed as layout."""
+    return [
+        f"{r.name}: layout, {_pct(r.delta)} instructions (limit "
+        + (f"+{100 * r.tolerance:g}%" if r.delta > 0 else f"-{100 * IMPROVEMENT:g}%")
+        + f"; {_pct(r.own)} from its base, within {100 * OWN_SHIFT:g}% either way)"
+        for r in rows
+        if r.verdict == "layout" and r.delta is not None and r.own is not None
+    ]
+
+
+def not_python_or_text(files: list[str]) -> list[str]:
+    """The paths of *files* that are not Python sources or text (PYTHON_OR_TEXT;
+    ci.yml holds the perf-gate job)."""
+    return [
+        f
+        for f in files
+        if f == ".github/workflows/ci.yml"
+        or not any(fnmatch.fnmatchcase(f, p) for p in PYTHON_OR_TEXT)
+    ]
+
+
+def _git(*args: str) -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(ROOT), *args], capture_output=True, text=True, timeout=120
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None if out.returncode else out.stdout
+
+
+def build_inputs(rev: str) -> str | None:
+    """What the perf-gate job reads of pyproject.toml and uv.lock at *rev*:
+    the build tables, and the locked packages of the project's dependencies
+    and its build group (uv sync --no-default-groups --group build): every
+    entry of a package's name, since a lock split by Python version may
+    lock a name more than once."""
+    try:
+        py = tomllib.loads(_git("show", f"{rev}:pyproject.toml") or "")
+        lock = tomllib.loads(_git("show", f"{rev}:uv.lock") or "")
+    except tomllib.TOMLDecodeError:
+        return None
+    tool = py.get("tool", {})
+    keep: dict[str, Any] = {
+        "build-system": py.get("build-system"),
+        "build": py.get("dependency-groups", {}).get("build"),
+        **{k: tool.get(k) for k in ("uv", "scikit-build", "setuptools_scm")},
+    }
+    packages: dict[str, list[dict[str, Any]]] = {}
+    for p in lock.get("package", []):
+        packages.setdefault(p["name"], []).append(p)
+    root = [p for p in lock.get("package", []) if p.get("source", {}).get("virtual") == "."]
+    todo = [
+        d["name"]
+        for p in root
+        for d in p.get("dependencies", []) + p.get("dev-dependencies", {}).get("build", [])
+    ]
+    seen: set[str] = set()
+    while todo:
+        name = todo.pop()
+        if name not in seen and name in packages:
+            seen.add(name)
+            todo += [d["name"] for p in packages[name] for d in p.get("dependencies", [])]
+    keep["locked"] = [p for n in sorted(seen) for p in packages[n]]
+    return json.dumps(keep, sort_keys=True, default=str)
+
+
+def measured_paths(commit: str, head: str = "HEAD") -> list[str] | None:
+    """The paths of measured code in which *head* differs from *commit* (a
+    rename lists both), or None if git cannot compare them."""
+    out = _git("diff", "--name-only", "--no-renames", commit, head, "--")
+    if out is None:
+        return None
+    others = not_python_or_text([line for line in out.splitlines() if line])
+    if set(others) & set(BUILD_FILES):
+        before, after = build_inputs(commit), build_inputs(head)
+        if before is not None and before == after:
+            others = [f for f in others if f not in BUILD_FILES]
+    return others
+
+
+def base_scope(commit: str) -> str:
+    """Why this tree's rows are not compared with its base *commit*: it is
+    not the commit the tree's change was applied to (HEAD's first parent),
+    or the change touches measured code, or git cannot tell; "" when they
+    are."""
+    parent, base = (
+        _git("rev-parse", "HEAD^1"),
+        _git("rev-parse", "--verify", f"{commit}^{{commit}}"),
+    )
+    if parent is None or base is None:
+        return f"git cannot find the base {commit[:8]} and this tree's parent"
+    if parent.strip() != base.strip():
+        return f"the base {commit[:8]} is not this tree's first parent {parent[:8]}"
+    others = measured_paths(commit)
+    if others is None:
+        return f"git cannot compare this tree with its base {commit[:8]}"
+    if not others:
+        return ""
+    more = f" and {len(others) - 3} more" if len(others) > 3 else ""
+    return f"the change touches measured code: {', '.join(others[:3])}{more}"
+
+
+def measure_base(
+    commit: str,
+    python: str,
+    env: dict[str, str],
+    pythonpath: str,
+    processes: int,
+    workdir: Path,
+    dumps: Path,
+) -> tuple[Base | None, str]:
+    """Each case's count and Python work on the base's Python sources, which
+    replace the tree's under FRONTEND for the measurement, so that the
+    same build, paths and environment run them; or None and why not. The
+    tree's sources are restored after it (FRONTEND must have no
+    uncommitted change; a file only the base has stays, untracked, and
+    the build has no link to it)."""
+    if _git("status", "--porcelain", "--", FRONTEND) != "":
+        return None, f"{FRONTEND} differs from HEAD's, or git cannot tell"
+    if _git("restore", f"--source={commit}", "--worktree", "--", FRONTEND) is None:
+        return None, f"git cannot check out the base's {FRONTEND}"
+    try:
+        _byte_compile(python, env, pythonpath)
+        measured, _, _ = measure_instructions(python, env, processes, workdir, dumps)
+        work, why = measure_python_work(python, env)
+    except (GateError, subprocess.CalledProcessError) as e:
+        return None, f"the base could not be measured: {str(e).splitlines()[0]}"
+    finally:
+        if _git("restore", "--source=HEAD", "--worktree", "--", FRONTEND) is None:
+            raise GateError(f"git cannot restore {FRONTEND} after measuring the base")
+    if work is None:
+        return None, f"on the base, {why}"
+    return {n: (min(m.instructions), work.get(n)) for n, m in measured.items()}, ""
 
 
 def failure_counts(rows: list[Row]) -> str:
@@ -894,7 +1123,8 @@ regressions, gains and "layout only":
     before taking a new baseline: compare its Callgrind dumps (the
     perf-gate-callgrind-dumps artifact, with callgrind_annotate) with
     those of the baseline's run, and look for the functions whose counts
-    moved.
+    moved. If its own change moved it by layout, it passes (base
+    comparison, below).
   A regression or gain lists each counter of Python work that changed;
   with the same work but more than 2%, it says the change is in native
   code.
@@ -905,6 +1135,27 @@ regressions, gains and "layout only":
   LLVM version:
        git show COMMIT:benchmarks/baselines/perf_gate.json > old.json
        python tools/perf-gate.py --baseline old.json
+
+base comparison:
+  A row's count also moves with the code merged before the change, so CI
+  gives the gate the commit the change was applied to (--base-commit: a
+  pull request's base, or a push's previous tip, which must be the tree's
+  first parent). A layout only row is then compared with its base, if the
+  change keeps the base's measured code: it touches only the package's
+  Python sources and files this job never reads (pyproject.toml and
+  uv.lock only outside what the job builds), as git says. Native code,
+  the build, ci.yml, the gate and its cases are measured code; if git
+  cannot tell, the limits apply. The gate then checks out the base's
+  core/frontend over the tree's, so that the same build, paths and
+  environment run it, measures it as it measured the tree, and restores
+  the tree's. A row whose case ran the same Python work on the base, and
+  whose count the change moved by at most 0.95% either way from the
+  base's, passes as "layout", with a notice. Layout shifts of a change's
+  own were seen up to 0.93%; hidden native work behind the same calls
+  passes below 0.95% per change, and up to 2% from the baseline in all.
+  A gain that passes this way is not kept: a later change can give it
+  back. The base is measured only when a row could pass, in about half a
+  minute; its dumps are in the base directory of the dumps.
 """
 
 
@@ -915,6 +1166,12 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--baseline", type=Path, default=BASELINE)
+    parser.add_argument(
+        "--base-commit",
+        metavar="SHA",
+        help="the commit this tree's change was applied to: a layout only row is compared "
+        "with it (--help, base comparison)",
+    )
     parser.add_argument("--update", action="store_true", help="rewrite the baseline")
     parser.add_argument("--out", type=Path, help="write this run in the baseline's format")
     parser.add_argument("--summary", type=Path, help="append a Markdown report to this file")
@@ -947,6 +1204,8 @@ def main() -> int:
         sizes, tolerances = _structural(args.python, env)
         instructions = None
         python_work: PythonWork | None = None
+        base: Base | None = None
+        scope = None
         note = work_note = ""
         if args.sizes_only:
             note = "instruction counts skipped (--sizes-only)"
@@ -969,8 +1228,29 @@ def main() -> int:
                     "off (setarch -R)" if no_aslr else "on: setarch -R is not permitted here"
                 )
                 python_work, work_note = measure_python_work(args.python, env)
+                # The base is measured only for a row it could pass.
+                if (
+                    args.base_commit
+                    and not problems
+                    and any(
+                        failure_kind(r) == "layout only"
+                        for r in compare(baseline, sizes, instructions, python_work)
+                    )
+                ):
+                    scope = base_scope(args.base_commit)
+                    if not scope:
+                        base, scope = measure_base(
+                            args.base_commit,
+                            args.python,
+                            env,
+                            pythonpath,
+                            args.processes,
+                            workdir,
+                            dumps / "base",
+                        )
 
-    rows = compare(baseline, sizes, instructions, python_work)
+    rows = compare(baseline, sizes, instructions, python_work, base, scope)
+    notes = layout_notes(rows)
     # Counts that failed the checks are reported but never become a baseline.
     measured = as_baseline(
         environment,
@@ -1032,6 +1312,11 @@ def main() -> int:
         print(f"\n{work_note}")
     for line in spread_lines + dump_warnings:
         print(f"::warning title=Perf gate::{line}")
+    if os.environ.get("GITHUB_ACTIONS"):
+        for line in notes:
+            print(f"::notice title=Perf gate::{line}: {AS_BASE}")
+    if notes:
+        print("\nLayout:\n" + "".join(f"  {line}\n" for line in notes) + f"  ({AS_BASE})")
     if bootstrapped and not problems:
         print(
             "\nBOOTSTRAP MODE: the baseline has no instruction counts for "
@@ -1115,12 +1400,22 @@ def main() -> int:
                     + f" To inspect: {dumps_hint}.\n\n"
                 )
             f.write(render(rows, markdown=True) + "\n\n")
+            if notes:
+                f.write(
+                    "> [!NOTE]\n"
+                    f"> **Layout ({len(notes)}).** "
+                    + " ".join(f"{line}." for line in notes)
+                    + f" In each, {AS_BASE} (`python tools/perf-gate.py --help`, base "
+                    "comparison).\n\n"
+                )
             own = ", ".join(f"{n} +{100 * t:g}%" for n, t in sorted(tolerances.items()))
             f.write(
                 f"Fails above +{100 * REGRESSION:.1f}% "
                 + (f"(own tolerances: {own}) " if own else "")
                 + f"or below -{100 * IMPROVEMENT:.1f}% "
-                "instructions per repetition, or on any change in program size. "
+                "instructions per repetition, or on any change in program size; a row with "
+                "the baseline's Python work whose count the change moved by at most "
+                f"{100 * OWN_SHIFT:g}% from its base's passes (verdict layout). "
                 f"Spread: largest difference between {args.processes} identical runs. "
                 "Python work: the bytecodes, Python calls and C calls of a repetition, "
                 "counted natively, against the baseline's; it labels a failure, and "
@@ -1157,7 +1452,7 @@ def main() -> int:
     if bootstrapped:
         print("\nPerf gate passed in bootstrap mode: instruction counts were not gated.")
     else:
-        print("\nPerf gate passed.")
+        print("\nPerf gate passed" + (f" ({len(notes)} layout)." if notes else "."))
     return 0
 
 

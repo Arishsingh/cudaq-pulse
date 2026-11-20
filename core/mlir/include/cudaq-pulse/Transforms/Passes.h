@@ -57,8 +57,14 @@ createPulseRewritePass(llvm::ArrayRef<const RewriteStage *> stages);
 /// MLIR's loop-invariant code motion, as pulse-hoist-loop-invariants.
 std::unique_ptr<mlir::Pass> createPulseHoistLoopInvariantsPass();
 
-std::unique_ptr<mlir::Pass> createPulseScheduleAsapPass();
-std::unique_ptr<mlir::Pass> createPulseScheduleAlapPass();
+/// asap and alap: every readout's outcome is usable `readoutLatency` cycles
+/// after the readout ends (on several controllers, the module's table).
+std::unique_ptr<mlir::Pass> createPulseScheduleAsapPass(int64_t readoutLatency);
+std::unique_ptr<mlir::Pass> createPulseScheduleAlapPass(int64_t readoutLatency);
+/// pulse-schedule-asap and pulse-schedule-alap with the latency as a pass
+/// option, for cudaq-pulse-opt.
+std::unique_ptr<mlir::Pass> createPulseScheduleAsapOptionsPass();
+std::unique_ptr<mlir::Pass> createPulseScheduleAlapOptionsPass();
 std::unique_ptr<mlir::Pass> createPulseScheduleRcpPass(int64_t maxDrives,
                                                        int64_t maxReadouts,
                                                        int64_t readoutLatency,
@@ -68,7 +74,8 @@ std::unique_ptr<mlir::Pass> createPulseScheduleRcpPass(int64_t maxDrives,
 /// cudaq-pulse-opt; the extension creates the pass above.
 std::unique_ptr<mlir::Pass> createPulseScheduleRcpOptionsPass();
 std::unique_ptr<mlir::Pass> createPulseInlineScheduleBlocksPass();
-std::unique_ptr<mlir::Pass> createPulseClassicalCheckPass();
+std::unique_ptr<mlir::Pass>
+createPulseClassicalCheckPass(int64_t readoutLatency);
 /// pulse-classical-check with its options, for cudaq-pulse-opt; the
 /// extension creates the pass above.
 std::unique_ptr<mlir::Pass> createPulseClassicalCheckOptionsPass();
@@ -108,8 +115,8 @@ inline void registerPulsePasses() {
   for (const RewriteStage &stage : rewriteStages())
     mlir::registerPass([&stage] { return createPulseRewritePass(&stage); });
   mlir::registerPass(createPulseHoistLoopInvariantsPass);
-  mlir::registerPass(createPulseScheduleAsapPass);
-  mlir::registerPass(createPulseScheduleAlapPass);
+  mlir::registerPass(createPulseScheduleAsapOptionsPass);
+  mlir::registerPass(createPulseScheduleAlapOptionsPass);
   mlir::registerPass(createPulseInlineScheduleBlocksPass);
   mlir::registerPass(createPulseClassicalCheckOptionsPass);
   mlir::registerPass(createPulseFrameChangesPass);

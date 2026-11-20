@@ -18,7 +18,7 @@ file:
   the description's limits, and whether the compiler refuses it.
   ``docs/_static/mem-gauge.js`` draws it.
 - ``isa_feedback.svg`` and ``isa_deadline.svg``, each with its ``-dark``
-  twin: the branch on another controller's readout, as the rcp schedule
+  twin: the branch on another controller's readout, as the default schedule
   places it on the page's two toy controllers, and the page's QEC round with
   its decoder deadline. The feedback figure is what readers without
   JavaScript see in place of the flip_other animation.
@@ -309,7 +309,7 @@ def flow(page: dict) -> dict:
         page["split"],
         [("If m0 reads 1", {"m0": 1}), ("If m0 reads 0", {"m0": 0})],
     )
-    compiled = pulse.compile(page["correct_across"], quantum_system=qpu, schedule="rcp")
+    compiled = pulse.compile(page["correct_across"], quantum_system=qpu)
     decoder = scene(
         "correct_across",
         "A decoder between two controllers",

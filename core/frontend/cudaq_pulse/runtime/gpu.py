@@ -6,7 +6,7 @@ Whether the GPU runtime exists is recorded by CMake in ``_build_config``; it
 is never discovered by searching the filesystem. ``require_gpu_runtime()``
 either returns a loaded, device-backed runtime or raises one of three
 distinct errors, so "built without GPU support", "runtime failed to load",
-and "no usable quantum system" are never confused.
+and "no usable GPU device" are never confused.
 
 A build carries one runtime per CUDA major. The one used is chosen by which
 ``cudensitymat-cuNN`` distribution the ``[cu12]`` or ``[cu13]`` extra
@@ -105,9 +105,18 @@ class GpuDeviceUnavailableError(GpuRuntimeError):
 class GpuRuntime:
     """A loaded cuDensityMat runtime with at least one usable device."""
 
+    #: The cudaq-pulse GPU runtime library, loaded from ``path``. It is the
+    #: project's own library, not cuDensityMat itself.
     library: ctypes.CDLL
+    #: The file the library was loaded from: the bundled runtime for the
+    #: selected CUDA major version, or the file ``CUDM_RUNTIME_LIB`` names.
     path: Path
+    #: The number of GPU devices CUDA reports. It is never 0 in a runtime that
+    #: ``require_gpu_runtime()`` returns, which raises instead.
     device_count: int
+    #: The CUDA major version of the runtime, 12 or 13. It is ``None`` only
+    #: when ``CUDM_RUNTIME_LIB`` names the library and neither
+    #: ``CUDAQ_PULSE_CUDA`` nor a single installed CUDA extra says which it is.
     cuda_major: int | None = None
 
 

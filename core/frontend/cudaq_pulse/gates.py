@@ -43,14 +43,29 @@ __all__ = ["CZ", "READOUT", "S", "T", "X", "X90", "Y", "Y90", "Z", "Gate"]
 class Gate(enum.StrEnum):
     """A gate a quantum system is calibrated for; see the module docstring."""
 
+    #: A drive line's pi rotation. An ``X`` without a published amplitude gets
+    #: the one that makes its area a pi rotation.
     X = "x"
+    #: A drive line's pi / 2 rotation, derived as ``X`` at half the amplitude
+    #: unless the quantum system publishes it.
     X90 = "x90"
+    #: A drive line's Y gate, derived as ``X`` at +90 degrees unless the
+    #: quantum system publishes it.
     Y = "y"
+    #: A drive line's Y90 gate, derived as ``X90`` at +90 degrees unless the
+    #: quantum system publishes it.
     Y90 = "y90"
+    #: A drive line's virtual Z rotation by pi: a frame change that takes no
+    #: time and plays no pulse.
     Z = "z"
+    #: A drive line's virtual Z rotation by pi / 2.
     S = "s"
+    #: A drive line's virtual Z rotation by pi / 4.
     T = "t"
+    #: A coupling's CZ gate; an unpublished one is a ``NotFoundError``.
     CZ = "cz"
+    #: A readout line's readout pulse; an unpublished one is a
+    #: ``NotFoundError``.
     READOUT = "readout"
 
 

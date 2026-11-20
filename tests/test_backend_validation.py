@@ -221,27 +221,21 @@ def test_a_program_beyond_the_declared_controller_is_skipped(ideal, monkeypatch)
     assert report.ok
 
 
-def test_a_feedback_gap_runs_the_branch_on_a_controller_with_long_feedback_latency(ideal):
-    # 2 us of feedback latency at 1 GHz: the branch's pulse comes right
-    # after its readout, so without a gap it is skipped.
+def test_the_branch_runs_on_a_controller_with_long_feedback_latency(ideal):
+    # 2 us of feedback latency at 1 GHz: the branch's pulse waits for it.
+    # Before, it came right after its readout and the program was skipped.
     backend = ToyBackend(Controller(clock_ghz=1.0, feedback_latency_cycles=2000))
     report = backends.validate(backend)
-    assert "SKIP branch: exceeds the controller's limits" in str(report)
-    assert "2000 cycles of feedback latency" in str(report)
-    spaced = backends.validate(backend, feedback_gap_cycles=2000)
-    lines = str(spaced).splitlines()
-    assert spaced.ok, str(spaced)
+    lines = str(report).splitlines()
+    assert report.ok, str(report)
     assert "PASS branch (/1)" in lines and "PASS branch (/2)" in lines
-    # Spaced, it passes what a controller without the latency passes.
-    assert lines == str(backends.validate(ToyBackend())).splitlines()
-    short = backends.validate(backend, feedback_gap_cycles=1999)
-    assert "SKIP branch: exceeds the controller's limits" in str(short)
 
 
-def test_the_feedback_gap_is_a_wait_before_the_branch_s_pulse():
-    dev = _validation._device(ControlSystem())
+def test_the_branch_s_pulse_waits_for_the_feedback_latency():
+    slow = ControlSystem(controllers=[Controller(feedback_latency_cycles=2000)])
+    dev = _validation._device(slow)
     events = (
-        pulse.compile(_validation._branch(2000), quantum_system=dev)
+        pulse.compile(_validation._corpus()["branch"], quantum_system=dev, control_system=slow)
         .lower(*dev.qudits[:2])
         .export_to_controller()["events"]
     )
@@ -249,7 +243,8 @@ def test_the_feedback_gap_is_a_wait_before_the_branch_s_pulse():
     [branched] = [e for e in events if e["conditions"]]
     assert branched["kind"] == "drive"
     assert branched["start_cycles"] == readout_end + 2000
-    # Without a gap, the branch's pulse starts where the readout ends.
+    # Without a latency, it starts where the readout ends.
+    dev = _validation._device(ControlSystem())
     unspaced = (
         pulse.compile(_validation._corpus()["branch"], quantum_system=dev)
         .lower(*dev.qudits[:2])
@@ -257,16 +252,8 @@ def test_the_feedback_gap_is_a_wait_before_the_branch_s_pulse():
     )
     assert "wait" not in [e["kind"] for e in unspaced]
     [branched] = [e for e in unspaced if e["conditions"]]
+    readout_end = next(e["end_cycles"] for e in unspaced if e["kind"] == "readout")
     assert branched["start_cycles"] == readout_end
-
-
-def test_a_backend_may_declare_its_feedback_gap(ideal):
-    backend = ToyBackend(Controller(clock_ghz=1.0, feedback_latency_cycles=2000))
-    backend.feedback_gap_cycles = 2000  # type: ignore[attr-defined]
-    assert "PASS branch (/1)" in str(backends.validate(backend)).splitlines()
-    # The argument takes precedence.
-    report = backends.validate(backend, feedback_gap_cycles=0)
-    assert "SKIP branch: exceeds the controller's limits" in str(report)
 
 
 def _passes(report):
@@ -376,9 +363,6 @@ def test_a_backend_that_refuses_everything_fails(ideal, monkeypatch):
 def test_validate_checks_its_arguments():
     with pytest.raises(ValueError, match="shots_count must be positive"):
         backends.validate(ToyBackend(), shots_count=0)
-    for gap in (-1, 1.5, True):
-        with pytest.raises(ValueError, match="feedback_gap_cycles must be an int of at least 0"):
-            backends.validate(ToyBackend(), feedback_gap_cycles=gap)  # type: ignore[arg-type]
     with pytest.raises(backends.IncompatibleBackendError, match="is not a"):
         backends.validate(object())  # type: ignore[arg-type]
     with pytest.raises(backends.BackendNotFoundError):
