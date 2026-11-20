@@ -65,11 +65,15 @@ jobs:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
         NVIDIA_DRIVER_CAPABILITIES: compute,utility
     steps:
+      # The package servers can be out of a runner's reach for minutes. With
+      # the apt.conf.d line, every apt-get retries a failed download up to 5
+      # times (3 by default).
       - name: Install the image's missing packages
         env:
           PACKAGES: ${{ matrix.packages }}
         run: |
           read -ra packages <<< "$PACKAGES"
+          echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
