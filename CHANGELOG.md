@@ -162,6 +162,22 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   row above the plot. The rows, bars, labels and axis limits, and the
   functions' arguments, are as before, and matplotlib is still imported only
   when a plot is drawn.
+- **Concurrency limits hold under every schedule.** A control system with
+  controllers given `max_concurrent_drives` or `max_concurrent_readouts`
+  now has them checked whatever the schedule: a program that plays more
+  drives or readouts at once than the limit fails to compile with a
+  `ControllerLimitError` naming the count, the first cycle where it
+  exceeds the limit and the limit, and suggesting `schedule="rcp"` or
+  `"alap_rcp"`, which keep to it. Before, only those two schedules used
+  the limits, and an `asap` or `alap` program past them compiled without
+  a word. They are counted as the `rcp` schedules count them, so a program
+  those schedules place fits; pulses in different arms of one branch never
+  count together, and a long rolled loop is counted from one iteration
+  where its iterations repeat, as the other limits are.
+  Both now default to `None`, not given: the `rcp` schedules still play at
+  most 4 drives and 2 readouts at once, and nothing else checks them. A
+  system file written by an earlier version holds 4 and 2, which now count
+  as given; to leave them unchecked, set them to `null` in the file.
 
 ### Fixed
 

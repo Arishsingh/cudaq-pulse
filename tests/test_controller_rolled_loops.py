@@ -206,6 +206,25 @@ def test_a_rolled_loop_of_10_15_iterations_is_checked_in_bounded_time_and_memory
     assert _in_a_child("drives", 10**15) == {"ops": 5}
 
 
+def test_a_rolled_loop_of_10_15_iterations_is_held_to_concurrency_limits_in_bounds():
+    def given(limit: int, schedule: str = "alap") -> str:
+        return (
+            "from cudaq_pulse import ControlSystem\n"
+            f"options = {{'schedule': '{schedule}', 'control_system': ControlSystem("
+            f"controllers=[Controller()], max_concurrent_drives={limit})}}\n"
+            "handles = (Q[0], Q[1])"
+        )
+
+    plain = _in_a_child("across", 10**15, system="handles = (Q[0], Q[1])")
+    assert _in_a_child("across", 10**15, system=given(2)) == plain
+    over = _in_a_child("across", 10**15, system=given(1))
+    assert over["count"] == 1
+    assert "2 drives play at once from cycle 0; the control system plays at most 1" in str(
+        over["message"]
+    )
+    assert "ops" in _in_a_child("across", 10**15, system=given(1, "rcp"))
+
+
 def test_the_second_and_third_loops_of_10_15_iterations_stay_rolled_in_a_child():
     assert _in_a_child("three", 10**15) == _in_a_child("three", 100)
 

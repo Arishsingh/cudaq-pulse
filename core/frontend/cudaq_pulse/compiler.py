@@ -219,6 +219,11 @@ class _Links(dict[int, "Link"]):
     __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _readonly  # type: ignore[assignment]
 
 
+# The drives and readouts the rcp and alap_rcp schedules play at once when
+# the control system gives no limit.
+_RCP_DRIVES = 4
+_RCP_READOUTS = 2
+
 # Defaults of the mapping fields, read-only: __post_init__ replaces whatever
 # a field is given.
 _NO_DELAYS: Mapping[tuple[str, int], float] = MappingProxyType({})
@@ -239,8 +244,8 @@ class _MachineModel:
     ``_bare`` set, not a field: one more would cost every import.
     """
 
-    max_concurrent_drives: int = 4
-    max_concurrent_readouts: int = 2
+    max_concurrent_drives: int | None = None
+    max_concurrent_readouts: int | None = None
     readout_latency_cycles: int = 0
     line_switch_penalty_cycles: int = 0
     links: Mapping[int | str, Link] = _NO_LINKS
@@ -253,8 +258,16 @@ class _MachineModel:
     # capabilities every program is checked against.
     _system: ControlSystem | None = field(default=None, repr=False)
     _plain: bool = field(init=False, repr=False, compare=False)
+    if TYPE_CHECKING:
+        # The drives and readouts the rcp schedules play at once: the limits
+        # given, else _RCP_DRIVES and _RCP_READOUTS. Not fields, as _bare.
+        _drive_lanes: int = field(init=False)
+        _readout_lanes: int = field(init=False)
 
     def __post_init__(self) -> None:
+        drives, readouts = self.max_concurrent_drives, self.max_concurrent_readouts
+        object.__setattr__(self, "_drive_lanes", _RCP_DRIVES if drives is None else drives)
+        object.__setattr__(self, "_readout_lanes", _RCP_READOUTS if readouts is None else readouts)
         if self.controller is not None:
             from ._system import Controller
 
@@ -542,9 +555,10 @@ class CompileOptions:
                     "compile(control_system=) takes a pulse.ControlSystem or a "
                     f"pulse.Controller, got {control_system!r}"
                 ) from None
-            if machine.max_concurrent_drives <= 0:
+            drives, readouts = machine.max_concurrent_drives, machine.max_concurrent_readouts
+            if drives is not None and drives <= 0:
                 raise ValueError("ControlSystem.max_concurrent_drives must be positive")
-            if machine.max_concurrent_readouts <= 0:
+            if readouts is not None and readouts <= 0:
                 raise ValueError("ControlSystem.max_concurrent_readouts must be positive")
             if machine.readout_latency_cycles < 0:
                 raise ValueError("the readout latency cannot be negative")
@@ -567,8 +581,8 @@ class CompileOptions:
         m = self.machine
         return (
             self.schedule,
-            m.max_concurrent_drives,
-            m.max_concurrent_readouts,
+            m._drive_lanes,
+            m._readout_lanes,
             int(m.readout_latency_cycles),
             int(m.line_switch_penalty_cycles),
         )
@@ -1524,6 +1538,17 @@ def _spaced(module: Any, machine: _MachineModel, target: QuantumSystem, args: An
     return spaced(module, spacing, target, args)
 
 
+def _over_concurrency(lowered: ScheduledKernel) -> tuple[list[str], bool]:
+    """The drives and readouts *lowered* plays at once past the limits its
+    control system gives (``_concurrency``), and whether that is exact."""
+    machine = lowered.options.machine
+    if machine.max_concurrent_drives is None and machine.max_concurrent_readouts is None:
+        return [], True
+    from ._concurrency import violations
+
+    return violations(lowered)
+
+
 def _check_controller(lowered: ScheduledKernel) -> ScheduledKernel:
     """*lowered*, checked against its controller limits: those it exceeds
     whatever its float values fail now, and when some values may exceed
@@ -1540,6 +1565,10 @@ def _check_controller(lowered: ScheduledKernel) -> ScheduledKernel:
     # without values is not one any call plays.
     if lowered.scheduled and lowered.waits is None:
         violations, exact = _compile_check(lowered, limits, system)
+        over, known = _over_concurrency(lowered)
+        if over:
+            violations = [*violations, *over]
+        exact = exact and known
         if violations:
             raise _limit_error(lowered, violations)
     if exact:
