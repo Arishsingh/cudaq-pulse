@@ -103,7 +103,7 @@ GPU Runtime Errors
 ------------------
 
 Every execution path calls ``require_gpu_runtime()`` first. It either returns
-a runtime backed by a usable quantum system or raises one of three errors, all
+a runtime backed by a usable GPU device or raises one of three errors, all
 subclasses of ``cudaq_pulse.runtime.GpuRuntimeError``:
 
 ``GpuSupportNotBuiltError``

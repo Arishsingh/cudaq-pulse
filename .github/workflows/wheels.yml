@@ -240,9 +240,13 @@ jobs:
           - { platform: macos-aarch64, runner: macos-15, image: "", python: python3, python-version: "3.14" }
           - { platform: macos-aarch64, runner: macos-15, image: "", python: python3.14t, python-version: "3.14t" }
     steps:
+      # The package servers can be out of a runner's reach for minutes. With
+      # the apt.conf.d line, every apt-get retries a failed download up to 5
+      # times (3 by default).
       - name: Install Python (ubuntu:24.04)
         if: matrix.image == 'ubuntu:24.04'
         run: |
+          echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             python3-pip python3-venv
