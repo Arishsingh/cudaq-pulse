@@ -194,7 +194,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   readout in its body, also with many lanes; such loops in another loop or
   holding one; and a loop whose lines move by periods of their own beside a
   longer pulse. Such a loop is now scheduled in the time and memory of a
-  few iterations, with the same schedule as before.
+  few iterations, with the same schedule as before. Under a control system
+  with controllers, a loop whose lines move by periods of their own still
+  takes time that grows with the trips in the controller check, as under
+  `asap`; that is a separate issue.
 - The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
   two inputs. A schedule block that yields one of its own arguments, passing
   an input through, is inlined with that input as its result; the passes
