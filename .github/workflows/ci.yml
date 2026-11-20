@@ -236,6 +236,10 @@ jobs:
           # The build reads its version from the git tags.
           fetch-depth: 0
           persist-credentials: false
+      # The container runs as root on a workspace it does not own, which git
+      # refuses unless it is marked safe (the checkout step marks it only for
+      # itself); the gate compares the change with its base through git.
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.12.23"
@@ -254,12 +258,17 @@ jobs:
       # they differ (the spread) next to each case's change. A run taken as
       # the baseline makes 5, for a closer look at the spread. Two native
       # runs after them count each case's Python work, which the baseline
-      # records and which labels a failure (perf-gate.py --help).
+      # records and which labels a failure (perf-gate.py --help). A layout
+      # only row is compared with the base the change was applied to, which
+      # the gate measures in this job when such a row fails (--help, base
+      # comparison).
       - name: Perf gate
         env:
           PROCESSES: ${{ inputs.perf_baseline && 5 || 2 }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: >
           uv run --no-sync python tools/perf-gate.py --processes "$PROCESSES"
+          ${BASE:+--base-commit "$BASE"}
           --out perf-gate/perf_gate.json --dumps perf-gate/callgrind
           --summary "$GITHUB_STEP_SUMMARY"
 
