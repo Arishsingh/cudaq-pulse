@@ -188,11 +188,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 - `rcp` and `alap_rcp` scheduled some rolled loops one iteration at a time,
   in time and memory that grew with the trip count (a loop of 10**15
   iterations did not finish): a loop beside a longer pulse on another line,
-  which its pulses reach only after many iterations, and a loop whose
-  iterations take the drive lanes in turn, such as a loop in one arm of a
+  which its pulses reach only after many iterations; a loop whose
+  iterations take the lanes in turn, such as a loop in one arm of a
   measured `if` whose other arm plays a pulse, or a loop that branches on a
-  readout in its body. Such a loop is now scheduled in the time and memory
-  of a few iterations, with the same schedule as before.
+  readout in its body, also with many lanes; such loops in another loop or
+  holding one; and a loop whose lines move by periods of their own beside a
+  longer pulse. Such a loop is now scheduled in the time and memory of a
+  few iterations, with the same schedule as before.
 - The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
   two inputs. A schedule block that yields one of its own arguments, passing
   an input through, is inlined with that input as its result; the passes
