@@ -254,6 +254,95 @@ def test_each_controller_checks_the_buses_of_its_own_lines():
     assert "at 16 updates its tone 0 cycles after" in violation
 
 
+@pulse.kernel
+def turns_on_every_line(*qs):
+    drives = []
+    for q in qs:
+        drives.append(get_drive_line(q))
+    for d in drives:
+        drive(d, square(16, 0.1))
+    for d in drives:
+        shift_phase(d.tone, 0.5)
+        drive(d, gaussian(16, 0.1, 4.0))
+
+
+class _Passes(list):
+    """A list that counts the passes made over it."""
+
+    passes = 0
+
+    def __iter__(self):
+        _Passes.passes += 1
+        return super().__iter__()
+
+
+def _bus_reads(count, monkeypatch, listed=True):
+    """Compiling and exporting every controller of *count*, two qudits each
+    and a bus per line: the events read through another controller's view
+    of them (``_SeenBy``), the passes over the updates per bus check, and
+    the exports."""
+    from cudaq_pulse import _system
+    from cudaq_pulse.quantum_systems import PhysicalQudit
+
+    def buses(lines):
+        return [UpdateBus(drive_lines=[q], cycles_per_update=8) for q in lines]
+
+    controllers = [
+        Controller(drive_lines=[2 * k, 2 * k + 1], update_buses=buses([2 * k, 2 * k + 1]))
+        for k in range(count)
+    ]
+    if not listed:
+        controllers.append(Controller(update_buses=buses([0, 1])))
+
+    qs = pulse.quantum_system(
+        name="buses",
+        clock_ghz=1.0,
+        qudits={
+            q: PhysicalQudit(q, 5.0e9 + 1.0e7 * q, 50.0, 30.0, anharmonicity_hz=-2.0e8)
+            for q in range(2 * count)
+        },
+        control_system=ControlSystem(controllers=controllers),
+    )
+    counts = {"seen": 0, "checks": 0}
+    seen, updates = _system._SeenBy._seen, controller_module._updates
+
+    def counted_seen(self, e):
+        counts["seen"] += 1
+        return seen(self, e)
+
+    def counted_updates(*args):
+        counts["checks"] += 1
+        found = updates(*args)
+        return None if found is None else _Passes(found)
+
+    monkeypatch.setattr(_system._SeenBy, "_seen", counted_seen)
+    monkeypatch.setattr(controller_module, "_updates", counted_updates)
+    _Passes.passes = 0
+    lowered = pulse.compile(turns_on_every_line, schedule="asap", quantum_system=qs).lower(
+        *(qs.qudits[q] for q in range(2 * count))
+    )
+    exports = [lowered.export_to_controller(controller=k) for k in range(len(controllers))]
+    monkeypatch.undo()
+    return counts["seen"], _Passes.passes / counts["checks"], exports
+
+
+def test_each_controller_s_bus_check_reads_its_own_updates_once(monkeypatch):
+    # A controller's bus check reads the updates on its lines, not every
+    # event of the program through its view of them, and makes one pass over
+    # them whatever its number of buses.
+    for count in (4, 16):
+        seen, passes, exports = _bus_reads(count, monkeypatch)
+        events = sum(len(e["events"]) for e in exports)
+        assert events == 4 * count
+        assert seen <= events
+        assert passes == 1
+    # A controller with buses that lists no lines has every line on its
+    # buses, another's too, and reads them through its view of every event.
+    seen, passes, exports = _bus_reads(4, monkeypatch, listed=False)
+    assert seen >= sum(len(e["events"]) for e in exports)
+    assert passes == 1
+
+
 def test_exports_list_the_buses_and_descriptions_read_them_back():
     machine = ControlSystem(controllers=[BUS])
     lowered = pulse.compile(same_tones, schedule="asap", control_system=machine).lower(Q[0], Q[1])

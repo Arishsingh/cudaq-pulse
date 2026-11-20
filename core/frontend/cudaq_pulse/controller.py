@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import copy
 import math
+import operator
 import os
 import sys
 import threading
@@ -1791,6 +1792,7 @@ class _Parts:
         "played",
         "synced",
         "exported",
+        "program",
         "lock",
     )
 
@@ -1809,7 +1811,18 @@ class _Parts:
         self.played: list[list[dict[str, Any]]] = []
         self.synced: dict[int, dict[int, list[int]]] = {}
         self.exported: set[int] = set()
+        self.program: tuple[Any, Any] | None = None
         self.lock = threading.Lock()
+
+    def whole(self, lowered: ScheduledKernel) -> tuple[Any, Any]:
+        """What each part's emulation data reads of the whole program, its
+        segments and calls (``classical.wire._program``), found once."""
+        with self.lock:
+            if self.program is None:
+                from .classical.wire import _program
+
+                self.program = _program(lowered)
+            return self.program
 
     def calls(self) -> list[int]:
         """The controllers that take part in the program's calls."""
@@ -2014,7 +2027,7 @@ def _export_part(
     functions: frozenset[str] = frozenset(
         e["function"] for e in mine if e["kind"] in ("submit", "answer")
     )
-    base = emulation(lowered, False, (index, own, functions, ()))
+    base = emulation(lowered, False, (index, own, functions, ()), shared.whole(lowered))
     exported = {
         "format": FORMAT,
         "quantum_system": lowered.quantum_system.name,
@@ -2284,8 +2297,8 @@ def _native_check(
     # Any found sends the check to its walk, which counts the amplitudes too.
     if limits.max_amplitude is not None and not found:
         found.extend(_amplitude_violations(lowered, module, limits.max_amplitude, unresolved))
-    if limits.min_pulse_cycles and not found:
-        found.extend(_short_pulse_violations(lowered, module, limits))
+    if _checks_pulse_lengths(limits) and not found:
+        found.extend(_pulse_length_violations(lowered, module, limits))
     # A value a call sets is an update here; the walk tells it apart.
     if limits.update_buses and not found:
         found.extend(_bus_fast(lowered, module, limits))
@@ -2374,14 +2387,21 @@ def _exclusive(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     return False
 
 
+_STARTED = operator.itemgetter("start_cycles", "index")
+
+
 def _pairs(
     events: Sequence[Mapping[str, Any]],
 ) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
-    """Each event with the latest earlier event it can follow on one path."""
-    ordered = sorted(events, key=lambda e: (e["start_cycles"], e["index"]))
+    """Each event with the latest earlier event it can follow on one path:
+    for an event without conditions, the one before it."""
+    ordered = sorted(events, key=_STARTED)
     pairs = []
     for k in range(1, len(ordered)):
         event = ordered[k]
+        if not event["conditions"]:
+            pairs.append((ordered[k - 1], event))
+            continue
         for j in range(k - 1, -1, -1):
             if not _exclusive(ordered[j], event):
                 pairs.append((ordered[j], event))
@@ -2404,6 +2424,7 @@ def _violations(
     held: bool = True,
     timed: Sequence[Mapping[str, Any]] | None = None,
     answers: Sequence[Mapping[str, Any]] | None = None,
+    updates: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """The limits *events* exceed. With *clocks*, the events are in the
     controller's own cycles: the native walk's, with *off* its line events
@@ -2418,7 +2439,9 @@ def _violations(
     *held* false leaves the lines held by calls to the caller, which knows
     the controller each call holds. *timed* and *answers*, when the caller
     has them, are the timed drives and readouts of *events* and its answers,
-    in order; then only the update-bus check reads all of *events*."""
+    in order; then only the update-bus check reads all of *events*, or only
+    *updates*, the frame updates, drives and readouts of *events* on the
+    controller's lines, when the caller has them."""
     if clocks is None:
         found = []
     else:
@@ -2478,12 +2501,12 @@ def _violations(
             found.extend(
                 _over_amplitude(lines[line], items, limits.max_amplitude, unresolved, peaks)
             )
-        if limits.min_pulse_cycles:
+        if _checks_pulse_lengths(limits):
             for e in items:
                 duration = e["end_cycles"] - e["start_cycles"]
-                if duration < limits.min_pulse_cycles:
-                    before, after = _short_pulse(lines[line], e["kind"], duration, limits)
-                    found.append(f"{before}{e['start_cycles']}{after}")
+                violation = _pulse_length(lines[line], e["kind"], duration, limits)
+                if violation is not None:
+                    found.append(f"{violation[0]}{e['start_cycles']}{violation[1]}")
         if limits.waveform_memory_samples is not None:
             shapes = stored if shared else {}
             unknown_samples = 0
@@ -2530,7 +2553,8 @@ def _violations(
                         f"(the readout of qudit {previous['qudit']} at {previous['start_cycles']})"
                     )
     if limits.update_buses:
-        found.extend(_bus_violations(lowered, events, limits, lines, clocks, unresolved))
+        on_lines = events if updates is None else updates
+        found.extend(_bus_violations(lowered, on_lines, limits, lines, clocks, unresolved))
     if limits.feedback_latency_cycles:
         for event in timed:
             for condition in event["conditions"]:
@@ -2652,9 +2676,11 @@ def _bus_clashes(
         return []
     if cycles is None:
         cycles = [bus.cycles_per_update for bus in limits.update_buses]
+    by_bus: list[list[Mapping[str, Any]]] = [[] for _ in limits.update_buses]
+    for e in updates:
+        by_bus[bus_of[e["line"]]].append(e)
     found = []
-    for index in range(len(limits.update_buses)):
-        on_bus = [e for e in updates if bus_of[e["line"]] == index]
+    for index, on_bus in enumerate(by_bus):
         for previous, event in _pairs(on_bus):
             gap = event["start_cycles"] - previous["start_cycles"]
             if gap < cycles[index]:
@@ -2915,20 +2941,33 @@ def _amplitude_violations(
     return [message for _, messages in sorted(by_line.items()) for message in messages]
 
 
-def _short_pulse(
+def _checks_pulse_lengths(limits: Controller) -> bool:
+    """Whether *limits* bound the length of a drive or readout."""
+    return bool(limits.min_pulse_cycles) or limits.max_pulse_cycles is not None
+
+
+def _pulse_length(
     line: Mapping[str, Any], kind: str, duration: int, limits: Controller
-) -> tuple[str, str]:
+) -> tuple[str, str] | None:
     """The violation of a *kind* of *duration* cycles on *line* shorter than
-    ``limits.min_pulse_cycles``, before and after its start."""
+    ``limits.min_pulse_cycles`` or longer than ``limits.max_pulse_cycles``,
+    before and after its start; ``None`` when its length is allowed."""
+    if duration < limits.min_pulse_cycles:
+        bound = f"none shorter than {limits.min_pulse_cycles} (Controller.min_pulse_cycles)"
+    elif limits.max_pulse_cycles is not None and duration > limits.max_pulse_cycles:
+        bound = f"none longer than {limits.max_pulse_cycles} (Controller.max_pulse_cycles)"
+    else:
+        return None
     return (
         f"line {line['line']} ({line['role']} of qudit {line['qudit']}): the {kind} at ",
-        f" lasts {duration} cycles; the controller plays none shorter than "
-        f"{limits.min_pulse_cycles} (Controller.min_pulse_cycles)",
+        f" lasts {duration} cycles; the controller plays {bound}",
     )
 
 
-def _short_pulse_violations(lowered: ScheduledKernel, module: Any, limits: Controller) -> list[str]:
-    """``_short_pulse`` on one clock, on the format /2 walk of *module*: a
+def _pulse_length_violations(
+    lowered: ScheduledKernel, module: Any, limits: Controller
+) -> list[str]:
+    """``_pulse_length`` on one clock, on the format /2 walk of *module*: a
     loop whose iterations repeat is checked once."""
     with lowered._lock:
         lines, events, _ = module.controller_program(
@@ -2937,12 +2976,14 @@ def _short_pulse_violations(lowered: ScheduledKernel, module: Any, limits: Contr
     found = []
     for event in _played(events):
         duration = event["duration_cycles"]
-        if duration is not None and duration < limits.min_pulse_cycles:
-            role, qudit = lines[event["line"]]
-            line = {"line": event["line"], "role": role, "qudit": qudit}
-            kind = _FLAT_KINDS.get(event["kind"], event["kind"])
-            before, after = _short_pulse(line, kind, duration, limits)
-            found.append(f"{before}{event['start_cycles']}{after}")
+        if duration is None:
+            continue
+        role, qudit = lines[event["line"]]
+        line = {"line": event["line"], "role": role, "qudit": qudit}
+        kind = _FLAT_KINDS.get(event["kind"], event["kind"])
+        violation = _pulse_length(line, kind, duration, limits)
+        if violation is not None:
+            found.append(f"{violation[0]}{event['start_cycles']}{violation[1]}")
     return found
 
 

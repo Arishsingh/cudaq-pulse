@@ -20,12 +20,13 @@ from typing import TYPE_CHECKING, Any, overload
 from .controller import (
     _PLAYED,
     WaveformMemoryScope,
+    _checks_pulse_lengths,
     _exclusive,
     _native_clock,
     _peak_amplitude,
+    _pulse_length,
     _sample_rates,
     _samples_per_own_cycle,
-    _short_pulse,
     shape_key,
 )
 
@@ -360,6 +361,21 @@ def _keep(nodes: list[Any], keep: Callable[[int], bool]) -> list[Any]:
             if body:
                 kept.append(node.keeping(body))
     return kept
+
+
+def _split(nodes: list[Any], key: Callable[[int], Any]) -> dict[Any, list[Any]]:
+    """``_keep`` of *nodes* for each value *key* gives an event other than
+    ``None``, keeping the events it gives that value, in one pass."""
+    split: dict[Any, list[Any]] = {}
+    for node in nodes:
+        if type(node) is int:
+            found = key(node)
+            if found is not None:
+                split.setdefault(found, []).append(node)
+        else:
+            for found, body in _split(node.body, key).items():
+                split.setdefault(found, []).append(node.keeping(body))
+    return split
 
 
 def _count(nodes: list[Any]) -> int:
@@ -740,8 +756,8 @@ def parts(
                     unresolved.append(f"line {line}: tone frequencies")
         if limits.max_amplitude is not None:
             found.extend(_amplitudes(lines[line], items, events, limits.max_amplitude, unresolved))
-        if limits.min_pulse_cycles:
-            found.extend(_short_pulses(lines[line], items, events, limits))
+        if _checks_pulse_lengths(limits):
+            found.extend(_pulse_lengths(lines[line], items, events, limits))
         if limits.waveform_memory_samples is not None:
             shapes = stored if shared else {}
             unknown_samples = 0
@@ -924,23 +940,23 @@ def _amplitudes(
     return _each_event(items, over, (line["line"],))
 
 
-def _short_pulses(
+def _pulse_lengths(
     line: Mapping[str, Any],
     items: list[Any],
     events: Sequence[Mapping[str, Any]],
     limits: Controller,
 ) -> list[Any]:
-    """``controller._short_pulse`` of the events of *items*."""
+    """``controller._pulse_length`` of the events of *items*."""
 
-    def short(i: int) -> _Text | None:
+    def off_length(i: int) -> _Text | None:
         event = events[i]
         duration = event["end_cycles"] - event["start_cycles"]
-        if duration >= limits.min_pulse_cycles:
+        violation = _pulse_length(line, event["kind"], duration, limits)
+        if violation is None:
             return None
-        before, after = _short_pulse(line, event["kind"], duration, limits)
-        return _Text(before, event["start_cycles"], after)
+        return _Text(violation[0], event["start_cycles"], violation[1])
 
-    return _each_event(items, short, (line["line"],))
+    return _each_event(items, off_length, (line["line"],))
 
 
 class _Feedback:

@@ -415,6 +415,88 @@ def test_a_calibration_keeps_the_checks():
         target.replace(couplings=[target.couplings[0]] * 2)
 
 
+def _qudit_problems(qudits):
+    with pytest.raises(QuantumSystemDefinitionError) as raised:
+        pulse.quantum_system(name="checked", qudits=qudits)
+    return [str(p) for p in raised.value.problems]
+
+
+def test_every_problem_of_every_qudit_is_listed_at_its_path():
+    qudits = _qudits()
+    qudits[0] = PhysicalQudit(0, -5.0e9, -10.0, -3.0, thermal_population=2.0)
+    qudits[2] = PhysicalQudit(2, math.nan, 50.0, math.inf, t2_echo_us=-1.0)
+    assert _qudit_problems(qudits) == [
+        "qudits[0].frequency_hz: -5000000000.0 is not a positive, finite number of Hz; "
+        "give the 0-1 frequency in Hz, more than 0",
+        "qudits[0].t1_us: -10.0 is not a finite number of microseconds, 0 or more; "
+        "give T1 in microseconds, 0 or more (0 is no decay)",
+        "qudits[0].t2_star_us: -3.0 is not a finite number of microseconds, 0 or more; "
+        "give T2* in microseconds, 0 or more (0 is no decay)",
+        "qudits[0].thermal_population: 2.0 is not a finite number in [0, 1); "
+        "give the excited-state population as a fraction, 0 or more and less than 1",
+        "qudits[2].frequency_hz: nan is not a positive, finite number of Hz; "
+        "give the 0-1 frequency in Hz, more than 0",
+        "qudits[2].t2_star_us: inf is not a finite number of microseconds, 0 or more; "
+        "give T2* in microseconds, 0 or more (0 is no decay)",
+        "qudits[2].t2_echo_us: -1.0 is not a finite number of microseconds, 0 or more; "
+        "give the Hahn-echo T2 in microseconds, 0 or more, or None (null in a file) if it "
+        "is not measured",
+    ]
+
+
+def test_a_problem_names_the_qudit_by_its_index_and_holds_the_value():
+    with pytest.raises(QuantumSystemDefinitionError) as raised:
+        pulse.quantum_system(name="checked", qudits={5: PhysicalQudit(5, 5.0e9, -50.0, 40.0)})
+    [problem] = raised.value.problems
+    assert (problem.path, problem.value) == ("qudits[5].t1_us", -50.0)
+
+
+@pytest.mark.parametrize("thermal_population", [1.0, -0.01, math.nan, True])
+def test_a_thermal_population_is_a_fraction_below_one(thermal_population):
+    qudits = {0: PhysicalQudit(0, 5.0e9, 50.0, 40.0, thermal_population=thermal_population)}
+    [problem] = _qudit_problems(qudits)
+    assert problem.startswith("qudits[0].thermal_population: ")
+
+
+def test_zero_decay_unmeasured_echo_and_int_values_are_allowed():
+    target = pulse.quantum_system(
+        name="checked",
+        qudits={
+            0: PhysicalQudit(0, 5.0e9, 0.0, 0.0, t2_echo_us=0.0),
+            1: PhysicalQudit(1, 5_100_000_000, 50, 40, t2_echo_us=None, thermal_population=0),
+            2: PhysicalQudit(2, 5.2e9, 50.0, 40.0, thermal_population=0.99),
+        },
+    )
+    assert target.t1_times == {0: 0.0, 1: 50, 2: 50.0}
+
+
+def test_qudit_and_coupling_problems_come_in_one_error():
+    qudits = _qudits()
+    qudits[1] = PhysicalQudit(1, 5.1e9, -50.0, 40.0)
+    with pytest.raises(QuantumSystemDefinitionError) as raised:
+        pulse.quantum_system(name="checked", qudits=qudits, couplings=[Coupling((0, 7), 1.0e6)])
+    assert [p.path for p in raised.value.problems] == ["qudits[1].t1_us", "couplings[0].qudits[1]"]
+
+
+def test_a_system_from_data_reports_a_bad_qudit_value():
+    data = _system_data()
+    data["qudits"][1]["t2_star_us"] = -40.0
+    with pytest.raises(QuantumSystemDefinitionError) as raised:
+        pulse.QuantumSystem.from_dict(data)
+    assert [(p.path, p.value) for p in raised.value.problems] == [("qudits[1].t2_star_us", -40.0)]
+
+
+def test_a_qudit_problem_in_a_file_is_at_the_qudit_in_the_list(tmp_path):
+    data = _system_data()
+    # The file lists the qudits out of index order, so a problem's path is
+    # where its qudit is in the list, not the qudit's index.
+    data["qudits"].reverse()
+    data["qudits"][0]["thermal_population"] = 1.5
+    problems, lines = _file_problems(tmp_path, data)
+    assert [(p.path, p.value) for p in problems] == [("qudits[0].thermal_population", 1.5)]
+    assert problems[0].line == _line_of(lines, '"thermal_population": 1.5')
+
+
 # ── System files: missing keys and value problems at their lines ───────────
 
 

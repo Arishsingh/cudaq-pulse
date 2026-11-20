@@ -6,15 +6,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="pv-svg pv-dark" role="img" aria-labelledby="title desc" viewBox="0 0 760 272">
  <title id="title">Two heralded attempts, then the T state</title>
  <desc id="desc">Two heralded attempts, then the T state. Attempt 1 reads D5 out. The outcome goes to herald on the controller link. herald accepts the shot: no π pulse. Attempt 2 reads D5 out. The outcome goes to herald on the controller link. herald accepts the shot: no π pulse. Y90 and the T gate's +π/4 frame shift prepare |T⟩. The last readout measures Z. Post-selection keeps the shot. If herald accepts both attempts, no π pulse plays (97.2% of shots). If herald rejects attempt 1 and accepts attempt 2, π 1 plays (2.7% of shots). If herald rejects both attempts, both π pulses play (8.2e-4 of shots). If herald accepts attempt 1 and rejects attempt 2, π 2 plays (3.2e-4 of shots).</desc>
- <style>.pv-svg { --pv-drive: #5b8c00; --pv-q: #3d6fa3; --pv-readout: #c2185b; --pv-classical: #00796b; --pv-text: #1a1a1a; --pv-muted: #5c636a; --pv-grid: #e8e8e8; --pv-rule: #b8bdc2; --pv-panel: rgba(0, 0, 0, 0.03); --pv-on-pill: #ffffff; --pv-page: #ffffff; display: block; width: 100%; height: auto; font-family: var(--pst-font-family-base, NVIDIA, Arial, Helvetica, sans-serif);}
-.pv-svg.pv-dark { --pv-drive: #76b900; --pv-q: #8fb8e8; --pv-readout: #f06292; --pv-classical: #4dd0c4; --pv-text: #eeeeee; --pv-muted: #b4bac1; --pv-grid: #2c2f33; --pv-rule: #5a6066; --pv-panel: rgba(255, 255, 255, 0.04); --pv-on-pill: #0b0b0b; --pv-page: #111111;}
+ <style>.pv-svg { --pv-drive: #5b8c00; --pv-q: #3d6fa3; --pv-readout: #c2185b; --pv-classical: #00796b; --pv-text: #1a1a1a; --pv-muted: #5c636a; --pv-grid: #e8e8e8; --pv-rule: #80868c; --pv-panel: rgba(0, 0, 0, 0.03); --pv-on-pill: #ffffff; --pv-page: #ffffff; display: block; width: 100%; height: auto; font-family: var(--pst-font-family-base, NVIDIA, Arial, Helvetica, sans-serif);}
+.pv-svg.pv-dark { --pv-drive: #76b900; --pv-q: #8fb8e8; --pv-readout: #f06292; --pv-classical: #4dd0c4; --pv-text: #eeeeee; --pv-muted: #b4bac1; --pv-grid: #2c2f33; --pv-rule: #6b7177; --pv-panel: rgba(255, 255, 255, 0.04); --pv-on-pill: #0b0b0b; --pv-page: #111111;}
 .pv-svg text { fill: var(--pv-text); font-size: 12px;}
 .pv-svg .pv-title { font-weight: 600; font-size: 12.5px;}
-.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted);}
-.pv-svg .pv-small { font-size: 10px;}
-.pv-svg .pv-tiny { font-size: 9px;}
+.pv-svg .pv-small, .pv-svg .pv-lane, .pv-svg .pv-tiny { fill: var(--pv-muted); font-size: 11.5px;}
 .pv-svg .pv-tiny.pv-on-text, .pv-svg .pv-on-bar { fill: var(--pv-on-pill);}
-.pv-svg .pv-lane { font-size: 10.5px;}
 .pv-svg .pv-lane, .pv-svg .pv-pill text { font-family: var(--pst-font-family-monospace, ui-monospace, Menlo, Consolas, monospace);}
 .pv-svg .pv-classical-text, .pv-svg .pv-window-text { fill: var(--pv-classical);}
 .pv-svg .pv-drive-text { fill: var(--pv-drive);}
@@ -95,9 +92,9 @@
    <path d="M 499.00 96 L 501.12 128" class="pv-arrow pv-arrow-request"/>
    <path d="M 522.33 128 L 526.58 64" class="pv-arrow pv-arrow-answer"/>
    <g>
-    <text x="262.59" y="117" class="pv-small pv-halo pv-window-text">answer may arrive</text>
-    <text x="470.49" y="117" class="pv-small pv-halo pv-window-text">answer may arrive</text>
-    <text x="550.00" y="53" class="pv-small pv-halo ">Y90</text>
+    <text x="255.79" y="117" class="pv-small pv-halo pv-window-text">answer may arrive</text>
+    <text x="463.69" y="117" class="pv-small pv-halo pv-window-text">answer may arrive</text>
+    <text x="548.80" y="54" class="pv-small pv-halo ">Y90</text>
    </g>
   </g>
   <path class="pv-head" d=""/>
@@ -110,36 +107,36 @@
   <text x="364" y="195" text-anchor="middle" class="pv-tiny">π 1</text>
   <rect x="394" y="186" width="44" height="12" rx="2" class="pv-ghost pv-cond"/>
   <text x="416" y="195" text-anchor="middle" class="pv-tiny">π 2</text>
-  <rect x="454" y="187" width="232" height="10" class="pv-track"/>
-  <rect x="454" y="187" width="225.49" height="10" class="pv-share"/>
-  <text x="692" y="195" class="pv-small">97.2%</text>
+  <rect x="454" y="187" width="224" height="10" class="pv-track"/>
+  <rect x="454" y="187" width="217.71" height="10" class="pv-share"/>
+  <text x="684" y="195" class="pv-small">97.2%</text>
   <rect x="128" y="202" width="618" height="18" rx="3" class="pv-case-band"/>
   <text x="132" y="215" class="pv-small">rejects, then accepts: kept</text>
   <rect x="342" y="206" width="44" height="12" rx="2" class="pv-fill pv-drive"/>
   <text x="364" y="215" text-anchor="middle" class="pv-tiny pv-on-text">π 1</text>
   <rect x="394" y="206" width="44" height="12" rx="2" class="pv-ghost pv-cond"/>
   <text x="416" y="215" text-anchor="middle" class="pv-tiny">π 2</text>
-  <rect x="454" y="207" width="232" height="10" class="pv-track"/>
-  <rect x="454" y="207" width="6.24" height="10" class="pv-share"/>
-  <text x="692" y="215" class="pv-small">2.7%</text>
+  <rect x="454" y="207" width="224" height="10" class="pv-track"/>
+  <rect x="454" y="207" width="6.02" height="10" class="pv-share"/>
+  <text x="684" y="215" class="pv-small">2.7%</text>
   <rect x="128" y="222" width="618" height="18" rx="3" class="pv-case-band"/>
   <text x="132" y="235" class="pv-small">rejects, then rejects: dropped</text>
   <rect x="342" y="226" width="44" height="12" rx="2" class="pv-fill pv-drive"/>
   <text x="364" y="235" text-anchor="middle" class="pv-tiny pv-on-text">π 1</text>
   <rect x="394" y="226" width="44" height="12" rx="2" class="pv-fill pv-drive"/>
   <text x="416" y="235" text-anchor="middle" class="pv-tiny pv-on-text">π 2</text>
-  <rect x="454" y="227" width="232" height="10" class="pv-track"/>
+  <rect x="454" y="227" width="224" height="10" class="pv-track"/>
   <rect x="454" y="227" width="1" height="10" class="pv-share"/>
-  <text x="692" y="235" class="pv-small">8.2e-4</text>
+  <text x="684" y="235" class="pv-small">8.2e-4</text>
   <rect x="128" y="242" width="618" height="18" rx="3" class="pv-case-band"/>
   <text x="132" y="255" class="pv-small">accepts, then rejects: dropped</text>
   <rect x="342" y="246" width="44" height="12" rx="2" class="pv-ghost pv-cond"/>
   <text x="364" y="255" text-anchor="middle" class="pv-tiny">π 1</text>
   <rect x="394" y="246" width="44" height="12" rx="2" class="pv-fill pv-drive"/>
   <text x="416" y="255" text-anchor="middle" class="pv-tiny pv-on-text">π 2</text>
-  <rect x="454" y="247" width="232" height="10" class="pv-track"/>
+  <rect x="454" y="247" width="224" height="10" class="pv-track"/>
   <rect x="454" y="247" width="1" height="10" class="pv-share"/>
-  <text x="692" y="255" class="pv-small">3.2e-4</text>
+  <text x="684" y="255" class="pv-small">3.2e-4</text>
   <text x="454" y="174" class="pv-small">share of shots</text>
  </g>
 </svg>

@@ -100,13 +100,23 @@ def deadlines(page) -> None:
                 fontsize=8,
                 color=p.muted,
             )
-        ax.plot(deadline_us, used, "o-", color=p.classical, ms=3.4, lw=1.4)
+        # The two shares differ in dash and marker as well as in color, so they
+        # stay apart for a reader who sees no color and in a grayscale print.
+        ax.plot(deadline_us, used, "s", ls=(0, (3, 2)), color=p.classical, ms=3.6, lw=1.4)
         ax.plot(deadline_us, restored, "o-", color=p.q, ms=3.4, lw=1.4)
-        mid = int(np.searchsorted(deadline_us, 50))
+        # Each label sits where its curve is far from the other one.
+        late = int(np.searchsorted(deadline_us, 60))
         end_label(
-            ax, deadline_us[mid], used[mid], "decoder's answer used", p.classical, ha="right", dx=-7
+            ax,
+            deadline_us[late],
+            used[late],
+            "decoder's answer used",
+            p.classical,
+            dy=4,
+            ha="right",
+            dx=-9,
         )
-        end_label(ax, deadline_us[2], restored[2], "data back in 000", p.q, dy=9, ha="left", dx=0)
+        end_label(ax, deadline_us[1], restored[1], "data back in 000", p.q, dy=9, ha="left", dx=6)
         ax.set_xlabel("deadline (µs)")
         ax.set_ylabel("fraction of shots")
         ax.set_ylim(0, 1.15)

@@ -138,3 +138,37 @@ def test_exchange_depends_on_the_operating_point():
 def test_frequencies_outside_the_tuning_range_are_rejected():
     with pytest.raises(ValueError, match="outside the tuning range"):
         CIRCUITS["D4"].flux_for_f01(7e9)
+
+
+@pytest.mark.parametrize("label", ["D4", "X2"])
+@pytest.mark.parametrize(("flux", "sign"), [(0.0, -1), (0.5, 1)])
+def test_flux_curvature_at_sweet_spots(label, flux, sign):
+    circuit = CIRCUITS[label]
+    curvature = circuit.flux_curvature_hz(flux)
+    assert sign * curvature > 0
+    # A coarser difference checks the scale without relying on rounded golden values.
+    step = 2e-3
+    coarse = (
+        circuit.f01_hz(flux + step) - 2 * circuit.f01_hz(flux) + circuit.f01_hz(flux - step)
+    ) / step**2
+    assert curvature == pytest.approx(coarse, rel=1e-3)
+
+
+@pytest.mark.parametrize("level_count", [3, 4])
+@pytest.mark.parametrize(("flux_a", "flux_b"), [(0.5, 0.0), (0.23, 0.17)])
+def test_uncoupled_dressed_spectrum_is_the_sum_of_single_circuit_energies(
+    level_count, flux_a, flux_b
+):
+    pair = ChargeCoupledPair(CIRCUITS["D4"], CIRCUITS["X2"], g_c_hz=0.0, level_count=level_count)
+    ea, _ = pair.a.eigensystem(flux_a, level_count)
+    eb, _ = pair.b.eigensystem(flux_b, level_count)
+    expected = {(i, j): ea[i] + eb[j] for i in range(level_count) for j in range(level_count)}
+    assert pair.dressed_spectrum(flux_a, flux_b) == pytest.approx(expected, rel=1e-12, abs=1e-5)
+
+
+@pytest.mark.parametrize("level_count", [3, 4])
+def test_weak_coupling_lowers_the_dressed_ground_state(level_count):
+    pair = ChargeCoupledPair(CIRCUITS["D4"], CIRCUITS["X2"], g_c_hz=1e6, level_count=level_count)
+    spectrum = pair.dressed_spectrum(0.5, 0.0)
+    assert len(spectrum) == level_count**2
+    assert -1e3 < spectrum[0, 0] < 0

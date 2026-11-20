@@ -269,6 +269,69 @@ def test_a_backend_may_declare_its_feedback_gap(ideal):
     assert "SKIP branch: exceeds the controller's limits" in str(report)
 
 
+def _passes(report):
+    return [line for line in str(report).splitlines() if line.startswith("PASS")]
+
+
+@pytest.mark.parametrize(
+    ("limits", "stretch"),
+    [
+        (Controller(clock_ghz=1.0, min_pulse_cycles=64), 4),
+        (Controller(clock_ghz=1.0, min_pulse_cycles=50), 4),
+        (Controller(clock_ghz=1.0, cycles_per_timestep=8), 2),
+        (Controller(clock_ghz=1.0, sample_rate_ghz=2.4), 5),
+        (Controller(clock_ghz=1.0, cycles_per_timestep=8, min_pulse_cycles=100), 8),
+    ],
+)
+def test_the_corpus_lasts_long_enough_for_the_controller_to_play_it(ideal, limits, stretch):
+    # As written, the corpus has a pulse or a wait the controller cannot play.
+    backend = ToyBackend(limits)
+    dev = _validation._device(backend.control_system())
+    with pytest.raises(pulse.controller.ControllerLimitError):
+        pulse.compile(
+            _validation._corpus()[pulse.Event.WAIT],
+            quantum_system=dev,
+            control_system=backend.control_system(),
+        ).lower(*dev.qudits[:2])
+    assert _validation._stretch(backend.control_system(), dev.clock_ghz) == stretch
+    report = backends.validate(backend)
+    assert report.ok, str(report)
+    assert "SKIP" not in str(report)
+    # Its pulses and waits last *stretch* times as long; it passes what a
+    # controller without the limit passes.
+    assert _passes(report) == _passes(backends.validate(ToyBackend()))
+    played = (
+        pulse.compile(_validation._corpus(stretch)[pulse.Event.WAIT], quantum_system=dev)
+        .lower(*dev.qudits[:2])
+        .export_to_controller()["events"]
+    )
+    assert [e["duration_cycles"] for e in played] == [16 * stretch, 100 * stretch, 16 * stretch]
+
+
+def test_the_corpus_is_as_written_wherever_it_plays_as_written():
+    for limits in (
+        Controller(clock_ghz=1.0),
+        Controller(clock_ghz=1.0, min_pulse_cycles=16),
+        Controller(clock_ghz=1.0, cycles_per_timestep=4),
+        Controller(clock_ghz=0.5, sample_rate_ghz=1.0),
+        Controller(clock_ghz=1.0, feedback_latency_cycles=2000),
+    ):
+        system = ControlSystem(controllers=[limits])
+        assert _validation._stretch(system, _validation._device(system).clock_ghz) == 1
+    assert _validation._corpus(1) is _validation._corpus()
+    # Two controllers: the corpus fits both.
+    two = ControlSystem(
+        controllers=[
+            Controller(clock_ghz=1.0, min_pulse_cycles=40, drive_lines=[0]),
+            Controller(clock_ghz=1.0, cycles_per_timestep=8, drive_lines=[1]),
+        ]
+    )
+    assert _validation._stretch(two, 1.0) == 4
+    # A controller at half the program clock counts its minimum in its own cycles.
+    half = ControlSystem(controllers=[Controller(clock_ghz=0.5, min_pulse_cycles=16)])
+    assert _validation._stretch(half, 1.0) == 2
+
+
 def test_emitted_pulses_must_respect_the_declared_limits():
     limits = Controller(instruction_cycles=4, max_pulses=2)
     close = {0: [("play", 0, 16), ("play", 2, 16)]}

@@ -11,6 +11,19 @@
 
 # CUDA-Q Pulse
 
+## About
+
+`cudaq-pulse` is a Python library and compiler for programming quantum
+processors at the pulse level: the drive and readout pulses, their timing,
+and the real-time classical decisions between them. It is for people who
+build and run QPUs and their control systems: hardware and control
+engineers, calibration and quantum error correction researchers, and
+controller vendors who want one open format to compile to. It belongs to the
+CUDA-Q family and shares its goal of one programming model across QPUs, but
+works at the level below CUDA-Q's gates and kernels and installs on its own,
+without CUDA-Q. The [documentation](https://nvidia.github.io/cudaq-pulse/)
+covers the tutorials, user guide and API reference.
+
 ## Highlights and Key Features
 
 `cudaq-pulse` lets developers write pulses, measurements and the real-time
@@ -61,12 +74,21 @@ python -m venv .venv && source .venv/bin/activate
 # Compiler and CPU simulation: compile kernels, inspect the MLIR, simulate
 # with the NumPy reference, run cudaq-pulse-opt.
 pip install cudaq-pulse
+```
 
-# Plus GPU simulation (Linux), with the CUDA 12 or CUDA 13 libraries.
+For GPU simulation on Linux, also install one CUDA extra, never both:
+
+```bash
+# CUDA 12 libraries: NVIDIA driver 525.60.13 or newer.
 pip install "cudaq-pulse[cu12]"
-pip install "cudaq-pulse[cu13]"
 
-# Check what was installed and whether it works.
+# CUDA 13 libraries instead: NVIDIA driver 580 or newer.
+# pip install "cudaq-pulse[cu13]"
+```
+
+Then check what was installed and whether it works:
+
+```bash
 python -m cudaq_pulse.doctor
 ```
 
@@ -220,43 +242,6 @@ What installing and building retrieve:
   archive (Apache-2.0 WITH LLVM-exception) from this repository's
   [`mlir-toolchain-22.1.8` release](https://github.com/NVIDIA/cudaq-pulse/releases/tag/mlir-toolchain-22.1.8).
 - pip and uv install the Python dependencies listed in `pyproject.toml`.
-
-## Current scope and limitations
-
-- The compiler, dialects, lowering experiments, and CPU unit tests are the
-  primary research surface.
-- GPU evolution models transmons in per-qubit rotating frames, as qubits or
-  with any number of levels (including their anharmonicity). The quantum system's T1/T2
-  data, exchange couplings, residual ZZ terms, and calibrated drive-amplitude
-  scaling are supported. Programs that measure and branch on the result are
-  evolved between measurements as an exact ensemble over outcomes, on the GPU
-  or with a NumPy reference (`pulse.simulate`).
-- GPU evolution supports the `rk1`, `rk2`, `rk4`, `magnus`, and
-  `crank_nicolson` integrators. Waveform sums, differences, scaling, and
-  negation are lowered exactly; products are sampled once per clock cycle.
-  Envelopes from Python functions (`custom`) are sampled once per clock
-  cycle while tracing. Observable evaluation, systems without a
-  simulation model and unspecialized parameters are rejected explicitly by
-  the execution lowering.
-- GPU numerical results are research regression coverage, with no production
-  compatibility or accuracy commitment.
-
-## Repository contents
-
-- `core/frontend/` — Python DSL, compiler pipeline, quantum systems, and
-  runtime
-- `core/mlir/` — Pulse, Classical, `QOp`, and CuDensityMat dialects, transformations,
-  bindings, and `cudaq-pulse-opt`
-- `core/runtime/` — cuDensityMat runtime library loaded by JIT-compiled code
-- `cmake/` — dependency, Python staging, testing, and documentation modules
-- `packaging/cudaq-pulse-tools/` — the `cudaq-pulse-tools` wheel
-  (`cudaq-pulse-opt`), built from this tree
-- `tools/` — MLIR toolchain build/fetch scripts and CI helpers
-- `test/` — lit and `FileCheck` compiler regression tests
-- `tests/` — pytest unit, workload, and GPU tests
-- `examples/` — pulse programming examples
-- `docs/` — user, API, and architecture documentation
-- `benchmarks/` — compiler and simulation benchmarks
 
 ## Contributing and support
 
