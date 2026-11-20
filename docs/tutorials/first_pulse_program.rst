@@ -311,13 +311,65 @@ Then draw and save the schedule:
 The same program as MLIR
 ------------------------
 
-``print(scheduled.mlir())`` shows the program in the Pulse dialect, the
-form that compiler passes, simulators and controller backends read.
+``mlir()`` returns the program in the Pulse dialect, the form that compiler
+passes, simulators and controller backends read. The text has one operation
+per line. This page wraps the long lines to fit, and writes ``{...}`` for
+the module's attributes, one long line of settings, the clock and the qubit
+among them:
 
-Each drive and readout in it carries the start and duration in cycles
-listed above. You don't need to read MLIR to use CUDA-Q Pulse, but it's
-there when you want to check what the compiler did.
-:doc:`../architecture/dialects` describes it.
+.. code-block:: python
+
+   print(scheduled.mlir())
+
+.. code-block:: text
+   :class: output abridged
+
+   module @rabi attributes {...} {
+     func.func @main()
+         attributes {pulse.schedule_state = #pulse.schedule_state<timed>} {
+       %cst = arith.constant 1.600000e-01 : f64
+       %cst_0 = arith.constant 0.000000e+00 : f64
+       %cst_1 = arith.constant 5.000000e-02 : f64
+       %c600_i64 = arith.constant 600 : i64
+       %cst_2 = arith.constant 1.600000e+01 : f64
+       %c64_i64 = arith.constant 64 : i64
+       %0 = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+       %line, %tone = pulse.get_drive_line %0
+           {frequency_hz = 3.885000e+09 : f64}
+           : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+       %line_3, %tone_4 = pulse.get_readout_line %0
+           {frequency_hz = 6.769000e+09 : f64}
+           : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
+       %1 = pulse.gaussian %c64_i64, %cst, %cst_2
+           : i64, f64, f64 -> !pulse.waveform
+       %updated_line, %updated_tone = pulse.drive %line, %1, %tone
+           <{duration_cycles = 64 : i64, start_cycles = 0 : i64}>
+           : !pulse.drive_line, !pulse.waveform, !pulse.tone
+           -> !pulse.drive_line, !pulse.tone
+       %2:2 = pulse.sync %updated_line, %line_3
+           : !pulse.drive_line, !pulse.readout_line
+           -> !pulse.drive_line, !pulse.readout_line
+       %3 = pulse.square %c600_i64, %cst_1, %cst_0
+           : i64, f64, f64 -> !pulse.waveform
+       %updated_line_5, %updated_tone_6, %result =
+           pulse.readout %2#1, %3, %tone_4, iq
+           <{duration_cycles = 600 : i64, start_cycles = 64 : i64}>
+           : !pulse.readout_line, !pulse.waveform, !pulse.tone
+           -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+       return
+     }
+   }
+
+What to notice: the kernel's ``drive``, ``sync`` and ``readout`` are
+``pulse.drive``, ``pulse.sync`` and ``pulse.readout``, in that order. The
+drive and the readout carry the start and duration in cycles listed above,
+between ``<{`` and ``}>``. The constants at the top are the program's
+numbers, such as the pulse lengths of 64 and 600 cycles and this call's
+amplitude, 0.16, which ``lower`` fills in.
+
+You don't need to read MLIR to use CUDA-Q Pulse, but it's there when you
+want to check what the compiler did. :doc:`../architecture/dialects`
+describes it.
 
 Where to go next
 ----------------

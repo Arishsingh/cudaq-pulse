@@ -4768,6 +4768,13 @@ static void inlineBody(pulse::ScheduleBlockOp block) {
   mlir::Block &body = block.getBody().front();
   mlir::Operation *yield = body.getTerminator();
   llvm::SmallVector<mlir::Value> results(yield->getOperands());
+  // A block that passes a value through yields one of its body's own
+  // arguments. Inlining destroys the arguments, so such a result is the
+  // input the argument stood for.
+  for (mlir::Value &result : results)
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(result);
+        argument && argument.getOwner() == &body)
+      result = block.getInputs()[argument.getArgNumber()];
   yield->erase();
   mlir::IRRewriter rewriter(block.getContext());
   rewriter.inlineBlockBefore(&body, block, block.getInputs());
@@ -5325,6 +5332,9 @@ struct PulseSchedulePass
 
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<mlir::arith::ArithDialect>();
+    // The pass marks every function with a schedule state, an attribute of
+    // the pulse dialect, even a function that holds no pulse operation.
+    registry.insert<pulse::PulseDialect>();
   }
 
   PulseSchedulePass() = default;
@@ -5364,6 +5374,7 @@ struct PulseScheduleOptionsPass
   }
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<mlir::arith::ArithDialect>();
+    registry.insert<pulse::PulseDialect>();
   }
   void runOnOperation() override {
     Resources resources;
@@ -5397,6 +5408,9 @@ struct PulseScheduleRcpPass
   }
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<mlir::arith::ArithDialect>();
+    // The pass marks every function with a schedule state, an attribute of
+    // the pulse dialect, even a function that holds no pulse operation.
+    registry.insert<pulse::PulseDialect>();
   }
   void runOnOperation() override {
     if (mlir::failed(schedule(getOperation(), resources, isAlap)))
@@ -5425,6 +5439,9 @@ struct PulseScheduleRcpOptionsPass
   }
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<mlir::arith::ArithDialect>();
+    // The pass marks every function with a schedule state, an attribute of
+    // the pulse dialect, even a function that holds no pulse operation.
+    registry.insert<pulse::PulseDialect>();
   }
   void runOnOperation() override {
     Resources resources{true,           maxDrives,     maxReadouts,

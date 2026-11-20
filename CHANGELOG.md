@@ -185,6 +185,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
+  two inputs. A schedule block that yields one of its own arguments, passing
+  an input through, is inlined with that input as its result; the passes
+  used the argument after it was destroyed. And a module with no pulse
+  operation or type, such as one with only classical calls, is scheduled
+  like any other; the schedule passes wrote the pulse dialect's schedule
+  state without loading the dialect.
 - On one controller whose clock is not the program's, `rcp` and `alap_rcp`
   waited the feedback latency in the controller's cycles as if they were the
   program's: they failed their own check (100 cycles at 0.5 GHz are 400 of
