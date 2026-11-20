@@ -220,9 +220,8 @@ on two measures:
   on Linux x86-64. A case fails at more than 0.4% above its baseline. It
   also fails at more than 1% below, so that a speedup is recorded in the
   baseline instead of hiding a later regression. A failure says whether it
-  is a regression, a gain or layout only (below). On the baseline's
-  measured code, a layout redraw passes within its case's layout band
-  (below).
+  is a regression, a gain or layout only (below). Layout only that the
+  change itself caused passes (below).
 - **Program sizes**: op count, packed program bytes and export bytes. Any
   change fails. These are the same on every platform, and
   `tests/test_perf_gate.py` checks them in the regular test suite too.
@@ -247,10 +246,9 @@ gh run download <run-id> -R <owner>/<repo> -n perf-gate-baseline -D benchmarks/b
 ```
 
 Check the run's summary first (no banner saying the counts aren't valid or
-that identical runs differed). Then commit `perf_gate.json` on top of the
-branch, which must still be the commit the run measured (the file's
-`source.commit`), with its layout draws (`perf_gate_layout.json`, below)
-and nothing else, and check that the pull request's run passes.
+that identical runs differed). Then commit `perf_gate.json` alone on top of
+the branch, which must still be the commit the run measured (the file's
+`source.commit`), and check that the pull request's run passes.
 `python tools/perf-gate.py --help` lists the same steps.
 
 **Bootstrap mode.** A baseline that says `"bootstrap": true` and holds no
@@ -282,13 +280,12 @@ summary lists every case with its baseline, its count in this run, the
 change, and the spread between two identical runs made in the same job. A
 case whose own numbers move more than the default allows declares its own
 `tolerance` (a fraction, below 0.5%) in `benchmarks/perf_gate/cases.py`;
-the baseline records it, and fails if it doesn't match. A layout band
-(below) is not a tolerance: it applies only to a layout redraw. The
-baseline also records the environment its counts were measured in and
-the run they came from. Changing a pin in the job (image digest,
-`UBUNTU_SNAPSHOT`, uv or Python version, MLIR toolchain) changes the
-counts, and counts from another environment fail the gate, so take a new
-baseline as above on the change's pull request branch.
+the baseline records it, and fails if it doesn't match. The baseline also
+records the environment its counts were measured in and the run they came
+from. Changing a pin in the job (image digest, `UBUNTU_SNAPSHOT`, uv or
+Python version, MLIR toolchain) changes the counts, and counts from another
+environment fail the gate, so take a new baseline as above on the change's
+pull request branch.
 
 **Regressions, gains and layout only.** The job also counts each case's
 Python-level work per repetition (bytecodes executed, Python calls and C
@@ -304,51 +301,28 @@ instructions says its kind, and the summary counts them by kind:
   interpreter's caches and memory: for example, one new class at import
   renumbers the interpreter's type version tags and changes its method
   cache's collisions. Judge it (compare the Callgrind dumps with the
-  baseline run's) before taking a new baseline. On the baseline's measured
-  code it passes within the case's layout band (below).
+  baseline run's) before taking a new baseline.
 
 A regression or a gain lists each counter of Python work that changed, or,
 with the same work, says the change is in native code. Every kind fails. A
 baseline without Python work tells only regressions from gains.
 
-**Layout bands.** The same Python on the same native code redraws its
-count from the interpreter's layout, so a row that moved past the limits
-with the baseline's Python work passes, as `layout`, when all of these
-hold:
-
-- the tree has the baseline's measured code: every path in which it
-  differs from the baseline's commit (`git diff --no-renames`) is one of
-  the package's Python sources or a file the job never reads (tests, docs,
-  examples, other workflows than `ci.yml`, the baselines), and
-  `pyproject.toml` and `uv.lock` differ only outside what the job builds.
-  Native code, build files, `ci.yml`, the gate and its cases are measured
-  code; if git cannot tell, the limits apply;
-- the case ran the same numbers of bytecodes, Python calls and C calls per
-  repetition as the baseline;
-- its count is within the case's layout band: Tukey's fences, the
-  quartiles widened by two interquartile ranges, of the distinct counts CI
-  measured for the case on that code, within 2%. A case with fewer than 8
-  distinct draws has no band.
-
-The summary reports each such row with its band and the draws seen. A gain
-inside the band isn't kept: a later change can give it back. The draws
-live in `benchmarks/baselines/perf_gate_layout.json`, are written only
-with a baseline, in its commit, and are used only with that baseline. They
-come from `ci.yml`'s runs on main's pushes, the baseline's dispatch and
-pull requests whose trees have its measured code (one run of a pull
-request that is not merged: its latest), decided from the run record and
-git, never from the artifacts; each names its run. After a merge of
-measured code the bands are off until the next baseline, which carries the
-earlier draws across the change where its pull request's run and main's
-push moved a case alike from two different counts (from one count, only a
-case that did not move carries). To take them, download the artifacts of
-the runs since the last baseline into `draws/<run-id>` and run:
-
-```bash
-python tools/perf-gate.py --layout-draws --since <date> [--carry <before>:<after>,...] draws/*
-```
-
-`python tools/perf-gate.py --help` (layout bands) has the commands.
+**Base comparison.** A count also moves with the code merged before a
+change, so the job compares a layout only row with the change's base (a
+pull request's base, or the previous tip of a push to main). If the change
+keeps the base's measured code, it touches only the package's Python
+sources and files the job never reads (tests, docs, examples, other
+workflows than `ci.yml`, the baselines; `pyproject.toml` and `uv.lock` only
+outside what the job builds), the gate checks out the base's
+`core/frontend` over the tree's and measures it on the same build. A row
+whose case ran the same Python work there, and whose count the change moved
+by at most 0.95% either way from the base's, passes as `layout`, with a
+notice. Native code, build files, `ci.yml`, the gate and its cases are
+measured code: such a change, or one git cannot compare, is judged by the
+limits. A gain that passes this way isn't kept, and hidden native work
+behind the same Python calls passes below 0.95% per change (up to 2% from
+the baseline). `python tools/perf-gate.py --help` (base comparison) has the
+details.
 
 Wall-clock times are informational only: shared runners are too noisy to
 block on. The test job still reports `tests/test_perf_guard.py`'s
