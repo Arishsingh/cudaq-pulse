@@ -13,6 +13,10 @@ machine, Linux or macOS, and the test suite runs each of them. Those marked
 (``pulse.simulate``); the others compile kernels and print their MLIR,
 schedules or metrics. Numbers 11 and 15 were removed and are not reused.
 
+The :doc:`tutorials <tutorials/index>` explain the same ideas step by step,
+and each one ends by naming the examples that take it further. If you are
+new to cudaq-pulse, start with :doc:`tutorials/first_pulse_program`.
+
 All examples use the canonical import convention:
 
 .. code-block:: python
