@@ -138,7 +138,10 @@ blocking call holds back only the lines of its timeline, which it opens a new
 segment for; see :doc:`../user_guide/classical_calls`.
 
 pulse-schedule-asap, pulse-schedule-alap
-   Place each operation as early, or as late, as its dependencies allow.
+   Place each operation as early, or as late, as its dependencies allow; a
+   readout's outcome is usable ``readout-latency`` cycles after it ends
+   (default 0; on several controllers, the module's table). The line is
+   not held for it.
 
 pulse-schedule-rcp
    Resource-constrained: at most ``max-drives`` drives and ``max-readouts``

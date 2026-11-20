@@ -985,9 +985,7 @@ def test_a_long_rolled_loop_on_a_control_system_is_checked_as_every_iteration(
     # A pulse before its forwarded outcome, or that needs a capability, is
     # reported for each copy, as is a pulse off its controller's grid.
     played_out = name == "odd" and system == "gridded"
-    played_out |= name == "forwarded" and (
-        system == "unforwarded" or (system == "shared" and schedule != "rcp")
-    )
+    played_out |= name == "forwarded" and system == "unforwarded"
     assert kept and any(kept) != played_out
 
 

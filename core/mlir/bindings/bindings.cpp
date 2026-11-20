@@ -2695,6 +2695,7 @@ simulationProgram(mlir::ModuleOp source) {
   if (pulse::LineGrid(clocks).enabled() ||
       (clocks.system && clocks.system.getControllers().size() > 1) ||
       clocks.delayed() || pulse::programBudget(module) ||
+      module->hasAttr("pulse.program_limits") ||
       pulse::persistentFrames(module) || pulse::blocksOnCalls(module))
     return program;
   mlir::WalkResult unsupported = main.walk([](mlir::Operation *op) {
@@ -4982,7 +4983,7 @@ private:
         policy,
         rcp ? maxDrives : 0,
         rcp ? maxReadouts : 0,
-        rcp ? readoutLatency : 0,
+        readoutLatency,
         rcp ? switchPenalty : 0,
         checkCalls && classical::declaresClassicalCalls(module),
         frameChanges ? *frameChanges : pulse::hasFrameChangeWork(module)};
@@ -5002,10 +5003,10 @@ private:
            checkCalls, frameChanges] = options;
     if (policy == "asap")
       pm.addNestedPass<mlir::func::FuncOp>(
-          pulse::createPulseScheduleAsapPass());
+          pulse::createPulseScheduleAsapPass(readoutLatency));
     else if (policy == "alap")
       pm.addNestedPass<mlir::func::FuncOp>(
-          pulse::createPulseScheduleAlapPass());
+          pulse::createPulseScheduleAlapPass(readoutLatency));
     else if (policy == "rcp" || policy == "alap_rcp")
       pm.addNestedPass<mlir::func::FuncOp>(pulse::createPulseScheduleRcpPass(
           maxDrives, maxReadouts, readoutLatency, switchPenalty,
@@ -5013,7 +5014,7 @@ private:
     else
       throw std::invalid_argument("unknown schedule policy: " + policy);
     if (checkCalls)
-      pm.addPass(pulse::createPulseClassicalCheckPass());
+      pm.addPass(pulse::createPulseClassicalCheckPass(readoutLatency));
     addAfterSchedulePasses(pm, frameChanges);
   }
 
@@ -6162,6 +6163,14 @@ public:
       // Helper: get SSA value for a waveform arg slot. If the param_mask
       // bit is set, the slot holds a vid (block arg ref); otherwise it's
       // a literal that needs an arith.constant.
+      //
+      // Each of these helpers may create a constant or reject a literal, and
+      // C++ leaves the order in which a call's arguments are evaluated
+      // unspecified: the Linux x86_64 build took them right to left, the
+      // others left to right. A case that uses more than one of them calls
+      // each in a statement of its own, in the order of the operation's
+      // operands, so that every build creates the same constants in the same
+      // order and names the same literal when two are rejected.
       auto getI64Arg = [&](int slot) -> mlir::Value {
         if (pmask & (1 << slot))
           return look(p[slot]);
@@ -6261,9 +6270,13 @@ public:
         auto index = [&](int64_t v) -> mlir::Value {
           return mlir::arith::ConstantIndexOp::create(*builder_, loc, v);
         };
-        auto loop = mlir::scf::ForOp::create(*builder_, loc, index(region.lb),
-                                             index(region.ub),
-                                             index(region.step), inits);
+        // One statement for each bound: the order in which a call's
+        // arguments are evaluated is unspecified, and each creates a constant.
+        mlir::Value lowerBound = index(region.lb);
+        mlir::Value upperBound = index(region.ub);
+        mlir::Value step = index(region.step);
+        auto loop = mlir::scf::ForOp::create(*builder_, loc, lowerBound,
+                                             upperBound, step, inits);
         mlir::Block *body = loop.getBody();
         if (!body->empty())
           body->getTerminator()->erase();
@@ -6484,54 +6497,67 @@ public:
 
       case kOpWfGaussian: {
         requirePayload(4);
-        auto op = pulse::GaussianPulseOp::create(
-            *builder_, loc, wfTy, getI64Arg(1), finite(2, "gaussian amplitude"),
-            positive(3, "gaussian sigma"));
+        mlir::Value duration = getI64Arg(1);
+        mlir::Value amplitude = finite(2, "gaussian amplitude");
+        mlir::Value sigma = positive(3, "gaussian sigma");
+        auto op = pulse::GaussianPulseOp::create(*builder_, loc, wfTy, duration,
+                                                 amplitude, sigma);
         bind(p[0], op.getResult());
         break;
       }
 
       case kOpWfSquare: {
         requirePayload(4);
-        auto op = pulse::SquarePulseOp::create(
-            *builder_, loc, wfTy, getI64Arg(1), finite(2, "square amplitude"),
-            finite(3, "square amplitude's imaginary part"));
+        mlir::Value duration = getI64Arg(1);
+        mlir::Value ampReal = finite(2, "square amplitude");
+        mlir::Value ampImag = finite(3, "square amplitude's imaginary part");
+        auto op = pulse::SquarePulseOp::create(*builder_, loc, wfTy, duration,
+                                               ampReal, ampImag);
         bind(p[0], op.getResult());
         break;
       }
 
       case kOpWfDrag: {
         requirePayload(5);
-        auto op = pulse::DRAGPulseOp::create(
-            *builder_, loc, wfTy, getI64Arg(1), finite(2, "drag amplitude"),
-            positive(3, "drag sigma"), finite(4, "drag beta"));
+        mlir::Value duration = getI64Arg(1);
+        mlir::Value amplitude = finite(2, "drag amplitude");
+        mlir::Value sigma = positive(3, "drag sigma");
+        mlir::Value beta = finite(4, "drag beta");
+        auto op = pulse::DRAGPulseOp::create(*builder_, loc, wfTy, duration,
+                                             amplitude, sigma, beta);
         bind(p[0], op.getResult());
         break;
       }
 
       case kOpWfCosine: {
         requirePayload(3);
-        auto op = pulse::CosinePulseOp::create(
-            *builder_, loc, wfTy, getI64Arg(1), finite(2, "cosine amplitude"));
+        mlir::Value duration = getI64Arg(1);
+        mlir::Value amplitude = finite(2, "cosine amplitude");
+        auto op = pulse::CosinePulseOp::create(*builder_, loc, wfTy, duration,
+                                               amplitude);
         bind(p[0], op.getResult());
         break;
       }
 
       case kOpWfTanhRamp: {
         requirePayload(4);
-        auto op = pulse::TanhRampOp::create(*builder_, loc, wfTy, getI64Arg(1),
-                                            finite(2, "tanh_ramp amplitude"),
-                                            positive(3, "tanh_ramp sigma"));
+        mlir::Value duration = getI64Arg(1);
+        mlir::Value amplitude = finite(2, "tanh_ramp amplitude");
+        mlir::Value sigma = positive(3, "tanh_ramp sigma");
+        auto op = pulse::TanhRampOp::create(*builder_, loc, wfTy, duration,
+                                            amplitude, sigma);
         bind(p[0], op.getResult());
         break;
       }
 
       case kOpWfGaussSquare: {
         requirePayload(5);
+        mlir::Value duration = getI64Arg(1);
+        mlir::Value amplitude = finite(2, "gaussian_square amplitude");
+        mlir::Value sigma = positive(3, "gaussian_square sigma");
+        mlir::Value risefall = getI64Arg(4);
         auto op = pulse::GaussianSquarePulseOp::create(
-            *builder_, loc, wfTy, getI64Arg(1),
-            finite(2, "gaussian_square amplitude"),
-            positive(3, "gaussian_square sigma"), getI64Arg(4));
+            *builder_, loc, wfTy, duration, amplitude, sigma, risefall);
         bind(p[0], op.getResult());
         break;
       }
