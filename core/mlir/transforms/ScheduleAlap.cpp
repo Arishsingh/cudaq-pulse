@@ -4209,10 +4209,12 @@ readoutsIn(llvm::ArrayRef<mlir::Operation *> ops) {
 /// function's readouts numbered first if they are not.
 static llvm::SmallVector<mlir::Operation *>
 loopReadouts(mlir::scf::ForOp loop) {
-  llvm::SmallVector<mlir::Operation *> ops;
+  llvm::SmallVector<mlir::Operation *> readouts;
   for (mlir::Operation &op : loop.getBody()->without_terminator())
-    ops.push_back(&op);
-  llvm::SmallVector<mlir::Operation *> readouts = readoutsIn(ops);
+    op.walk([&](mlir::Operation *inner) {
+      if (isReadoutOp(inner))
+        readouts.push_back(inner);
+    });
   if (readouts.empty())
     return readouts;
   mlir::MLIRContext *ctx = loop->getContext();
@@ -4266,17 +4268,21 @@ static void peelFront(mlir::scf::ForOp loop) {
   int64_t lb = *pulse::constantIndex(loop.getLowerBound());
   int64_t step = *pulse::constantIndex(loop.getStep());
   auto readouts = loopReadouts(loop);
-  int64_t depth = static_cast<int64_t>(pulse::enclosingLoops(loop).size());
   mlir::OpBuilder builder(loop);
   mlir::IRMapping map;
   map.map(loop.getInductionVar(), loop.getLowerBound());
   for (auto [arg, init] :
        llvm::zip(loop.getRegionIterArgs(), loop.getInitArgs()))
     map.map(arg, init);
+  // The copies are kept only where they hold readouts to renumber.
   llvm::SmallVector<mlir::Operation *> clones;
-  for (mlir::Operation &op : loop.getBody()->without_terminator())
-    clones.push_back(builder.clone(op, map));
+  for (mlir::Operation &op : loop.getBody()->without_terminator()) {
+    mlir::Operation *copy = builder.clone(op, map);
+    if (!readouts.empty())
+      clones.push_back(copy);
+  }
   if (!readouts.empty()) {
+    int64_t depth = static_cast<int64_t>(pulse::enclosingLoops(loop).size());
     remapReadouts(readoutsIn(clones), depth, 1, 0, true);
     remapReadouts(readouts, depth, 1, 1, false);
   }
@@ -4345,7 +4351,10 @@ static void unrollBy(mlir::scf::ForOp loop, int64_t factor) {
   for (mlir::Operation &op : body->without_terminator())
     ops.push_back(&op);
   auto readouts = loopReadouts(loop);
-  int64_t depth = static_cast<int64_t>(pulse::enclosingLoops(loop).size());
+  int64_t depth =
+      readouts.empty()
+          ? 0
+          : static_cast<int64_t>(pulse::enclosingLoops(loop).size());
   llvm::SmallVector<mlir::Value> yielded(yield->getOperands());
   llvm::SmallVector<mlir::Value> carried = yielded;
   mlir::OpBuilder builder(yield);
@@ -4359,8 +4368,11 @@ static void unrollBy(mlir::scf::ForOp loop, int64_t factor) {
     for (auto [arg, value] : llvm::zip(loop.getRegionIterArgs(), carried))
       map.map(arg, value);
     llvm::SmallVector<mlir::Operation *> clones;
-    for (mlir::Operation *op : ops)
-      clones.push_back(builder.clone(*op, map));
+    for (mlir::Operation *op : ops) {
+      mlir::Operation *clone = builder.clone(*op, map);
+      if (!readouts.empty())
+        clones.push_back(clone);
+    }
     if (!readouts.empty())
       remapReadouts(readoutsIn(clones), depth, factor, copy, false);
     for (auto [value, original] : llvm::zip(carried, yielded))

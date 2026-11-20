@@ -6006,6 +6006,13 @@ public:
     // `openIfs` counts the ifs being built.
     bool runTime = false;
     int64_t openIfs = 0;
+    // The readouts in the kernel's order, whether an if or a select has
+    // begun, and whether a pass can copy a readout: one in a loop (peeled
+    // or unrolled) or after an if or a select begins (run in both arms of
+    // an if on a selected value). Only then are the readouts numbered.
+    llvm::SmallVector<mlir::Operation *> kernelReadouts;
+    bool branched = false;
+    bool copyable = false;
 
     auto bind = [&](int64_t vid, mlir::Value v) {
       ssa[vid] = v;
@@ -6336,6 +6343,7 @@ public:
         builder_->setInsertionPointToEnd(region.body.get());
         regions.push_back(std::move(region));
         ++openIfs;
+        branched = true;
         break;
       }
       case kOpElse: {
@@ -6659,6 +6667,7 @@ public:
         bind(p[0], mlir::arith::SelectOp::create(*builder_, loc, condition,
                                                  then, other));
         runTime = true;
+        branched = true;
         break;
       }
 
@@ -6814,6 +6823,10 @@ public:
         bind(p[4], roOp.getUpdatedTone());
         bind(p[5], roOp.getResult());
         lengthen(waveformCycles(roOp.getPulse()), cur);
+        kernelReadouts.push_back(roOp);
+        copyable =
+            copyable || branched ||
+            llvm::any_of(regions, [](const Region &r) { return r.isLoop; });
         break;
       }
 
@@ -7106,8 +7119,13 @@ public:
     mlir::func::ReturnOp::create(*builder_, loc);
     // The kernel's numbers of its readouts, before any pass can copy one:
     // a copy (in both arms of an if, out of a peeled or unrolled loop)
-    // reports as the readout the kernel made.
-    pulse::numberReadouts(module);
+    // reports as the readout the kernel made. Where no pass can copy one, a
+    // readout's place among them is its number (pulse::kernelReadoutKey).
+    if (copyable) {
+      auto name = builder_->getStringAttr(pulse::kReadoutNumberAttr);
+      for (auto [number, op] : llvm::enumerate(kernelReadouts))
+        op->setAttr(name, builder_->getI64IntegerAttr(number));
+    }
     PulseModule result(ctx_, std::move(owningModule));
     result.runTime_ = runTime;
     result.loops_ = loops;

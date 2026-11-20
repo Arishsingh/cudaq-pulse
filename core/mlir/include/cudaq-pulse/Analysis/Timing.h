@@ -196,8 +196,10 @@ inline std::optional<int64_t> scheduledDuration(mlir::Operation *op) {
 }
 
 /// A readout's number in the kernel, written when the module is built from
-/// a kernel (or, in a module without it, when scheduling first copies a
-/// readout of its function); without it, its place among the readouts.
+/// a kernel in which a pass can copy a readout (one in a loop, or one after
+/// an if or a select), or, in a module without it, when scheduling first
+/// copies a readout of its function; without it, its place among the
+/// readouts.
 inline constexpr llvm::StringLiteral kReadoutNumberAttr =
     "pulse.readout_number";
 /// How a readout's loop iterations map to the kernel's, written when a loop

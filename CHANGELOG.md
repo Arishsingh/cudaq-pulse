@@ -169,8 +169,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   runs in both arms of an if on it) is one measurement, where its two copies
   were two and the readouts after it moved up by one (a measurement returned
   after it gave -1). The printed MLIR (`mlir("pulse")`) now carries the
-  kernel's numbers: every readout of a module built from a kernel has
-  `pulse.readout_number`, and a readout copied out of a loop or into one
+  kernel's numbers: the readouts of a module built from a kernel that has a
+  readout in a loop or after an if or a select carry
+  `pulse.readout_number` (elsewhere a readout's number is its place among
+  them, as before), and a readout copied out of a loop or into one
   trip several times `pulse.readout_iteration` (see the `pulse.readout` op).
   The schedule events and both export formats describe the scheduled
   program as before: a peeled iteration's readout is at the top level, with

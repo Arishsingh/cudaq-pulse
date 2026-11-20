@@ -1014,7 +1014,8 @@ def _simulate_compiled(
             seen,
         )
 
-    measurements, column = _columns(_kernel_numbered(module, seen))
+    # The kernel's numbers are looked up only where something was measured.
+    measurements, column = _columns(_kernel_numbered(module, seen)) if seen else ([], {})
     rho = np.zeros((dim, dim), dtype=np.complex128)
     branches = []
     rows = []

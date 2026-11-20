@@ -150,7 +150,6 @@ print(scheduled.mlir())
 #       %updated_line_5, %updated_tone_6, %result =
 #           pulse.readout %2#1, %3, %tone_4, iq
 #           <{duration_cycles = 600 : i64, start_cycles = 64 : i64}>
-#           {pulse.readout_number = 0 : i64}
 #           : !pulse.readout_line, !pulse.waveform, !pulse.tone
 #           -> !pulse.readout_line, !pulse.tone, !pulse.measurement
 #       return

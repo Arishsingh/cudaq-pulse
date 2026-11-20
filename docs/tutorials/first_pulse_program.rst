@@ -354,7 +354,6 @@ among them:
        %updated_line_5, %updated_tone_6, %result =
            pulse.readout %2#1, %3, %tone_4, iq
            <{duration_cycles = 600 : i64, start_cycles = 64 : i64}>
-           {pulse.readout_number = 0 : i64}
            : !pulse.readout_line, !pulse.waveform, !pulse.tone
            -> !pulse.readout_line, !pulse.tone, !pulse.measurement
        return
@@ -364,8 +363,7 @@ among them:
 What to notice: the kernel's ``drive``, ``sync`` and ``readout`` are
 ``pulse.drive``, ``pulse.sync`` and ``pulse.readout``, in that order. The
 drive and the readout carry the start and duration in cycles listed above,
-between ``<{`` and ``}>``, and the readout its number in the kernel's
-order, 0. The constants at the top are the program's
+between ``<{`` and ``}>``. The constants at the top are the program's
 numbers, such as the pulse lengths of 64 and 600 cycles and this call's
 amplitude, 0.16, which ``lower`` fills in.
 

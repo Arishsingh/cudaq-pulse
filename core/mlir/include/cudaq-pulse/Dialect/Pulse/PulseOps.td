@@ -271,15 +271,17 @@ def ReadoutOp : PulseOp<"readout", []> {
     simulated and exported so far; the others are refused there.
 
     Readouts are numbered in walk order, the kernel's order: a module built
-    from a kernel gives each readout its number, `pulse.readout_number`,
-    before any pass runs (in another module, scheduling numbers a function's
-    readouts before it first copies one). A copy keeps the number: an op
-    that reads a measurement run in both arms of an if on it, or a readout
-    of a loop that scheduling peels or unrolls, which also gets
-    `pulse.readout_iteration`: three integers (depth, scale, offset) per
-    loop of the kernel around it, outermost first; its iteration of that
-    loop is scale * k + offset, k the iteration of its enclosing `scf.for`
-    at depth `depth`, or `offset` where `depth` is -1.
+    from a kernel in which a pass can copy a readout (one in a loop, or one
+    after an if or a select) gives each readout its number,
+    `pulse.readout_number`, before any pass runs (in another module,
+    scheduling numbers a function's readouts before it first copies one);
+    without it, a readout's number is its place among the readouts. A copy
+    keeps the number: an op that reads a measurement run in both arms of an
+    if on it, or a readout of a loop that scheduling peels or unrolls, which
+    also gets `pulse.readout_iteration`: three integers (depth, scale,
+    offset) per loop of the kernel around it, outermost first; its iteration
+    of that loop is scale * k + offset, k the iteration of its enclosing
+    `scf.for` at depth `depth`, or `offset` where `depth` is -1.
 
     ```mlir
     %r1, %t1, %m = pulse.readout %r0, %w, %t0, iq : ...
