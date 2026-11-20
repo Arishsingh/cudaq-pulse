@@ -159,6 +159,33 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **Measurements keep the kernel's numbers under every schedule.**
+  `SimulationResult.measurements` gives each measurement the readout number
+  (the kernel's order of its readouts) and loop iteration the kernel gave it,
+  under `asap`, `alap`, `rcp` and `alap_rcp` alike. `asap` and `rcp` peel a
+  loop's first iterations (and some loops' last ones), and `rcp` and
+  `alap_rcp` run several iterations in each trip of a loop, which copied its
+  readouts and renumbered them by their place in the scheduled program: a
+  readout in a loop of three read as readout 0 at no iteration and readout 1
+  at iterations 0 and 1, and the readouts after the loop moved up by one.
+  Those measurements are now renumbered to the kernel's order (readout 0 at
+  iterations 0, 1 and 2), and a measurement a kernel returns after a loop of
+  readouts gives its outcome where it gave -1. Under every policy, a readout
+  in a loop that makes classical calls (which simulation unrolls) keeps its
+  number and reports its iteration where each round's readout had a number
+  of its own, and a readout whose waveform depends on a measurement (which
+  runs in both arms of an if on it) is one measurement, where its two copies
+  were two and the readouts after it moved up by one (a measurement returned
+  after it gave -1). The printed MLIR (`mlir("pulse")`) now carries the
+  kernel's numbers: the readouts of a module built from a kernel that has a
+  readout in a loop or after an if or a select carry
+  `pulse.readout_number` (elsewhere a readout's number is its place among
+  them, as before), and a readout copied out of a loop or into one
+  trip several times `pulse.readout_iteration` (see the `pulse.readout` op).
+  The schedule events and both export formats describe the scheduled
+  program as before: a peeled iteration's readout is at the top level, with
+  no iteration.
+
 - **Every schedule waits for readouts.** `asap` and `alap` (the default)
   now start an operation that depends on a readout (an arm of a branch on
   it, a pulse on a tone whose frame a branch on it changed, a value computed
