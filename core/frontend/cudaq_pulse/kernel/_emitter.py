@@ -28,7 +28,6 @@ import collections
 import dis
 import functools
 import inspect
-import itertools
 import linecache
 import math
 import numbers
@@ -36,6 +35,7 @@ import operator
 import sys
 import types
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from itertools import compress, count
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from .._errors import NotFoundError, PulseError
@@ -1240,11 +1240,11 @@ class _Held:
     records the channel in ``IRValue.chan``.
     """
 
+    # ``seq``, the channel's place in ``_Lines.held``, is set from a trace's
+    # first measurement-conditioned if on (``_runtime_branch``).
     __slots__ = ("cells", "key", "seq")
 
-    def __init__(self, values: tuple[IRValue, ...], key: tuple[Any, ...], seq: int) -> None:
-        # The channel's place in ``_Lines.held``.
-        self.seq = seq
+    def __init__(self, values: tuple[IRValue, ...], key: tuple[Any, ...]) -> None:
         try:
             line, tone = values
         except ValueError:
@@ -1294,15 +1294,19 @@ class _Lines:
     # for each arm around the trace, its record of changed containers and
     # the containers it copies when they first change. ``plain``, set by the
     # first such if: id -> (list, length) for lists whose first `length`
-    # entries hold no line or tone. Both are read with getattr. ``journal``,
-    # while a measurement-conditioned if is traced: each channel cell an op
-    # rebound since the if began, with its value then (results written back
-    # by an if or a rolled loop are to cells already in it).
-    __slots__ = ("held", "shared", "log", "watched", "plain", "journal")
+    # entries hold no line or tone. Both are read with getattr. ``journal``
+    # and ``twin``, set by the first such if (``_branch_journal``): while an
+    # if is traced, each channel cell an op rebound since the if began, with
+    # its value then (results written back by an if or a rolled loop are to
+    # cells already in it), else None; the twin of the trace's tracer type
+    # that notes them.
+    __slots__ = ("held", "shared", "log", "watched", "plain", "journal", "twin")
 
     if TYPE_CHECKING:
         watched: tuple[tuple[dict[int, tuple[Any, Any]], tuple[Any, ...]], ...]
         plain: dict[int, tuple[list[Any], int]]
+        journal: dict[_Chan, IRValue] | None
+        twin: type[PulseIREmitter]
 
     def __init__(self) -> None:
         self.held: dict[tuple[Any, ...], _Held] = {}
@@ -1311,12 +1315,9 @@ class _Lines:
         # Line acquisitions, in order: those a rolled loop body makes are
         # hoisted before the loop.
         self.log: list[tuple[str, IRValue]] = []
-        self.journal: dict[_Chan, IRValue] | None = None
 
     def add(self, key: tuple[Any, ...], values: tuple[IRValue, ...]) -> None:
-        # Only a channel not held is added, and ``held`` only ever loses its
-        # newest entries: its length is the channel's place.
-        self.held[key] = _Held(values, key, len(self.held))
+        self.held[key] = _Held(values, key)
 
     def share(self, held: _Held) -> None:
         for cell in held.cells:
@@ -1643,6 +1644,8 @@ class PulseIREmitter:
         # Names a measurement-conditioned if bound in one arm only, with the
         # branch instruction; set by the first such if.
         _one_arm: dict[str, tuple[bc.DecodedCode, int]]
+        # Of the twin that traces such an if's arms (_branch_journal).
+        _CELL_ORDER: Callable[[_Chan], Any]
 
     def __init__(
         self,
@@ -2324,7 +2327,7 @@ class PulseIREmitter:
         if containers:
             found = containers
             containers = []
-            rebound = set(map(id, map(_FIRST, self._slots.values())))
+            rebound = set(map(id, map(_first, self._slots.values())))
             # id -> (list, n): the list's first n entries hold no line or
             # tone, looked at once each while they stay in it, unless a call
             # the trace does not follow ran. A line or tone a traced change
@@ -2364,199 +2367,219 @@ class PulseIREmitter:
         held_count = len(held)
         # Each channel the arms change, with its value entering the if: an if
         # costs what its arms do, not the number of channels. One acquired in
-        # an arm has a seq of at least held_count. A tracing error leaves
-        # this journal set: _roll, which goes on tracing, puts back its own.
-        outer = lines.journal
-        journal: dict[_Chan, IRValue] = {}
+        # an arm has a seq of at least held_count. The arms are traced by the
+        # twin of the trace's tracer type, which notes the channels each op
+        # rebinds (_branch_journal): outside an if nothing is noted.
+        tracer = self.__class__
+        try:
+            outer = lines.journal
+        except AttributeError:
+            # The trace's first: its channels are numbered, as is each one
+            # acquired from now on, and its arms are traced by the twin.
+            from cudaq_pulse.kernel._branch_journal import TWINS, NumberedLines
+
+            h: Any
+            for seq, h in enumerate(held.values()):
+                h.seq = seq
+            lines.__class__ = NumberedLines
+            lines.twin = TWINS[tracer]
+            outer = None
+        self.__class__ = lines.twin
+        journal: dict[Any, IRValue] = {}
         lines.journal = journal
-
-        first = builder._next_id  # the first id made in the if
-        builder.emit("scf.if", (value,), ())
-        then_locals, then_slots, then_copies = self._trace_arm(
-            view, index, join, then_start, (containers, lazy)
-        )
-        then_stack = list(stack)
-        then_held = {cell: cell.value for cell in journal}
-        stack[:] = saved_stack
-        self.locals.clear()
-        self.locals.update(saved_locals)
-        for obj, copy in containers:
-            self._restore_container(obj, copy)
-        if then_copies:
-            for obj, copy in then_copies:
+        try:
+            first = builder._next_id  # the first id made in the if
+            builder.emit("scf.if", (value,), ())
+            then_locals, then_slots, then_copies = self._trace_arm(
+                view, index, join, then_start, (containers, lazy)
+            )
+            then_stack = list(stack)
+            stack[:] = saved_stack
+            self.locals.clear()
+            self.locals.update(saved_locals)
+            for obj, copy in containers:
                 self._restore_container(obj, copy)
-        _restore_channels(held, held_count, ())
-        for cell in journal:
-            if cell.held.seq < held_count:
-                before = journal[cell]
-                cell.value = before
-                before.chan = cell
-        else_index = builder.mark()
-        builder.emit("scf.else", (), ())
-        else_locals, else_slots, else_copies = self._trace_arm(
-            view, index, join, else_start, (containers, lazy)
-        )
-        # Names, and stack slots (ints), the arms leave different numbers,
-        # waveforms or conditions on.
-        chosen: list[tuple[str | int, Any, Any]] = []
-        # Python joins the arms at one stack depth.
-        if stack and not returns and any(map(_IS_NOT, stack, then_stack)):
-            from ._conditions import stack_choices
-
-            stack_choices(
-                self, value, then_stack, saved_stack, jump_if_true, prog, index, first, chosen
+            if then_copies:
+                for obj, copy in then_copies:
+                    self._restore_container(obj, copy)
+            if len(held) != held_count:
+                _restore_channels(held, held_count, ())
+            # Each channel's value after the then arm, and before the if.
+            then_held: dict[Any, IRValue] = {}
+            for cell in journal:
+                then_held[cell] = cell.value
+                if cell.held.seq < held_count:
+                    before = journal[cell]
+                    cell.value = before
+                    before.chan = cell
+            else_index = builder.mark()
+            builder.emit("scf.else", (), ())
+            else_locals, else_slots, else_copies = self._trace_arm(
+                view, index, join, else_start, (containers, lazy)
             )
+            # Names, and stack slots (ints), the arms leave different numbers,
+            # waveforms or conditions on.
+            chosen: list[tuple[str | int, Any, Any]] = []
+            # Python joins the arms at one stack depth.
+            if stack and not returns and any(map(_IS_NOT, stack, then_stack)):
+                from ._conditions import stack_choices
 
-        merged: dict[str, StackVal] = {}
-        results: list[tuple[str, IRValue, IRValue]] = []
-        for name in sorted(then_locals.keys() | else_locals.keys()):
-            a = then_locals.get(name, _MISSING)
-            b = else_locals.get(name, _MISSING)
-            if a is b:
-                merged[name] = a
-            elif (
-                isinstance(a, IRValue)
-                and isinstance(b, IRValue)
-                and a.vtype == b.vtype
-                and a.vtype != "qref"
-            ):
-                results.append((name, a, b))
-            elif a is _MISSING or b is _MISSING:
-                # Bound in one arm only: unbound after the if.
-                try:
-                    self._one_arm[name] = (prog, index)
-                except AttributeError:
-                    self._one_arm = {name: (prog, index)}
-            elif type(a) is type(b) and isinstance(a, _SCALARS) and a == b:
-                merged[name] = a
-            else:
-                from ._conditions import bits_chosen
+                stack_choices(
+                    self, value, then_stack, saved_stack, jump_if_true, prog, index, first, chosen
+                )
 
-                if not bits_chosen(value, a, b):
-                    self._check_choosable(name, a, b, prog, index, first, value)
-                chosen.append((name, a, b))
-        slot_results: list[tuple[Any, int, IRValue, IRValue]] = []
-        # Channels either arm advanced become results, unless a name
-        # carries the same pair of values.
-        aliases: list[tuple[_Chan, str]] = []
-        by_pair: dict[tuple[int, int], str] | None = None
-        changed = [cell for cell in journal if cell.held.seq < held_count]
-        changed.sort(key=_CELL_ORDER)
-        for cell in changed:
-            before = journal[cell]
-            a = then_held[cell] if cell in then_held else before
-            b = cell.value
-            if a is before and b is before:
-                continue
-            if by_pair is None:
-                by_pair = {(id(x), id(y)): name for name, x, y in results}
-            alias = by_pair.get((id(a), id(b)))
-            if alias is None:
-                slot_results.append((cell.held, cell.index, a, b))
-            else:
-                aliases.append((cell, alias))
-        # List slots holding lines or tones that either arm rebound. One that
-        # holds the values a name or channel carries takes its result, so
-        # that each arm yields a value once.
-        listed: list[tuple[Any, int, IRValue, IRValue, IRValue | None]] = []
-        if then_slots or else_slots:
-            originals = {id(obj): copy for obj, copy in containers}
-            if lazy:
-                for obj, copy in then_copies + else_copies:
-                    originals[id(obj)] = copy
-            keys: dict[tuple[int, int], list[Any]] = {}
-            for obj, i, _ in then_slots + else_slots:
-                keys[(id(obj), i)] = obj
-            then_new = {(id(obj), i): new for obj, i, new in then_slots}
-            else_new = {(id(obj), i): new for obj, i, new in else_slots}
-            carrying = {(id(a), id(b)) for _, a, b in results}
-            carrying.update((id(a), id(b)) for _, _, a, b in slot_results)
-            for key, obj in keys.items():
-                old = originals[key[0]][key[1]]
-                a = then_new.get(key, old)
-                b = else_new.get(key, old)
+            merged: dict[str, StackVal] = {}
+            results: list[tuple[str, IRValue, IRValue]] = []
+            for name in sorted(then_locals.keys() | else_locals.keys()):
+                a = then_locals.get(name, _MISSING)
+                b = else_locals.get(name, _MISSING)
                 if a is b:
-                    continue
-                if (id(a), id(b)) in carrying:
-                    self._slots.pop(id(a), None)
-                    self._slots.pop(id(b), None)
-                    listed.append((obj, key[1], a, b, None))
+                    merged[name] = a
+                elif (
+                    isinstance(a, IRValue)
+                    and isinstance(b, IRValue)
+                    and a.vtype == b.vtype
+                    and a.vtype != "qref"
+                ):
+                    results.append((name, a, b))
+                elif a is _MISSING or b is _MISSING:
+                    # Bound in one arm only: unbound after the if.
+                    try:
+                        self._one_arm[name] = (prog, index)
+                    except AttributeError:
+                        self._one_arm = {name: (prog, index)}
+                elif type(a) is type(b) and isinstance(a, _SCALARS) and a == b:
+                    merged[name] = a
                 else:
-                    slot_results.append((obj, key[1], a, b))
-        if slot_results:
-            pairs = {name: (a, b) for name, a, b in results}
-            order = self._carry_order(
-                [name for name, _, _ in results],
-                {n: ab[1] for n, ab in pairs.items()},
-                slot_results,
-            )
-            labels = []
-            then_list = []
-            else_list = []
-            for entry in order:
-                if type(entry) is str:
-                    a, b = pairs[entry]
-                    labels.append(entry)
-                else:
-                    _, _, a, b = slot_results[entry[0]]
-                    labels.append(entry[1])
-                then_list.append(a)
-                else_list.append(b)
-            then_vals = tuple(then_list)
-            else_vals = tuple(else_list)
-        else:
-            order = [name for name, _, _ in results]
-            labels = order
-            then_vals = tuple(a for _, a, _ in results)
-            else_vals = tuple(b for _, _, b in results)
-        builder.insert(else_index, "scf.yield", then_vals)
-        builder.emit("scf.yield", else_vals, ())
-        outs = builder.emit(
-            "scf.if_end",
-            (),
-            tuple(v.vtype for v in then_vals),
-            {"result_names": labels},
-        )
-        carried: dict[tuple[int, int], IRValue] = {}
-        for entry, out in zip(order, outs, strict=False):
-            if type(entry) is str:
-                merged[entry] = out
-                continue
-            obj, i, a, b = slot_results[entry[0]]
-            self._slots.pop(id(a), None)
-            self._slots.pop(id(b), None)
-            if isinstance(obj, _Held):
-                carried[(id(a), id(b))] = out
-                obj[i] = out
-            else:
-                listed.append((obj, i, a, b, out))
-        if listed:
-            for name, a, b in results:
-                carried.setdefault((id(a), id(b)), merged[name])
-        # A list slot that holds its channel's values takes the channel's result.
-        for obj, i, a, b, out in listed:
-            out = carried.get((id(a), id(b)), out)
-            assert out is not None
-            obj[i] = out
-            self._slots[id(out)] = (obj, i, out)
-        if chosen:
-            from ._conditions import chosen_value
+                    from ._conditions import bits_chosen
 
-            line = prog.location(index)[1]
-            scope = getattr(builder, "scope", ())
-            for chose, a, b in chosen:
-                if isinstance(chose, int):
-                    stack[chose] = chosen_value(self, value, a, b, "", line, scope)
+                    if not bits_chosen(value, a, b):
+                        self._check_choosable(name, a, b, prog, index, first, value)
+                    chosen.append((name, a, b))
+            slot_results: list[tuple[Any, int, IRValue, IRValue]] = []
+            # Channels either arm advanced become results, unless a name
+            # carries the same pair of values.
+            aliases: list[tuple[_Chan, str]] = []
+            by_pair: dict[tuple[int, int], str] | None = None
+            changed = [cell for cell in journal if cell.held.seq < held_count]
+            changed.sort(key=self._CELL_ORDER)
+            for cell in changed:
+                before = journal[cell]
+                a = then_held[cell] if cell in then_held else before
+                b = cell.value
+                if a is before and b is before:
+                    continue
+                if by_pair is None:
+                    by_pair = {(id(x), id(y)): name for name, x, y in results}
+                alias = by_pair.get((id(a), id(b)))
+                if alias is None:
+                    slot_results.append((cell.held, cell.index, a, b))
                 else:
-                    merged[chose] = chosen_value(self, value, a, b, chose, line, scope)
-        for cell, alias in aliases:
-            out = merged[alias]
-            cell.value = out
-            out.chan = cell
-        # A channel first acquired in one arm is not held after the if.
-        if len(held) != held_count:
-            _restore_channels(held, held_count, ())
-        lines.journal = outer
+                    aliases.append((cell, alias))
+            # List slots holding lines or tones that either arm rebound. One that
+            # holds the values a name or channel carries takes its result, so
+            # that each arm yields a value once.
+            listed: list[tuple[Any, int, IRValue, IRValue, IRValue | None]] = []
+            if then_slots or else_slots:
+                originals = {id(obj): copy for obj, copy in containers}
+                if lazy:
+                    for obj, copy in then_copies + else_copies:
+                        originals[id(obj)] = copy
+                keys: dict[tuple[int, int], list[Any]] = {}
+                for obj, i, _ in then_slots + else_slots:
+                    keys[(id(obj), i)] = obj
+                then_new = {(id(obj), i): new for obj, i, new in then_slots}
+                else_new = {(id(obj), i): new for obj, i, new in else_slots}
+                carrying = {(id(a), id(b)) for _, a, b in results}
+                carrying.update((id(a), id(b)) for _, _, a, b in slot_results)
+                for key, obj in keys.items():
+                    old = originals[key[0]][key[1]]
+                    a = then_new.get(key, old)
+                    b = else_new.get(key, old)
+                    if a is b:
+                        continue
+                    if (id(a), id(b)) in carrying:
+                        self._slots.pop(id(a), None)
+                        self._slots.pop(id(b), None)
+                        listed.append((obj, key[1], a, b, None))
+                    else:
+                        slot_results.append((obj, key[1], a, b))
+            if slot_results:
+                pairs = {name: (a, b) for name, a, b in results}
+                order = self._carry_order(
+                    [name for name, _, _ in results],
+                    {n: ab[1] for n, ab in pairs.items()},
+                    slot_results,
+                )
+                labels = []
+                then_list = []
+                else_list = []
+                for entry in order:
+                    if type(entry) is str:
+                        a, b = pairs[entry]
+                        labels.append(entry)
+                    else:
+                        _, _, a, b = slot_results[entry[0]]
+                        labels.append(entry[1])
+                    then_list.append(a)
+                    else_list.append(b)
+                then_vals = tuple(then_list)
+                else_vals = tuple(else_list)
+            else:
+                order = [name for name, _, _ in results]
+                labels = order
+                then_vals = tuple(a for _, a, _ in results)
+                else_vals = tuple(b for _, _, b in results)
+            builder.insert(else_index, "scf.yield", then_vals)
+            builder.emit("scf.yield", else_vals, ())
+            outs = builder.emit(
+                "scf.if_end",
+                (),
+                tuple(v.vtype for v in then_vals),
+                {"result_names": labels},
+            )
+            carried: dict[tuple[int, int], IRValue] = {}
+            for entry, out in zip(order, outs, strict=False):
+                if type(entry) is str:
+                    merged[entry] = out
+                    continue
+                obj, i, a, b = slot_results[entry[0]]
+                self._slots.pop(id(a), None)
+                self._slots.pop(id(b), None)
+                if isinstance(obj, _Held):
+                    carried[(id(a), id(b))] = out
+                    obj[i] = out
+                else:
+                    listed.append((obj, i, a, b, out))
+            if listed:
+                for name, a, b in results:
+                    carried.setdefault((id(a), id(b)), merged[name])
+            # A list slot that holds its channel's values takes the channel's result.
+            for obj, i, a, b, out in listed:
+                out = carried.get((id(a), id(b)), out)
+                assert out is not None
+                obj[i] = out
+                self._slots[id(out)] = (obj, i, out)
+            if chosen:
+                from ._conditions import chosen_value
+
+                line = prog.location(index)[1]
+                scope = getattr(builder, "scope", ())
+                for chose, a, b in chosen:
+                    if isinstance(chose, int):
+                        stack[chose] = chosen_value(self, value, a, b, "", line, scope)
+                    else:
+                        merged[chose] = chosen_value(self, value, a, b, chose, line, scope)
+            for cell, alias in aliases:
+                out = merged[alias]
+                cell.value = out
+                out.chan = cell
+            # A channel first acquired in one arm is not held after the if.
+            if len(held) != held_count:
+                _restore_channels(held, held_count, ())
+        finally:
+            lines.journal = outer
+            self.__class__ = tracer
         if outer is not None:
             # The channels held before this if, for the if around it.
             for cell in journal:
@@ -2657,7 +2680,8 @@ class PulseIREmitter:
         *snapshot* of containers the arm starts with, the first are copied and
         the others (each with its length) are copied when first changed."""
         containers, lazy = snapshot
-        returns = join >= len(view.instrs)
+        end = len(view.instrs)
+        returns = join >= end
         # An arm may only move forward from the branch, except that a join at
         # an enclosing loop header (both arms continue) ends the arm.
         if join < branch:
@@ -2677,7 +2701,7 @@ class PulseIREmitter:
             around = getattr(lines, "watched", ())
             lines.watched = ((mutated, tuple(obj for obj, _ in lazy)), *around)
         try:
-            outcome = self._loop(view, start, branch, len(view.instrs), header)
+            outcome = self._loop(view, start, branch, end, header)
         except _NotRollableError:
             from ._conditions import rejoin_error
 
@@ -2792,7 +2816,6 @@ class PulseIREmitter:
             if isinstance(v, (list, dict))
         ]
         lines = self._lines
-        journal = lines.journal
         # Each channel value entering the loop, as (cell, value).
         held = lines.held
         held_count = len(held)
@@ -2856,8 +2879,6 @@ class PulseIREmitter:
             ok = False
         finally:
             self._mutated = outer
-            # The journal of an if the body raised out of, put back.
-            lines.journal = journal
             if outer is not None:
                 for key, entry in mutated.items():
                     outer.setdefault(key, entry)
@@ -4006,8 +4027,6 @@ class PulseIREmitter:
                 continue
             name, op_val, slot, chan = unclaimed[res.vtype].pop()
             if chan is not None and chan.value is op_val:
-                if self._lines.journal is not None and chan not in self._lines.journal:
-                    self._lines.journal[chan] = op_val
                 chan.value = res
                 res.chan = chan
                 if chan.shared:
@@ -4032,19 +4051,7 @@ class PulseIREmitter:
                 obj[i] = value
         elif isinstance(obj, list):
             obj[:] = copy
-            if (
-                len(copy) > 8
-                and obj.__class__ is list
-                and set(map(type, copy)) == {IRValue}
-                and LINEAR_TYPES.issuperset(map(operator.attrgetter("vtype"), copy))
-            ):
-                # Lines or tones only, as a measurement-conditioned if restores
-                # a list of them: every slot at once. A subclass is read by
-                # index (its own len() and indexing run).
-                entries = zip(itertools.repeat(obj), itertools.count(), copy, strict=False)
-                self._slots.update(zip(map(id, copy), entries, strict=False))
-            else:
-                self._track_slots(obj, 0)
+            self._track_slots(obj, 0)
         elif isinstance(obj, (dict, set)):
             obj.clear()
             obj.update(copy)
@@ -4084,13 +4091,6 @@ class PulseIREmitter:
         them are found in one pass over the locals."""
         chan = old.chan
         chan2 = old2.chan
-        if self._lines.journal is not None:
-            # Noted for _rebind_one too, which only this calls.
-            journal = self._lines.journal
-            if chan is not None and chan not in journal:
-                journal[chan] = chan.value
-            if chan2 is not None and chan2 not in journal:
-                journal[chan2] = chan2.value
         if (chan is not None and chan.shared) or (chan2 is not None and chan2.shared):
             self._rebind_one(old, new)
             self._rebind_one(old2, new2)
@@ -4162,24 +4162,14 @@ def _slot_changes(
             if not _container_unchanged(obj, copy):
                 return None
             continue
-        if obj.__class__ is list:
-            # Only the places that differ are read again.
-            for i in itertools.compress(itertools.count(), map(operator.is_not, obj, copy)):
-                new = obj[i]
-                old = copy[i]
-                if not (
-                    isinstance(new, IRValue)
-                    and isinstance(old, IRValue)
-                    and new.vtype == old.vtype
-                    and new.vtype in LINEAR_TYPES
-                ):
-                    return None
-                changes.append((obj, i, new))
+        if obj.__class__ is not list:
+            if not _subclass_slot_changes(obj, copy, changes):
+                return None
             continue
-        # A subclass is read as it iterates, once.
-        for i, (new, old) in enumerate(zip(obj, copy, strict=False)):
-            if new is old:
-                continue
+        # Only the places that differ are read again.
+        for i in compress(count(), map(_IS_NOT, obj, copy)):
+            new = obj[i]
+            old = copy[i]
             if not (
                 isinstance(new, IRValue)
                 and isinstance(old, IRValue)
@@ -4189,6 +4179,23 @@ def _slot_changes(
                 return None
             changes.append((obj, i, new))
     return changes
+
+
+def _subclass_slot_changes(obj: list[Any], copy: list[Any], changes: list[Any]) -> bool:
+    """``_slot_changes`` of a list subclass, read as it iterates, once: False
+    for any change but a linear value replaced."""
+    for i, (new, old) in enumerate(zip(obj, copy, strict=False)):
+        if new is old:
+            continue
+        if not (
+            isinstance(new, IRValue)
+            and isinstance(old, IRValue)
+            and new.vtype == old.vtype
+            and new.vtype in LINEAR_TYPES
+        ):
+            return False
+        changes.append((obj, i, new))
+    return True
 
 
 def _stale_names(
@@ -4240,13 +4247,6 @@ def _qudit_names(
         if v.vtype == "qref":
             (moved if count and n in before else fixed).append(n)
     return fixed, moved
-
-
-_FIRST = operator.itemgetter(0)
-
-
-# Where a cell is in ``_channel_values``: its channel's place, then its own.
-_CELL_ORDER = operator.attrgetter("held.seq", "index")
 
 
 def _channel_values(held: dict[tuple[int, str], _Held]) -> list[tuple[_Chan, IRValue]]:
