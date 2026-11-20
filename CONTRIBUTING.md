@@ -220,7 +220,8 @@ on two measures:
   on Linux x86-64. A case fails at more than 0.4% above its baseline. It
   also fails at more than 1% below, so that a speedup is recorded in the
   baseline instead of hiding a later regression. A failure says whether it
-  is a regression, a gain or layout only (below).
+  is a regression, a gain or layout only (below). Layout only that the
+  change itself caused passes (below).
 - **Program sizes**: op count, packed program bytes and export bytes. Any
   change fails. These are the same on every platform, and
   `tests/test_perf_gate.py` checks them in the regular test suite too.
@@ -305,6 +306,23 @@ instructions says its kind, and the summary counts them by kind:
 A regression or a gain lists each counter of Python work that changed, or,
 with the same work, says the change is in native code. Every kind fails. A
 baseline without Python work tells only regressions from gains.
+
+**Base comparison.** A count also moves with the code merged before a
+change, so the job compares a layout only row with the change's base (a
+pull request's base, or the previous tip of a push to main). If the change
+keeps the base's measured code, it touches only the package's Python
+sources and files the job never reads (tests, docs, examples, other
+workflows than `ci.yml`, the baselines; `pyproject.toml` and `uv.lock` only
+outside what the job builds), the gate checks out the base's
+`core/frontend` over the tree's and measures it on the same build. A row
+whose case ran the same Python work there, and whose count the change moved
+by at most 0.95% either way from the base's, passes as `layout`, with a
+notice. Native code, build files, `ci.yml`, the gate and its cases are
+measured code: such a change, or one git cannot compare, is judged by the
+limits. A gain that passes this way isn't kept, and hidden native work
+behind the same Python calls passes below 0.95% per change (up to 2% from
+the baseline). `python tools/perf-gate.py --help` (base comparison) has the
+details.
 
 Wall-clock times are informational only: shared runners are too noisy to
 block on. The test job still reports `tests/test_perf_guard.py`'s
