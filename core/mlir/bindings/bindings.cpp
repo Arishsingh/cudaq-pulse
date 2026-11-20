@@ -2695,6 +2695,7 @@ simulationProgram(mlir::ModuleOp source) {
   if (pulse::LineGrid(clocks).enabled() ||
       (clocks.system && clocks.system.getControllers().size() > 1) ||
       clocks.delayed() || pulse::programBudget(module) ||
+      module->hasAttr("pulse.program_limits") ||
       pulse::persistentFrames(module) || pulse::blocksOnCalls(module))
     return program;
   mlir::WalkResult unsupported = main.walk([](mlir::Operation *op) {
@@ -4982,7 +4983,7 @@ private:
         policy,
         rcp ? maxDrives : 0,
         rcp ? maxReadouts : 0,
-        rcp ? readoutLatency : 0,
+        readoutLatency,
         rcp ? switchPenalty : 0,
         checkCalls && classical::declaresClassicalCalls(module),
         frameChanges ? *frameChanges : pulse::hasFrameChangeWork(module)};
@@ -5002,10 +5003,10 @@ private:
            checkCalls, frameChanges] = options;
     if (policy == "asap")
       pm.addNestedPass<mlir::func::FuncOp>(
-          pulse::createPulseScheduleAsapPass());
+          pulse::createPulseScheduleAsapPass(readoutLatency));
     else if (policy == "alap")
       pm.addNestedPass<mlir::func::FuncOp>(
-          pulse::createPulseScheduleAlapPass());
+          pulse::createPulseScheduleAlapPass(readoutLatency));
     else if (policy == "rcp" || policy == "alap_rcp")
       pm.addNestedPass<mlir::func::FuncOp>(pulse::createPulseScheduleRcpPass(
           maxDrives, maxReadouts, readoutLatency, switchPenalty,
@@ -5013,7 +5014,7 @@ private:
     else
       throw std::invalid_argument("unknown schedule policy: " + policy);
     if (checkCalls)
-      pm.addPass(pulse::createPulseClassicalCheckPass());
+      pm.addPass(pulse::createPulseClassicalCheckPass(readoutLatency));
     addAfterSchedulePasses(pm, frameChanges);
   }
 

@@ -316,3 +316,317 @@ func.func @sync_in_block() {
   }
   return
 }
+
+// A block that reads a bit and changes a tone's phase on it hands the
+// tone out once the readout has ended, as the flat schedule does: the drive
+// after the block plays the chosen phase. Before, the tone was taken to pass
+// through the block unchanged and the drive started at 0 (asap) or 360
+// (alap), before the readout ended at 400.
+// CHECK-LABEL: func.func @bit_read_in_block
+// CHECK: pulse.readout {{.*}}<{duration_cycles = 400 : i64, start_cycles = 0 : i64}>
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 400 : i64}>
+// FLAT-ASAP-LABEL: func.func @bit_read_in_block
+// FLAT-ASAP: pulse.readout {{.*}}<{duration_cycles = 400 : i64, start_cycles = 0 : i64}>
+// FLAT-ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 400 : i64}>
+// FLAT-ALAP-LABEL: func.func @bit_read_in_block
+// FLAT-ALAP: pulse.readout {{.*}}<{duration_cycles = 400 : i64, start_cycles = 0 : i64}>
+// FLAT-ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 400 : i64}>
+func.func @bit_read_in_block() {
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %r0, %tr0 = pulse.get_readout_line %q : (!pulse.qudit) -> (!r, !t)
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!d, !t)
+  %amp = arith.constant 0.1 : f64
+  %zero = arith.constant 0.0 : f64
+  %phi = arith.constant 3.14 : f64
+  %c400 = arith.constant 400 : i64
+  %c40 = arith.constant 40 : i64
+  %ro = pulse.square %c400, %amp, %zero : i64, f64, f64 -> !w
+  %x40 = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !w
+  %r1, %tr1, %t1 = pulse.schedule_block asap (%r0, %tr0, %t0) : (!r, !t, !t) -> (!r, !t, !t) {
+  ^bb0(%r: !r, %tr: !t, %t: !t):
+    %r2, %tr2, %m = pulse.readout %r, %ro, %tr, discriminated : !r, !w, !t -> !r, !t, !m
+    %bit = pulse.is_set %m : !m -> i1
+    %t2 = scf.if %bit -> (!t) {
+      %t3 = pulse.shift_phase %t, %phi : !t, f64 -> !t
+      scf.yield %t3 : !t
+    } else {
+      scf.yield %t : !t
+    }
+    pulse.yield %r2, %tr2, %t2 : !r, !t, !t
+  }
+  %d1, %t4 = pulse.drive %d0, %x40, %t1 : !d, !w, !t -> !d, !t
+  return
+}
+
+// A measured bit passed into a block that changes a phase on it: the
+// branch's result counts as a use of the bit, so the block waits for the
+// readout. Before, the drive started at 0 (asap) or 360 (alap).
+// CHECK-LABEL: func.func @bit_passed_in
+// CHECK: pulse.readout {{.*}}<{duration_cycles = 400 : i64, start_cycles = 0 : i64}>
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 400 : i64}>
+// FLAT-ASAP-LABEL: func.func @bit_passed_in
+// FLAT-ASAP: pulse.readout {{.*}}<{duration_cycles = 400 : i64, start_cycles = 0 : i64}>
+// FLAT-ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 400 : i64}>
+// FLAT-ALAP-LABEL: func.func @bit_passed_in
+// FLAT-ALAP: pulse.readout {{.*}}<{duration_cycles = 400 : i64, start_cycles = 0 : i64}>
+// FLAT-ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 400 : i64}>
+func.func @bit_passed_in() {
+  %q0 = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %q1 = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %r0, %tr0 = pulse.get_readout_line %q0 : (!pulse.qudit) -> (!r, !t)
+  %d0, %t0 = pulse.get_drive_line %q1 : (!pulse.qudit) -> (!d, !t)
+  %amp = arith.constant 0.1 : f64
+  %zero = arith.constant 0.0 : f64
+  %phi = arith.constant 3.14 : f64
+  %c400 = arith.constant 400 : i64
+  %c40 = arith.constant 40 : i64
+  %ro = pulse.square %c400, %amp, %zero : i64, f64, f64 -> !w
+  %x40 = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !w
+  %r1, %tr1, %m = pulse.readout %r0, %ro, %tr0, discriminated : !r, !w, !t -> !r, !t, !m
+  %d1, %t1 = pulse.schedule_block asap (%m, %d0, %t0) : (!m, !d, !t) -> (!d, !t) {
+  ^bb0(%bm: !m, %d: !d, %t: !t):
+    %bit = pulse.is_set %bm : !m -> i1
+    %t2 = scf.if %bit -> (!t) {
+      %t3 = pulse.shift_phase %t, %phi : !t, f64 -> !t
+      scf.yield %t3 : !t
+    } else {
+      scf.yield %t : !t
+    }
+    %d2, %t4 = pulse.drive %d, %x40, %t2 : !d, !w, !t -> !d, !t
+    pulse.yield %d2, %t4 : !d, !t
+  }
+  return
+}
+
+// The same bit is branched on again at local 504. The first use is still
+// the drive at local 0 on the changed tone: the block, placed whole, waits
+// for the readout. Before, 504 was taken as the first use and the drive
+// started at 0, before the readout ended at 400 (asap) or 504 (alap).
+// CHECK-LABEL: func.func @bit_passed_in_used_later
+// CHECK: pulse.readout {{.*}}<{duration_cycles = 400 : i64, start_cycles = 0 : i64}>
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 400 : i64}>
+// CHECK: pulse.wait {{.*}}<{duration_cycles = 504 : i64, start_cycles = 400 : i64}>
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 904 : i64}>
+// FLAT-ASAP-LABEL: func.func @bit_passed_in_used_later
+// FLAT-ASAP: pulse.readout {{.*}}<{duration_cycles = 400 : i64, start_cycles = 0 : i64}>
+// FLAT-ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 400 : i64}>
+// FLAT-ASAP: pulse.wait {{.*}}<{duration_cycles = 504 : i64, start_cycles = 0 : i64}>
+// FLAT-ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 504 : i64}>
+// FLAT-ALAP-LABEL: func.func @bit_passed_in_used_later
+// FLAT-ALAP: pulse.readout {{.*}}<{duration_cycles = 400 : i64, start_cycles = 104 : i64}>
+// FLAT-ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 504 : i64}>
+// FLAT-ALAP: pulse.wait {{.*}}<{duration_cycles = 504 : i64, start_cycles = 0 : i64}>
+// FLAT-ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 504 : i64}>
+func.func @bit_passed_in_used_later() {
+  %q0 = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %q1 = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %r0, %tr0 = pulse.get_readout_line %q0 : (!pulse.qudit) -> (!r, !t)
+  %d0, %t0 = pulse.get_drive_line %q1 : (!pulse.qudit) -> (!d, !t)
+  %e0, %te0 = pulse.get_drive_line %q0 : (!pulse.qudit) -> (!d, !t)
+  %amp = arith.constant 0.1 : f64
+  %zero = arith.constant 0.0 : f64
+  %phi = arith.constant 3.14 : f64
+  %c400 = arith.constant 400 : i64
+  %c40 = arith.constant 40 : i64
+  %c504 = arith.constant 504 : i64
+  %w504 = pulse.duration_from_int %c504 : (i64) -> !pulse.duration
+  %ro = pulse.square %c400, %amp, %zero : i64, f64, f64 -> !w
+  %x40 = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !w
+  %r1, %tr1, %m = pulse.readout %r0, %ro, %tr0, discriminated : !r, !w, !t -> !r, !t, !m
+  %d1, %t1, %e1, %te1 = pulse.schedule_block asap (%m, %d0, %t0, %e0, %te0) : (!m, !d, !t, !d, !t) -> (!d, !t, !d, !t) {
+  ^bb0(%bm: !m, %d: !d, %t: !t, %e: !d, %te: !t):
+    %bit = pulse.is_set %bm : !m -> i1
+    %t2 = scf.if %bit -> (!t) {
+      %t3 = pulse.shift_phase %t, %phi : !t, f64 -> !t
+      scf.yield %t3 : !t
+    } else {
+      scf.yield %t : !t
+    }
+    %d2, %t4 = pulse.drive %d, %x40, %t2 : !d, !w, !t -> !d, !t
+    %e2 = pulse.wait %e, %w504 : (!d, !pulse.duration) -> !d
+    %e3, %te3 = scf.if %bit -> (!d, !t) {
+      %e4, %te4 = pulse.drive %e2, %x40, %te : !d, !w, !t -> !d, !t
+      scf.yield %e4, %te4 : !d, !t
+    } else {
+      scf.yield %e2, %te : !d, !t
+    }
+    pulse.yield %d2, %t4, %e3, %te3 : !d, !t, !d, !t
+  }
+  return
+}
+
+// A loop in a block branches on a measurement carried two trips deep
+// (a = b; b = readout): the last trip branches on the readout of trip 5,
+// which ends at 2480. The block hands the tone out after it, as the flat
+// schedule does. Before, the shape took the last trip's condition from the
+// first trips and the drive started at 0 (asap), before that readout ended.
+// ASAP-LABEL: func.func @carried_two_deep
+// ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 2480 : i64}>
+// ALAP-LABEL: func.func @carried_two_deep
+// ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 3240 : i64}>
+// FLAT-ASAP-LABEL: func.func @carried_two_deep
+// FLAT-ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 2480 : i64}>
+// FLAT-ALAP-LABEL: func.func @carried_two_deep
+// FLAT-ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 3240 : i64}>
+func.func @carried_two_deep() {
+  %q0 = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %q1 = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %r0, %tr0 = pulse.get_readout_line %q0 : (!pulse.qudit) -> (!r, !t)
+  %d0, %t0 = pulse.get_drive_line %q1 : (!pulse.qudit) -> (!d, !t)
+  %amp = arith.constant 0.1 : f64
+  %zero = arith.constant 0.0 : f64
+  %phi = arith.constant 3.14 : f64
+  %c400 = arith.constant 400 : i64
+  %c40 = arith.constant 40 : i64
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 8 : index
+  %st = arith.constant 1 : index
+  %ro = pulse.square %c400, %amp, %zero : i64, f64, f64 -> !w
+  %x40 = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !w
+  %r1, %tr1, %t1 = pulse.schedule_block asap (%r0, %tr0, %t0) : (!r, !t, !t) -> (!r, !t, !t) {
+  ^bb0(%r: !r, %tr: !t, %t: !t):
+    %ra, %tra, %a = pulse.readout %r, %x40, %tr, discriminated : !r, !w, !t -> !r, !t, !m
+    %rb, %trb, %b = pulse.readout %ra, %x40, %tra, discriminated : !r, !w, !t -> !r, !t, !m
+    %rl, %trl, %tl, %al, %bl = scf.for %i = %lb to %ub step %st iter_args(%ri = %rb, %tri = %trb, %ti = %t, %ai = %a, %bi = %b) -> (!r, !t, !t, !m, !m) {
+      %bit = pulse.is_set %ai : !m -> i1
+      %t2 = scf.if %bit -> (!t) {
+        %t3 = pulse.shift_phase %ti, %phi : !t, f64 -> !t
+        scf.yield %t3 : !t
+      } else {
+        scf.yield %ti : !t
+      }
+      %rn, %trn, %mn = pulse.readout %ri, %ro, %tri, discriminated : !r, !w, !t -> !r, !t, !m
+      scf.yield %rn, %trn, %t2, %bi, %mn : !r, !t, !t, !m, !m
+    }
+    pulse.yield %rl, %trl, %tl : !r, !t, !t
+  }
+  %d1, %t4 = pulse.drive %d0, %x40, %t1 : !d, !w, !t -> !d, !t
+  return
+}
+
+// Three trips deep: the last trip branches on the readout of trip 4, which
+// ends at 2120. Before, the drive started at 0 (asap).
+// ASAP-LABEL: func.func @carried_three_deep
+// ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 2120 : i64}>
+// ALAP-LABEL: func.func @carried_three_deep
+// ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 3280 : i64}>
+// FLAT-ASAP-LABEL: func.func @carried_three_deep
+// FLAT-ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 2120 : i64}>
+// FLAT-ALAP-LABEL: func.func @carried_three_deep
+// FLAT-ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 3280 : i64}>
+func.func @carried_three_deep() {
+  %q0 = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %q1 = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %r0, %tr0 = pulse.get_readout_line %q0 : (!pulse.qudit) -> (!r, !t)
+  %d0, %t0 = pulse.get_drive_line %q1 : (!pulse.qudit) -> (!d, !t)
+  %amp = arith.constant 0.1 : f64
+  %zero = arith.constant 0.0 : f64
+  %phi = arith.constant 3.14 : f64
+  %c400 = arith.constant 400 : i64
+  %c40 = arith.constant 40 : i64
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 8 : index
+  %st = arith.constant 1 : index
+  %ro = pulse.square %c400, %amp, %zero : i64, f64, f64 -> !w
+  %x40 = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !w
+  %r1, %tr1, %t1 = pulse.schedule_block asap (%r0, %tr0, %t0) : (!r, !t, !t) -> (!r, !t, !t) {
+  ^bb0(%r: !r, %tr: !t, %t: !t):
+    %ra, %tra, %a = pulse.readout %r, %x40, %tr, discriminated : !r, !w, !t -> !r, !t, !m
+    %rb, %trb, %b = pulse.readout %ra, %x40, %tra, discriminated : !r, !w, !t -> !r, !t, !m
+    %rc, %trc, %c = pulse.readout %rb, %x40, %trb, discriminated : !r, !w, !t -> !r, !t, !m
+    %rl, %trl, %tl, %al, %bl, %cl = scf.for %i = %lb to %ub step %st iter_args(%ri = %rc, %tri = %trc, %ti = %t, %ai = %a, %bi = %b, %ci = %c) -> (!r, !t, !t, !m, !m, !m) {
+      %bit = pulse.is_set %ai : !m -> i1
+      %t2 = scf.if %bit -> (!t) {
+        %t3 = pulse.shift_phase %ti, %phi : !t, f64 -> !t
+        scf.yield %t3 : !t
+      } else {
+        scf.yield %ti : !t
+      }
+      %rn, %trn, %mn = pulse.readout %ri, %ro, %tri, discriminated : !r, !w, !t -> !r, !t, !m
+      scf.yield %rn, %trn, %t2, %bi, %ci, %mn : !r, !t, !t, !m, !m, !m
+    }
+    pulse.yield %rl, %trl, %tl : !r, !t, !t
+  }
+  %d1, %t4 = pulse.drive %d0, %x40, %t1 : !d, !w, !t -> !d, !t
+  return
+}
+
+// No readout: a loop in a block plays on the first of three tones and
+// rotates them, 7 trips. The block hands out tone b (last played in trip 4,
+// ending at 200), tone c (trip 5, 240) and tone a (trip 6, 280). Before,
+// the drive on tone b started at 0 and the one on tone c at 40, while the
+// block still played them.
+// ASAP-LABEL: func.func @tones_rotated_in_block
+// ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 200 : i64}>
+// ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 240 : i64}>
+// ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 280 : i64}>
+func.func @tones_rotated_in_block() {
+  %qa = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %qb = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %qc = pulse.qudit_alloc {qudit = 2 : i64} : !pulse.qudit
+  %a0, %ta0 = pulse.get_drive_line %qa : (!pulse.qudit) -> (!d, !t)
+  %b0, %tb0 = pulse.get_drive_line %qb : (!pulse.qudit) -> (!d, !t)
+  %c0, %tc0 = pulse.get_drive_line %qc : (!pulse.qudit) -> (!d, !t)
+  %amp = arith.constant 0.1 : f64
+  %zero = arith.constant 0.0 : f64
+  %c40 = arith.constant 40 : i64
+  %x40 = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !w
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 7 : index
+  %st = arith.constant 1 : index
+  %a5, %x5, %y5, %z5 = pulse.schedule_block asap (%a0, %ta0, %tb0, %tc0) : (!d, !t, !t, !t) -> (!d, !t, !t, !t) {
+  ^bb0(%a: !d, %x: !t, %y: !t, %z: !t):
+    %l, %p, %q, %r = scf.for %i = %lb to %ub step %st iter_args(%l1 = %a, %p1 = %x, %q1 = %y, %r1 = %z) -> (!d, !t, !t, !t) {
+      %l2, %p2 = pulse.drive %l1, %x40, %p1 : !d, !w, !t -> !d, !t
+      scf.yield %l2, %q1, %r1, %p2 : !d, !t, !t, !t
+    }
+    pulse.yield %l, %p, %q, %r : !d, !t, !t, !t
+  }
+  %b1, %t1 = pulse.drive %b0, %x40, %x5 : !d, !w, !t -> !d, !t
+  %c1, %t2 = pulse.drive %c0, %x40, %y5 : !d, !w, !t -> !d, !t
+  %b2, %t3 = pulse.drive %b1, %x40, %z5 : !d, !w, !t -> !d, !t
+  return
+}
+
+// No readout: a loop in a block passes two tones to each other, 9 trips,
+// so the second result is the first operand, busy until 200. The shape
+// skips trips; when they are not a whole number of swaps it takes the
+// later of the two tones, so the block also waits for both (alap places it
+// at 200, its drive at 520, later than the flat 320). Before, the drive on
+// the second result started at 0 (asap).
+// ASAP-LABEL: func.func @tones_swapped_in_block
+// ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 200 : i64}>
+// ALAP-LABEL: func.func @tones_swapped_in_block
+// ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 520 : i64}>
+// FLAT-ASAP-LABEL: func.func @tones_swapped_in_block
+// FLAT-ASAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 200 : i64}>
+// FLAT-ALAP-LABEL: func.func @tones_swapped_in_block
+// FLAT-ALAP: pulse.drive {{.*}}<{duration_cycles = 40 : i64, start_cycles = 320 : i64}>
+func.func @tones_swapped_in_block() {
+  %qa = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %qb = pulse.qudit_alloc {qudit = 1 : i64} : !pulse.qudit
+  %qc = pulse.qudit_alloc {qudit = 2 : i64} : !pulse.qudit
+  %a0, %ta0 = pulse.get_drive_line %qa : (!pulse.qudit) -> (!d, !t)
+  %b0, %tb0 = pulse.get_drive_line %qb : (!pulse.qudit) -> (!d, !t)
+  %c0, %tc0 = pulse.get_drive_line %qc : (!pulse.qudit) -> (!d, !t)
+  %amp = arith.constant 0.1 : f64
+  %zero = arith.constant 0.0 : f64
+  %c40 = arith.constant 40 : i64
+  %c200 = arith.constant 200 : i64
+  %x40 = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !w
+  %x200 = pulse.square %c200, %amp, %zero : i64, f64, f64 -> !w
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 9 : index
+  %st = arith.constant 1 : index
+  %a1, %ta1 = pulse.drive %a0, %x200, %ta0 : !d, !w, !t -> !d, !t
+  %c5, %tc5, %x5, %y5 = pulse.schedule_block asap (%c0, %tc0, %ta1, %tb0) : (!d, !t, !t, !t) -> (!d, !t, !t, !t) {
+  ^bb0(%c: !d, %tc: !t, %x: !t, %y: !t):
+    %l, %w, %p, %q = scf.for %i = %lb to %ub step %st iter_args(%l1 = %c, %w1 = %tc, %p1 = %x, %q1 = %y) -> (!d, !t, !t, !t) {
+      %l2, %w2 = pulse.drive %l1, %x40, %w1 : !d, !w, !t -> !d, !t
+      scf.yield %l2, %w2, %q1, %p1 : !d, !t, !t, !t
+    }
+    pulse.yield %l, %w, %p, %q : !d, !t, !t, !t
+  }
+  %b1, %t1 = pulse.drive %b0, %x40, %y5 : !d, !w, !t -> !d, !t
+  return
+}

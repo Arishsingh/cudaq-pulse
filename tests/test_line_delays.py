@@ -10,7 +10,7 @@ import json
 
 import cudaq_pulse as pulse
 import pytest
-from cudaq_pulse.controller import ControllerLimitError, DriveLine, ReadoutLine
+from cudaq_pulse.controller import DriveLine, ReadoutLine
 
 from tests._handles import Q
 
@@ -179,14 +179,20 @@ def test_moved_lines_are_checked_like_any_others():
     assert pulse.compile(feedback, schedule="rcp", control_system=machine).lower(Q[0], Q[1])
     later = _delayed({("drive", 1): 5.0}, feedback_latency_cycles=20)
     assert pulse.compile(feedback, schedule="rcp", control_system=later).lower(Q[0], Q[1])
-    # The readout ends 10 cycles later: rcp waits for it, and a schedule that
-    # does not is too close to the branch on it.
+    # The readout ends 10 cycles later: every schedule waits for it.
     late_readout = _delayed({("readout", 0): 5.0}, feedback_latency_cycles=20)
-    lowered = pulse.compile(feedback, schedule="rcp", control_system=late_readout).lower(Q[0], Q[1])
-    readout, drive = lowered.schedule
-    assert (readout.end, drive.start) == (110, 130)
-    with pytest.raises(ControllerLimitError, match="ending at 110; the controller needs 20"):
-        pulse.compile(feedback, schedule="asap", control_system=late_readout).lower(Q[0], Q[1])
+    for schedule in ("rcp", "asap", "alap"):
+        lowered = pulse.compile(feedback, schedule=schedule, control_system=late_readout).lower(
+            Q[0], Q[1]
+        )
+        readout, drive = lowered.schedule
+        assert (readout.end, drive.start) == (110, 130)
+    # A schedule made without the latency is too close to the branch on it.
+    early = pulse.compile(
+        feedback, schedule="asap", control_system=_delayed({("readout", 0): 5.0})
+    ).lower(Q[0], Q[1])
+    [message] = pulse.controller.check(early, late_readout.controllers[0])
+    assert "ending at 110; the controller needs 20" in message
 
 
 # ── Scheduling again ─────────────────────────────────────────────────────────

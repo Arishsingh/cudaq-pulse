@@ -259,7 +259,8 @@ enum class Carried : uint8_t {
   Untimed,
   /// Must advance by the loop's period every iteration.
   Timed,
-  /// A tone that no pulse in the body plays on keeps its time.
+  /// A tone that no pulse in the body plays on keeps its time (also a link,
+  /// and, backward, a measurement the body reads).
   Tone,
 };
 
@@ -1161,8 +1162,7 @@ public:
             const Timelines *timelines = nullptr)
       : region(&region), resources(resources), classical(classical),
         lanesPer(timelines && timelines->count > 1 ? timelines : nullptr),
-        grid(grid),
-        controllers(resources.enabled ? controllers : pulse::Controllers()) {
+        grid(grid), controllers(controllers) {
     auto module = region.getParentOp()->getParentOfType<mlir::ModuleOp>();
     if (module && pulse::blocksOnCalls(module))
       holdControllers(pulse::controlSystemOf(module), controllers);
@@ -1369,6 +1369,42 @@ private:
   int64_t readerOf(mlir::Value measurement) {
     auto readout = measurement.getDefiningOp<pulse::ReadoutOp>();
     return readout ? controllerOf(readout) : -1;
+  }
+
+  /// The controllers the ops of schedule block `block` play on (-1: one
+  /// not known), as the flat schedule finds each op's.
+  llvm::ArrayRef<int64_t> playersOf(pulse::ScheduleBlockOp block) {
+    auto [it, inserted] = blockPlayers.try_emplace(block.getOperation());
+    auto &players = it->second;
+    if (inserted)
+      block.getBody().walk([&](mlir::Operation *op) {
+        if (!isTimedOp(op))
+          return;
+        int64_t owner = controllerOf(op);
+        if (!llvm::is_contained(players, owner))
+          players.push_back(owner);
+      });
+    return players;
+  }
+
+  /// On several controllers, the outcomes block input `input` carries (a
+  /// measurement, or a value computed from one or from an answer), each
+  /// with how much later than on its reader it is usable on every
+  /// controller `block` plays on, as the flat schedule waits for each op
+  /// in a branch on it.
+  llvm::SmallVector<std::pair<mlir::Value, int64_t>, 2>
+  carriedOutcomes(pulse::ScheduleBlockOp block, mlir::Value input) {
+    llvm::SmallVector<std::pair<mlir::Value, int64_t>, 2> found;
+    if (!several() || isLineType(input.getType()) ||
+        mlir::isa<pulse::ToneType>(input.getType()))
+      return found;
+    for (mlir::Value measurement : conditionMeasurements(input)) {
+      int64_t reader = readerOf(measurement), most = 0;
+      for (int64_t player : playersOf(block))
+        most = std::max(most, controllers.extra(reader, player));
+      found.push_back({measurement, most});
+    }
+    return found;
   }
 
   /// How much later than scheduled the readout `op` ends once its line is
@@ -2831,8 +2867,12 @@ private:
     int64_t t = timelineOf(block);
     int64_t start = floorOf(t);
     for (auto [input, offset] : llvm::zip(inputs, shape.in))
-      if (offset >= 0)
+      if (offset >= 0) {
         start = std::max(start, ready(input) - offset);
+        // An outcome reaches the block's other controllers later.
+        for (auto [measurement, extra] : carriedOutcomes(block, input))
+          start = std::max(start, ready(measurement) + extra - offset);
+      }
     // A block placed whole is held on every controller.
     if (holding())
       start = std::max(start, *llvm::max_element(heldFloors));
@@ -3516,8 +3556,11 @@ private:
     record(block, start);
     armStart = std::min(armStart, start);
     for (auto [input, offset] : llvm::zip(inputs, shape.in))
-      if (offset >= 0)
+      if (offset >= 0) {
         bound(input, start + offset);
+        for (auto [measurement, extra] : carriedOutcomes(block, input))
+          bound(measurement, start + offset - extra);
+      }
   }
 
   mlir::LogicalResult backwardLoop(mlir::scf::ForOp loop) {
@@ -3545,9 +3588,13 @@ private:
     });
     llvm::SmallVector<Carried> kinds;
     llvm::SmallVector<int64_t> carried;
-    for (mlir::Value result : loop.getResults()) {
-      kinds.push_back(
-          carriedKind(result.getType(), isLineType(result.getType())));
+    for (auto [arg, result] : llvm::zip(args, loop.getResults())) {
+      mlir::Type type = result.getType();
+      // A measurement the body reads is due by the next iteration's use of
+      // it, so it moves with the loop, as a tone does, when that use moves.
+      bool due = mlir::isa<pulse::MeasurementType>(type) && !arg.use_empty();
+      kinds.push_back(due ? Carried::Tone
+                          : carriedKind(type, isLineType(type)));
       carried.push_back(late(result));
     }
 
@@ -3896,6 +3943,8 @@ private:
   Resources resources;
   llvm::DenseMap<mlir::Value, int64_t> readyAt;
   llvm::DenseMap<mlir::Value, int64_t> lateAt;
+  /// The controllers each schedule block plays on (playersOf).
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<int64_t, 2>> blockPlayers;
   /// Per branch condition, on several controllers: answerGroup, and the
   /// groups each measurement is in (group, slot of its reader);
   /// conditionReadyOf.
@@ -4362,11 +4411,15 @@ private:
       return;
     }
     if (op->getNumRegions() > 0) {
-      // A branch condition: both arms wait for it.
+      // A branch condition: both arms wait for it, and so does whatever
+      // reads what the branch yields (a tone an arm changes without a timed
+      // op), as in the flat schedule.
       op->walk([&](mlir::Operation *inner) {
         if (isTimedOp(inner))
           note(inner);
       });
+      for (mlir::Value result : op->getResults())
+        visitUses(result);
       return;
     }
     for (mlir::Value result : op->getResults())
@@ -4378,6 +4431,63 @@ private:
   int64_t earliest = kNever;
 };
 
+/// When a block's readout's outcome is usable: `latency` cycles after the
+/// readout ends on its line, delayed by `delays` (by qudit, see
+/// Resources::readoutDelays).
+struct Readiness {
+  int64_t latency = 0;
+  llvm::ArrayRef<int64_t> delays;
+  /// On several controllers, their latencies: an outcome a branch yields
+  /// values under reaches the other controllers later.
+  const pulse::Controllers *controllers = nullptr;
+
+  /// How much later than on its reader the outcome of `measurement` is
+  /// usable on every controller, as the flat schedule's branches on it
+  /// yield (a measurement not read out in the block: of any reader).
+  int64_t peerOf(mlir::Value measurement,
+                 pulse::AllocationTracer &trace) const {
+    if (!controllers)
+      return 0;
+    auto readout = measurement.getDefiningOp<pulse::ReadoutOp>();
+    int64_t reader =
+        readout ? controllers->of(readout->getOperand(0), trace) : -1;
+    return controllers->extra(reader, -1);
+  }
+
+  int64_t delayOf(mlir::Operation *op, pulse::AllocationTracer &trace) const {
+    if (delays.empty())
+      return 0;
+    mlir::Operation *allocation = trace(op->getOperand(0));
+    int64_t qudit = allocation ? pulse::quditOf(allocation) : -1;
+    if (qudit < 0 || qudit >= static_cast<int64_t>(delays.size()))
+      return 0;
+    return delays[qudit];
+  }
+};
+
+/// The feedback latency every readout waits under `resources`: on several
+/// `controllers`, the longest any controller waits for its own.
+static int64_t readoutLatencyOf(const Resources &resources,
+                                const pulse::Controllers &controllers) {
+  return controllers.enabled() ? controllers.own(-1) : resources.readoutLatency;
+}
+
+/// What a schedule block keeps of its caller's `resources`: the feedback
+/// latency and the readout lines' delays (rcp's lanes refuse blocks).
+static Resources latencyOf(const Resources &resources) {
+  Resources kept;
+  kept.readoutLatency = resources.readoutLatency;
+  kept.readoutDelays = resources.readoutDelays;
+  return kept;
+}
+
+static Readiness readinessOf(const Resources &resources,
+                             const pulse::Controllers &controllers) {
+  return Readiness{readoutLatencyOf(resources, controllers),
+                   resources.readoutDelays,
+                   controllers.enabled() ? &controllers : nullptr};
+}
+
 /// When each value in a scheduled block becomes available, in local time,
 /// or which operand it passes through unchanged.
 class Availability {
@@ -4388,8 +4498,10 @@ public:
   };
 
   Availability(pulse::ScheduleBlockOp block,
-               llvm::MutableArrayRef<int64_t> firstUse)
-      : block(block), firstUse(firstUse) {
+               llvm::MutableArrayRef<int64_t> firstUse, bool classical,
+               const Readiness &readiness)
+      : block(block), firstUse(firstUse), classical(classical),
+        readiness(readiness) {
     for (auto [index, arg] : llvm::enumerate(block.getBody().getArguments()))
       state[arg] = State{0, static_cast<int>(index)};
   }
@@ -4421,6 +4533,77 @@ private:
     return State{time, -1};
   }
 
+  /// The states `value` is computed from: the measurements, answers and
+  /// operands it reads.
+  void statesOf(mlir::Value value, llvm::SmallVectorImpl<State> &found,
+                llvm::DenseSet<mlir::Value> &seen) const {
+    if (mlir::isa<classical::LinkType>(value.getType()) ||
+        !seen.insert(value).second)
+      return;
+    if (auto it = state.find(value); it != state.end()) {
+      found.push_back(it->second);
+      return;
+    }
+    if (mlir::Operation *def = value.getDefiningOp())
+      for (mlir::Value operand : def->getOperands())
+        statesOf(operand, found, seen);
+  }
+
+  /// The iteration argument of `loop` that `value` passes on with no timed
+  /// op between them (itself, or a frame change of it), else -1.
+  static int passedOn(mlir::scf::ForOp loop, mlir::Value value) {
+    while (true) {
+      auto args = loop.getRegionIterArgs();
+      if (auto it = llvm::find(args, value); it != args.end())
+        return static_cast<int>(it - args.begin());
+      mlir::Operation *def = value.getDefiningOp();
+      if (!def || isTimedOp(def) || def->getNumRegions() > 0)
+        return -1;
+      mlir::Value only;
+      for (mlir::Value operand : def->getOperands())
+        if (isTimedType(operand.getType())) {
+          if (only)
+            return -1;
+          only = operand;
+        }
+      if (!only)
+        return -1;
+      value = only;
+    }
+  }
+
+  /// Join the carried states of each cycle of arguments that pass each
+  /// other on, when `skipped` trips are not a whole number of its turns.
+  void joinCycles(mlir::scf::ForOp loop, llvm::MutableArrayRef<State> carried,
+                  int64_t skipped) {
+    auto yields = loop.getBody()->getTerminator()->getOperands();
+    llvm::SmallVector<int> from;
+    for (mlir::Value value : yields)
+      from.push_back(passedOn(loop, value));
+    llvm::SmallVector<bool> done(from.size(), false);
+    for (size_t start = 0; start < from.size(); ++start) {
+      llvm::SmallVector<int> cycle;
+      int at = static_cast<int>(start);
+      while (at >= 0 && !done[at] && cycle.size() <= from.size() &&
+             !llvm::is_contained(cycle, at)) {
+        cycle.push_back(at);
+        at = from[at];
+      }
+      if (at != static_cast<int>(start) || cycle.size() < 2)
+        continue;
+      for (int member : cycle)
+        done[member] = true;
+      if (skipped % static_cast<int64_t>(cycle.size()) == 0)
+        continue;
+      llvm::SmallVector<State> states;
+      for (int member : cycle)
+        states.push_back(carried[member]);
+      State latest = join(states);
+      for (int member : cycle)
+        carried[member] = latest;
+    }
+  }
+
   State joinValues(mlir::ValueRange values) {
     llvm::SmallVector<State> states;
     for (mlir::Value value : values)
@@ -4447,6 +4630,10 @@ private:
       length = std::max(length, end);
       for (mlir::Value result : op->getResults())
         state[result] = State{end, -1};
+      // Its outcome after the feedback latency and the line's delay.
+      if (auto readout = mlir::dyn_cast<pulse::ReadoutOp>(op))
+        state[readout.getResult()] =
+            State{end + readiness.latency + readiness.delayOf(op, trace), -1};
       if (auto submit = mlir::dyn_cast<classical::SubmitOp>(op))
         state[submit.getFuture()] = State{end + budgetOf(op), -1};
       return;
@@ -4456,13 +4643,18 @@ private:
       llvm::SmallVector<State> carried;
       for (mlir::Value init : loop.getInitArgs())
         carried.push_back(state.lookup(init));
-      // The first iteration, then the last from what the first carries:
-      // the ops that run in every iteration override what it carries.
-      llvm::SmallVector<int64_t, 2> runs;
+      // The first iteration, then the last ones, each from what the one
+      // before it carries. A value moves to at most one other iteration
+      // argument per trip and through at most all of them, so what the last
+      // iteration reads (a measurement an arm keeps, a tone passed from
+      // argument to argument) was made in one of the last K + 1 trips.
+      int64_t args = loop.getNumRegionIterArgs();
+      int64_t from = std::max<int64_t>(1, trips - 1 - args);
+      llvm::SmallVector<int64_t> runs;
       if (trips > 0)
         runs.push_back(0);
-      if (trips > 1)
-        runs.push_back(trips - 1);
+      for (int64_t k = from; k < trips; ++k)
+        runs.push_back(k);
       iteration.push_back(0);
       for (int64_t k : runs) {
         iteration.back() = k;
@@ -4474,6 +4666,11 @@ private:
           s = state.lookup(value);
       }
       iteration.pop_back();
+      // Arguments that only pass each other on, in a cycle, end in an order
+      // that depends on the trips skipped: take the latest of the cycle
+      // unless the skipped trips are a whole number of turns.
+      if (from > 1)
+        joinCycles(loop, carried, from - 1);
       for (auto [result, s] : llvm::zip(loop.getResults(), carried))
         state[result] = s;
       return;
@@ -4489,6 +4686,30 @@ private:
              llvm::zip(results, branch.elseYield().getOperands()))
           s = join({s, state.lookup(value)});
       }
+      // What a branch on a measurement or an answer yields is there only
+      // once its condition is, as in the flat schedule (yieldsAfterCondition).
+      mlir::Value condition = branch.getCondition();
+      llvm::SmallVector<mlir::Value> measured =
+          conditionMeasurements(condition);
+      if (classical || !measured.empty()) {
+        llvm::SmallVector<State> at;
+        llvm::DenseSet<mlir::Value> seen;
+        statesOf(condition, at, seen);
+        // On several controllers, once its outcomes reach every controller
+        // (an outcome passed in: the caller waits for it, see
+        // carriedOutcomes).
+        for (mlir::Value measurement : measured)
+          if (int64_t peer = readiness.peerOf(measurement, trace)) {
+            State s = state.lookup(measurement);
+            if (s.source < 0)
+              at.push_back(State{s.time + peer, -1});
+          }
+        for (State &s : results) {
+          at.push_back(s);
+          s = join(at);
+          at.pop_back();
+        }
+      }
       for (auto [result, s] : llvm::zip(branch.getResults(), results))
         state[result] = s;
       return;
@@ -4501,19 +4722,24 @@ private:
 
   pulse::ScheduleBlockOp block;
   llvm::MutableArrayRef<int64_t> firstUse;
+  bool classical;
+  const Readiness &readiness;
+  pulse::AllocationTracer trace;
   llvm::DenseMap<mlir::Value, State> state;
   llvm::SmallVector<int64_t, 2> iteration;
 };
 
-/// Record the shape of `block`, whose body has a local schedule.
-static void writeShape(pulse::ScheduleBlockOp block) {
+/// Record the shape of `block`, whose body has a local schedule; a
+/// readout's outcome is usable as `readiness` says.
+static void writeShape(pulse::ScheduleBlockOp block, bool classical,
+                       const Readiness &readiness) {
   FirstUse firstUse(block);
   llvm::SmallVector<int64_t> in;
   for (mlir::Value arg : block.getBody().getArguments()) {
     int64_t first = firstUse.of(arg);
     in.push_back(first == kNever ? -1 : first);
   }
-  Availability availability(block, in);
+  Availability availability(block, in, classical, readiness);
   availability.run();
   llvm::SmallVector<int64_t> out, source;
   int64_t length = availability.length;
@@ -4522,7 +4748,10 @@ static void writeShape(pulse::ScheduleBlockOp block) {
     Availability::State s = availability.of(value);
     out.push_back(s.source >= 0 ? -1 : s.time);
     source.push_back(s.source);
-    length = std::max(length, s.source >= 0 ? 0 : s.time);
+    // A measurement handed out is usable later than the block ends; the
+    // block does not last longer for it.
+    if (!mlir::isa<pulse::MeasurementType>(value.getType()))
+      length = std::max(length, s.source >= 0 ? 0 : s.time);
   }
   mlir::MLIRContext *context = block.getContext();
   block->setAttr(
@@ -4633,12 +4862,36 @@ static std::pair<int64_t, mlir::Operation *> stretchIn(mlir::Operation *root) {
   return {total, unbounded};
 }
 
+/// The feedback latency the schedule of `root` waits after a readout
+/// something in it depends on, `latency` under its resources; 0 if nothing
+/// does.
+static int64_t waitedLatency(mlir::Operation *root, int64_t latency) {
+  if (latency <= 0)
+    return 0;
+  bool used = root->walk([](pulse::ReadoutOp readout) {
+                    return readout.getResult().use_empty()
+                               ? mlir::WalkResult::advance()
+                               : mlir::WalkResult::interrupt();
+                  })
+                  .wasInterrupted();
+  return used ? latency : 0;
+}
+
+/// The clause of a budget's error that names `latency`, if any.
+static void nameLatency(mlir::InFlightDiagnostic &diagnostic, int64_t latency) {
+  if (latency > 0)
+    diagnostic << ", waiting " << latency
+               << " cycles of feedback latency after the readouts its "
+                  "operations depend on";
+}
+
 /// Fail with the error for `what` (a kernel, quoted), whose executions take
-/// `length` cycles as scheduled, against `budget`, if it can take longer.
+/// `length` cycles as scheduled, against `budget`, if it can take longer;
+/// `latency`: what it waits after its readouts (see waitedLatency).
 static mlir::LogicalResult checkBudget(mlir::Operation *root,
                                        mlir::Operation *at,
                                        llvm::StringRef what, int64_t length,
-                                       int64_t budget) {
+                                       int64_t budget, int64_t latency) {
   auto [stretch, unbounded] = stretchIn(root);
   if (unbounded && mlir::isa<classical::WaitOp>(unbounded))
     return unbounded->emitError()
@@ -4660,33 +4913,59 @@ static mlir::LogicalResult checkBudget(mlir::Operation *root,
   if (stretch)
     diagnostic << " (" << length << " as scheduled, its variable waits add up "
                << "to " << stretch << ")";
-  diagnostic << ", more than max_duration_cycles=" << budget
-             << "; let its operations overlap, shorten them or raise "
+  diagnostic << ", more than max_duration_cycles=" << budget;
+  nameLatency(diagnostic, latency);
+  diagnostic << "; let its operations overlap, shorten them or raise "
                 "max_duration_cycles";
   return mlir::failure();
 }
 
-static mlir::LogicalResult checkBlockBudget(pulse::ScheduleBlockOp block) {
+static mlir::LogicalResult checkBlockBudget(pulse::ScheduleBlockOp block,
+                                            int64_t latency) {
   auto budget = block->getAttrOfType<mlir::IntegerAttr>("max_duration_cycles");
   if (!budget)
     return mlir::success();
   std::string what =
       "each call of kernel '" + block.getCallee().value_or("block").str() + "'";
-  return checkBudget(block, block, what, shapeOf(block).length,
-                     budget.getInt());
+  return checkBudget(block, block, what, shapeOf(block).length, budget.getInt(),
+                     waitedLatency(block, latency));
+}
+
+/// Whether `op` plays on a line the control system `clocks` gives another
+/// controller than `controller` (-1: any).
+static bool playsElsewhere(mlir::Operation *op,
+                           const pulse::ClockAttributes &clocks,
+                           int64_t controller, pulse::AllocationTracer &trace) {
+  if (controller < 0 ||
+      !mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp>(op))
+    return false;
+  mlir::Operation *allocation = trace(op->getOperand(0));
+  if (!allocation)
+    return false;
+  int64_t qudit = pulse::quditOf(allocation);
+  const llvm::SmallVector<int64_t> &owners =
+      mlir::isa<pulse::GetDriveLineOp>(allocation) ? clocks.driveOwner
+                                                   : clocks.readoutOwner;
+  if (qudit < 0 || qudit >= static_cast<int64_t>(owners.size()))
+    return false;
+  return owners[qudit] >= 0 && owners[qudit] != controller;
 }
 
 /// The end of the last execution of the last op of the scheduled
 /// `function`, with each line delayed as `clocks` (its module's; none when
-/// null) delays it.
+/// null) delays it; with `controller`, of the ops on its lines and on lines
+/// of no known controller.
 static int64_t programLength(mlir::func::FuncOp function,
-                             const pulse::ClockAttributes *clocks = nullptr) {
+                             const pulse::ClockAttributes *clocks = nullptr,
+                             int64_t controller = -1) {
   std::optional<pulse::LineDelays> lines;
   if (clocks && clocks->delayed())
     lines.emplace(*clocks);
+  pulse::AllocationTracer trace;
   int64_t length = 0;
   function.walk([&](mlir::Operation *op) {
-    if (!isTimedOp(op))
+    if (!isTimedOp(op) ||
+        (clocks && playsElsewhere(op, *clocks, controller, trace)))
       return;
     std::optional<int64_t> start = pulse::startCycles(op);
     if (!start)
@@ -4727,7 +5006,8 @@ checkDelayedLength(mlir::func::FuncOp function,
             "(their delay_ns), more than a schedule counts";
 }
 
-static mlir::LogicalResult checkProgramBudget(mlir::func::FuncOp function) {
+static mlir::LogicalResult checkProgramBudget(mlir::func::FuncOp function,
+                                              int64_t latency) {
   auto module = function->getParentOfType<mlir::ModuleOp>();
   std::optional<int64_t> budget =
       module ? pulse::programBudget(module) : std::nullopt;
@@ -4735,8 +5015,58 @@ static mlir::LogicalResult checkProgramBudget(mlir::func::FuncOp function) {
     return mlir::success();
   std::string what =
       "kernel '" + module.getSymName().value_or("main").str() + "'";
-  return checkBudget(function, function, what, programLength(function),
-                     *budget);
+  return checkBudget(function, function, what, programLength(function), *budget,
+                     latency);
+}
+
+/// The module attribute that lists each controller's longest program, from
+/// Controller.max_program_duration: by entry, a dictionary of its
+/// `controller` index, `name`, `cycles` (program cycles) and `duration` (as
+/// declared, for messages).
+inline constexpr llvm::StringLiteral kProgramLimitsAttr =
+    "pulse.program_limits";
+
+/// Fail if the scheduled `function` lasts longer than a controller's
+/// longest program: to the end of its last op on the lines that controller
+/// plays (every line, with one), line delays included. `latency`: the
+/// feedback latency the schedule waits after a readout something depends
+/// on (0: none), which the message names.
+static mlir::LogicalResult
+checkProgramLimits(mlir::func::FuncOp function,
+                   const pulse::ClockAttributes &clocks, int64_t latency) {
+  auto module = function->getParentOfType<mlir::ModuleOp>();
+  auto limits = module
+                    ? module->getAttrOfType<mlir::ArrayAttr>(kProgramLimitsAttr)
+                    : nullptr;
+  if (!limits)
+    return mlir::success();
+  // A wait whose length a call sets counts at its length as scheduled: each
+  // call's values are scheduled, and checked, again.
+  for (mlir::Attribute entry : limits) {
+    auto fields = mlir::dyn_cast<mlir::DictionaryAttr>(entry);
+    auto controller =
+        fields ? fields.getAs<mlir::IntegerAttr>("controller") : nullptr;
+    auto cycles = fields ? fields.getAs<mlir::IntegerAttr>("cycles") : nullptr;
+    auto name = fields ? fields.getAs<mlir::StringAttr>("name") : nullptr;
+    auto duration =
+        fields ? fields.getAs<mlir::StringAttr>("duration") : nullptr;
+    if (!controller || !cycles || !name || !duration)
+      continue;
+    int64_t length = programLength(function, &clocks, controller.getInt());
+    if (length <= cycles.getInt())
+      continue;
+    auto diagnostic = function->emitError()
+                      << "kernel '" << module.getSymName().value_or("main")
+                      << "' lasts " << length << " cycles, more than "
+                      << name.getValue() << "'s max_program_duration of "
+                      << duration.getValue() << " (" << cycles.getInt()
+                      << " cycles)";
+    nameLatency(diagnostic, latency);
+    diagnostic << "; let its operations overlap, shorten them or raise "
+                  "max_program_duration";
+    return mlir::failure();
+  }
+  return mlir::success();
 }
 
 // ── Driver ───────────────────────────────────────────────────────────────
@@ -4889,19 +5219,18 @@ scheduleRegion(mlir::Region &region, mlir::Operation *root, Resources resources,
     return mlir::failure();
   for (pulse::ScheduleBlockOp block : *blocks) {
     if (mlir::failed(
-            scheduleRegion(block.getBody(), block, Resources{},
+            scheduleRegion(block.getBody(), block, latencyOf(resources),
                            block.getPolicy() == pulse::SchedulePolicy::ALAP,
                            classical, timelines, grid, controllers)))
       return mlir::failure();
-    writeShape(block);
-    if (mlir::failed(checkBlockBudget(block)))
+    writeShape(block, classical, readinessOf(resources, controllers));
+    if (mlir::failed(
+            checkBlockBudget(block, readoutLatencyOf(resources, controllers))))
       return mlir::failure();
   }
-  // Calls that hold some of several controllers trace lines under any
-  // policy.
-  bool traced =
-      grid.enabled() ||
-      (controllers.enabled() && (resources.enabled || holdsControllers(root)));
+  // Lines on several controllers are traced under every policy: an outcome
+  // reaches each controller at its own time.
+  bool traced = grid.enabled() || controllers.enabled();
   if (mlir::failed(
           traced
               ? scheduleRounds<true>(region, root, resources, isAlap, classical,
@@ -4965,14 +5294,17 @@ static mlir::LogicalResult schedule(mlir::func::FuncOp function,
   bool data = classical || function->hasAttr("pulse.selected_values");
   const pulse::ClockAttributes clocks(
       function->getParentOfType<mlir::ModuleOp>());
-  // Under rcp an outcome waits for its readout to end on the delayed line.
-  if (resources.enabled)
-    resources.readoutDelays = clocks.readoutDelay;
+  // An outcome waits for its readout to end on the delayed line, its fine
+  // delay rounded up.
+  resources.readoutDelays = clocks.readoutReady;
+  int64_t waited = waitedLatency(
+      function, readoutLatencyOf(resources, pulse::Controllers(clocks)));
   if (mlir::failed(scheduleRegion(
           function.getBody(), function, resources, isAlap, data, timelines,
           pulse::LineGrid(clocks), pulse::Controllers(clocks))) ||
-      mlir::failed(checkProgramBudget(function)) ||
-      mlir::failed(checkDelayedLength(function, clocks)))
+      mlir::failed(checkProgramBudget(function, waited)) ||
+      mlir::failed(checkDelayedLength(function, clocks)) ||
+      mlir::failed(checkProgramLimits(function, clocks, waited)))
     return mlir::failure();
   bool placed = pulse::applyLineDelays(function, clocks);
   function->setAttr(
@@ -5005,10 +5337,57 @@ struct PulseSchedulePass
     registry.insert<pulse::PulseDialect>();
   }
 
+  PulseSchedulePass() = default;
+  explicit PulseSchedulePass(int64_t readoutLatency) {
+    resources.readoutLatency = readoutLatency;
+  }
+
   void runOnOperation() override {
-    if (mlir::failed(schedule(this->getOperation(), Resources{}, IsAlap)))
+    if (mlir::failed(schedule(this->getOperation(), resources, IsAlap)))
       this->signalPassFailure();
   }
+
+  /// No lanes: only the feedback latency every readout's outcome waits.
+  Resources resources;
+};
+
+/// pulse-schedule-asap and pulse-schedule-alap as cudaq-pulse-opt runs
+/// them, with the feedback latency as an option. The extension builds
+/// PulseSchedulePass instead: options cost a command-line parser per pass.
+template <bool IsAlap>
+struct PulseScheduleOptionsPass
+    : public mlir::PassWrapper<PulseScheduleOptionsPass<IsAlap>,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PulseScheduleOptionsPass<IsAlap>)
+
+  PulseScheduleOptionsPass() = default;
+  PulseScheduleOptionsPass(const PulseScheduleOptionsPass &other)
+      : mlir::PassWrapper<PulseScheduleOptionsPass<IsAlap>,
+                          mlir::OperationPass<mlir::func::FuncOp>>(other) {}
+
+  llvm::StringRef getArgument() const override {
+    return IsAlap ? "pulse-schedule-alap" : "pulse-schedule-asap";
+  }
+  llvm::StringRef getDescription() const override {
+    return IsAlap ? "Assign a dependency-correct ALAP pulse schedule"
+                  : "Assign a dependency-correct ASAP pulse schedule";
+  }
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::arith::ArithDialect>();
+    registry.insert<pulse::PulseDialect>();
+  }
+  void runOnOperation() override {
+    Resources resources;
+    resources.readoutLatency = readoutLatency;
+    if (mlir::failed(schedule(this->getOperation(), resources, IsAlap)))
+      this->signalPassFailure();
+  }
+
+  mlir::Pass::Option<int64_t> readoutLatency{
+      *this, "readout-latency",
+      llvm::cl::desc("Cycles after a readout ends before its outcome is "
+                     "usable"),
+      llvm::cl::init(0)};
 };
 
 struct PulseScheduleRcpPass
@@ -5168,12 +5547,22 @@ std::unique_ptr<mlir::Pass> createPulseUnrollClassicalLoopsPass() {
   return std::make_unique<PulseUnrollClassicalLoopsPass>();
 }
 
-std::unique_ptr<mlir::Pass> createPulseScheduleAsapPass() {
-  return std::make_unique<PulseSchedulePass<false>>();
+std::unique_ptr<mlir::Pass>
+createPulseScheduleAsapPass(int64_t readoutLatency) {
+  return std::make_unique<PulseSchedulePass<false>>(readoutLatency);
 }
 
-std::unique_ptr<mlir::Pass> createPulseScheduleAlapPass() {
-  return std::make_unique<PulseSchedulePass<true>>();
+std::unique_ptr<mlir::Pass>
+createPulseScheduleAlapPass(int64_t readoutLatency) {
+  return std::make_unique<PulseSchedulePass<true>>(readoutLatency);
+}
+
+std::unique_ptr<mlir::Pass> createPulseScheduleAsapOptionsPass() {
+  return std::make_unique<PulseScheduleOptionsPass<false>>();
+}
+
+std::unique_ptr<mlir::Pass> createPulseScheduleAlapOptionsPass() {
+  return std::make_unique<PulseScheduleOptionsPass<true>>();
 }
 
 std::unique_ptr<mlir::Pass> createPulseScheduleRcpPass(int64_t maxDrives,
