@@ -27,9 +27,12 @@ Limits
 - At most 20 ns in all, waits included.
 - Every sample at most 0.5 in magnitude (the shipped X pulse peaks at 0.13).
 - Every pulse within 50 MHz of the qubit's 0-1 frequency.
+- At most 64 pulses.
 
-The scorer plays your pulse as the samples a controller would send at the system's 2 GHz clock, so
-a result from your own ``simulate`` run can differ from the scorer's in the fourth decimal place.
+The scorer plays your pulse as the samples a controller would send at the system's 2 GHz clock:
+one value every 0.5 ns. Your own ``simulate`` run follows a smooth shape more finely, so the two
+can differ: in the fourth or fifth decimal place for a pulse as wide as the references', and by
+more for one only a few samples wide. The scorer's number is the one that counts.
 
 Rungs
 -----
@@ -46,7 +49,7 @@ Rungs
    * - Silver
      - ``P1 >= 0.999`` and ``P2 <= 0.0002``
      - Amplitude alone will not do it: look at what stays in level 0 and what reaches level 2,
-       and try ``drag()``.
+       and try ``drag()`` or a small detuning.
 
 Getting started
 ---------------

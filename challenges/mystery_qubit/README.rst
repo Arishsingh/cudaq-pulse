@@ -31,6 +31,8 @@ Limits
 - A kernel plays drive pulses and waits, and ends in exactly one readout.
 - The readout is a square pulse, as the calibrated one is.
 - At most 100,000 shots in 200 runs per qubit.
+- A kernel has at most 64 drive pulses and lasts at most 2 ms.
+- A run with a seed given repeats known qubits, so it prints its rungs but no score.
 
 Rungs
 -----
@@ -46,7 +48,7 @@ Rungs
      - Start from the Coherence tutorial's T1 sweep, and count shots instead of reading a
        population.
    * - Silver
-     - Bronze, with at most 8,000 shots per qubit on average.
+     - Bronze, with at most 10,000 shots per qubit on average.
      - A shot says most about T1 at one particular wait. Find it roughly, then spend your shots
        there.
 

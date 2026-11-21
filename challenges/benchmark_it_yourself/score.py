@@ -17,9 +17,10 @@ copy of the qubit that does not decay. There, lab.run compiles the kernel and se
 which calibrated pulses it plays and when. The scorer plays them on the hidden qubit and sends the
 populations back, and it is the scorer that counts sequences and pulses.
 
-Rules (all the scorer's): a sequence plays only the qubit's calibrated X90 and Y90 (a frame change
-before a pulse is allowed), then at most one calibrated readout; a call of error_per_gate plays at
-least MIN_SEQUENCES sequences and at most MAX_PULSES pulses.
+Rules (all the scorer's): a sequence plays only the qubit's calibrated X90 and Y90, back to back
+from the start (a frame change before a pulse is allowed, a wait is not), then at most one
+calibrated readout at once; a call of error_per_gate plays at least MIN_SEQUENCES sequences and
+MIN_PULSES pulses, and at most MAX_PULSES pulses.
 
 The reference is the exact average gate error of the X90 on the hidden qubit: one minus its
 fidelity with a quarter turn about X, averaged over the six axis states, in the same three-level
@@ -38,11 +39,11 @@ import numpy as np
 from _qubit import benchmark_system
 
 RUNS = 5
-T1_RANGE_US = (15.0, 60.0)
-T2_RANGE_US = (15.0, 60.0)
+T1_RANGE_US = (8.0, 80.0)
+T2_RANGE_US = (8.0, 80.0)
 BRONZE_FACTOR = 1.5
-SILVER_TOLERANCE, SILVER_SEQUENCES = 0.08, 8
-MIN_SEQUENCES, MAX_PULSES = 2, 6000  # per call; the upper limit keeps the scorer under a minute
+SILVER_TOLERANCE, SILVER_SEQUENCES = 0.10, 8
+MIN_SEQUENCES, MIN_PULSES, MAX_PULSES = 2, 20, 6000  # per call of error_per_gate
 PULSE_CYCLES = 80  # a calibrated X90 or Y90: 40 ns at the 2 GHz clock
 CHILD = Path(__file__).with_name("_child.py")
 
@@ -91,15 +92,16 @@ def replay(request, hidden, count):
     count["pulses"] += len(pulses)
     if count["pulses"] > MAX_PULSES:
         raise RefusedError(f"more than {MAX_PULSES} pulses in one call of error_per_gate")
-    to_ns = 1.0 / hidden.clock_ghz
     steps, clock, phase = [], 0, 0.0
     for start, name, turn in pulses:
-        if name not in ("X90", "Y90") or not math.isfinite(turn) or start < clock:
+        if name not in ("X90", "Y90") or not math.isfinite(turn):
             raise RefusedError("the sequence could not be read")
-        steps.append(((start - clock) * to_ns, turn - phase, name))
+        if start != clock:
+            raise RefusedError("a sequence plays its pulses back to back, from the start; no waits")
+        steps.append((0.0, turn - phase, name))
         clock, phase = start + PULSE_CYCLES, turn
-    if readouts and readouts[0] < clock:
-        raise RefusedError("the readout comes after the last pulse")
+    if readouts and readouts[0] != clock:
+        raise RefusedError("the readout follows the last pulse at once; no wait before it")
     program = pulse.compile(played, quantum_system=hidden, schedule="asap").lower(
         hidden.qudits[0], tuple(steps), bool(readouts)
     )
@@ -123,11 +125,19 @@ def reference(hidden):
     return 1 - fidelity, leakage
 
 
+def one_line(text):
+    """*text* from the submission's process as one short line: it cannot print a verdict."""
+    return " ".join(str(text).split())[:300]
+
+
 def ask(child):
     line = child.stdout.readline()
     if not line:
         raise EOFError("the submission's process ended")
-    return json.loads(line)
+    message = json.loads(line)
+    if not isinstance(message, dict):
+        raise ValueError("the submission's process sent something that is not a message")
+    return message
 
 
 def one_run(child, seed, hidden, count):
@@ -139,7 +149,7 @@ def one_run(child, seed, hidden, count):
         if "estimate" in message:
             return float(message["estimate"])
         if "error" in message:
-            raise ValueError(str(message["error"]))
+            raise ValueError(one_line(message["error"]))
         try:
             answer = {"populations": replay(message["run"], hidden, count)}
         except RefusedError as refused:
@@ -151,7 +161,8 @@ def one_run(child, seed, hidden, count):
 
 
 def main(path, seed=None):
-    seed = secrets.randbelow(2**31) if seed is None else seed
+    given = seed is not None
+    seed = seed if given else secrets.randbelow(2**31)
     rng = np.random.default_rng(seed)
     child = subprocess.Popen(
         [sys.executable, str(CHILD), path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
@@ -160,27 +171,28 @@ def main(path, seed=None):
     try:
         first = ask(child)
         if "error" in first:
-            raise ValueError(f"it does not load: {first['error']}")
+            raise ValueError(f"it does not load: {one_line(first['error'])}")
         for run in range(1, RUNS + 1):
             t1_us = float(rng.uniform(*T1_RANGE_US))
             t2_us = float(rng.uniform(T2_RANGE_US[0], min(T2_RANGE_US[1], 2 * t1_us)))
             hidden = benchmark_system(t1_us, t2_us)
             count = {"sequences": 0, "pulses": 0}
             estimate = one_run(child, run, hidden, count)
-            if count["sequences"] < MIN_SEQUENCES or not 0 < estimate < math.inf:
+            enough = count["sequences"] >= MIN_SEQUENCES and count["pulses"] >= MIN_PULSES
+            if not enough or not 0 < estimate < math.inf:
                 raise ValueError(
-                    f"run {run} gave {estimate!r} from {count['sequences']} sequences; an estimate is a positive number from at least {MIN_SEQUENCES}"
+                    f"run {run} gave {estimate!r} from {count['sequences']} sequences and {count['pulses']} pulses; an estimate is a positive number from at least {MIN_SEQUENCES} sequences and {MIN_PULSES} pulses"
                 )
             error, leakage = reference(hidden)
             runs.append((estimate / error, count["sequences"]))
             print(
                 f"RUN {run} estimate={estimate:.4e} reference={error:.4e} (leakage {leakage:.1e}) ratio={estimate / error:.4f} sequences={count['sequences']} pulses={count['pulses']}"
             )
-    except (ValueError, EOFError) as problem:  # the file does not load, breaks a rule or fails
-        print(f"INVALID {problem}\nBRONZE fail\nSILVER fail\nSCORE none")
+    except Exception as problem:  # the file does not load, breaks a rule or the exchange, or fails
+        print(f"INVALID {one_line(problem)}\nBRONZE fail\nSILVER fail\nSCORE none")
         return 1
     finally:
-        child.stdin.close()
+        child.kill()
         child.wait(timeout=30)
     worst, most = max(abs(ratio - 1) for ratio, _ in runs), max(sequences for _, sequences in runs)
     bronze = all(1 / BRONZE_FACTOR <= ratio <= BRONZE_FACTOR for ratio, _ in runs)
@@ -189,10 +201,13 @@ def main(path, seed=None):
         f"BRONZE {'pass' if bronze else 'fail'}  (every run within a factor {BRONZE_FACTOR:g} of the reference)"
     )
     print(
-        f"SILVER {'pass' if silver else 'fail'}  (every run within {SILVER_TOLERANCE:.0%} of it, from at most {SILVER_SEQUENCES} sequences)"
+        f"SILVER {'pass' if silver else 'fail'}  (every run within {SILVER_TOLERANCE:.0%} of it, from at most {SILVER_SEQUENCES} sequences; worst {worst:.2%}, most {most})"
     )
-    print(f"SCORE worst_deviation={worst:.2%} most_sequences={most}")
-    print(f"SEED  {seed} (give it as the second argument to repeat this run)")
+    if given:
+        print("SCORE none (a run with a given seed repeats known qubits: it is not a score)")
+    else:
+        print(f"SCORE worst_deviation={worst:.2%} most_sequences={most}")
+    print(f"SEED {seed} (give it as the second argument to repeat this run)")
     return 0
 
 

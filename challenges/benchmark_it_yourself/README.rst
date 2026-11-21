@@ -22,15 +22,17 @@ lab.qubit, ...)`` plays your kernel once and returns a result with ``level_popul
 numbers, nothing is sampled.
 
 The scorer calls your function for five hidden qubits. After each estimate it prints the exact
-error of the pulse on that qubit, then ``BRONZE``, ``SILVER``, ``SCORE`` (your worst deviation)
-and ``SEED``. Each run draws new qubits; give the seed as a second argument to repeat a run.
+error of the pulse on that qubit, then ``BRONZE``, ``SILVER``, ``SCORE`` (your worst deviation
+and your largest number of sequences) and ``SEED``. Each run draws new qubits; give the seed as a second argument to repeat a run.
 
 Limits
 ------
 
-- A sequence plays only the qubit's calibrated X90 and Y90 (a frame change before a pulse is
-  allowed), then at most one calibrated readout.
-- One call of ``error_per_gate`` plays at least 2 sequences and at most 6,000 pulses.
+- A sequence plays only the qubit's calibrated X90 and Y90, back to back from the start (a frame
+  change before a pulse is allowed, a wait is not), then at most one calibrated readout, at once.
+- One call of ``error_per_gate`` plays at least 2 sequences and 20 pulses, and at most 6,000
+  pulses.
+- A run with a seed given repeats known qubits, so it prints its rungs but no score.
 
 Rungs
 -----
@@ -46,7 +48,7 @@ Rungs
      - In example 14, play the calibrated pulses and fit ``survival = A p^depth + 1/2``. The error
        per Clifford is ``(1 - p)/2``; a Clifford is 37/12 pulses on average.
    * - Silver
-     - Every estimate within 8 %, from at most 8 sequences.
+     - Every estimate within 10 %, from at most 8 sequences.
      - Two sequences of one depth differ by tens of pulses. What does the decay really depend on?
 
 Expect 45 to 60 minutes for bronze after the tutorials.

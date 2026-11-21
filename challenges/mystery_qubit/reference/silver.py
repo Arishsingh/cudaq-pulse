@@ -35,9 +35,9 @@ def estimate_t1(lab):
     rough_t1_ns = -wait_ns / np.log(max(fraction, 0.01))
 
     # The fraction with no wait: the pi pulse and the decay during the readout.
-    start = lab.run(t1, lab.qubit, 0.0, shots_count=200).mean()
+    start = lab.run(t1, lab.qubit, 0.0, shots_count=1000).mean()
 
     # Measure: the rest of the shots, at 1.6 times the rough T1.
     wait_ns = 1.6 * rough_t1_ns
-    end = lab.run(t1, lab.qubit, wait_ns, shots_count=7000).mean()
+    end = lab.run(t1, lab.qubit, wait_ns, shots_count=8500).mean()
     return wait_ns / np.log(start / end) / 1000

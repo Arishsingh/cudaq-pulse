@@ -57,7 +57,7 @@ def read_submission(path):
         raise InvalidSubmissionError(f"it did not compile within {CHILD_TIMEOUT_S} s") from None
     lines = [line for line in done.stdout.splitlines() if line.startswith("PULSES ")]
     if done.returncode != 0 or not lines:
-        last = (done.stderr.strip().splitlines() or ["no message"])[-1]
+        last = " ".join((done.stderr.strip().splitlines() or ["no message"])[-1].split())[:300]
         raise InvalidSubmissionError(f"it does not load or compile: {last}")
     try:
         data = json.loads(lines[-1][len("PULSES ") :])
@@ -76,7 +76,7 @@ def read_submission(path):
                     "phase_rad": float(item["phase_rad"]),
                 }
             )
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):
         raise InvalidSubmissionError("its pulses could not be read") from None
     numbers = [x for p in pulses for s in p["samples"] for x in (s.real, s.imag)]
     numbers += [x for p in pulses for x in (p["frequency_hz"], p["phase_rad"])]
@@ -116,20 +116,24 @@ def check(pulses, others, total, system, qudit):
 def replay(pulses, system, qudit):
     """Level populations after the scorer plays the pulses itself from level 0."""
     to_ns = 1.0 / system.clock_ghz
-    steps, clock, frequency, phase = [], 0, system.qudit_freq[qudit.index], 0.0
+    native = system.qudit_freq[qudit.index]
+    steps, clock, frequency, frame, last = [], 0, native, 0.0, 0
     for p in pulses:
+        # A pulse's phase is its frame's at its start. The scorer's own tone, off the qubit by
+        # frequency - native since the last pulse began, has gathered part of it already.
+        frame += 2.0 * math.pi * (frequency - native) * (p["start"] - last) * to_ns * 1e-9
         steps.append(
             (
                 (p["start"] - clock) * to_ns,
                 p["frequency_hz"] - frequency,
-                p["phase_rad"] - phase,
+                p["phase_rad"] - frame,
                 [s.real for s in p["samples"]],
                 [s.imag for s in p["samples"]],
                 len(p["samples"]),
             )
         )
-        clock = p["start"] + len(p["samples"])
-        frequency, phase = p["frequency_hz"], p["phase_rad"]
+        clock, last = p["start"] + len(p["samples"]), p["start"]
+        frequency, frame = p["frequency_hz"], p["phase_rad"]
 
     @pulse.kernel
     def played(target):
