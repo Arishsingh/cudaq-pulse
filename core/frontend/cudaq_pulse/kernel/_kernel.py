@@ -1020,7 +1020,7 @@ class CompiledKernel[**P]:
 
     @property
     def metrics(self) -> Any:
-        """The compile metrics; see ``ScheduledKernel.metrics``."""
+        """The compile metrics, a ``CompileMetrics``; see ``ScheduledKernel.metrics``."""
         return self._view().metrics
 
     @property
