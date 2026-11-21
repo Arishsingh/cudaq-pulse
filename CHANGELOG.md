@@ -253,6 +253,8 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   most 4 drives and 2 readouts at once, and nothing else checks them. A
   system file written by an earlier version holds 4 and 2, which now count
   as given; to leave them unchecked, set them to `null` in the file.
+- The first compile of a kernel with many measurement-conditioned ifs no
+  longer takes time in the square of their number.
 
 ### Fixed
 
