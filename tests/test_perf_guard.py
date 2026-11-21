@@ -87,6 +87,28 @@ def _best(
     return best
 
 
+def _best_interleaved(
+    runs: dict[int, Callable[[], object]],
+    min_reps: int = 5,
+    budget_s: float = 0.5,
+    clock: Callable[[], float] = time.process_time,
+) -> dict[int, float]:
+    """The best time of each run in *runs* on *clock*, taking them in turn so
+    that a slow spell of a shared machine falls on every size alike."""
+    for fn in runs.values():
+        fn()
+    best = dict.fromkeys(runs, float("inf"))
+    reps = 0
+    deadline = time.perf_counter() + budget_s
+    while reps < min_reps or (time.perf_counter() < deadline and reps < 2000):
+        for n, fn in runs.items():
+            t0 = clock()
+            fn()
+            best[n] = min(best[n], clock() - t0)
+        reps += 1
+    return best
+
+
 def _assert_flat(
     what: str,
     runs: dict[int, Callable[[], object]],
@@ -108,10 +130,11 @@ def _assert_linear(what: str, runs: dict[int, Callable[[], object]], limit: floa
     to its size, and the largest takes less than *limit* times the smallest's
     CPU time; a cost quadratic in the size takes the ratio of sizes squared.
     The runs take milliseconds, long enough for a loaded machine to stretch
-    their wall-clock times unevenly."""
+    their wall-clock times unevenly; the sizes are timed in turn, so that a
+    slow spell stretches both."""
     small, large = min(runs), max(runs)
     work = {n: python_work(runs[n]) for n in (small, large)}
-    seconds = {n: _best(runs[n], 5, clock=time.process_time) for n in (small, large)}
+    seconds = _best_interleaved({n: runs[n] for n in (small, large)})
     for count in work[small]:
         assert work[large][count] <= work[small][count] * large / small, (what, work)
     assert seconds[large] < seconds[small] * limit, (what, seconds)
