@@ -207,3 +207,91 @@ def test_code_without_unsupported_instructions_has_no_notes():
         return xs + [k]
 
     assert decode(f.__code__).notes is None
+
+
+_CONDITIONAL = (bc.JUMP_IF_FALSE, bc.JUMP_IF_TRUE, bc.JUMP_IF_NONE, bc.JUMP_IF_NOT_NONE)
+
+
+def _check_join_points(d, monkeypatch):
+    """join_point of each conditional jump, asked in index order, then in
+    reverse order with empty caches, equals _join_point_reference's; so do
+    those of each region view's."""
+    branches = [i for i, (op, _) in enumerate(d.instrs) if op in _CONDITIONAL]
+    joins = {}
+    for order in (branches, branches[::-1]):
+        monkeypatch.setattr(bc, "_JOINS", {})
+        monkeypatch.setattr(bc, "_POSTDOMS", {})
+        for b in order:
+            joins[b] = bc.join_point(d, b)
+            assert joins[b] == bc._join_point_reference(d, b)
+    for b, join in joins.items():
+        view = bc.region_view(d, join)
+        for c in branches:
+            if b <= c < join:
+                assert bc.join_point(view, c) == bc._join_point_reference(view, c)
+    return [joins[b] for b in branches]
+
+
+def test_join_points_of_many_ifs_match_the_reference(monkeypatch):
+    src = "def f(m, n, xs):\n    a = 0\n" + "    if m:\n        a += 1\n" * 60 + "    return a\n"
+    ns: dict = {}
+    exec(compile(src, "<ifs>", "exec"), ns)
+    d = decode(ns["f"].__code__)
+    joins = _check_join_points(d, monkeypatch)
+    # Each if's arms meet where the next if starts, and the last one's before
+    # the return.
+    assert len(joins) == 60 and joins == sorted(joins) and joins[-1] < len(d.instrs)
+
+
+def test_join_points_of_nested_and_looping_ifs_match_the_reference(monkeypatch):
+
+    def f(m, n, xs):
+        a = 0
+        for x in xs:
+            if x is None:
+                continue
+            if m and not n:
+                a += 1
+            elif n or x:
+                if a > 2:
+                    break
+                a -= 1
+            else:
+                return a
+        while n:
+            n -= 1
+            if m:
+                raise ValueError(a)
+        if m:
+            return 1 if n else 2
+        return a
+
+    _check_join_points(decode(f.__code__), monkeypatch)
+
+
+def test_a_branch_that_can_loop_forever_asks_the_reference(monkeypatch):
+    # 0: if -> 3; 1-2: a loop that never ends; 3: return. Branch 4 reaches
+    # the exit as well as the loop.
+    instrs = (
+        (bc.JUMP_IF_FALSE, 3),
+        (bc.POP_TOP, None),
+        (bc.JUMP, 1),
+        (bc.RETURN, None),
+        (bc.JUMP_IF_TRUE, 1),
+        (bc.RETURN, None),
+    )
+    code = (lambda: None).__code__
+    d = bc.DecodedCode(code, instrs, (None,) * len(instrs))
+    monkeypatch.setattr(bc, "_JOINS", {})
+    monkeypatch.setattr(bc, "_POSTDOMS", {})
+    calls = []
+    real = bc._join_point_reference
+
+    def spy(decoded, branch):
+        calls.append(branch)
+        return real(decoded, branch)
+
+    monkeypatch.setattr(bc, "_join_point_reference", spy)
+    assert [bc.join_point(d, 0), bc.join_point(d, 4)] == [3, 5]
+    assert calls == [0, 4]
+    assert [real(d, 0), real(d, 4)] == [3, 5]
