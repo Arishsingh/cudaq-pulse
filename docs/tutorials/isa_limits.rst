@@ -99,43 +99,17 @@ it reads 1:
        if outcome:
            drive(drive_line, flip)
 
-The default schedule refuses it
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The default schedule waits for it
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The default schedule starts the flip at cycle 200, before the bit can
-have arrived. The compile refuses, and names the cycle and the fix:
+The readout ends at cycle 200, and its bit reaches the second controller
+120 cycles later: 80 of feedback latency and 40 of peer latency. Every
+schedule keeps the flip that far from its readout, so the default one
+starts it at cycle 320. Each controller's part then lowers on its own:
 
 .. code-block:: python
 
    compiled = pulse.compile(flip_other, quantum_system=qpu)
-   try:
-       compiled.lower(q0, q2)
-   except ControllerLimitError as error:
-       show(error)
-
-.. code-block:: text
-   :class: output
-
-   controllers[1] (toy.sequencer): the drive on line 1 at 200
-   branches on the readout of controllers[0] (toy.sequencer) ending
-   at 200, whose outcome reaches it 120 cycles later, at 320 (120
-   of feedback and peer latency, and 0 of the two controllers'
-   start uncertainty); start it at 320 or later: schedule with rcp,
-   which waits for it, or wait 120 cycles before it on its line
-
-The rcp schedule places it
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The resource-constrained schedule, ``rcp``, keeps every branch that far
-from its readout. Each controller's part then lowers on its own:
-
-.. code-block:: python
-
-   compiled = pulse.compile(
-       flip_other,
-       quantum_system=qpu,
-       schedule="rcp",
-   )
    split = compiled.lower(q0, q2)
 
    part = split.export_to_controller(controller=0)
@@ -205,7 +179,6 @@ A controller without it is refused this program:
    compiled = pulse.compile(
        flip_other,
        quantum_system=qpu,
-       schedule="rcp",
        control_system=system,
    )
 
@@ -225,6 +198,11 @@ The refusal names the readout that needs it:
    at cycle 0 needs 'forward_outcome', which the controller does
    not support; run that part of the program on a controller that
    supports it, or write it without 'forward_outcome'
+
+Every operation in a branch waits for the bit, a wait too: a backend may
+branch where the arm starts. Idle time that doesn't depend on the bit
+belongs before the ``if``, not inside it, where it would start only once
+the bit has arrived.
 
 Takeaway: describe the latencies once, and every branch is placed where
 its bit has arrived.
@@ -482,7 +460,6 @@ feedline:
    compiled = pulse.compile(
        qec_round,
        quantum_system=qpu,
-       schedule="rcp",
    )
    qec = compiled.lower(q0, q1)
    listing = lower(qec.export_to_controller())
@@ -583,7 +560,6 @@ then print each controller's listing:
    compiled = pulse.compile(
        correct_across,
        quantum_system=qpu,
-       schedule="rcp",
    )
    across = compiled.lower(q0, q1, q2)
 

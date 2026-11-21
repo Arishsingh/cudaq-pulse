@@ -57,28 +57,8 @@ def flip_other(measured, other):
         drive(drive_line, flip)
 
 
-# %% The default schedule refuses it
+# %% The default schedule waits for it
 compiled = pulse.compile(flip_other, quantum_system=qpu)
-try:
-    compiled.lower(q0, q2)
-except ControllerLimitError as error:
-    show(error)
-
-# Prints:
-#   controllers[1] (toy.sequencer): the drive on line 1 at 200
-#   branches on the readout of controllers[0] (toy.sequencer) ending
-#   at 200, whose outcome reaches it 120 cycles later, at 320 (120
-#   of feedback and peer latency, and 0 of the two controllers'
-#   start uncertainty); start it at 320 or later: schedule with rcp,
-#   which waits for it, or wait 120 cycles before it on its line
-
-
-# %% The rcp schedule places it
-compiled = pulse.compile(
-    flip_other,
-    quantum_system=qpu,
-    schedule="rcp",
-)
 split = compiled.lower(q0, q2)
 
 part = split.export_to_controller(controller=0)
@@ -118,7 +98,6 @@ system = pulse.ControlSystem(
 compiled = pulse.compile(
     flip_other,
     quantum_system=qpu,
-    schedule="rcp",
     control_system=system,
 )
 
@@ -281,7 +260,6 @@ def qec_round(data, ancilla):
 compiled = pulse.compile(
     qec_round,
     quantum_system=qpu,
-    schedule="rcp",
 )
 qec = compiled.lower(q0, q1)
 listing = lower(qec.export_to_controller())
@@ -340,7 +318,6 @@ def correct_across(ancilla_0, ancilla_1, data):
 compiled = pulse.compile(
     correct_across,
     quantum_system=qpu,
-    schedule="rcp",
 )
 across = compiled.lower(q0, q1, q2)
 

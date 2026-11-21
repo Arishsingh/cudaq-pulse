@@ -722,7 +722,9 @@ class Controller:
     each qudit; readouts on one detector are serialized, each holding it
     for its duration plus ``detector_recovery_cycles``.
     ``feedback_latency_cycles``: the least time from the end of a readout to
-    the start of an operation in a branch on its outcome.
+    the start of any operation that depends on its outcome (in a branch on
+    it, on a tone whose frame a branch on it changed, computed from it, or a
+    request that sends it); every schedule waits it.
     ``supports_timeouts``: whether the controller can stop waiting for an
     answer after a timeout (``result(timeout=...)``, ``latency_mode=
     "timeout"``); without, only waits that block or are budgeted are
@@ -738,7 +740,10 @@ class Controller:
     time or a number of ns (``None``: no limit); the compiler sums the
     program op after op, every iteration of its loops, and a program longer
     than that is a compile error at the op or loop that passes it (a wait
-    whose length floats set, at the call). Without it, a program may last
+    whose length floats set, at the call). The scheduled program, to the
+    end of its last operation on the controller's lines (line delays and
+    the waits for feedback, lines and links included), is checked against
+    it too, on one controller or several. Without it, a program may last
     up to 2**60 cycles. Exports list it only when it is set.
     ``max_fine_delay_ns``: the longest delay, below one grid step, each line
     can add to its output (0: none), a time or a number of ns; it plays the
@@ -1233,12 +1238,19 @@ class ControlSystem:
     link id a program uses that is not listed gets ``Link()``.
     ``Link.controllers`` says which controllers a link reaches. Their slots
     and latencies apply to every schedule, because they are hardware.
+    ``max_concurrent_drives`` and ``max_concurrent_readouts``, when given,
+    are the most drives and readouts the system plays at once, counted on
+    every controller: the ``rcp`` and ``alap_rcp`` schedules keep to them,
+    and a program whose schedule plays more at once fails to compile under
+    any schedule. ``None`` (not given): the ``rcp`` schedules play at most 4
+    drives and 2 readouts at once, and nothing else checks them.
     ``max_concurrent_drives``, ``max_concurrent_readouts`` and
     ``line_switch_penalty_cycles`` apply to the ``rcp`` and ``alap_rcp``
-    schedules, which keep a branch on a readout at least the
-    ``feedback_latency_cycles`` of the controllers that play readouts after it,
-    and pulses of two controllers that follow each other on one lane their
-    start uncertainty apart.
+    schedules, which keep pulses of two controllers that follow each other on
+    one lane their start uncertainty apart. Every schedule keeps an operation
+    that depends on a readout at least the ``feedback_latency_cycles`` of the
+    controller that read it after the readout ends (on another controller,
+    its peer latency and both start uncertainties too).
     ``reference_clock_ghz`` is a clock every controller locks to, if they
     share one: each controller's clock must be a whole multiple of it, and
     without it each controller's start is known only to within one of its
@@ -1248,8 +1260,8 @@ class ControlSystem:
 
     controllers: Sequence[Controller] = ()
     links: Mapping[str, Link] = field(default_factory=dict)
-    max_concurrent_drives: int = 4
-    max_concurrent_readouts: int = 2
+    max_concurrent_drives: int | None = None
+    max_concurrent_readouts: int | None = None
     line_switch_penalty_cycles: int = 0
     reference_clock_ghz: float | None = None
     # Set by __post_init__, and declared for type checkers only: as fields
@@ -1420,16 +1432,22 @@ class ControlSystem:
         )
 
     def __hash__(self) -> int:
-        return hash(
-            (
-                self.controllers,
-                tuple(sorted(self.links.items())),
-                self.max_concurrent_drives,
-                self.max_concurrent_readouts,
-                self.line_switch_penalty_cycles,
-                self.reference_clock_ghz,
+        # Kept: a kernel's cache key holds the control system its qudits
+        # are lowered for, read at every call.
+        found: int | None = self.__dict__.get("_hash")
+        if found is None:
+            found = hash(
+                (
+                    self.controllers,
+                    tuple(sorted(self.links.items())),
+                    self.max_concurrent_drives,
+                    self.max_concurrent_readouts,
+                    self.line_switch_penalty_cycles,
+                    self.reference_clock_ghz,
+                )
             )
-        )
+            object.__setattr__(self, "_hash", found)
+        return found
 
     def __reduce__(self) -> tuple[Any, ...]:
         from ._pickling import frozen_reduce
@@ -1439,7 +1457,7 @@ class ControlSystem:
     def as_dict(self) -> dict[str, Any]:
         """The control system as JSON-serializable data; links name the
         controllers they reach by index."""
-        data = {
+        data: dict[str, Any] = {
             "controllers": [c.as_dict() for c in self.controllers],
             "links": {
                 name: {

@@ -33,6 +33,28 @@ permissions:
   contents: read
 
 jobs:
+  # Which jobs the change needs, from the paths it touches
+  # (tools/ci-changes.py): "native" runs every job, "python" every job but
+  # old-compilers, "docs" only test-docs beside lint, and a change of none of
+  # them lint alone. A path the tool does not name is native. Only a pull
+  # request is classed: a push and a manual run are native.
+  changes:
+    name: changes
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      native: ${{ steps.kind.outputs.native }}
+      python: ${{ steps.kind.outputs.python }}
+      docs: ${{ steps.kind.outputs.docs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: kind
+        uses: ./.github/actions/changes
+
   lint:
     name: lint (pre-commit, zizmor)
     if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline }}
@@ -60,7 +82,8 @@ jobs:
 
   test:
     name: test (${{ matrix.platform }}, py${{ matrix.python }})
-    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline }}
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline && needs.changes.outputs.python == 'true' }}
+    needs: changes
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -206,9 +229,12 @@ jobs:
   # change's branch. While the baseline says "bootstrap": true and has no counts,
   # the counts are reported, not gated (CONTRIBUTING.md, The perf gate). A
   # manual run with perf_baseline runs this job alone, to take a baseline.
+  # Every change that can move it runs it: the compiler, the runtime and the
+  # Python package (needs.changes.outputs.python covers all three).
   perf-gate:
     name: perf gate (instructions and sizes, linux-x86_64)
-    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') }}
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && needs.changes.outputs.python == 'true' }}
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
@@ -241,6 +267,10 @@ jobs:
           # The build reads its version from the git tags.
           fetch-depth: 0
           persist-credentials: false
+      # The container runs as root on a workspace it does not own, which git
+      # refuses unless it is marked safe (the checkout step marks it only for
+      # itself); the gate compares the change with its base through git.
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.12.23"
@@ -259,12 +289,17 @@ jobs:
       # they differ (the spread) next to each case's change. A run taken as
       # the baseline makes 5, for a closer look at the spread. Two native
       # runs after them count each case's Python work, which the baseline
-      # records and which labels a failure (perf-gate.py --help).
+      # records and which labels a failure (perf-gate.py --help). A layout
+      # only row is compared with the base the change was applied to, which
+      # the gate measures in this job when such a row fails (--help, base
+      # comparison).
       - name: Perf gate
         env:
           PROCESSES: ${{ inputs.perf_baseline && 5 || 2 }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: >
           uv run --no-sync python tools/perf-gate.py --processes "$PROCESSES"
+          ${BASE:+--base-commit "$BASE"}
           --out perf-gate/perf_gate.json --dumps perf-gate/callgrind
           --summary "$GITHUB_STEP_SUMMARY"
 
@@ -293,8 +328,8 @@ jobs:
   # reported.
   editor-types:
     name: editor types (pyright, no configuration)
-    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline }}
-    needs: test
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline && needs.changes.outputs.python == 'true' }}
+    needs: [changes, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -327,7 +362,8 @@ jobs:
   # and tests the cp314t release wheels the same way.
   test-free-threaded:
     name: test (linux-x86_64, py3.14t)
-    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline }}
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline && needs.changes.outputs.python == 'true' }}
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -373,7 +409,8 @@ jobs:
   # template called through one in a class template). Build and lit only.
   old-compilers:
     name: build and lit (linux-x86_64, ${{ matrix.compiler }})
-    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline }}
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline && needs.changes.outputs.native == 'true' }}
+    needs: changes
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     strategy:
@@ -411,7 +448,8 @@ jobs:
   # Code that runs only in a subprocess the tests start is not measured.
   coverage:
     name: coverage (report only, linux-x86_64, py3.12)
-    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline }}
+    if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline && needs.changes.outputs.python == 'true' }}
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     continue-on-error: true
@@ -456,6 +494,77 @@ jobs:
           path: coverage
           if-no-files-found: warn
           retention-days: 14
+
+  # A change to the pages or to a file that tests read (the README, the
+  # changelog, the contributing guide, the license files) and to nothing
+  # wider: the tests that read them, once. A wider change runs them in every
+  # test job. tests/test_ci_changes.py holds this list against the tests.
+  test-docs:
+    name: test (the pages' tests, linux-x86_64, py3.12)
+    if: >-
+      ${{ !startsWith(github.ref, 'refs/heads/pull-request/') && !inputs.perf_baseline &&
+      needs.changes.outputs.docs == 'true' && needs.changes.outputs.python != 'true' }}
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - uses: ./.github/actions/mlir-toolchain
+      - name: Configure
+        run: uv run --no-sync cmake --preset dev
+      - name: Build
+        run: uv run --no-sync cmake --build build/dev
+      - name: The tests that read the pages
+        env:
+          PYTHONPATH: build/dev/python
+        run: >-
+          PATH="$PWD/build/dev/bin:$PATH" uv run --no-sync python -m pytest
+          tests/test_tutorials.py tests/test_tutorial_scripts.py tests/test_tutorial_figures.py
+          tests/test_examples.py tests/test_conventions.py tests/test_release_tools.py
+          tests/test_api_docs.py tests/test_error_codes.py tests/test_third_party_notices.py
+          tests/test_ci_changes.py tests/test_perf_gate.py
+          -q -m "not gpu" -p no:cacheprovider
+
+  # The check of this workflow to require on main. It runs whatever the
+  # others did, fails when one of them failed or was cancelled, and passes
+  # when the jobs a change does not need were skipped. coverage reports only
+  # and is left out. It has the required name only for a pull request and for
+  # main: a pull-request/<N> branch and a perf-baseline run test only a part,
+  # on a commit that may be a pull request's head, and must not stand in for
+  # the real one.
+  ci-ok:
+    name: >-
+      ${{ (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+      && !inputs.perf_baseline && 'ci-ok' || 'ci-ok (a partial run, not the required check)' }}
+    if: ${{ always() }}
+    needs: [changes, lint, test, test-docs, perf-gate, editor-types, test-free-threaded, old-compilers]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job that ran passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          GPU_ONLY: ${{ startsWith(github.ref, 'refs/heads/pull-request/') }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          results = {job: need["result"] for job, need in json.loads(os.environ["NEEDS"]).items()}
+          print(json.dumps(results, indent=2))
+          bad = {job: result for job, result in results.items() if result not in ("success", "skipped")}
+          # The classifier itself must have run: without it every job is
+          # skipped. A pull-request/<N> branch runs the gpu job alone.
+          if results.get("changes") != "success" and os.environ.get("GPU_ONLY") != "true":
+              bad["changes"] = results.get("changes")
+          sys.exit(f"not passed: {bad}" if bad else 0)
+          PY
 
   # A source build with GPU support and the GPU tests (gpu-tests.yml), in the
   # CUDA 12.9 development image on a GPU runner, once the GPU_RUNNERS

@@ -436,7 +436,9 @@ def simulate_tree(
             return
         index, iteration, qudit, start, end = found
         key = (index, tuple(iteration))
-        seen[key] = (index, tuple(iteration), qudit, start, end)
+        # Reported with the number and iteration the kernel gave the readout.
+        ((number, kernel_iteration),) = current.readout_keys([[index, *iteration]])
+        seen[key] = (number, tuple(kernel_iteration), qudit, start, end)
         m = modes[qudit]
         projected = [engine.project(state, dims, m, k) for k in range(dims[m])]
         weights = np.array([engine.weight(s) for s in projected]) * weight

@@ -912,7 +912,11 @@ def _simulate_compiled(
     if functions:
         # Calls are bound one execution at a time, on the concrete module
         # with loops that hold calls unrolled.
-        module = compiled._concrete().simulation_module(*compiled.options.schedule_args())
+        from .._programs import _schedule_args
+
+        module = compiled._concrete().simulation_module(
+            *_schedule_args(compiled.options, compiled.clocks)
+        )
         arguments = []
         lock = threading.RLock()
     elif backend == "gpu" or compiled.waits is not None:
@@ -1010,8 +1014,8 @@ def _simulate_compiled(
             seen,
         )
 
-    measurements = sorted(seen.values(), key=lambda m: (m.end_ns, m.readout, m.iteration))
-    column = {(m.readout, m.iteration): i for i, m in enumerate(measurements)}
+    # The kernel's numbers are looked up only where something was measured.
+    measurements, column = _columns(_kernel_numbered(module, seen)) if seen else ([], {})
     rho = np.zeros((dim, dim), dtype=np.complex128)
     branches = []
     rows = []
@@ -1039,6 +1043,43 @@ def _simulate_compiled(
         times_ns=(t_start, t_end),
         _states=[leaf for leaf, _, _ in leaves],
     )
+
+
+def _kernel_numbered(
+    module: Any, seen: dict[tuple[int, tuple[int, ...]], Measurement]
+) -> dict[tuple[int, tuple[int, ...]], Measurement]:
+    """*seen*, by the module's readout index and loop iteration, each
+    measurement given the number and iteration the kernel gave its readout:
+    peeling and unrolling a loop copy its readouts, and every schedule
+    reports them as the kernel made them."""
+    keys = list(seen)
+    numbered = module.readout_keys([[index, *iteration] for index, iteration in keys])
+    return {
+        key: replace(seen[key], readout=number, iteration=tuple(iteration))
+        for key, (number, iteration) in zip(keys, numbered, strict=True)
+    }
+
+
+def _columns(
+    seen: dict[tuple[int, tuple[int, ...]], Measurement],
+) -> tuple[list[Measurement], dict[tuple[int, tuple[int, ...]], int]]:
+    """The measurements of *seen* in the order they end, and the column of
+    each path key (readout index and iteration in the module) among them.
+
+    Copies of one execution of a kernel's readout (an op that reads a
+    measurement runs in both arms of an if on it) share one column: a shot
+    runs one of them, and the column holds its level. The measurement
+    listed is the copy that ends first."""
+    keys = sorted(seen, key=lambda k: (seen[k].end_ns, seen[k].readout, seen[k].iteration))
+    measurements: list[Measurement] = []
+    of: dict[tuple[int, tuple[int, ...]], int] = {}
+    column = {}
+    for key in keys:
+        m = seen[key]
+        column[key] = of.setdefault((m.readout, m.iteration), len(measurements))
+        if column[key] == len(measurements):
+            measurements.append(m)
+    return measurements, column
 
 
 def _measurement_tree(
@@ -1198,6 +1239,7 @@ def _simulate_tree(
 
     Without *t_end* each path runs to the end of its own schedule, which
     variable waits make path-dependent."""
+    from .._programs import _schedule_args
     from ..classical import _handlers_for
     from ._calls import IQModel, ReadoutModel, simulate_tree, takes_iq
 
@@ -1218,7 +1260,7 @@ def _simulate_tree(
         rng,
         functions,
         chosen,
-        compiled.options.schedule_args(),
+        _schedule_args(compiled.options, compiled.clocks),
         model,
         latency_branching,
         clock_ghz,
@@ -1233,8 +1275,7 @@ def _simulate_tree(
     seen = {key: Measurement(*value) for key, value in seen_raw.items()}
     if t_end is None:
         t_end = max((leaf.end for leaf in leaves), default=t_start)
-    measurements = sorted(seen.values(), key=lambda m: (m.end_ns, m.readout, m.iteration))
-    column = {(m.readout, m.iteration): i for i, m in enumerate(measurements)}
+    measurements, column = _columns(seen)
     dim = math.prod(dims)
     rho = np.zeros((dim, dim), dtype=np.complex128)
     branches = []

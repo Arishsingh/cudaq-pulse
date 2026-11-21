@@ -2695,6 +2695,7 @@ simulationProgram(mlir::ModuleOp source) {
   if (pulse::LineGrid(clocks).enabled() ||
       (clocks.system && clocks.system.getControllers().size() > 1) ||
       clocks.delayed() || pulse::programBudget(module) ||
+      module->hasAttr("pulse.program_limits") ||
       pulse::persistentFrames(module) || pulse::blocksOnCalls(module))
     return program;
   mlir::WalkResult unsupported = main.walk([](mlir::Operation *op) {
@@ -4207,6 +4208,27 @@ public:
     return {program_->readoutsBefore[first_], program_->submitsBefore[first_]};
   }
 
+  /// The number and loop iteration the kernel gave each readout execution
+  /// [readout index, iteration...] of this module (in a window, numbered as
+  /// in the program): what SimulationResult.measurements reports. Peeling
+  /// and unrolling copy readouts; a copy keeps the kernel's.
+  std::vector<std::pair<int64_t, std::vector<int64_t>>>
+  readout_keys(const std::vector<std::vector<int64_t>> &entries) {
+    std::lock_guard<std::recursive_mutex> guard(*lock_);
+    auto readouts = readoutOps();
+    int64_t base = window_bases().first;
+    std::vector<std::pair<int64_t, std::vector<int64_t>>> keys;
+    for (const auto &entry : entries) {
+      int64_t index = entry.empty() ? -1 : entry.front() - base;
+      if (index < 0 || index >= static_cast<int64_t>(readouts.size()))
+        throw std::invalid_argument(
+            "readout_keys entries are [readout index, iteration...]");
+      keys.push_back(pulse::kernelReadoutKey(
+          readouts[index], llvm::ArrayRef(entry).drop_front(), entry.front()));
+    }
+    return keys;
+  }
+
   /// This module with every answer not bound yet replaced by zeros, for
   /// evolving up to the next call: those answers only affect what follows.
   PulseModule placeholders() {
@@ -4982,7 +5004,7 @@ private:
         policy,
         rcp ? maxDrives : 0,
         rcp ? maxReadouts : 0,
-        rcp ? readoutLatency : 0,
+        readoutLatency,
         rcp ? switchPenalty : 0,
         checkCalls && classical::declaresClassicalCalls(module),
         frameChanges ? *frameChanges : pulse::hasFrameChangeWork(module)};
@@ -5002,10 +5024,10 @@ private:
            checkCalls, frameChanges] = options;
     if (policy == "asap")
       pm.addNestedPass<mlir::func::FuncOp>(
-          pulse::createPulseScheduleAsapPass());
+          pulse::createPulseScheduleAsapPass(readoutLatency));
     else if (policy == "alap")
       pm.addNestedPass<mlir::func::FuncOp>(
-          pulse::createPulseScheduleAlapPass());
+          pulse::createPulseScheduleAlapPass(readoutLatency));
     else if (policy == "rcp" || policy == "alap_rcp")
       pm.addNestedPass<mlir::func::FuncOp>(pulse::createPulseScheduleRcpPass(
           maxDrives, maxReadouts, readoutLatency, switchPenalty,
@@ -5013,7 +5035,7 @@ private:
     else
       throw std::invalid_argument("unknown schedule policy: " + policy);
     if (checkCalls)
-      pm.addPass(pulse::createPulseClassicalCheckPass());
+      pm.addPass(pulse::createPulseClassicalCheckPass(readoutLatency));
     addAfterSchedulePasses(pm, frameChanges);
   }
 
@@ -5367,6 +5389,10 @@ private:
     });
     if (!fits)
       throw std::invalid_argument("bind_call: an answer does not fit its call");
+    // A program built from a kernel numbered its readouts; one that was not
+    // is numbered here as in the program, before scheduling the window can
+    // copy a readout (pulse::numberReadouts does nothing to numbered ones).
+    pulse::numberReadouts(*module, program.readoutsBefore[head]);
 
     PulseModule result(ctx_, std::move(module));
     result.loops_ = loops_;
@@ -5980,6 +6006,13 @@ public:
     // `openIfs` counts the ifs being built.
     bool runTime = false;
     int64_t openIfs = 0;
+    // The readouts in the kernel's order, whether an if or a select has
+    // begun, and whether a pass can copy a readout: one in a loop (peeled
+    // or unrolled) or after an if or a select begins (run in both arms of
+    // an if on a selected value). Only then are the readouts numbered.
+    llvm::SmallVector<mlir::Operation *> kernelReadouts;
+    bool branched = false;
+    bool copyable = false;
 
     auto bind = [&](int64_t vid, mlir::Value v) {
       ssa[vid] = v;
@@ -6310,6 +6343,7 @@ public:
         builder_->setInsertionPointToEnd(region.body.get());
         regions.push_back(std::move(region));
         ++openIfs;
+        branched = true;
         break;
       }
       case kOpElse: {
@@ -6633,6 +6667,7 @@ public:
         bind(p[0], mlir::arith::SelectOp::create(*builder_, loc, condition,
                                                  then, other));
         runTime = true;
+        branched = true;
         break;
       }
 
@@ -6788,6 +6823,10 @@ public:
         bind(p[4], roOp.getUpdatedTone());
         bind(p[5], roOp.getResult());
         lengthen(waveformCycles(roOp.getPulse()), cur);
+        kernelReadouts.push_back(roOp);
+        copyable =
+            copyable || branched ||
+            llvm::any_of(regions, [](const Region &r) { return r.isLoop; });
         break;
       }
 
@@ -7078,6 +7117,15 @@ public:
       throw std::invalid_argument("packed: region left open");
 
     mlir::func::ReturnOp::create(*builder_, loc);
+    // The kernel's numbers of its readouts, before any pass can copy one:
+    // a copy (in both arms of an if, out of a peeled or unrolled loop)
+    // reports as the readout the kernel made. Where no pass can copy one, a
+    // readout's place among them is its number (pulse::kernelReadoutKey).
+    if (copyable) {
+      auto name = builder_->getStringAttr(pulse::kReadoutNumberAttr);
+      for (auto [number, op] : llvm::enumerate(kernelReadouts))
+        op->setAttr(name, builder_->getI64IntegerAttr(number));
+    }
     PulseModule result(ctx_, std::move(owningModule));
     result.runTime_ = runTime;
     result.loops_ = loops;
@@ -7545,6 +7593,8 @@ NB_MODULE(_cudaq_pulse_native, m) {
            nb::arg("path") = nb::none())
       .def("window_bases", &PulseModule::window_bases,
            "The readouts and calls of the program before this window")
+      .def("readout_keys", &PulseModule::readout_keys, nb::arg("entries"),
+           "The kernel's number and iteration of each readout execution")
       .def("placeholders", &PulseModule::placeholders,
            "This module with unbound answers set to zero")
       .def("segment_boundaries", &PulseModule::segment_boundaries,
