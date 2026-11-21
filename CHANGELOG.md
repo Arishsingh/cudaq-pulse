@@ -403,6 +403,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   such waits at distance 41. The check now compiles for any number of
   waits and accepts and refuses the same calls as before; waits of one
   length and bounds share one test.
+- A controller check paired a pulse in one arm of a measured `if` with the
+  pulses of a rolled loop in the other arm, though only one arm plays:
+  `if m: drive(d, w)` with `else: for _ in range(10): drive(d, w)` was
+  refused under every schedule ("drive at 2400 starts 0 cycles after the
+  drive at 2400"), as were loops in both arms or in nested arms, for
+  spacing, detectors and calls that hold the lines. The pulses of an arm
+  are paired only with those that can play with them, as when the loop is
+  unrolled.
 
 ## [0.1.0] - 2026-11-13
 

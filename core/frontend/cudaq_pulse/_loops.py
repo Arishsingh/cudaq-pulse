@@ -506,46 +506,67 @@ class _Pairs:
                 + items[bad + 1 :]
             )
 
+    def apart(self, a: _At, b: _At) -> bool:
+        """Whether events *a* and *b* lie in different arms of one branch
+        execution: never in two copies of one loop, which share the arms of
+        the branches around it and run those in it apart."""
+        for x, y in zip(a[2], b[2], strict=False):
+            if x != y:
+                if (x if type(x) is int else x[0]) == (y if type(y) is int else y[0]):
+                    return False
+                break
+        return _exclusive(self.events[a[0]], self.events[b[0]])
+
     def walk(
-        self, items: list[tuple[Any, int, tuple[Any, ...]]], before: _At | None
+        self, items: list[tuple[Any, int, tuple[Any, ...]]], seen: list[_At]
     ) -> tuple[list[Any], _At | None]:
-        """The pairs of *items* after *before*, and the last of them."""
+        """The pairs of *items* after the events *seen* (in start order,
+        which *items* are appended to), and the last of them. An event's
+        mate is the latest one seen that is not in another arm of a branch
+        execution it is in, a loop in an arm too."""
         events = self.events
         parts: list[Any] = []
-        run: list[_At] = []
-        anchor = last = before
+        last = seen[-1] if seen else None
         for node, dt, path in self.ordered(items):
             if type(node) is int:
                 event = events[node]
-                mate = anchor
-                for other in reversed(run):
-                    if other[2] != path or not _exclusive(events[other[0]], event):
-                        mate = other
+                at = (node, dt, path)
+                for mate in reversed(seen):
+                    if not self.apart(mate, at):
+                        part = self.pair(events[mate[0]], mate[1], event, dt)
+                        if part is not None:
+                            parts.append(part)
                         break
-                if mate is not None:
-                    part = self.pair(events[mate[0]], mate[1], event, dt)
-                    if part is not None:
-                        parts.append(part)
-                last = (node, dt, path)
-                run.append(last)
+                last = at
+                seen.append(at)
                 continue
-            inner = path + (id(node.orig),)
-            first, last = self.walk([(child, dt, inner) for child in node.body], last)
+            rid, depth = id(node.orig), len(path)
+            inner = path + (rid,)
+            first, last = self.walk([(child, dt, inner) for child in node.body], seen)
             parts.extend(first)
             assert last is not None
             if node.copies > 1:
                 period = self.period(node)
+                # A copy follows the last event of the copy before it.
                 again, end = self.walk(
                     [(child, 0, inner) for child in node.body],
-                    (last[0], last[1] - dt - period, ("copy",)),
+                    [(last[0], last[1] - dt - period, _copied(last[2], depth, (rid, -1)))],
                 )
                 if again:
                     parts.append(_Copies(again, 1, node.copies, period, dt))
                 assert end is not None
-                last = (end[0], dt + (node.copies - 1) * period + end[1], ("copy",))
-            anchor = last
-            run = []
+                last = (
+                    end[0],
+                    dt + (node.copies - 1) * period + end[1],
+                    _copied(end[2], depth, (rid, node.copies - 1)),
+                )
+                seen.append(last)
         return parts, last
+
+
+def _copied(path: tuple[Any, ...], depth: int, copy: tuple[int, int]) -> tuple[Any, ...]:
+    """*path* with its loop at *depth* in copy *copy* (its id, copy)."""
+    return (*path[:depth], copy, *path[depth + 1 :])
 
 
 def _rolled_loops(
@@ -731,7 +752,7 @@ def parts(
     for line in on_lines:
         items = _keep(timed, lambda i: events[i]["line"] == line)  # noqa: B023
         found.extend(
-            _Pairs(events, spacing, budget, (line,)).walk([(n, 0, ()) for n in items], None)[0]
+            _Pairs(events, spacing, budget, (line,)).walk([(n, 0, ()) for n in items], [])[0]
         )
         templates = list(_events_of(items))
         if limits.max_frequencies_per_line is not None:
@@ -821,7 +842,7 @@ def parts(
             items = _keep(readouts, lambda i: detectors[events[i]["qudit"]] == detector)  # noqa: B023
             joint = {events[i]["line"] for i in _events_of(items)}
             found.extend(
-                _Pairs(events, acquired, budget, joint).walk([(n, 0, ()) for n in items], None)[0]
+                _Pairs(events, acquired, budget, joint).walk([(n, 0, ()) for n in items], [])[0]
             )
     if limits.feedback_latency_cycles:
         found.extend(

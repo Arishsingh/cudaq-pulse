@@ -2376,12 +2376,16 @@ def _limit_violations(
 
 
 def _exclusive(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
-    """Whether two events lie in different arms of one branch execution."""
+    """Whether two events lie in different arms of one branch execution. A
+    walk numbers each execution of a branch apart, so the events of one
+    branch id are of one execution, a loop in an arm or not; a summarizing
+    walk's copies of a loop share its body's ids, and its callers compare
+    only events of one copy (``_loops._Pairs``)."""
     if not a["conditions"] or not b["conditions"]:
         return False
-    arms = {(c["branch"], tuple(a["iteration"])): c["arm"] for c in a["conditions"]}
+    arms = {c["branch"]: c["arm"] for c in a["conditions"]}
     for c in b["conditions"]:
-        arm = arms.get((c["branch"], tuple(b["iteration"])))
+        arm = arms.get(c["branch"])
         if arm is not None and arm != c["arm"]:
             return True
     return False
