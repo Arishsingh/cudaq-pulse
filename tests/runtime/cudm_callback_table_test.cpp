@@ -4,10 +4,12 @@
 // The waveform-callback table of the cuDensityMat runtime, run against the
 // host fake in fake_cudensitymat/: concurrent runs each see their own
 // envelopes, the capacity is per run, a callback evaluated outside its
-// run's evolution fails instead of reading another run's parameters, and
-// the members of a batched run evolve as their own runs do.
+// run's evolution fails instead of reading another run's parameters, the
+// members of a batched run evolve as their own runs do, a workspace serves
+// more than one evolution, and a sum callback adds its envelopes.
 
 #include "cudm_runtime.h"
+#include "cudaq-pulse/Runtime/WaveformCallback.h"
 
 #include <cudensitymat.h>
 
@@ -284,6 +286,85 @@ void multidiagonalOperatorsAreChecked() {
         "data of the wrong size is refused");
 }
 
+// The parameters of a sum callback over square envelopes of `amplitudes`,
+// with `count` as the number of envelopes it claims.
+std::vector<double> squareSum(const std::vector<double> &amplitudes,
+                              double count) {
+  std::vector<double> parameters = {count};
+  for (double amplitude : amplitudes) {
+    const auto envelope = squareEnvelope(amplitude);
+    parameters.push_back(squareKind);
+    parameters.push_back(static_cast<double>(envelope.size()));
+    parameters.insert(parameters.end(), envelope.begin(), envelope.end());
+  }
+  return parameters;
+}
+
+// One product whose callback sums envelopes evolves as one product per
+// envelope does; a sum whose parameters do not add up fails the evolution.
+void aSumCallbackAddsItsEnvelopes() {
+  constexpr int32_t modes[] = {0};
+  constexpr int32_t duality[] = {0};
+  const std::vector<double> amplitudes = {0.25, 0.5, -0.125};
+  {
+    Run run("sum");
+    const auto parameters = squareSum(amplitudes, 3.0);
+    check(cudm_op_term_append(
+              run.handle, run.term, &run.elementary, modes, duality, 1, 1.0,
+              0.0, cudaq_pulse::kSumKind, parameters.data(),
+              static_cast<int32_t>(parameters.size())) == CUDM_SUCCESS,
+          "sum: append");
+    double separate = NAN;
+    {
+      Run single("one product per envelope");
+      for (double amplitude : amplitudes)
+        check(single.appendEnvelope(amplitude) == CUDM_SUCCESS,
+              "one product per envelope: append");
+      separate = single.evolve("one product per envelope");
+    }
+    const double amplitude = run.evolve("sum");
+    check(amplitude == separate && std::abs(amplitude - expected(amplitudes)) <
+                                       1.0e-8 * expected(amplitudes),
+          "sum: |0> amplitude " + std::to_string(amplitude) +
+              ", one product per envelope " + std::to_string(separate));
+  }
+  for (double count : {2.0, 4.0, -1.0}) {
+    Run run("malformed sum");
+    const auto parameters = squareSum(amplitudes, count);
+    check(cudm_op_term_append(
+              run.handle, run.term, &run.elementary, modes, duality, 1, 1.0,
+              0.0, cudaq_pulse::kSumKind, parameters.data(),
+              static_cast<int32_t>(parameters.size())) == CUDM_SUCCESS,
+          "malformed sum: append");
+    check(cudm_operator_append(run.handle, run.op, run.term, 0, 1.0, 0.0) ==
+                  CUDM_SUCCESS &&
+              cudm_evolve(run.handle, run.op, run.in, run.out, run.workspace,
+                          0.0, durationNs, 200, 4) != CUDM_SUCCESS,
+          "a sum claiming " + std::to_string(count) +
+              " of 3 envelopes fails the evolution");
+  }
+}
+
+// A second evolution with the same workspace re-prepares it, attaches the
+// buffer the first one allocated, and ends where the first one did.
+void aWorkspaceServesASecondEvolution() {
+  Run run("second evolution");
+  check(run.appendEnvelope(0.25) == CUDM_SUCCESS, "second evolution: append");
+  const auto first = run.evolveAll("first evolution", 1);
+  const bool evolved =
+      cudm_evolve(run.handle, run.op, run.in, run.out, run.workspace, 0.0,
+                  durationNs, 200, 4) == CUDM_SUCCESS &&
+      cudm_state_capture(run.out) == CUDM_SUCCESS;
+  check(evolved,
+        std::string("second evolution failed: ") + cudm_last_error_message());
+  std::vector<double> second(4);
+  if (evolved)
+    cudm_last_result_copy(second.data(), second.size() * sizeof(double));
+  check(evolved && first.size() == 4 &&
+            std::memcmp(first.data(), second.data(), 4 * sizeof(double)) == 0,
+        "the second evolution ends where the first one did");
+}
+
 } // namespace
 
 int main() {
@@ -293,6 +374,8 @@ int main() {
   invalidParametersAreRejected();
   batchedMembersEvolveAsTheirOwnRuns();
   multidiagonalOperatorsAreChecked();
+  aWorkspaceServesASecondEvolution();
+  aSumCallbackAddsItsEnvelopes();
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures.load());
     return 1;

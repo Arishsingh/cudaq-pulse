@@ -249,6 +249,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   raise `ControllerLimitError`, or start its operations later by a line's
   delay, where it compiled before. Qudits of quantum systems that differ
   only in their control system get a program each.
+- **Long pulse sequences on the GPU.** With `backend="gpu"` and the
+  default operator lowering, the pulses played on one qudit are one
+  time-dependent term per quadrature, whose envelope callback sums theirs,
+  so the number of terms cuDensityMat applies at each step no longer grows
+  with the number of pulses. The drives now take two of an evolution's
+  1024 envelope callbacks per driven qudit, not two per pulse or pulse
+  train: a program of more than about 512 pulses that do not form a
+  train, which failed with "the drives of this program need more than
+  1024 envelope callbacks", now runs. The host still evaluates every
+  pulse's envelope at each step. The envelopes are added before they
+  scale the drive's operator, so results can differ from before in the
+  last bits. `CUDAQ_PULSE_GPU_OPERATORS=banded` or `dense` lowers as
+  before.
 - **Schedule plots look different.** `viz.plot_schedule`, `viz.save_schedule`
   and `timeline()` draw in the style of the documentation's figures: drives
   green, readouts rose, waits hatched grey and classical calls teal (colors
@@ -280,9 +293,30 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   most 4 drives and 2 readouts at once, and nothing else checks them. A
   system file written by an earlier version holds 4 and 2, which now count
   as given; to leave them unchecked, set them to `null` in the file.
+- The first compile of a kernel with many measurement-conditioned ifs no
+  longer takes time in the square of their number.
+- **Control systems of many controllers build and compile faster.** Checking
+  that no `Controller` is listed twice and placing a link's controllers take
+  time in proportion to the number of controllers, not its square, and so
+  does finding the readout latency when controllers give one
+  `peer_latency_cycles` to all others (a controller with a mapping is still
+  compared with every other). Programs and errors are as before.
 
 ### Fixed
 
+- `rcp` and `alap_rcp` scheduled some rolled loops one iteration at a time,
+  in time and memory that grew with the trip count (a loop of 10**15
+  iterations did not finish): a loop beside a longer pulse on another line,
+  which its pulses reach only after many iterations; a loop whose
+  iterations take the lanes in turn, such as a loop in one arm of a
+  measured `if` whose other arm plays a pulse, or a loop that branches on a
+  readout in its body, also with many lanes; such loops in another loop or
+  holding one; and a loop whose lines move by periods of their own beside a
+  longer pulse. Such a loop is now scheduled in the time and memory of a
+  few iterations, with the same schedule as before. Under a control system
+  with controllers, a loop whose lines move by periods of their own still
+  takes time that grows with the trips in the controller check, as under
+  `asap`; that is a separate issue.
 - The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
   two inputs. A schedule block that yields one of its own arguments, passing
   an input through, is inlined with that input as its result; the passes

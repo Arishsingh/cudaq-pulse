@@ -116,7 +116,9 @@ interface.
 
 `CUDAQ_PULSE_GPU_OPERATORS` chooses how `qop-to-cudm` builds the GPU
 backend's operator, as its `operators` option: `fused`, the default, sums
-the static terms and dissipators into a few dense operators and stores the
+the static terms and dissipators into a few dense operators, makes the
+time-dependent terms of one operator one term whose callback sums theirs
+(the pulses played on a qudit make one per quadrature), and stores the
 single-diagonal operators of modes of four or more levels by their diagonal;
 `banded` only does the latter; `dense` lowers every product to its own term
 of dense operators, as before either. Use it to tell whether a

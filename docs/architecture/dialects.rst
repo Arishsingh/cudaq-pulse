@@ -189,8 +189,10 @@ then a ``cudm.evolve`` with the chosen integrator. The constant Hamiltonian
 terms and the dissipators that act on few levels become a few dense operators,
 as CUDA-Q builds them: where a group of modes is small enough, one
 superoperator on its ket and bra sides; otherwise one operator per group of
-modes on each side, which also takes the dissipators' anticommutators. Each
-time-dependent term stays a term of its own. On a mode of four or more
+modes on each side, which also takes the dissipators' anticommutators.
+Time-dependent terms of the same operator become one term whose envelope
+callback sums theirs: the pulses played on one qudit make one term per
+quadrature, however many there are. On a mode of four or more
 levels, an operator with a single nonzero diagonal (a lowering, raising or
 number operator, or a sum of diagonal terms) is stored multi-diagonal, by that
 diagonal. The pass option ``max-fused-dimension`` (16) bounds the size of a

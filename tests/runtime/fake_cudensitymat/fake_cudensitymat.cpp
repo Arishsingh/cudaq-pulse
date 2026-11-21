@@ -7,7 +7,10 @@
 // the product's scalar callback at t. That keeps the runtime's integrators,
 // state handling and callback table real while needing no GPU. A batched
 // state holds its members one after another, and each member takes the
-// callbacks' value and the scaling factor for its own index.
+// callbacks' value and the scaling factor for its own index. It holds the
+// runtime to the library's documented workspace contract: a prepared
+// workspace has no memory until some is attached, and an action without it
+// fails.
 
 #include <cudensitymat.h>
 
@@ -29,7 +32,10 @@ struct Product {
 } // namespace
 
 struct FakeCudmHandle {};
-struct FakeCudmWorkspace {};
+struct FakeCudmWorkspace {
+  size_t required = 0;
+  bool attached = false;
+};
 struct FakeCudmElementary {};
 
 struct FakeCudmState {
@@ -177,15 +183,18 @@ cudensitymatDestroyWorkspace(cudensitymatWorkspaceDescriptor_t workspace) {
 }
 
 cudensitymatStatus_t cudensitymatWorkspaceGetMemorySize(
-    const cudensitymatHandle_t, const cudensitymatWorkspaceDescriptor_t,
-    cudensitymatMemspace_t, cudensitymatWorkspaceKind_t, size_t *size) {
-  *size = 0;
+    const cudensitymatHandle_t,
+    const cudensitymatWorkspaceDescriptor_t workspace, cudensitymatMemspace_t,
+    cudensitymatWorkspaceKind_t, size_t *size) {
+  *size = workspace->required;
   return CUDENSITYMAT_STATUS_SUCCESS;
 }
 
 cudensitymatStatus_t cudensitymatWorkspaceSetMemory(
-    const cudensitymatHandle_t, cudensitymatWorkspaceDescriptor_t,
-    cudensitymatMemspace_t, cudensitymatWorkspaceKind_t, void *, size_t) {
+    const cudensitymatHandle_t, cudensitymatWorkspaceDescriptor_t workspace,
+    cudensitymatMemspace_t, cudensitymatWorkspaceKind_t, void *buffer,
+    size_t size) {
+  workspace->attached = buffer && size >= workspace->required;
   return CUDENSITYMAT_STATUS_SUCCESS;
 }
 
@@ -256,17 +265,21 @@ cudensitymatStatus_t cudensitymatOperatorPrepareAction(
     const cudensitymatHandle_t, cudensitymatOperator_t,
     const cudensitymatState_t, const cudensitymatState_t,
     cudensitymatComputeType_t computeType, size_t,
-    cudensitymatWorkspaceDescriptor_t, cudaStream_t) {
-  return computeType == CUDENSITYMAT_COMPUTE_64F
-             ? CUDENSITYMAT_STATUS_SUCCESS
-             : CUDENSITYMAT_STATUS_INVALID_VALUE;
+    cudensitymatWorkspaceDescriptor_t workspace, cudaStream_t) {
+  if (computeType != CUDENSITYMAT_COMPUTE_64F)
+    return CUDENSITYMAT_STATUS_INVALID_VALUE;
+  workspace->required = 256;
+  workspace->attached = false;
+  return CUDENSITYMAT_STATUS_SUCCESS;
 }
 
 cudensitymatStatus_t cudensitymatOperatorComputeAction(
     const cudensitymatHandle_t, cudensitymatOperator_t op, double time,
     int64_t batchSize, int32_t, const double *,
     const cudensitymatState_t stateIn, cudensitymatState_t stateOut,
-    cudensitymatWorkspaceDescriptor_t, cudaStream_t) {
+    cudensitymatWorkspaceDescriptor_t workspace, cudaStream_t) {
+  if (!workspace->attached)
+    return CUDENSITYMAT_STATUS_INVALID_VALUE;
   if (static_cast<size_t>(batchSize > 1 ? batchSize : 1) != stateIn->batch ||
       stateIn->batch != stateOut->batch)
     return CUDENSITYMAT_STATUS_INVALID_VALUE;
