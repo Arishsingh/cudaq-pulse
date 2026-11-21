@@ -843,7 +843,7 @@ By making a contribution to this project, I certify that:
     this project or the open source license(s) involved.
 ```
 
-Use your real name and the email address you commit with. `git commit -s`
+Use a known identity and the email address you commit with. `git commit -s`
 (`--signoff`) adds the line from `user.name` and `user.email`:
 
 ```bash
