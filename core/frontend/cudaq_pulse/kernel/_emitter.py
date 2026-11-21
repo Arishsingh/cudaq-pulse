@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     _CHOICE_COMPARE: dict[str, Callable[[Any, Any], Any]]
     _OPERAND_TYPES: dict[str, tuple[tuple[str, ...], ...]]
     _identity_keys: Callable[[dict[str, Any], Any, Any], tuple[str | None, str | None]] | None
+    _journal_lines: type[_Lines] | None
     _SIGNATURES: dict[int, tuple[Any, inspect.Signature]]
 
 _WAVEFORMS = frozenset(
@@ -1240,9 +1241,12 @@ class _Held:
     records the channel in ``IRValue.chan``.
     """
 
-    # ``seq``, the channel's place in ``_Lines.held``, is set from a trace's
-    # first measurement-conditioned if on (``_runtime_branch``).
     __slots__ = ("cells", "key", "seq")
+
+    if TYPE_CHECKING:
+        # The channel's place in ``_Lines.held``, set from a trace's first
+        # measurement-conditioned if on (``_branch_journal.JournalLines``).
+        seq: int
 
     def __init__(self, values: tuple[IRValue, ...], key: tuple[Any, ...]) -> None:
         try:
@@ -1294,19 +1298,18 @@ class _Lines:
     # for each arm around the trace, its record of changed containers and
     # the containers it copies when they first change. ``plain``, set by the
     # first such if: id -> (list, length) for lists whose first `length`
-    # entries hold no line or tone. Both are read with getattr. ``journal``
-    # and ``twin``, set by the first such if (``_branch_journal``): while an
-    # if is traced, each channel cell an op rebound since the if began, with
-    # its value then (results written back by an if or a rolled loop are to
-    # cells already in it), else None; the twin of the trace's tracer type
-    # that notes them.
-    __slots__ = ("held", "shared", "log", "watched", "plain", "journal", "twin")
+    # entries hold no line or tone. Both are read with getattr. ``journal``,
+    # set by the first such if, which makes these channels
+    # ``_branch_journal.JournalLines``: while an if is traced, each channel
+    # cell an op rebound since the if began, with its value then (results
+    # written back by an if or a rolled loop are to cells already in it),
+    # else None.
+    __slots__ = ("held", "shared", "log", "watched", "plain", "journal")
 
     if TYPE_CHECKING:
         watched: tuple[tuple[dict[int, tuple[Any, Any]], tuple[Any, ...]], ...]
         plain: dict[int, tuple[list[Any], int]]
         journal: dict[_Chan, IRValue] | None
-        twin: type[PulseIREmitter]
 
     def __init__(self) -> None:
         self.held: dict[tuple[Any, ...], _Held] = {}
@@ -1318,6 +1321,89 @@ class _Lines:
 
     def add(self, key: tuple[Any, ...], values: tuple[IRValue, ...]) -> None:
         self.held[key] = _Held(values, key)
+
+    def rebind_linear(
+        self,
+        emitter: PulseIREmitter,
+        fname: str,
+        call_args: list[StackVal],
+        results: tuple[IRValue, ...],
+    ) -> None:
+        """Rebind *emitter*'s locals and list slots, and the channels, holding
+        the linear values *fname* consumed.
+
+        Each linear result (drive_line, tone, ...) replaces the first
+        unclaimed operand of the same type, wherever the kernel holds it.
+        """
+        slots = emitter._slots
+        names: dict[int, str | None] | None = None
+        if fname == "sync" and len(call_args) == 2 and call_args[0] is not call_args[1]:
+            # Two distinct lines: their names are found in one pass.
+            first, second = call_args
+            if first.chan is not None and second.chan is not None and len(results) == 2:
+                # Both are claimable, so each claims its own result.
+                self.rebind_pair(emitter, first, results[0], second, results[1])
+                return
+            found = emitter._local_names(first, second)
+            names = {id(first): found[0], id(second): found[1]}
+        # The operands each result may replace, by type, the first in operand
+        # order last: a sync over n lines rebinds in O(n), not O(n^2).
+        unclaimed: dict[str, list[tuple[str | None, IRValue, Any, Any]]] = {}
+        for a in reversed(call_args):
+            if a.__class__ is IRValue and a.vtype in LINEAR_TYPES:
+                slot = slots.get(id(a))
+                if slot is not None and not _slot_holds(slot, a):
+                    slot = None
+                name = emitter._find_local_name(a) if names is None else names[id(a)]
+                if name is not None or slot is not None or a.chan is not None:
+                    if a.vtype in unclaimed:
+                        unclaimed[a.vtype].append((name, a, slot, a.chan))
+                    else:
+                        unclaimed[a.vtype] = [(name, a, slot, a.chan)]
+
+        for res in results:
+            if res.vtype not in unclaimed or not unclaimed[res.vtype]:
+                continue
+            name, op_val, slot, chan = unclaimed[res.vtype].pop()
+            if chan is not None and chan.value is op_val:
+                chan.value = res
+                res.chan = chan
+                if chan.shared:
+                    for other, value in emitter.locals.items():
+                        if value is op_val:
+                            emitter.locals[other] = res
+            if name is not None:
+                emitter.locals[name] = res
+            if slot is not None:
+                slot[0][slot[1]] = res
+                slots.pop(id(op_val), None)
+                slots[id(res)] = (slot[0], slot[1], res)
+
+    def rebind_pair(
+        self, emitter: PulseIREmitter, old: IRValue, new: IRValue, old2: IRValue, new2: IRValue
+    ) -> None:
+        """*emitter*'s ``_rebind_one(old, new)``, then ``_rebind_one(old2,
+        new2)``: a drive's line and tone. Unless a channel is shared, the
+        names holding them are found in one pass over the locals."""
+        chan = old.chan
+        chan2 = old2.chan
+        if (chan is not None and chan.shared) or (chan2 is not None and chan2.shared):
+            emitter._rebind_one(old, new)
+            emitter._rebind_one(old2, new2)
+            return
+        name, name2 = (_identity_keys or _load_identity_keys())(emitter.locals, old, old2)
+        if chan is not None:
+            chan.value = new
+            new.chan = chan
+        if name is not None:
+            emitter.locals[name] = new
+        emitter._rebind_slot(old, new)
+        if chan2 is not None:
+            chan2.value = new2
+            new2.chan = chan2
+        if name2 is not None:
+            emitter.locals[name2] = new2
+        emitter._rebind_slot(old2, new2)
 
     def share(self, held: _Held) -> None:
         for cell in held.cells:
@@ -1490,6 +1576,17 @@ def _current(value: IRValue) -> IRValue:
 
 
 _identity_keys = None
+_journal_lines = None
+
+
+def _load_journal_lines() -> type[_Lines]:
+    """The channels of a trace from its first measurement-conditioned if on,
+    imported then."""
+    global _journal_lines
+    from ._branch_journal import JournalLines
+
+    _journal_lines = JournalLines
+    return JournalLines
 
 
 def _load_identity_keys() -> Callable[[dict[str, Any], Any, Any], tuple[str | None, str | None]]:
@@ -1644,8 +1741,6 @@ class PulseIREmitter:
         # Names a measurement-conditioned if bound in one arm only, with the
         # branch instruction; set by the first such if.
         _one_arm: dict[str, tuple[bc.DecodedCode, int]]
-        # Of the twin that traces such an if's arms (_branch_journal).
-        _CELL_ORDER: Callable[[_Chan], Any]
 
     def __init__(
         self,
@@ -2362,29 +2457,22 @@ class PulseIREmitter:
                     plain.pop(id(v), None)
                 containers.append((v, list(v)))
 
-        lines = self._lines
+        # JournalLines from the first such if on (_branch_journal).
+        lines: Any = self._lines
         held = lines.held
         held_count = len(held)
         # Each channel the arms change, with its value entering the if: an if
         # costs what its arms do, not the number of channels. One acquired in
-        # an arm has a seq of at least held_count. The arms are traced by the
-        # twin of the trace's tracer type, which notes the channels each op
-        # rebinds (_branch_journal): outside an if nothing is noted.
-        tracer = self.__class__
-        try:
-            outer = lines.journal
-        except AttributeError:
-            # The trace's first: its channels are numbered, as is each one
-            # acquired from now on, and its arms are traced by the twin.
-            from cudaq_pulse.kernel._branch_journal import TWINS, NumberedLines
-
-            h: Any
+        # an arm has a seq of at least held_count. The trace's first such if
+        # makes its channels ones that note what an op rebinds while a
+        # journal is open (_branch_journal.JournalLines), and numbers them,
+        # as each one acquired from then on: before it nothing is noted.
+        if lines.__class__ is _Lines:
             for seq, h in enumerate(held.values()):
                 h.seq = seq
-            lines.__class__ = NumberedLines
-            lines.twin = TWINS[tracer]
-            outer = None
-        self.__class__ = lines.twin
+            lines.__class__ = _journal_lines or _load_journal_lines()
+            lines.journal = None
+        outer = lines.journal
         journal: dict[Any, IRValue] = {}
         lines.journal = journal
         try:
@@ -2398,10 +2486,10 @@ class PulseIREmitter:
             self.locals.clear()
             self.locals.update(saved_locals)
             for obj, copy in containers:
-                self._restore_container(obj, copy)
+                lines.restore_container(self, obj, copy)
             if then_copies:
                 for obj, copy in then_copies:
-                    self._restore_container(obj, copy)
+                    lines.restore_container(self, obj, copy)
             if len(held) != held_count:
                 _restore_channels(held, held_count, ())
             # Each channel's value after the then arm, and before the if.
@@ -2462,7 +2550,7 @@ class PulseIREmitter:
             aliases: list[tuple[_Chan, str]] = []
             by_pair: dict[tuple[int, int], str] | None = None
             changed = [cell for cell in journal if cell.held.seq < held_count]
-            changed.sort(key=self._CELL_ORDER)
+            changed.sort(key=lines.CELL_ORDER)
             for cell in changed:
                 before = journal[cell]
                 a = then_held[cell] if cell in then_held else before
@@ -2579,7 +2667,6 @@ class PulseIREmitter:
                 _restore_channels(held, held_count, ())
         finally:
             lines.journal = outer
-            self.__class__ = tracer
         if outer is not None:
             # The channels held before this if, for the if around it.
             for cell in journal:
@@ -3932,9 +4019,9 @@ class PulseIREmitter:
             self._lines.add((call_args[0].vid, fname), results)
         elif fname == "drive" and len(results) == 2:
             # drive(line, waveform, tone) -> (line, tone): the common case.
-            self._rebind_pair(call_args[0], results[0], call_args[2], results[1])
+            self._lines.rebind_pair(self, call_args[0], results[0], call_args[2], results[1])
         else:
-            self._rebind_linear(fname, call_args, results)
+            self._lines.rebind_linear(self, fname, call_args, results)
         return results
 
     def _custom_samples(self, duration: Any, attrs: dict[str, Any]) -> tuple[dict[str, Any], int]:
@@ -3985,61 +4072,6 @@ class PulseIREmitter:
                 return None
         return None
 
-    def _rebind_linear(
-        self,
-        fname: str,
-        call_args: list[StackVal],
-        results: tuple[IRValue, ...],
-    ) -> None:
-        """Rebind the locals and list slots holding consumed linear values.
-
-        Each linear result (drive_line, tone, ...) replaces the first
-        unclaimed operand of the same type, wherever the kernel holds it.
-        """
-        slots = self._slots
-        names: dict[int, str | None] | None = None
-        if fname == "sync" and len(call_args) == 2 and call_args[0] is not call_args[1]:
-            # Two distinct lines: their names are found in one pass.
-            first, second = call_args
-            if first.chan is not None and second.chan is not None and len(results) == 2:
-                # Both are claimable, so each claims its own result.
-                self._rebind_pair(first, results[0], second, results[1])
-                return
-            found = self._local_names(first, second)
-            names = {id(first): found[0], id(second): found[1]}
-        # The operands each result may replace, by type, the first in operand
-        # order last: a sync over n lines rebinds in O(n), not O(n^2).
-        unclaimed: dict[str, list[tuple[str | None, IRValue, Any, Any]]] = {}
-        for a in reversed(call_args):
-            if a.__class__ is IRValue and a.vtype in LINEAR_TYPES:
-                slot = slots.get(id(a))
-                if slot is not None and not _slot_holds(slot, a):
-                    slot = None
-                name = self._find_local_name(a) if names is None else names[id(a)]
-                if name is not None or slot is not None or a.chan is not None:
-                    if a.vtype in unclaimed:
-                        unclaimed[a.vtype].append((name, a, slot, a.chan))
-                    else:
-                        unclaimed[a.vtype] = [(name, a, slot, a.chan)]
-
-        for res in results:
-            if res.vtype not in unclaimed or not unclaimed[res.vtype]:
-                continue
-            name, op_val, slot, chan = unclaimed[res.vtype].pop()
-            if chan is not None and chan.value is op_val:
-                chan.value = res
-                res.chan = chan
-                if chan.shared:
-                    for other, value in self.locals.items():
-                        if value is op_val:
-                            self.locals[other] = res
-            if name is not None:
-                self.locals[name] = res
-            if slot is not None:
-                slot[0][slot[1]] = res
-                slots.pop(id(op_val), None)
-                slots[id(res)] = (slot[0], slot[1], res)
-
     def _restore_container(self, obj: Any, copy: Any) -> None:
         """Undo a traced arm or loop body's changes to a container.
 
@@ -4084,30 +4116,6 @@ class PulseIREmitter:
         if name is not None:
             self.locals[name] = new
         self._rebind_slot(old, new)
-
-    def _rebind_pair(self, old: IRValue, new: IRValue, old2: IRValue, new2: IRValue) -> None:
-        """``_rebind_one(old, new)``, then ``_rebind_one(old2, new2)``: a
-        drive's line and tone. Unless a channel is shared, the names holding
-        them are found in one pass over the locals."""
-        chan = old.chan
-        chan2 = old2.chan
-        if (chan is not None and chan.shared) or (chan2 is not None and chan2.shared):
-            self._rebind_one(old, new)
-            self._rebind_one(old2, new2)
-            return
-        name, name2 = (_identity_keys or _load_identity_keys())(self.locals, old, old2)
-        if chan is not None:
-            chan.value = new
-            new.chan = chan
-        if name is not None:
-            self.locals[name] = new
-        self._rebind_slot(old, new)
-        if chan2 is not None:
-            chan2.value = new2
-            new2.chan = chan2
-        if name2 is not None:
-            self.locals[name2] = new2
-        self._rebind_slot(old2, new2)
 
     def _local_names(self, val: IRValue, val2: IRValue) -> tuple[str | None, str | None]:
         """``_find_local_name`` of two distinct values, in one pass."""

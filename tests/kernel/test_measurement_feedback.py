@@ -564,7 +564,7 @@ def _traced_lines(monkeypatch, kernel, qudit_count):
 
 def test_a_trace_without_a_measurement_conditioned_if_notes_no_channel(monkeypatch):
     # The branch journal is only for an if's arms: a trace without one gives
-    # no channel a place and never swaps in the tracer that notes them.
+    # no channel a place and never makes its channels ones that note.
     @pulse.kernel
     def plain(q0, q1):
         lines = [get_drive_line(q0), get_drive_line(q1)]
@@ -578,14 +578,14 @@ def test_a_trace_without_a_measurement_conditioned_if_notes_no_channel(monkeypat
 
     (lines,) = _traced_lines(monkeypatch, plain, 2)
     assert type(lines).__name__ == "Recorded"
-    assert not hasattr(lines, "journal") and not hasattr(lines, "twin")
+    assert not hasattr(lines, "journal")
     assert not any(hasattr(held, "seq") for held in lines.held.values())
 
     # With an if, each channel has its place, and no journal is open after it.
     (lines,) = _traced_lines(monkeypatch, _swap_in_loop_in_if, 2)
+    assert type(lines).__name__ == "JournalLines"
     assert lines.journal is None
     assert [held.seq for held in lines.held.values()] == list(range(len(lines.held)))
-    assert lines.twin.__name__ == "JournalingPulseIREmitter"
 
 
 # A container of each kind, and a change of it that keeps its length or
