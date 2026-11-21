@@ -255,7 +255,8 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `python -m` does. The launcher used to reject them (`give either a script
   path or -m MODULE`) or take them as its own options (`--quiet`,
   `unrecognized arguments: --sort-keys`), so only a module without arguments
-  could run.
+  could run. The launcher's own options (`--quantum-system`, `--quiet`) now
+  come before `-m`; after the module name they go to the module.
 - On one controller whose clock is not the program's, `rcp` and `alap_rcp`
   waited the feedback latency in the controller's cycles as if they were the
   program's: they failed their own check (100 cycles at 0.5 GHz are 400 of

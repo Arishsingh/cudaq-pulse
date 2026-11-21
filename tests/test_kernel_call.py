@@ -622,9 +622,14 @@ def test_the_launcher_passes_a_modules_arguments_through(tmp_path: Path):
     )
     assert dashed.returncode == 0, dashed.stderr
     assert dashed.stdout.strip() == "transmon_lattice:3 ['--sort-keys', '--quiet', 'data.json']"
-    assert (
-        "quantum system transmon_lattice:3" in dashed.stderr
-    )  # the module's --quiet is not the launcher's
+    # the module's --quiet is not the launcher's
+    assert "quantum system transmon_lattice:3" in dashed.stderr
+    attached = _launch_module(
+        tmp_path, "--quantum-system", "transmon_lattice:3", "-mlauncher_probe", "data.json"
+    )
+    assert attached.returncode == 0, attached.stderr
+    assert attached.stdout.strip() == "transmon_lattice:3 ['data.json']"
+    assert "quantum system transmon_lattice:3" in attached.stderr
 
 
 def test_the_launcher_quiet_option_drops_the_quantum_system_banner(tmp_path: Path):
