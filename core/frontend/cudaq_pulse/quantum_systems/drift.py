@@ -325,7 +325,8 @@ def _checked(qudit: Any, carrier: int, method: str) -> PhysicalQudit:
     if problems:
         raise InvalidValueError(
             f"a drift model's {method}() returned qudit {carrier} with values a quantum system "
-            "cannot have:\n" + "\n".join(f"  {problem}" for problem in problems)
+            "cannot have",
+            problems=problems,
         )
     return qudit
 
@@ -427,7 +428,7 @@ class _DriftingQuantumSystem(QuantumSystem):
             true = self._true
             # Every qudit moves on, or none does: a model's bad value leaves
             # the true values and the clock as they were (the random streams
-            # of the models before it have still moved on).
+            # of the models up to and including it have still moved on).
             moved = {}
             for carrier, model in self._models.items():
                 qudit = model.advance(

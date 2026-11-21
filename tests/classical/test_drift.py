@@ -305,6 +305,22 @@ def test_a_model_value_a_system_cannot_have_names_the_model_method():
         "  advance().t1_us: -20.0 is not a finite number of microseconds, 0 or more; "
         "give T1 in microseconds, 0 or more (0 is no decay)"
     )
+    assert raised.value.problems[0].path == "advance().t1_us"
+    assert raised.value.problems[0].value == -20.0
+
+
+def test_simulate_raises_after_its_shots_when_the_model_goes_bad_and_returns_nothing():
+    qs = _target(t1_us=20.0).replace(parameter_drift={0: DecayingT1(10.0)})
+    program = rabi.lower(qs.qudits[0], 1.0)
+    result = None
+    # 10 shots with a 300 ms reset are about 3 s: T1 would fall from 20 us to -10 us.
+    with pytest.raises(
+        pulse.InvalidValueError, match=r"^a drift model's advance\(\) returned qudit 0"
+    ):
+        result = pulse.simulate(program, levels=2, shots_count=10, reset_time=300 * pulse.ms)
+    assert result is None
+    assert qs.parameter_drift_time == 0 * pulse.s
+    assert qs.true_qudits[0].t1_us == 20.0
 
 
 def test_a_bad_model_value_moves_no_qudit_and_not_the_clock():

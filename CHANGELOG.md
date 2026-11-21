@@ -186,6 +186,8 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   method and lists each problem (`advance().t1_us`) with the value. It
   used to surface at the next `simulate` as a problem in the system's
   definition. A failed `advance()` moves no qudit and not the drift clock.
+  When a model goes bad as `simulate` advances the clock after its shots,
+  `simulate` raises the error after the shots have run and returns no result.
 - A frame change made after a wait on its tone's line acted where the
   tone's previous drive or readout ended, before the wait:
   `shift_frequency(tone, +d)`, a wait of `T` and `shift_frequency(tone, -d)`
