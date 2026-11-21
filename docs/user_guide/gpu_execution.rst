@@ -311,9 +311,12 @@ The execution lowering fails explicitly for observables, systems with
 no simulation model, products of two float arguments, arbitrary Python waveform
 callbacks, and waveform-algebra nodes. Built-in waveforms and
 ``custom_samples`` are supported. The callback runtime holds 1024
-time-dependent coefficients per evolution: two per drive op (a drive
-repeated by a loop needs only one pair) and four per coupling between
-detuned qudits. A single evolution cannot contain a measurement: a
+time-dependent coefficients per evolution: four per coupling between
+detuned qudits and, with the default operator lowering, two per driven
+qudit, whose pulses share one per quadrature. The ``banded`` and ``dense``
+lowerings (``CUDAQ_PULSE_GPU_OPERATORS``, a development aid) take two per
+drive op instead; a drive repeated by a loop needs only one pair. A single
+evolution cannot contain a measurement: a
 program that measures is lowered and evolved one interval at a time (see
 :ref:`measurement-simulation`).
 

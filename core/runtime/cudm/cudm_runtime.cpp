@@ -109,7 +109,7 @@ int32_t evaluateWaveformCallback(size_t slot, double time,
   if (!scalarStorage)
     return 2;
   double value = 0.0;
-  if (int32_t status = cudaq_pulse::evaluateWaveform(
+  if (int32_t status = cudaq_pulse::evaluateCallback(
           callback.kind, callback.parameters.data(), callback.parameters.size(),
           time, value))
     return status;
@@ -272,23 +272,29 @@ CudmStatus prepareWorkspace(HandleData *handle, OperatorData *op,
                          CUDENSITYMAT_MEMSPACE_DEVICE,
                          CUDENSITYMAT_WORKSPACE_SCRATCH, &required),
                      "cudensitymatWorkspaceGetMemorySize");
-  if (status != CUDM_SUCCESS || required <= workspace->deviceBufferSize)
+  if (status != CUDM_SUCCESS || required == 0)
     return status;
 
-  if (workspace->deviceBuffer)
-    cudaFree(workspace->deviceBuffer);
-  workspace->deviceBuffer = nullptr;
-  workspace->deviceBufferSize = 0;
-  status = checkCuda(cudaMalloc(&workspace->deviceBuffer, required),
-                     "cudaMalloc(workspace)");
-  if (status != CUDM_SUCCESS)
-    return status;
-  workspace->deviceBufferSize = required;
-  return checkCudm(
-      cudensitymatWorkspaceSetMemory(
-          handle->native, workspace->native, CUDENSITYMAT_MEMSPACE_DEVICE,
-          CUDENSITYMAT_WORKSPACE_SCRATCH, workspace->deviceBuffer, required),
-      "cudensitymatWorkspaceSetMemory");
+  if (required > workspace->deviceBufferSize) {
+    if (workspace->deviceBuffer)
+      cudaFree(workspace->deviceBuffer);
+    workspace->deviceBuffer = nullptr;
+    workspace->deviceBufferSize = 0;
+    status = checkCuda(cudaMalloc(&workspace->deviceBuffer, required),
+                       "cudaMalloc(workspace)");
+    if (status != CUDM_SUCCESS)
+      return status;
+    workspace->deviceBufferSize = required;
+  }
+  // cudensitymatOperatorPrepareAction takes the workspace as empty and sets
+  // the size it needs, so attach the buffer after every prepare, also when
+  // the one from an earlier evolution is big enough.
+  return checkCudm(cudensitymatWorkspaceSetMemory(
+                       handle->native, workspace->native,
+                       CUDENSITYMAT_MEMSPACE_DEVICE,
+                       CUDENSITYMAT_WORKSPACE_SCRATCH, workspace->deviceBuffer,
+                       workspace->deviceBufferSize),
+                   "cudensitymatWorkspaceSetMemory");
 }
 
 CudmStatus rhs(HandleData *handle, OperatorData *op, StateData *stateIn,

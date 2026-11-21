@@ -207,7 +207,9 @@ def test_systems_without_a_simulation_model_are_refused(backend):
 # The GPU path lowers the same pulse-to-qop operator to cuDensityMat terms:
 # rebuild H(t) = i K(t) from K, the sum of the terms on the ket side, and
 # compare it with the CPU reference's. The lowering may sum static terms into
-# one operator on several modes, with their -i.
+# one operator on several modes, with their -i, and the envelopes of the
+# terms of one operator into one callback, which evaluate_callback sums as
+# the runtime does.
 
 _CONSTANT = re.compile(r"(%\S+) = arith\.constant dense<(.*)> : tensor<(\d+)x\d+x2xf64>")
 _ELEMENTARY = re.compile(r"(%\S+) = cudm\.create_elementary_op %\S+, (%\S+) \{(.*)\} :")
@@ -369,7 +371,8 @@ def _at(terms, times):
 
 @pytest.mark.parametrize("operators", ["fused", "banded", "dense"])
 @pytest.mark.parametrize("levels", [2, 3, 5])
-def test_gpu_lowering_builds_the_cpu_operator(levels, operators, monkeypatch):
+@pytest.mark.parametrize("pulses", [1, 2])
+def test_gpu_lowering_builds_the_cpu_operator(pulses, levels, operators, monkeypatch):
     monkeypatch.setenv("CUDAQ_PULSE_GPU_OPERATORS", operators)
     target = _pair(3.9e9, 5.9e9, g_hz=7.0e6, zz_hz=2.0e4)
 
@@ -379,7 +382,14 @@ def test_gpu_lowering_builds_the_cpu_operator(levels, operators, monkeypatch):
         get_drive_line(q1)
         drive(d0, gaussian(40, 0.05, 10.0))
 
-    lowered = on(target, driven, Q[0], Q[1])
+    @pulse.kernel
+    def driven_twice(q0, q1):
+        d0 = get_drive_line(q0)
+        get_drive_line(q1)
+        drive(d0, gaussian(20, 0.05, 5.0))
+        drive(d0, drag(20, 0.03, 4.0, 0.5))
+
+    lowered = on(target, driven if pulses == 1 else driven_twice, Q[0], Q[1])
     # A CPU run leaves the module with the attributes of its interval, which
     # the GPU backend lowers the same way.
     pulse.simulate(lowered, levels=levels, t_end=20.0)
@@ -395,11 +405,42 @@ def test_gpu_lowering_builds_the_cpu_operator(levels, operators, monkeypatch):
     on_both = re.search(r"create_elementary_op .*mode_extents = array<i64: \d+, \d+>", text)
     assert bool(on_both) == (operators == "fused" and levels < 5)
     assert ("multidiagonal" in text) == (operators != "dense" and levels == 5)
+    # Fused, the two pulses are one term per quadrature, whose callback sums
+    # their envelopes.
+    summed = text.count("cudm.callback_kind = 512")
+    assert summed == (2 if operators == "fused" and pulses == 2 else 0)
     cpu = _at(cpu_terms, times)
     assert np.abs(cpu).max() > 0.04
     np.testing.assert_allclose(_at(gpu_terms, times), cpu, atol=1e-12)
     # The coupling turns at the frames' difference frequency.
     assert "coupling_0_0" in text
+
+
+# Fused, the pulses a qudit's drive plays share one term per quadrature,
+# whose callback sums their envelopes, so more pulses than the callback
+# runtime's 1024 coefficients hold at two per pulse take two of them. The
+# other lowerings keep a callback per pulse and quadrature.
+@pytest.mark.parametrize("operators", ["fused", "banded", "dense"])
+def test_the_pulses_of_a_drive_share_its_callbacks_when_fused(operators, monkeypatch):
+    monkeypatch.setenv("CUDAQ_PULSE_GPU_OPERATORS", operators)
+    pulses = 520
+
+    @pulse.kernel
+    def train(q0):
+        d0 = get_drive_line(q0)
+        for i in range(pulses):
+            # Amplitudes that differ keep the pulses from becoming one train.
+            drive(d0, square(4, 0.001 + 1e-6 * (i % 3)))
+
+    module = on(_pair(3.9e9, 5.9e9), train, Q[0])._concrete()
+    pipeline = MLIRPipeline()
+    text = pipeline.run_qop_to_cudm(pipeline.run_pulse_to_qop(module.print()))
+    kinds = re.findall(r"cudm\.append_elementary_product .*cudm\.callback_kind = (\d+)", text)
+    assert kinds == (["512"] * 2 if operators == "fused" else ["1"] * (2 * pulses))
+    dims, times = (2,), [0.5, 333.3, 777.7, 1039.5]
+    cpu = _at(list(_cpu_hamiltonian(module.operator_program([]), dims)), times)
+    assert np.abs(cpu).max() > 4.0e-4
+    np.testing.assert_allclose(_at(list(_cudm_hamiltonian(text, dims)), times), cpu, atol=1e-12)
 
 
 def _constant(name, matrix):
