@@ -9,6 +9,10 @@ Level: Starter, at the top of the band.
 
 How good is a qubit's calibrated X90 pulse? Measure its error by randomized benchmarking.
 
+The scorer can check which pulses you play, not how you chose them: any train of the calibrated
+X90 and Y90 is within the rules. Randomized benchmarking is what the challenge is there to teach,
+and what the rungs are tuned for.
+
 Write one file, ``my_rb.py``, with a function ``error_per_gate(lab, seed)`` that returns the error
 of one X90 pulse, and score it:
 
@@ -23,7 +27,8 @@ numbers, nothing is sampled.
 
 The scorer calls your function for five hidden qubits. After each estimate it prints the exact
 error of the pulse on that qubit, then ``BRONZE``, ``SILVER``, ``SCORE`` (your worst deviation
-and your largest number of sequences) and ``SEED``. Each run draws new qubits; give the seed as a second argument to repeat a run.
+and your largest number of sequences) and ``SEED``. Each run draws new qubits; give the seed as a
+second argument to repeat a run.
 
 Limits
 ------

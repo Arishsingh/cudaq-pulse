@@ -9,8 +9,8 @@ The solution defines estimate_t1(lab), which returns T1 in microseconds. lab.qub
 lab.run(kernel, lab.qubit, ..., shots_count=n) plays a kernel on it n times and returns the
 records, one row per shot, as pulse.simulate(..., shots_count=n).records does.
 
-The solution never runs in the scorer's process. A second Python process (_child.py) loads it. There, lab.run
-compiles the kernel for the public description of the qubit (no T1) and sends the scorer what the
+The solution never runs in the scorer's process. A second Python process (_child.py) loads it.
+There, lab.run compiles the kernel for the public description of the qubit (no T1) and sends the scorer what the
 kernel would put on the drive and readout lines: starts, samples, frequencies and phases. The
 scorer plays those numbers on the hidden qubit and sends the shots back. The hidden T1 values, the
 shot tally and the verdicts exist only in the scorer's process.
@@ -150,8 +150,8 @@ def replay(request, hidden, seed):
 
 
 def one_line(text):
-    """*text* from the solution's process as one short line: it cannot print a verdict."""
-    return " ".join(str(text).split())[:300]
+    """*text* from the submission's process as one short line of printable characters."""
+    return " ".join("".join(c if c.isprintable() else " " for c in str(text)).split())[:300]
 
 
 def ask(child):
@@ -245,10 +245,11 @@ def rounds(child, seed, given):
     bronze = within == QUBITS
     silver = bronze and shots <= SILVER_SHOTS * QUBITS
     limit = f"at most {SILVER_SHOTS} shots per qubit on average (used {shots / QUBITS:.0f})"
+    repeat = " (repeat run)" if given else ""
     print(
-        f"BRONZE {'pass' if bronze else 'fail'}: {within} of {QUBITS} qubits within {TOLERANCE:.0%}"
+        f"BRONZE {'pass' if bronze else 'fail'}{repeat}: {within} of {QUBITS} qubits within {TOLERANCE:.0%}"
     )
-    print(f"SILVER {'pass' if silver else 'fail'}: bronze, with {limit}")
+    print(f"SILVER {'pass' if silver else 'fail'}{repeat}: bronze, with {limit}")
     if given:
         print("SCORE none (a run with a given seed repeats known qubits: it is not a score)")
     else:

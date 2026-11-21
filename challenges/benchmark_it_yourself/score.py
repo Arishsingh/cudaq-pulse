@@ -12,8 +12,8 @@ sampled.
 
 The qubit is hidden. It has the frequency, the anharmonicity and the calibrated pulses of a qubit
 like Z4 of transmon_surface17, and a T1 and a T2* that each run of the scorer draws anew. The
-submission never runs in the scorer's process: a second Python process (_child.py) loads it and holds a public
-copy of the qubit that does not decay. There, lab.run compiles the kernel and sends the scorer
+submission never runs in the scorer's process: a second Python process (_child.py) loads it and
+holds a public copy of the qubit that does not decay. There, lab.run compiles the kernel and sends the scorer
 which calibrated pulses it plays and when. The scorer plays them on the hidden qubit and sends the
 populations back, and it is the scorer that counts sequences and pulses.
 
@@ -110,7 +110,7 @@ def replay(request, hidden, count):
 
 
 def reference(hidden):
-    """(error, leakage) of the calibrated X90 on the hidden qubit, exact, from the six axis states."""
+    """(error, leakage) of the calibrated X90 on the hidden qubit, from the six axis states."""
     program = pulse.compile(played, quantum_system=hidden, schedule="asap").lower(
         hidden.qudits[0], ((0.0, 0.0, "X90"),), False
     )
@@ -126,8 +126,8 @@ def reference(hidden):
 
 
 def one_line(text):
-    """*text* from the submission's process as one short line: it cannot print a verdict."""
-    return " ".join(str(text).split())[:300]
+    """*text* from the submission's process as one short line of printable characters."""
+    return " ".join("".join(c if c.isprintable() else " " for c in str(text)).split())[:300]
 
 
 def ask(child):
@@ -197,11 +197,12 @@ def main(path, seed=None):
     worst, most = max(abs(ratio - 1) for ratio, _ in runs), max(sequences for _, sequences in runs)
     bronze = all(1 / BRONZE_FACTOR <= ratio <= BRONZE_FACTOR for ratio, _ in runs)
     silver = worst <= SILVER_TOLERANCE and most <= SILVER_SEQUENCES
+    repeat = " (repeat run)" if given else ""
     print(
-        f"BRONZE {'pass' if bronze else 'fail'}  (every run within a factor {BRONZE_FACTOR:g} of the reference)"
+        f"BRONZE {'pass' if bronze else 'fail'}{repeat}  (every run within a factor {BRONZE_FACTOR:g} of the reference)"
     )
     print(
-        f"SILVER {'pass' if silver else 'fail'}  (every run within {SILVER_TOLERANCE:.0%} of it, from at most {SILVER_SEQUENCES} sequences; worst {worst:.2%}, most {most})"
+        f"SILVER {'pass' if silver else 'fail'}{repeat}  (every run within {SILVER_TOLERANCE:.0%} of it, from at most {SILVER_SEQUENCES} sequences; worst {worst:.2%}, most {most})"
     )
     if given:
         print("SCORE none (a run with a given seed repeats known qubits: it is not a score)")

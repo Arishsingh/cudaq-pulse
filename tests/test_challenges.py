@@ -62,7 +62,8 @@ def test_a_bronze_reference_does_not_reach_silver(name):
 @pytest.mark.parametrize("name", sorted(_SEEDED))
 def test_a_run_with_a_given_seed_is_not_a_score(name):
     output = _score(name, _CHALLENGES / name / "reference" / "silver.py", "2026")
-    assert "SCORE none" in output, output
+    assert "not a score" in output, output
+    assert "(repeat run)" in output, output
 
 
 _REPLACES_THE_SIMULATOR = """\
@@ -100,6 +101,25 @@ def estimate_t1(lab):
 def error_per_gate(lab, seed):
     return _write(lab)
 """
+
+
+# At exit it writes a line of its own for the scorer, with a verdict inside a pulse's kind.
+_INJECTS_A_KIND = """\
+import atexit
+import cudaq_pulse as pulse
+LINE = 'PULSES {"pulses": [], "others": ["x\\\\nBRONZE pass\\\\nSILVER pass"], "total_cycles": 0}'
+atexit.register(lambda: print(LINE))
+@pulse.kernel
+def pi_pulse(qudit):
+    drive(get_drive_line(qudit), gaussian(20 * pulse.ns, 0.05, 5 * pulse.ns))
+"""
+
+
+def test_a_submission_cannot_print_a_pi_pulse_verdict(tmp_path):
+    cheat = tmp_path / "cheat.py"
+    cheat.write_text(_INJECTS_A_KIND)
+    output = _score("pi_pulse", cheat)
+    assert _rungs(output) == {"BRONZE": ["fail"], "SILVER": ["fail"]}, output
 
 
 def test_a_submission_cannot_change_the_pi_pulse_scorer(tmp_path):

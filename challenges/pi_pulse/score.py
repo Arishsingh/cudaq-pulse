@@ -39,6 +39,11 @@ MAX_PULSES = 64
 CHILD = Path(__file__).with_name("_child.py")
 
 
+def one_line(text):
+    """*text* from the submission's process as one short line of printable characters."""
+    return " ".join("".join(c if c.isprintable() else " " for c in str(text)).split())[:300]
+
+
 class InvalidSubmissionError(Exception):
     """The submission cannot be scored; the message says why."""
 
@@ -57,11 +62,11 @@ def read_submission(path):
         raise InvalidSubmissionError(f"it did not compile within {CHILD_TIMEOUT_S} s") from None
     lines = [line for line in done.stdout.splitlines() if line.startswith("PULSES ")]
     if done.returncode != 0 or not lines:
-        last = " ".join((done.stderr.strip().splitlines() or ["no message"])[-1].split())[:300]
+        last = one_line((done.stderr.strip().splitlines() or ["no message"])[-1])
         raise InvalidSubmissionError(f"it does not load or compile: {last}")
     try:
         data = json.loads(lines[-1][len("PULSES ") :])
-        others = [str(kind) for kind in data["others"]]
+        others = [one_line(kind)[:40] for kind in data["others"]]
         total = int(data["total_cycles"])
         pulses = []
         for item in data["pulses"]:
