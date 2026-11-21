@@ -255,6 +255,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   as given; to leave them unchecked, set them to `null` in the file.
 - The first compile of a kernel with many measurement-conditioned ifs no
   longer takes time in the square of their number.
+- **Control systems of many controllers build and compile faster.** Checking
+  that no `Controller` is listed twice and placing a link's controllers take
+  time in proportion to the number of controllers, not its square, and so
+  does finding the readout latency when controllers give one
+  `peer_latency_cycles` to all others (a controller with a mapping is still
+  compared with every other). Programs and errors are as before.
 
 ### Fixed
 
