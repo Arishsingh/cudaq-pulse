@@ -544,6 +544,50 @@ def test_a_line_first_acquired_in_an_arm_is_not_carried_out_of_the_if():
     assert compiled.schedule == _compile(before, 2, schedule="asap").schedule
 
 
+def _traced_lines(monkeypatch, kernel, qudit_count):
+    """The channels of each trace compiling *kernel* makes (``_Lines``)."""
+    from cudaq_pulse.kernel import _emitter
+
+    made = []
+
+    class Recorded(_emitter._Lines):
+        __slots__ = ()
+
+        def __init__(self):
+            super().__init__()
+            made.append(self)
+
+    monkeypatch.setattr(_emitter, "_Lines", Recorded)
+    _compile(kernel, qudit_count)
+    return made
+
+
+def test_a_trace_without_a_measurement_conditioned_if_notes_no_channel(monkeypatch):
+    # The branch journal is only for an if's arms: a trace without one gives
+    # no channel a place and never makes its channels ones that note.
+    @pulse.kernel
+    def plain(q0, q1):
+        lines = [get_drive_line(q0), get_drive_line(q1)]
+        r = get_readout_line(q0)
+        bits = [readout(r, square(40, 0.05))]
+        for _ in range(3):
+            sync(lines[0], lines[1], r)
+            drive(lines[0], square(16, 0.1))
+            shift_phase(lines[1].tone, 0.2)
+        wait(lines[1], 8 * len(bits))
+
+    (lines,) = _traced_lines(monkeypatch, plain, 2)
+    assert type(lines).__name__ == "Recorded"
+    assert not hasattr(lines, "journal")
+    assert not any(hasattr(held, "seq") for held in lines.held.values())
+
+    # With an if, each channel has its place, and no journal is open after it.
+    (lines,) = _traced_lines(monkeypatch, _swap_in_loop_in_if, 2)
+    assert type(lines).__name__ == "JournalLines"
+    assert lines.journal is None
+    assert [held.seq for held in lines.held.values()] == list(range(len(lines.held)))
+
+
 # A container of each kind, and a change of it that keeps its length or
 # adds to it in place.
 _CHANGED = {
