@@ -1599,16 +1599,17 @@ class ControlSystem:
         first = second = -1
         for reader in readers:
             source = controllers[reader]
-            ratio = None if clocks is None else clocks.controllers[reader].ratio
+            # A whole number of cycles without clocks, else a Fraction.
+            scale: Fraction | None = None if clocks is None else clocks.controllers[reader].ratio
             own = uncertainty[reader]
             peers = source.peer_latency_cycles
             if isinstance(peers, Mapping):
                 for user in users:
                     if user != reader:
-                        latency = source.feedback_latency_cycles + peers.get(user, 0)
-                        if ratio is not None:
-                            latency /= ratio
-                        longest = max(longest, latency + own + uncertainty[user])
+                        wait: int | Fraction = source.feedback_latency_cycles + peers.get(user, 0)
+                        if scale is not None:
+                            wait /= scale
+                        longest = max(longest, wait + own + uncertainty[user])
                 continue
             # One peer latency to every user: the latest is on the user with
             # the largest start uncertainty other than the reader.
@@ -1618,11 +1619,11 @@ class ControlSystem:
                         first, second = user, first
                     elif second < 0 or uncertainty[user] > uncertainty[second]:
                         second = user
-            latency = source.feedback_latency_cycles + peers
-            if ratio is not None:
-                latency /= ratio
+            wait = source.feedback_latency_cycles + peers
+            if scale is not None:
+                wait /= scale
             other = second if reader == first else first
-            longest = max(longest, latency + own + uncertainty[other])
+            longest = max(longest, wait + own + uncertainty[other])
         return math.ceil(longest)
 
     def _start_uncertainty(self, clocks: _clocks.ClockPlan | None) -> list[Fraction]:
