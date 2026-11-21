@@ -151,10 +151,12 @@ def CUDM_AppendElementaryProductOp
     on several modes takes that many consecutive entries of
     `modes_acted_on`; a mode may appear twice in one operator, once on each
     side. Each `duality` entry says whether its operator acts on the ket (0)
-    or the bra (1) side of that mode. With `callback`,
-    the weight is also multiplied by that drive envelope at each time;
-    the lowering carries the envelope's kind and parameters as
-    attributes.
+    or the bra (1) side of that mode. The weight of a time-dependent
+    product is also multiplied, at each time, by the drive envelope that
+    its `cudm.callback_kind` and `cudm.callback_params` attributes
+    describe. `callback` names that envelope's qop callback when there is
+    one; a sum of envelopes (kind 512, whose parameters list each
+    envelope's kind, parameter count and parameters) has none.
   }];
   let arguments = (ins
     CUDM_HandleType:$handle,
