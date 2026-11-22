@@ -8,8 +8,9 @@ sizes of one program can require them equal, or in proportion, where their
 times are only close. Work done in native code is not counted: a test that
 bounds it as well times it, in CPU time and the best of several: all of a
 call (cpu_seconds) or the native methods it calls (native_seconds); a test
-that compares sizes or variants times them in turn (cpu_seconds_each,
-native_seconds_each), so that a slow spell of a shared machine stretches all.
+that compares sizes or variants times them in turn (seconds_each,
+cpu_seconds_each, native_seconds_each), so that a slow spell of a shared
+machine stretches all.
 """
 
 from __future__ import annotations
@@ -59,29 +60,36 @@ def python_work(fn: Callable[[], object]) -> dict[str, int]:
     return work
 
 
-def _least[K: Hashable](runs: dict[K, Callable[[], float]], repeats: int) -> dict[K, float]:
+def _least[K: Hashable](
+    runs: dict[K, Callable[[], float]], repeats: int, run_s: float = 0.5
+) -> dict[K, float]:
     """The least time each of *runs* reports, a run being a call that returns
     the time it spent, after a first, uncounted call of each. The runs are
     taken in turn, so that a slow spell of a shared machine falls on all of
     them alike rather than on whichever was being timed: *repeats* rounds,
-    and more until they have taken half a second per run, as a short call is
-    the likelier to have shared its core with other work in each of a few.
-    The garbage collector is held off for each call."""
+    and more until they have taken *run_s* seconds per run, as a short call is
+    the likelier to have shared its core with other work in each of a few;
+    a hundred rounds at most. The garbage collector runs before each round
+    and is held off through it; as a collection leaves the caches cold, each
+    round starts with the next run in turn, so that every run is also timed
+    after another rather than after a collection."""
     for run in runs.values():
         run()
     best = dict.fromkeys(runs, float("inf"))
+    order = list(runs.items())
     collecting = gc.isenabled()
-    deadline = time.perf_counter() + 0.5 * len(runs)
+    deadline = time.perf_counter() + run_s * len(runs)
     try:
         for done in range(100):
             if done >= repeats and time.perf_counter() > deadline:
                 break
-            for key, run in runs.items():
-                gc.collect()
-                gc.disable()
+            gc.collect()
+            gc.disable()
+            first = done % len(order)
+            for key, run in order[first:] + order[:first]:
                 best[key] = min(best[key], run())
-                if collecting:
-                    gc.enable()
+            if collecting:
+                gc.enable()
     finally:
         if collecting:
             gc.enable()
@@ -89,25 +97,37 @@ def _least[K: Hashable](runs: dict[K, Callable[[], float]], repeats: int) -> dic
     return best
 
 
-def cpu_seconds_each[K: Hashable](
-    fns: dict[K, Callable[[], object]], repeats: int = 5
+def seconds_each[K: Hashable](
+    fns: dict[K, Callable[[], object]],
+    clock: Callable[[], float],
+    repeats: int = 5,
+    run_s: float = 0.5,
 ) -> dict[K, float]:
-    """The least CPU time a call of each of *fns* takes, of *repeats* or more,
-    the calls taken in turn (see _least): what a test that compares sizes or
-    variants of a program needs, as each is timed under the same load.
-
-    CPU time leaves out the time a loaded machine spends running something
-    else, which stretches a wall-clock time the more the longer it is."""
+    """The least time on *clock* a call of each of *fns* takes, of *repeats*
+    or more, the calls taken in turn for about *run_s* seconds per entry
+    (see _least): what a test that compares sizes or variants of a program
+    needs, as each is timed under the same load."""
 
     def timed(fn: Callable[[], object]) -> Callable[[], float]:
         def run() -> float:
-            started = time.process_time()
+            started = clock()
             fn()
-            return time.process_time() - started
+            return clock() - started
 
         return run
 
-    return _least({key: timed(fn) for key, fn in fns.items()}, repeats)
+    return _least({key: timed(fn) for key, fn in fns.items()}, repeats, run_s)
+
+
+def cpu_seconds_each[K: Hashable](
+    fns: dict[K, Callable[[], object]], repeats: int = 5, run_s: float = 0.5
+) -> dict[K, float]:
+    """The least CPU time a call of each of *fns* takes, the calls taken in
+    turn (see seconds_each).
+
+    CPU time leaves out the time a loaded machine spends running something
+    else, which stretches a wall-clock time the more the longer it is."""
+    return seconds_each(fns, time.process_time, repeats, run_s)
 
 
 def cpu_seconds(fn: Callable[[], object], repeats: int = 5) -> float:

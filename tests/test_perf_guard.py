@@ -42,7 +42,7 @@ from cudaq_pulse.kernel.packed_ir_builder import PackedIRBuilder
 from tests._handles import Q, ladder_target
 from tests._ir import python_ir
 from tests._tools import missing
-from tests._work import cpu_seconds_each, python_work
+from tests._work import cpu_seconds_each, python_work, seconds_each
 from tests.kernel.ir_corpus import (
     bicycle_syndrome,
     dd_loop,
@@ -97,9 +97,8 @@ def _assert_flat(
     *clock*, CPU time unless a run is shorter than a tick of it."""
     small, large = min(runs), max(runs)
     work = {n: python_work(runs[n]) for n in (small, large)}
-    seconds = {n: _best(runs[n], 20, clock=clock) for n in (small, large)}
+    seconds = seconds_each({n: runs[n] for n in (small, large)}, clock, 20, run_s=0.125)
     assert work[large] == work[small], (what, work)
-    assert seconds[small] > 0, (what, "shorter than a tick of", clock.__name__, seconds)
     assert seconds[large] < seconds[small] * FLAT_LOOP_LIMIT, (what, seconds)
 
 
@@ -112,7 +111,7 @@ def _assert_linear(what: str, runs: dict[int, Callable[[], object]], limit: floa
     slow spell stretches both."""
     small, large = min(runs), max(runs)
     work = {n: python_work(runs[n]) for n in (small, large)}
-    seconds = cpu_seconds_each({n: runs[n] for n in (small, large)})
+    seconds = cpu_seconds_each({n: runs[n] for n in (small, large)}, run_s=0.25)
     for count in work[small]:
         assert work[large][count] <= work[small][count] * large / small, (what, work)
     assert seconds[large] < seconds[small] * limit, (what, seconds)
@@ -321,8 +320,10 @@ def test_compiling_a_kernel_that_reads_a_dict_is_flat_in_its_size():
     # Copying a million entries, or hashing them, takes some 10 ms.
     programs = {n: program(n) for n in (16, 10**6)}
     _assert_flat("compile", {n: runs[0] for n, runs in programs.items()})
-    # A cached call takes under a microsecond, a tick of the CPU clock on macOS.
-    _assert_flat("call", {n: runs[1] for n, runs in programs.items()}, time.perf_counter)
+    # A cached call takes under a microsecond, so it is timed a hundred at a
+    # time: the first of each hundred finds the caches cold from the other size.
+    calls = {n: lambda call=runs[1]: [call() for _ in range(100)] for n, runs in programs.items()}
+    _assert_flat("call", calls)
 
 
 @pytest.mark.scaling
@@ -537,8 +538,15 @@ def test_exporting_a_call_again_does_not_specialize_again():
 
     compiled = pulse.compile(pulses, unroll_threshold=100_000)
     values = iter(1e-3 * k for k in range(1, 10**6))
-    new = _best(lambda: compiled.lower(Q[0], next(values)).export_to_controller(), 20)
-    again = _best(lambda: compiled.lower(Q[0], 0.5).export_to_controller(), 20)
+    seconds = cpu_seconds_each(
+        {
+            "new": lambda: compiled.lower(Q[0], next(values)).export_to_controller(),
+            "again": lambda: compiled.lower(Q[0], 0.5).export_to_controller(),
+        },
+        repeats=20,
+        run_s=0.125,
+    )
+    new, again = seconds["new"], seconds["again"]
     assert compiled.lower(Q[0], 0.5)._concrete() is compiled.lower(Q[0], 0.5)._concrete()
     # Specializing is most of an export of new values: about 3x the time.
     assert again < new / 1.5, (again, new)
@@ -639,8 +647,12 @@ def test_calls_compile_schedule_and_report_in_linear_time():
     # 8x the calls: linear is 8x, quadratic 64x.
     _assert_linear("compile", compiles, 16)
     _assert_linear("report", reports, 16)
-    events_s = _best(lambda m=lowered: m.schedule, 5, clock=time.process_time)
-    assert events_s < _best(lowered.classical_report, 5, clock=time.process_time) * 4
+    seconds = seconds_each(
+        {"events": lambda m=lowered: m.schedule, "report": lowered.classical_report},
+        time.process_time,
+        run_s=0.125,
+    )
+    assert seconds["events"] < seconds["report"] * 4, seconds
 
 
 def test_a_cached_kernel_that_calls_lowers_in_microseconds():
@@ -661,8 +673,16 @@ def test_a_call_adds_little_to_simulation_on_the_same_timeline():
     plain = pulse.compile(bench.waiting_reset, quantum_system=dev).lower(q)
     called = pulse.compile(bench.decoded_reset, quantum_system=dev).lower(q)
     plus = [2**-0.5, 2**-0.5]
-    a = _best(lambda: pulse.simulate(plain, initial_state=plus, levels=2, dt_ns=0.5), 3, 0)
-    b = _best(lambda: pulse.simulate(called, initial_state=plus, levels=2, dt_ns=0.5), 3, 0)
+    seconds = seconds_each(
+        {
+            "plain": lambda: pulse.simulate(plain, initial_state=plus, levels=2, dt_ns=0.5),
+            "called": lambda: pulse.simulate(called, initial_state=plus, levels=2, dt_ns=0.5),
+        },
+        time.perf_counter,
+        repeats=3,
+        run_s=0,
+    )
+    a, b = seconds["plain"], seconds["called"]
     # Both take well under a millisecond, so allow the call's own binding and
     # rescheduling (about 0.3 ms) on top.
     assert b < 1.25 * a + 2e-3, (a, b)
@@ -727,10 +747,12 @@ def test_a_long_idle_simulates_in_constant_time():
     compiled = pulse.compile(idle, quantum_system=dev)
     q = dev.qudits[0]
     short, long = compiled.lower(q, 2_000), compiled.lower(q, 400_000)
-    times = {
-        name: _best(lambda m=m: pulse.simulate(m), 3, 0)
-        for name, m in (("1 us", short), ("200 us", long))
-    }
+    times = seconds_each(
+        {"1 us": lambda: pulse.simulate(short), "200 us": lambda: pulse.simulate(long)},
+        time.perf_counter,
+        repeats=3,
+        run_s=0,
+    )
     assert times["200 us"] < 3 * times["1 us"] + 0.01, times
 
 
