@@ -324,11 +324,18 @@ by at most 0.95% either way from the base's, passes as `layout`, with a
 notice. For a slower row the base's Python work is the one compared, not
 the baseline's: code merged after the baseline was taken can change a
 case's work. A gain needs the baseline's work as well, so that it is kept. Native code, build files, `ci.yml`, the gate and its cases are
-measured code: such a change, or one git cannot compare, is judged by the
-limits. A gain that passes this way isn't kept, and hidden native work
-behind the same Python calls passes below 0.95% per change (up to 2% from
-the baseline). `python tools/perf-gate.py --help` (base comparison) has the
-details.
+measured code. A change to native code or its build is compared with its
+base built in the same job, with the extension's symbols kept: a slower row
+whose case ran the same Python work there, moved by at most 0.95% from the
+base's, and called every named native function as many times as the base,
+except kinds whose calls follow addresses rather than the program
+(container probes, the interpreter, allocation, memory copies, unmapped
+code), passes as `layout`, and its notice lists every function whose calls
+differed. A change to `ci.yml`, the gate, its cases or the pins, or one git
+cannot compare, is judged by the limits. A gain that passes this way isn't
+kept, and hidden native work behind the same calls passes below 0.95% per
+change (up to 2% from the baseline). `python tools/perf-gate.py --help`
+(base comparison, native base comparison) has the details.
 
 Wall-clock times are informational only: shared runners are too noisy to
 block on. The test job still reports `tests/test_perf_guard.py`'s
