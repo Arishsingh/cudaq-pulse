@@ -109,6 +109,57 @@ inline bool mutuallyExclusive(mlir::Operation *a, mlir::Operation *b) {
   return false;
 }
 
+/// Whether every two of `ops` are mutuallyExclusive, in time linear in the
+/// ops and the regions around them rather than in their pairs.
+///
+/// Two ops are exclusive exactly when the chains of regions around them,
+/// from the outermost, first differ at two regions of one scf.if. So all of
+/// them are, when at each region on their chains: at most one op lies in it
+/// directly, and then no other op lies deeper in it; the deeper ones all lie
+/// in the regions of one op; and if they lie in two or more of its regions,
+/// that op is an scf.if. A region's chain is its own, so the region itself
+/// keys what is seen there.
+inline bool allMutuallyExclusive(llvm::ArrayRef<mlir::Operation *> ops) {
+  if (ops.size() < 2)
+    return true;
+  struct Seen {
+    bool direct = false;           // an op lies in this region directly
+    mlir::Region *child = nullptr; // a region of an op in this one
+  };
+  llvm::DenseMap<mlir::Region *, Seen> seen;
+  for (mlir::Operation *op : ops) {
+    mlir::Region *region = op->getParentRegion();
+    if (!region)
+      return false;
+    Seen &here = seen[region];
+    if (here.direct || here.child)
+      return false;
+    here.direct = true;
+    mlir::Region *inner = region;
+    while (mlir::Operation *holder = inner->getParentOp()) {
+      mlir::Region *outer = holder->getParentRegion();
+      if (!outer)
+        break;
+      Seen &around = seen[outer];
+      if (around.direct)
+        return false;
+      if (around.child == inner)
+        break; // seen from here outwards by an earlier op
+      if (around.child) {
+        // Another region of the op an earlier op came through, which
+        // walked on outwards from here.
+        if (around.child->getParentOp() != holder ||
+            !mlir::isa<mlir::scf::IfOp>(holder))
+          return false;
+        break;
+      }
+      around.child = inner;
+      inner = outer;
+    }
+  }
+  return true;
+}
+
 /// Whether `a` runs before `b` in program order, both in one function: `a`
 /// or the op holding it comes before `b` or the op holding it in a block they
 /// share (an op runs before the ops of its regions).
