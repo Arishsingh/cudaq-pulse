@@ -74,11 +74,12 @@ def _concrete_general(self: ScheduledKernel) -> Any:
 
 
 class _ClockedLowered(ScheduledKernel):
-    """A module with a clock plan or line delays. Its own class keeps them off
+    """A module with a clock plan or line delays, or one scheduled again for
+    other line delays (``with_line_delays``). Its own class keeps them off
     every other module and every call's view, which stay the size they are
     on one clock."""
 
-    __slots__ = ("clocks", "fine_delays")
+    __slots__ = ("clocks", "fine_delays", "_reused_trace")
     _concrete = _concrete_general
 
 
@@ -292,7 +293,7 @@ class _CheckedPerCall(ScheduledKernel):
     do not: each call's values are checked when they are bound, once per
     distinct values, so that no limit fails first at export."""
 
-    __slots__ = ("_accepted", "clocks", "fine_delays")
+    __slots__ = ("_accepted", "clocks", "fine_delays", "_reused_trace")
     _concrete = _concrete_general
 
     def __init__(self, lowered: ScheduledKernel) -> None:
@@ -308,6 +309,7 @@ class _CheckedPerCall(ScheduledKernel):
         )
         self.classical = lowered.classical
         self.runtime_selects = lowered.runtime_selects
+        self._reused_trace = lowered._reused_trace
         self.clocks = lowered.clocks
         self.fine_delays = lowered.fine_delays
         self._accepted: set[bytes] = set()

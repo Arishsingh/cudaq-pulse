@@ -656,7 +656,7 @@ class ScheduledKernel:
     A wait whose length is computed from float parameters keeps the module
     generic too: without values it is scheduled at its lowest length, and a
     call's schedule, text and simulation come from the module with the call's
-    values bound and scheduled again.
+    values bound and scheduled again: the call is ``rescheduled``.
 
     ``qudits`` holds the quantum system qudits the program drives or measures (gets
     a line on), in increasing order: the qudits ``simulate()`` models.
@@ -705,6 +705,11 @@ class ScheduledKernel:
     # Each line's fine delay in ns, when the machine has line delays; a
     # call's view reads its generic module's.
     fine_delays: Mapping[tuple[str, int], float] | None = None
+    # Whether the module is the trace of a compile for other line delays,
+    # scheduled again for its own (``with_line_delays``, which makes a
+    # _ClockedLowered); a call's view reads the module at the end of its
+    # chain of generics (``rescheduled_for_line_delays``).
+    _reused_trace: bool = False
     # How many values bind takes: set by a generic module's first bind.
     _arity: int
     _export_parts: _Parts
@@ -837,10 +842,45 @@ class ScheduledKernel:
         return self if generic is None else generic
 
     @property
-    def _retimed(self) -> bool:
-        """Whether the call's values move ops: its times come from the module
-        with them bound."""
+    def rescheduled(self) -> bool:
+        """Whether the call's float values set a wait length, so its times
+        come from scheduling the module again with them bound, rather than
+        from the module's own schedule.
+
+        ``True`` for a call whose float values set a wait length, and for a
+        module that could not be scheduled without values. ``False`` for a
+        module scheduled without values (its waits stand at their lowest
+        lengths) and for a call of it whose values move no op, which keeps
+        that module's times. Whether the module itself was scheduled again
+        for new line delays is ``rescheduled_for_line_delays``.
+
+        It records how ``lower()`` or ``bind()`` made the program, so
+        reading it does no work: a call's schedule is still computed when it
+        is first read. Copies and pickles keep it.
+        """
         return not self.scheduled or (self.waits is not None and bool(self.arguments))
+
+    @property
+    def rescheduled_for_line_delays(self) -> bool:
+        """Whether the module was compiled again with only other line delays,
+        scheduling its kernel's earlier trace again for the new delays
+        rather than tracing the kernel anew.
+
+        ``True`` for such a module and for every call of it. ``False`` for a
+        module traced by its own compile, such as the first compile of a
+        kernel, a compile with the line delays it was last compiled with,
+        any compile of a kernel with list or qudit parameters, and a compile
+        after a change to what the kernel read while it was traced. It does
+        not depend on ``rescheduled``: a call of such a module whose float
+        values set a wait length is both.
+
+        It records how the module was made, so reading it does no work.
+        Copies and pickles keep it.
+        """
+        program = self
+        while program._generic is not None:
+            program = program._generic
+        return program._reused_trace
 
     def _unbound(self) -> bool:
         """Whether the module has runtime qudits and no carriers for them."""
@@ -919,7 +959,7 @@ class ScheduledKernel:
         values."""
         # The clock exactly as its float holds it, as Fraction(clock_ghz) is.
         numerator, denominator = self.quantum_system.clock_ghz.as_integer_ratio()
-        module = self._concrete() if self._retimed or self.carriers else self._module
+        module = self._concrete() if self.rescheduled or self.carriers else self._module
         with self._lock:
             events = module.event_tree(_LISTED_EVENTS)
         if type(events) is list:
@@ -954,7 +994,7 @@ class ScheduledKernel:
         iterations: ``len()`` is exact, and indexing, slicing and iterating
         give what the list would.
         """
-        module = self._concrete() if self._retimed or self.carriers else self._module
+        module = self._concrete() if self.rescheduled or self.carriers else self._module
         with self._lock:
             events = module.event_tree(_LISTED_EVENTS)
         if type(events) is list:
@@ -991,7 +1031,7 @@ class ScheduledKernel:
         controller export), in the same order."""
         if not self.classical:
             return []
-        module = self._concrete() if syncs or self._retimed else self._module
+        module = self._concrete() if syncs or self.rescheduled else self._module
         with self._lock:
             return list(module.event_segments(syncs))
 
@@ -1098,6 +1138,7 @@ def _lowered(
         lowered = _Placed(module, role=role, **fields)
     else:
         lowered = _ClockedLowered(module, **fields)
+        lowered._reused_trace = False
     lowered.clocks = clocks
     lowered.fine_delays = fine_delays
     return lowered
@@ -1803,10 +1844,12 @@ def with_line_delays(lowered: _Kernel, options: CompileOptions) -> _Kernel | Non
     metrics.op_count = old.op_count
     metrics.schedule_ms = (time.perf_counter() - t0) * 1000
     metrics.total_ms = metrics.schedule_ms
-    result = _lowered(
+    from ._programs import _ClockedLowered
+
+    # Always a _ClockedLowered, the class that holds the mark below, even
+    # with no clocks and no line delays left.
+    result = _ClockedLowered(
         module,
-        clocks,
-        fine_delays,
         quantum_system=target,
         metrics=metrics,
         parameters=lowered.parameters,
@@ -1814,8 +1857,11 @@ def with_line_delays(lowered: _Kernel, options: CompileOptions) -> _Kernel | Non
         options=options,
         waits=lowered.waits,
     )
+    result.clocks = clocks
+    result.fine_delays = fine_delays
     result.classical = lowered.classical
     result.runtime_selects = lowered.runtime_selects
+    result._reused_trace = True
     return _check_controller(result)
 
 

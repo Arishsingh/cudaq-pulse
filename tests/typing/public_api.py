@@ -113,6 +113,11 @@ assert_type(pulse.simulate(lowered, shots_count=10), pulse.SimulationResult)
 assert_type(lowered.generic, pulse.ScheduledKernel)
 assert_type(pulse.simulate(lowered.generic, 0.7), pulse.SimulationResult)
 assert_type(lowered.generic.bind([0.7]), pulse.ScheduledKernel)
+# Whether a call's values or new line delays scheduled the program again, read-only.
+assert_type(lowered.rescheduled, bool)
+lowered.rescheduled = False  # type: ignore[misc]
+assert_type(lowered.rescheduled_for_line_delays, bool)
+lowered.rescheduled_for_line_delays = False  # type: ignore[misc]
 # Times take units or numbers of ns.
 assert_type(pulse.simulate(lowered, t_end=40 * pulse.ns, dt_ns=0.5), pulse.SimulationResult)
 assert_type(pulse.simulate(rabi, dev.qudits[0], 0.5), pulse.SimulationResult)
