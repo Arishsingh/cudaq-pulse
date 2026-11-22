@@ -496,13 +496,20 @@ unknownValue(const llvm::DenseMap<int64_t, MixedResult> &mixed, int64_t vid) {
 /// Whether `value` is what an op that takes one line or one tone and gives
 /// it back made of `given`: the op is given `given`, of `value`'s type.
 /// Such an op has one operand of each of those types, so no other check is
-/// needed; a sync, a loop, a block or an if is not asked here.
+/// needed; a sync, a loop, a block or an if is not asked here. A drive,
+/// the op most arms hold, is asked first, by the places of its line and
+/// its tone. True only for a line or a tone: these ops are given nothing
+/// else that they give back.
 inline bool madeFrom(mlir::Value value, mlir::Value given) {
   mlir::Operation *op = value.getDefiningOp();
-  if (!op ||
-      !mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::IQAcquireOp,
-                 pulse::WaitOp, pulse::ShiftPhaseOp, pulse::ShiftFrequencyOp,
-                 pulse::SetPhaseOp, pulse::SetFrequencyOp>(op))
+  if (!op)
+    return false;
+  if (mlir::isa<pulse::DriveOp>(op))
+    return (op->getOperand(0) == given || op->getOperand(2) == given) &&
+           given.getType() == value.getType();
+  if (!mlir::isa<pulse::ReadoutOp, pulse::WaitOp, pulse::ShiftPhaseOp,
+                 pulse::IQAcquireOp, pulse::ShiftFrequencyOp, pulse::SetPhaseOp,
+                 pulse::SetFrequencyOp>(op))
     return false;
   for (mlir::Value operand : op->getOperands())
     if (operand == given)
@@ -6692,10 +6699,13 @@ public:
           dropped = true;
         };
         llvm::SmallVector<std::pair<size_t, mlir::Value>, 4> began;
+        // The arms' values were made before this record: whether any is no
+        // value is known before its results are looked at.
+        const bool someMixed = !mixed.empty();
         for (int64_t i = 0; i < n; ++i) {
           // A result either arm takes from an if that left different lines
           // there is none either.
-          if (!mixed.empty()) [[unlikely]] {
+          if (someMixed) [[unlikely]] {
             auto lost = mixed.find(p[1 + i]);
             if (lost == mixed.end())
               lost = mixed.find(p[1 + n + i]);
@@ -6711,20 +6721,18 @@ public:
           mlir::Value then = look(p[1 + i]), other = look(p[1 + n + i]);
           // A result is one line, or one tone, on either path: an arm that
           // leaves another line there (two names swapped in one arm) would
-          // make every later op on it play one path's line on both.
-          if (mlir::isa<pulse::DriveLineType, pulse::ReadoutLineType,
-                        pulse::ToneType>(then.getType())) {
-            // An arm that operated once on what the other arm left alone
-            // began with it: one line, with no walk.
-            mlir::Value a, b;
-            if (madeFrom(then, other)) {
-              a = b = other;
-            } else if (madeFrom(other, then)) {
-              a = b = then;
-            } else {
-              a = enteringArm(then, region.body.get(), entered);
-              b = enteringArm(other, region.elseBody.get(), entered);
-            }
+          // make every later op on it play one path's line on both. An arm
+          // that operated once on what the other arm left alone began with
+          // it: one line or tone, with no walk and no look at its type.
+          mlir::Value entry;
+          if (madeFrom(then, other)) [[likely]] {
+            entry = other;
+          } else if (madeFrom(other, then)) {
+            entry = then;
+          } else if (mlir::isa<pulse::DriveLineType, pulse::ReadoutLineType,
+                               pulse::ToneType>(then.getType())) {
+            mlir::Value a = enteringArm(then, region.body.get(), entered);
+            mlir::Value b = enteringArm(other, region.elseBody.get(), entered);
             if (a != b && differentLines(then, region.body.get(), a, other,
                                          region.elseBody.get(), kept))
                 [[unlikely]] {
@@ -6736,9 +6744,11 @@ public:
                 rejectArms(from);
               continue;
             }
-            if (openIfs > 0 && a == b)
-              began.push_back({thenValues.size(), a});
+            if (a == b)
+              entry = a;
           }
+          if (openIfs > 0 && entry)
+            began.push_back({thenValues.size(), entry});
           if (dropped) [[unlikely]]
             made.push_back(i);
           thenValues.push_back(then);
