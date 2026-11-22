@@ -308,6 +308,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   does finding the readout latency when controllers give one
   `peer_latency_cycles` to all others (a controller with a mapping is still
   compared with every other). Programs and errors are as before.
+- **Verifying a line used in many branches takes time in proportion to its
+  uses.** The `verify` pass checked that a line or tone is used at most once
+  on every path by comparing every two of its uses; it now looks at each use
+  once, so a long chain of `m and n` conditions, which gives a line
+  thousands of uses, no longer spends most of its compile in `verify`.
+  Programs and errors are as before.
 
 ### Fixed
 

@@ -42,7 +42,7 @@ from cudaq_pulse.kernel.packed_ir_builder import PackedIRBuilder
 from tests._handles import Q, ladder_target
 from tests._ir import python_ir
 from tests._tools import missing
-from tests._work import python_work
+from tests._work import native_seconds, python_work
 from tests.kernel.ir_corpus import (
     bicycle_syndrome,
     dd_loop,
@@ -357,6 +357,40 @@ def test_the_events_of_a_long_line_are_listed_in_linear_time():
     # Eight times the drives: about 10x the time when linear, 64x when not.
     runs = {n: lambda m=program(n): m.schedule for n in (2000, 16000)}  # noqa: B008
     _assert_linear("schedule", runs, 8 * TOLERANCE)
+
+
+@pytest.mark.scaling
+def test_the_uses_of_a_line_in_the_arms_of_nested_ifs_are_checked_in_linear_time():
+    # Each leaf of a tree of ifs nested `depth` deep reads out on one line:
+    # 2**depth uses of it, no two on one path, which verify checks.
+    def program(depth: int):
+        source = ["def kernel(qs):", "    rm = get_readout_line(qs[1])"]
+        source += ["    r = get_readout_line(qs[0])"]
+        source += [f"    m{d} = readout(rm, square(40, 0.05))" for d in range(depth)]
+        source.append("    sync(rm, r)")
+
+        def tree(d: int, indent: str) -> None:
+            if d == depth:
+                source.append(f"{indent}readout(r, square(400, 0.05))")
+                return
+            source.append(f"{indent}if m{d}:")
+            tree(d + 1, indent + "    ")
+            source.append(f"{indent}else:")
+            tree(d + 1, indent + "    ")
+
+        tree(0, "    ")
+        namespace: dict[str, object] = {}
+        exec("\n".join(source) + "\n", namespace)
+        kernel = pulse.kernel(namespace["kernel"])
+        device = ladder_target(2)
+        return lambda: pulse.compile(kernel, quantum_system=device, passes=("verify",)).lower(
+            device.qudits[0:2]
+        )
+
+    # Eight times the uses: about 8x the time when linear, 64x when every two
+    # of them are compared.
+    seconds = {d: native_seconds(program(d), ("run_passes",)) for d in (7, 10)}
+    assert seconds[10] < seconds[7] * 8 * TOLERANCE, seconds
 
 
 @pytest.mark.scaling
