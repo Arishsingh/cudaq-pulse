@@ -75,6 +75,36 @@ def across(q, r):
         sync(a, b)
 
 @pulse.kernel
+def parallel(q, r):
+    a = get_drive_line(q)
+    b = get_drive_line(r)
+    for _ in range(TRIPS):
+        drive(a, square(5, 0.1))
+    for _ in range(TRIPS):
+        drive(b, square(5, 0.1))
+
+@pulse.kernel
+def beside_long(q, r):
+    a = get_drive_line(q)
+    b = get_drive_line(r)
+    drive(b, square(4000, 0.1))
+    for _ in range(TRIPS):
+        drive(a, square(5, 0.1))
+
+@pulse.kernel
+def in_an_arm(q, r, s, t):
+    m = readout(get_readout_line(q), square(100, 0.05))
+    if m:
+        a = get_drive_line(r)
+        b = get_drive_line(s)
+        for _ in range(TRIPS):
+            drive(a, gaussian(40, 0.1, 10))
+            drive(b, gaussian(40, 0.1, 10))
+            sync(a, b)
+    else:
+        drive(get_drive_line(t), square(200, 0.1))
+
+@pulse.kernel
 def once(q):
     drive(get_drive_line(q), square(8, 0.1))
 
@@ -204,6 +234,53 @@ def test_a_rolled_loop_of_a_few_iterations_compiles_under_a_controller_in_a_chil
 
 def test_a_rolled_loop_of_10_15_iterations_is_checked_in_bounded_time_and_memory():
     assert _in_a_child("drives", 10**15) == {"ops": 5}
+
+
+def _given(limit: int | None, schedule: str, qudits: int) -> str:
+    """Child code compiling with *schedule* for one controller and, unless
+    ``None``, a ``max_concurrent_drives`` of *limit*."""
+    given = "" if limit is None else f", max_concurrent_drives={limit}"
+    return (
+        "from cudaq_pulse import ControlSystem\n"
+        f"options = {{'schedule': '{schedule}', 'control_system': ControlSystem("
+        f"controllers=[Controller()]{given})}}\n"
+        f"handles = tuple(Q[:{qudits}])"
+    )
+
+
+@pytest.mark.parametrize(
+    ("kernel", "qudits", "first"),
+    [("across", 2, 0), ("parallel", 2, 0), ("beside_long", 2, 0), ("in_an_arm", 4, 100)],
+)
+def test_rolled_loops_of_10_15_iterations_are_held_to_concurrency_limits_in_bounds(
+    kernel, qudits, first
+):
+    # Loops beside others of their kind: in step with another, beside
+    # another loop or a long pulse, in one arm of a branch.
+    plain = _in_a_child(kernel, 10**15, system=_given(None, "asap", qudits))
+    assert _in_a_child(kernel, 10**15, system=_given(2, "asap", qudits)) == plain
+    over = _in_a_child(kernel, 10**15, system=_given(1, "asap", qudits))
+    assert over["count"] == 1
+    assert f"2 drives play at once from cycle {first}; the control system plays at most 1" in str(
+        over["message"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("kernel", "qudits", "trips"),
+    # The rcp schedules place a loop beside a long pulse, or in a branch arm,
+    # in time that grows with its trips, with or without limits.
+    [
+        ("across", 2, 10**15),
+        ("parallel", 2, 10**15),
+        ("beside_long", 2, 10**5),
+        ("in_an_arm", 4, 10**5),
+    ],
+)
+@pytest.mark.parametrize("schedule", ["rcp", "alap_rcp"])
+def test_rcp_loops_fit_concurrency_limits_in_bounds(kernel, qudits, trips, schedule):
+    for limit in (1, 2):
+        assert "ops" in _in_a_child(kernel, trips, system=_given(limit, schedule, qudits))
 
 
 def test_the_second_and_third_loops_of_10_15_iterations_stay_rolled_in_a_child():

@@ -2425,6 +2425,7 @@ def _violations(
     timed: Sequence[Mapping[str, Any]] | None = None,
     answers: Sequence[Mapping[str, Any]] | None = None,
     updates: Sequence[Mapping[str, Any]] | None = None,
+    peaks: dict[str, float | None] | None = None,
 ) -> list[str]:
     """The limits *events* exceed. With *clocks*, the events are in the
     controller's own cycles: the native walk's, with *off* its line events
@@ -2441,7 +2442,9 @@ def _violations(
     has them, are the timed drives and readouts of *events* and its answers,
     in order; then only the update-bus check reads all of *events*, or only
     *updates*, the frame updates, drives and readouts of *events* on the
-    controller's lines, when the caller has them."""
+    controller's lines, when the caller has them. *peaks* holds the sampled
+    peak of each envelope (``_over_amplitude``), shared with the checks of
+    other controllers of the same events."""
     if clocks is None:
         found = []
     else:
@@ -2468,7 +2471,8 @@ def _violations(
     shared = limits.waveform_memory is WaveformMemoryScope.SHARED
     stored: dict[Any, int] = {}
     unknown_stored = 0
-    peaks: dict[str, float | None] = {}
+    if peaks is None:
+        peaks = {}
     for line, items in sorted(by_line.items()):
         for previous, event in _pairs(items):
             distance = event["start_cycles"] - previous["start_cycles"]
@@ -3087,15 +3091,25 @@ def check(lowered: ScheduledKernel, limits: Controller | None = None) -> Sequenc
     made, so a limit never fails first at export. A shared line of *limits*
     is checked as compiling for it checks it (the tones it plays at once).
     """
-    limits = limits if limits is not None else lowered.options.machine.controller
+    machine = lowered.options.machine
+    limits = limits if limits is not None else machine.controller
+    # The drives and readouts at once its control system was given, when
+    # checked for that system's controller (or controllers).
+    over: list[str] = []
+    if limits is machine.controller and (
+        machine.controller is not None or machine._system is not None
+    ):
+        from .compiler import _over_concurrency
+
+        over = _over_concurrency(lowered)[0]
     if limits is None:
-        return []
+        return over
     found = _compile_check(lowered, limits)[0]
     if any(len(line) > 2 for line in limits._all_lines):
         from ._shared_lines import against
 
-        return [*found, *against(lowered, limits)]
-    return found
+        found = [*found, *against(lowered, limits)]
+    return [*found, *over] if over else found
 
 
 def _compile_check(
@@ -3199,6 +3213,15 @@ def _compile_check(
 
 def _call_violations(lowered: ScheduledKernel) -> Sequence[str]:
     """The limits one call's values exceed, as its export checks them."""
+    from .compiler import _over_concurrency
+
+    found = _system_call_violations(lowered)
+    over = _over_concurrency(lowered)[0]
+    return [*found, *over] if over else found
+
+
+def _system_call_violations(lowered: ScheduledKernel) -> Sequence[str]:
+    """``_call_violations`` but the drives and readouts at once."""
     machine = lowered.options.machine
     clocks = (lowered._generic or lowered).clocks
     system = machine._system

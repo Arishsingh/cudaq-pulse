@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     _INTRINSIC_1_NAMES: list[str]
     _OP_INFO: list[_OpInfo | None]
     _JOINS: dict[tuple[int, int], tuple[DecodedCode, int]]
+    _POSTDOMS: dict[int, tuple[DecodedCode, list[int]]]
     _VIEWS: dict[tuple[int, int], tuple[DecodedCode, DecodedCode]]
     _CACHE: dict[int, DecodedCode]
 
@@ -933,16 +934,20 @@ def _loop_var_is_read(out: list[list[Any]], for_idx: int, exit_idx: int) -> bool
     return False
 
 
+_CONDITIONAL_JUMPS = (JUMP_IF_FALSE, JUMP_IF_TRUE, JUMP_IF_NONE, JUMP_IF_NOT_NONE)
+_ENDS = (RETURN, RAISE, UNSUPPORTED, REGION_END)
+
+
 def _successors(instrs: tuple[Instr, ...], i: int, exit_node: int) -> tuple[int, ...]:
     op, arg = instrs[i]
     if op == JUMP:
         return (arg,)
-    if op in (JUMP_IF_FALSE, JUMP_IF_TRUE, JUMP_IF_NONE, JUMP_IF_NOT_NONE):
+    if op in _CONDITIONAL_JUMPS:
         return (i + 1, arg)
     if op == FOR_ITER:
         return (i + 1, arg[0])
     # Tracing an arm stops at its REGION_END, as at a return.
-    if op in (RETURN, RAISE, UNSUPPORTED, REGION_END):
+    if op in _ENDS:
         return (exit_node,)
     return (i + 1,)
 
@@ -957,6 +962,132 @@ def join_point(decoded: DecodedCode, branch: int) -> int:
     hit = _JOINS.get(key)
     if hit is not None and hit[0] is decoded:
         return hit[1]
+    # One post-dominator tree per decoded code object answers all its ifs:
+    # asking each if alone costs the square of the function's length.
+    tree = _POSTDOMS.get(id(decoded))
+    ipdom = None if tree is None or tree[0] is not decoded else tree[1]
+    if ipdom is None or ipdom[branch] == _UNREACHED:
+        ipdom = _postdominators(decoded.instrs, branch, ipdom)
+        _POSTDOMS[id(decoded)] = (decoded, ipdom)
+    join = ipdom[branch]
+    if join < 0:
+        join = _join_point_reference(decoded, branch)
+    _JOINS[key] = (decoded, join)
+    return join
+
+
+_UNREACHED = -2
+_STUCK = -1
+
+
+def _postdominators(instrs: tuple[Instr, ...], start: int, known: list[int] | None) -> list[int]:
+    """Immediate post-dominator of each instruction reached from *start*.
+
+    Also of each one an earlier result *known* holds. The entry of an
+    instruction not reached is _UNREACHED; of one from which some path never
+    reaches the exit (a loop that never ends) _STUCK, for
+    _join_point_reference to answer. All paths from an instruction to the
+    exit lie among the instructions it reaches, so its post-dominators are
+    the same whatever else is included.
+
+    This is Cooper, Harvey and Kennedy's iterative dominator algorithm on
+    the reversed graph, from the exit, which takes any order of the
+    instructions in which each comes after one of its successors.
+    """
+    exit_node = len(instrs)
+    # As _successors, following each straight run of instructions.
+    succs: dict[int, tuple[int, ...]] = {exit_node: ()}
+    work = [start]
+    if known is not None:
+        work += [i for i, d in enumerate(known) if d != _UNREACHED]
+    while work:
+        i = work.pop()
+        while i not in succs:
+            op, arg = instrs[i]
+            if op == JUMP:
+                succs[i] = (arg,)
+                i = arg
+            elif op in _CONDITIONAL_JUMPS:
+                succs[i] = (i + 1, arg)
+                work.append(arg)
+                i += 1
+            elif op == FOR_ITER:
+                succs[i] = (i + 1, arg[0])
+                work.append(arg[0])
+                i += 1
+            elif op in _ENDS:
+                succs[i] = (exit_node,)
+                i = exit_node
+            else:
+                succs[i] = (i + 1,)
+                i += 1
+    # Rank each instruction that reaches the exit after one of its
+    # successors, in sweeps from the last instruction to the first: a loop's
+    # body is ranked a sweep after its head, so this takes one sweep more
+    # than the deepest nesting of loops.
+    nodes = sorted(succs, reverse=True)
+    rank = [-1] * (exit_node + 1)
+    rank[exit_node] = 0
+    ranked = 1
+    while ranked < len(nodes):
+        before = ranked
+        for v in nodes:
+            if rank[v] < 0:
+                for a in succs[v]:
+                    if rank[a] >= 0:
+                        rank[v] = ranked
+                        ranked += 1
+                        break
+        if ranked == before:
+            break
+    order = sorted(nodes, key=rank.__getitem__)[len(nodes) - ranked + 1 :]
+    ipdom = [_UNREACHED] * (exit_node + 1)
+    ipdom[exit_node] = exit_node
+    changed = True
+    while changed:
+        changed = False
+        for v in order:
+            new = -1
+            for a in succs[v]:
+                if ipdom[a] < 0:
+                    continue
+                if new < 0:
+                    new = a
+                    continue
+                while a != new:
+                    while rank[a] > rank[new]:
+                        a = ipdom[a]
+                    while rank[new] > rank[a]:
+                        new = ipdom[new]
+            if ipdom[v] != new:
+                ipdom[v] = new
+                changed = True
+    if ranked < len(nodes):
+        # Some instruction never reaches the exit: those that can reach one
+        # are left to _join_point_reference.
+        for v in nodes:
+            if rank[v] < 0:
+                ipdom[v] = _STUCK
+        changed = True
+        while changed:
+            changed = False
+            for v in nodes:
+                if ipdom[v] != _STUCK:
+                    for a in succs[v]:
+                        if ipdom[a] == _STUCK:
+                            ipdom[v] = _STUCK
+                            changed = True
+                            break
+    return ipdom
+
+
+def _join_point_reference(decoded: DecodedCode, branch: int) -> int:
+    """join_point from post-dominator sets of what *branch* reaches.
+
+    Quadratic in the function's length or worse, per branch: the reference
+    join_point's tree is tested against, and the answer when some path from
+    *branch* never reaches the exit.
+    """
     instrs = decoded.instrs
     exit_node = len(instrs)
     reachable: list[int] = []
@@ -991,7 +1122,6 @@ def join_point(decoded: DecodedCode, branch: int) -> int:
                 changed = True
     strict = postdom[branch] - {branch}
     join = next(p for p in strict if postdom[p] == strict)
-    _JOINS[key] = (decoded, join)
     return join
 
 
@@ -1013,6 +1143,7 @@ def region_view(decoded: DecodedCode, join: int) -> DecodedCode:
 # Each read and write is one dict operation and a hit is checked by identity,
 # so threads share these without a lock: a race only decodes twice.
 _JOINS = {}
+_POSTDOMS = {}
 _VIEWS = {}
 _CACHE = {}
 _CACHE_LIMIT = 4096
