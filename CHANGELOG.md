@@ -447,7 +447,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   and qudits. Binding values to a call with runtime qudits or
   `list[float]` parameters raises the `InvalidTypeError` other calls
   raise, where it returned a program without its qudits or with the wrong
-  values.
+  values. One such bind worked before and is now that error: a call with
+  `list[float]` parameters bound with as many values as it has
+  (`kernel.lower(q, [0.1, 0.2]).bind([0.4, 0.5])`). For other values, lower
+  the kernel again with them (`kernel.lower(q, [0.4, 0.5])`).
 
 ## [0.1.0] - 2026-11-13
 
