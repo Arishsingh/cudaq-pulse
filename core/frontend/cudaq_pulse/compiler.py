@@ -754,7 +754,11 @@ class ScheduledKernel:
         ``ValueError``. A value that is not a real number (a bool or a str) is
         an ``InvalidTypeError``, and a NaN an ``InvalidValueError``, each
         naming the parameter; an infinity is an ``InvalidValueError`` naming
-        it where the module is used: run, simulated, exported or printed."""
+        it where the module is used: run, simulated, exported or printed.
+
+        A module of one call, as ``lower()`` with values returns, has no
+        parameters left: binding no values returns that call, and binding any
+        is an ``InvalidTypeError``."""
         try:
             arity = self._arity
             arguments = tuple(values)
@@ -763,6 +767,9 @@ class ScheduledKernel:
             # bind; a call's view keeps none and takes none.
             if self._generic is None:
                 self._arity = len(self.parameters)
+            elif not _bind_checked(self.parameters, values):
+                # A call's values are bound: binding none keeps them.
+                return self
             return self._with_values(_bind_checked(self.parameters, values))
         if len(arguments) != arity:
             raise _bind_count_error(self.parameters, arguments)
