@@ -1016,10 +1016,14 @@ def test_python_sources_and_files_the_job_never_reads_keep_the_measured_code(rep
             "CHANGELOG.md": "",
             ".github__workflows__docs.yml": "",
             "tools__check-k.py": "",
+            "tools__ci-changes.py": "",
+            "challenges__k__score.py": "",
             "benchmarks__baselines__perf_gate.json": '{"a": 1}\n',
-            # Dev dependencies and tool settings are not built.
+            # Dev dependencies, tool settings and the sdist's contents are not built.
             "uv.lock": _UV_LOCK.format(numpy="2.0", pytest="9.0"),
-            "pyproject.toml": _PYPROJECT + "[tool.ruff]\nline-length = 99\n",
+            "pyproject.toml": _PYPROJECT
+            + "[tool.ruff]\nline-length = 99\n"
+            + '[tool.scikit-build]\nsdist.exclude = ["/challenges"]\n',
         }
     )
     assert gate.base_scope(repo.base) == ""
@@ -1035,6 +1039,10 @@ def test_python_sources_and_files_the_job_never_reads_keep_the_measured_code(rep
         ({"core__frontend__cudaq_pulse__data.json": ""}, "core/frontend/cudaq_pulse/data.json"),
         ({"uv.lock": _UV_LOCK.format(numpy="2.1", pytest="8.0")}, "uv.lock"),
         ({"pyproject.toml": _PYPROJECT.replace('"numpy"', '"numpy", "cmake"')}, "pyproject.toml"),
+        (
+            {"pyproject.toml": _PYPROJECT + '[tool.scikit-build]\ncmake.build-type = "Debug"\n'},
+            "pyproject.toml",
+        ),
         # A rename into tests/ lists both paths.
         (
             {"core__mlir__lib__Foo.cpp": None, "tests__Foo.cpp": "int f();\n"},
