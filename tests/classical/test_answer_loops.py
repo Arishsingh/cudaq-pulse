@@ -35,7 +35,7 @@ from cudaq_pulse.classical import Link
 
 from tests import _child
 from tests._handles import Q
-from tests._work import native_seconds, python_work
+from tests._work import native_seconds_each, python_work
 
 POLICIES = ("asap", "alap", "rcp", "alap_rcp")
 
@@ -591,16 +591,13 @@ def test_an_unrolled_loop_of_calls_verifies_and_schedules_in_linear_time():
     # on the link, so neither verifying nor scheduling the unrolled loop
     # walks them all. Eight times the trips take about eight times as long
     # natively (64 if quadratic); tracing is linear either way.
-    timings = {}
+    runs = {}
     for n in (500, 4000):
         kernel = _kernels(n)["round"]
-        timings[n] = native_seconds(
-            lambda kernel=kernel: pulse.compile(
-                kernel, schedule="alap", unroll_threshold=10**6
-            ).lower(Q[0], Q[1], Q[2]),
-            ("lower_selects", "run_passes", "schedule"),
-            repeats=3,
-        )
+        runs[n] = lambda kernel=kernel: pulse.compile(
+            kernel, schedule="alap", unroll_threshold=10**6
+        ).lower(Q[0], Q[1], Q[2])
+    timings = native_seconds_each(runs, ("lower_selects", "run_passes", "schedule"), repeats=3)
     assert timings[4000] < 24 * timings[500], timings
 
 
@@ -609,14 +606,13 @@ def test_a_loop_that_never_repeats_schedules_in_linear_time(schedule):
     # Its iterations are peeled around the copies of its inner loop, all of
     # them in each round, so the rounds do not grow with the trips. Eight
     # times the trips: eight times the time when linear, 64 when quadratic.
-    timings = {}
+    runs = {}
     for n in (125, 1000):
         kernel = _saturating(n)
-        timings[n] = native_seconds(
-            lambda kernel=kernel: pulse.compile(
-                kernel, schedule=schedule, unroll_threshold=0
-            ).lower(Q[0], Q[1], Q[2])
-        )
+        runs[n] = lambda kernel=kernel: pulse.compile(
+            kernel, schedule=schedule, unroll_threshold=0
+        ).lower(Q[0], Q[1], Q[2])
+    timings = native_seconds_each(runs)
     assert timings[1000] < 24 * timings[125], timings
 
 

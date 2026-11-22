@@ -7,7 +7,9 @@ are the same on any machine and at any load, so a test that compares two
 sizes of one program can require them equal, or in proportion, where their
 times are only close. Work done in native code is not counted: a test that
 bounds it as well times it, in CPU time and the best of several: all of a
-call (cpu_seconds) or the native methods it calls (native_seconds).
+call (cpu_seconds) or the native methods it calls (native_seconds); a test
+that compares sizes or variants times them in turn (cpu_seconds_each,
+native_seconds_each), so that a slow spell of a shared machine stretches all.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from __future__ import annotations
 import gc
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 
 import pytest
 from cudaq_pulse._native._cudaq_pulse_native import PulseModule
@@ -57,54 +59,71 @@ def python_work(fn: Callable[[], object]) -> dict[str, int]:
     return work
 
 
-def _least(fn: Callable[[], object], spent: Callable[[], float], repeats: int) -> float:
-    """The least of *spent*() after each call of *fn*, which follow a first,
-    uncounted one: *repeats* calls, and more until they have taken half a
-    second, as a short call is the likelier to have shared its core with
-    other work in each of a few. The garbage collector is held off for each
-    call."""
-    fn()
-    best = float("inf")
+def _least[K: Hashable](runs: dict[K, Callable[[], float]], repeats: int) -> dict[K, float]:
+    """The least time each of *runs* reports, a run being a call that returns
+    the time it spent, after a first, uncounted call of each. The runs are
+    taken in turn, so that a slow spell of a shared machine falls on all of
+    them alike rather than on whichever was being timed: *repeats* rounds,
+    and more until they have taken half a second per run, as a short call is
+    the likelier to have shared its core with other work in each of a few.
+    The garbage collector is held off for each call."""
+    for run in runs.values():
+        run()
+    best = dict.fromkeys(runs, float("inf"))
     collecting = gc.isenabled()
-    deadline = time.perf_counter() + 0.5
+    deadline = time.perf_counter() + 0.5 * len(runs)
     try:
         for done in range(100):
             if done >= repeats and time.perf_counter() > deadline:
                 break
-            gc.collect()
-            gc.disable()
-            fn()
-            best = min(best, spent())
-            if collecting:
-                gc.enable()
+            for key, run in runs.items():
+                gc.collect()
+                gc.disable()
+                best[key] = min(best[key], run())
+                if collecting:
+                    gc.enable()
     finally:
         if collecting:
             gc.enable()
-    assert 0 < best < float("inf"), best
+    assert all(0 < b < float("inf") for b in best.values()), best
     return best
 
 
-def cpu_seconds(fn: Callable[[], object], repeats: int = 5) -> float:
-    """The least CPU time a call of *fn* takes, of *repeats* or more.
+def cpu_seconds_each[K: Hashable](
+    fns: dict[K, Callable[[], object]], repeats: int = 5
+) -> dict[K, float]:
+    """The least CPU time a call of each of *fns* takes, of *repeats* or more,
+    the calls taken in turn (see _least): what a test that compares sizes or
+    variants of a program needs, as each is timed under the same load.
 
     CPU time leaves out the time a loaded machine spends running something
     else, which stretches a wall-clock time the more the longer it is."""
-    started = [0.0]
 
-    def run() -> None:
-        started[0] = time.process_time()
-        fn()
+    def timed(fn: Callable[[], object]) -> Callable[[], float]:
+        def run() -> float:
+            started = time.process_time()
+            fn()
+            return time.process_time() - started
 
-    return _least(run, lambda: time.process_time() - started[0], repeats)
+        return run
+
+    return _least({key: timed(fn) for key, fn in fns.items()}, repeats)
 
 
-def native_seconds(
-    fn: Callable[[], object], methods: tuple[str, ...] = ("schedule",), repeats: int = 5
-) -> float:
-    """The least CPU time, of *repeats* or more calls of *fn*, that its calls of the
-    PulseModule *methods* take: without the tracing around them, which
-    python_work counts, a cost in them that grows faster than the program
-    is not diluted."""
+def cpu_seconds(fn: Callable[[], object], repeats: int = 5) -> float:
+    """The least CPU time a call of *fn* takes, of *repeats* or more."""
+    return cpu_seconds_each({0: fn}, repeats)[0]
+
+
+def native_seconds_each[K: Hashable](
+    fns: dict[K, Callable[[], object]],
+    methods: tuple[str, ...] = ("schedule",),
+    repeats: int = 5,
+) -> dict[K, float]:
+    """The least CPU time, of *repeats* or more calls of each of *fns*, taken in
+    turn (see _least), that its calls of the PulseModule *methods* take:
+    without the tracing around them, which python_work counts, a cost in
+    them that grows faster than the program is not diluted."""
     spent = [0.0]
     originals = {name: getattr(PulseModule, name) for name in methods}
 
@@ -118,14 +137,26 @@ def native_seconds(
 
         return call
 
-    def run() -> None:
-        spent[0] = 0.0
-        fn()
+    def counted(fn: Callable[[], object]) -> Callable[[], float]:
+        def run() -> float:
+            spent[0] = 0.0
+            fn()
+            return spent[0]
+
+        return run
 
     try:
         for name, method in originals.items():
             setattr(PulseModule, name, timed(method))
-        return _least(run, lambda: spent[0], repeats)
+        return _least({key: counted(fn) for key, fn in fns.items()}, repeats)
     finally:
         for name, method in originals.items():
             setattr(PulseModule, name, method)
+
+
+def native_seconds(
+    fn: Callable[[], object], methods: tuple[str, ...] = ("schedule",), repeats: int = 5
+) -> float:
+    """The least CPU time, of *repeats* or more calls of *fn*, that its calls of
+    the PulseModule *methods* take (see native_seconds_each)."""
+    return native_seconds_each({0: fn}, methods, repeats)[0]

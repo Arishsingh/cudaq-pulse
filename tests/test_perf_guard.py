@@ -42,7 +42,7 @@ from cudaq_pulse.kernel.packed_ir_builder import PackedIRBuilder
 from tests._handles import Q, ladder_target
 from tests._ir import python_ir
 from tests._tools import missing
-from tests._work import python_work
+from tests._work import cpu_seconds_each, python_work
 from tests.kernel.ir_corpus import (
     bicycle_syndrome,
     dd_loop,
@@ -87,28 +87,6 @@ def _best(
     return best
 
 
-def _best_interleaved(
-    runs: dict[int, Callable[[], object]],
-    min_reps: int = 5,
-    budget_s: float = 0.5,
-    clock: Callable[[], float] = time.process_time,
-) -> dict[int, float]:
-    """The best time of each run in *runs* on *clock*, taking them in turn so
-    that a slow spell of a shared machine falls on every size alike."""
-    for fn in runs.values():
-        fn()
-    best = dict.fromkeys(runs, float("inf"))
-    reps = 0
-    deadline = time.perf_counter() + budget_s
-    while reps < min_reps or (time.perf_counter() < deadline and reps < 2000):
-        for n, fn in runs.items():
-            t0 = clock()
-            fn()
-            best[n] = min(best[n], clock() - t0)
-        reps += 1
-    return best
-
-
 def _assert_flat(
     what: str,
     runs: dict[int, Callable[[], object]],
@@ -134,7 +112,7 @@ def _assert_linear(what: str, runs: dict[int, Callable[[], object]], limit: floa
     slow spell stretches both."""
     small, large = min(runs), max(runs)
     work = {n: python_work(runs[n]) for n in (small, large)}
-    seconds = _best_interleaved({n: runs[n] for n in (small, large)})
+    seconds = cpu_seconds_each({n: runs[n] for n in (small, large)})
     for count in work[small]:
         assert work[large][count] <= work[small][count] * large / small, (what, work)
     assert seconds[large] < seconds[small] * limit, (what, seconds)
