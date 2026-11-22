@@ -347,6 +347,30 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   name. A kernel that binds such a name in each
   arm and does not use it after the `if`, which the verify pass refused
   with `linear pulse value is consumed more than once`, compiles.
+- `export_to_controller` no longer stops on an assertion for a program
+  the check accepted whose tones on a shared readout line, in different
+  arms of one branch, play at once: the three arms of `if m: ... elif n:
+  ... else: ...` each reading out at the same cycle on a line of two tones
+  (`AssertionError`; under `python -O`, format 1 dropped a readout's
+  `tone_slot` and format 2 wrote `"tone_slot": null`). Tones in different
+  arms of one branch execution now share a slot where the line's slots
+  would not serve them otherwise.
+- A shared readout line counts at once only the tones that can play
+  together. A tone that starts while readouts in the then and else arms of
+  one branch play counted both, so a line that plays two tones refused `if
+  m: readout(r0, ...) else: readout(r1, ...)` beside one more readout
+  ("plays 3 tones at once"), though only one arm plays. It now counts the
+  most tones that lie in no two different arms of one branch execution:
+  through nested branches, `elif` chains and branches in a rolled loop, in
+  time polynomial in the tones playing. A line is still refused when more
+  tones than it holds play at once, no two in different arms of one branch
+  execution; its message names those tones. Two branches that test one
+  measurement (`if m: ...` then `if not m: ...`) are two branch
+  executions, so their arms still count together. A program can now
+  compile and simulate and still not export: when its tones fit the line
+  on every path but no one tone slot per tone serves every path,
+  `export_to_controller` raises `UnsupportedError`
+  (`slots_apart_and_together` in `tests/test_shared_lines.py`).
 - The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
   two inputs. A schedule block that yields one of its own arguments, passing
   an input through, is inlined with that input as its result; the passes

@@ -14,7 +14,7 @@ shared line loads this."""
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ._errors import InvalidTypeError, InvalidValueError, UnsupportedError, _ranges
@@ -302,6 +302,190 @@ def _timed_on(event: Mapping[str, Any], of: Mapping[int, int]) -> int | None:
     return None
 
 
+def _apart(a: Mapping[Any, Any], b: Mapping[Any, Any]) -> bool:
+    """Whether arms *a* and *b* (by branch) differ on a branch execution:
+    ``controller._exclusive`` of two events' arms, which a walk tells apart
+    by branch id."""
+    return any(b.get(branch, arm) != arm for branch, arm in a.items())
+
+
+# A node of the branches tones lie in: the tones in no branch below it, and
+# by branch below it, by arm, the node of that arm.
+_Node = tuple[list[int], dict[Any, dict[Any, Any]]]
+# The (branch, arm) of each branch execution around a tone, outermost first.
+_Path = tuple[tuple[Any, Any], ...]
+
+
+def _nested(nodes: list[int], path: Callable[[int], _Path]) -> list[int] | None:
+    """The most of the tones *nodes* (of one copy; *path*: of a tone, the
+    (branch, arm) of each branch execution around it, outermost first) that
+    can all play in one execution, in order; ``None`` when the branches do
+    not nest (a branch under two arms).
+
+    Each branch execution lies in one arm of the one around it, or in none,
+    so the tones form a tree: at a node, the tones there play together with
+    the most of each branch below it, and of a branch only the most of one
+    arm plays. Two tones are in different arms of one branch execution just
+    when their paths part at one branch: below two branches they share none.
+    O(m d) for m tones in d branches around each at most."""
+    root: _Node = ([], {})
+    under: dict[Any, int] = {}
+    for k in nodes:
+        node = root
+        for branch, arm in path(k):
+            if under.setdefault(branch, id(node)) != id(node):
+                return None
+            node = node[1].setdefault(branch, {}).setdefault(arm, ([], {}))
+        node[0].append(k)
+
+    def most(node: _Node) -> list[int]:
+        found = list(node[0])
+        for arms in node[1].values():
+            best: list[int] = []
+            for child in arms.values():
+                below = most(child)
+                if len(below) > len(best):
+                    best = below
+            found += best
+        return found
+
+    return sorted(most(root))
+
+
+def _parts(nodes: list[int], near: Callable[[int], set[int]]) -> list[list[int]]:
+    """The connected parts of *nodes*, *near* giving each node's neighbours,
+    each part in order."""
+    left = set(nodes)
+    parts = []
+    for k in nodes:
+        if k not in left:
+            continue
+        left.discard(k)
+        part, queue = [k], [k]
+        while queue:
+            found = near(queue.pop()) & left
+            left -= found
+            part.extend(found)
+            queue.extend(found)
+        parts.append(sorted(part))
+    return parts
+
+
+def _split(nodes: list[int], apart: Mapping[int, set[int]]) -> list[int]:
+    """``_nested`` from *apart* (by tone, the tones apart from it) alone, for
+    branches that do not nest: the tones split into parts no tone of which
+    is apart from any of another part's, whose mosts add up, or else into
+    parts every tone of which is apart from every one of another part's, of
+    whose mosts the largest plays, and so on down to single tones; each
+    split takes O(m^2) for m tones and leaves fewer, so the whole O(m^3).
+    Tones that split neither way all count: never fewer than play
+    together."""
+    if len(nodes) < 2:
+        return nodes
+    within = set(nodes)
+    parts = _parts(nodes, lambda k: within - apart[k])
+    if len(parts) > 1:
+        return max((_split(part, apart) for part in parts), key=len)
+    parts = _parts(nodes, lambda k: apart[k] & within)
+    if len(parts) > 1:
+        return sorted(k for part in parts for k in _split(part, apart))
+    return nodes
+
+
+def _most_together(
+    nodes: list[int], path: Callable[[int], _Path], copies: Sequence[Any], nested: bool
+) -> list[int]:
+    """The most of the tones *nodes* that can all play in one execution: no
+    two of one copy (*copies*, by tone) in different arms of one branch
+    execution (*path*, as ``_nested``), in order; unless *nested*, by
+    ``_split`` alone."""
+    by_copy: dict[Any, list[int]] = {}
+    for k in nodes:
+        by_copy.setdefault(copies[k], []).append(k)
+    found: list[int] = []
+    for each in by_copy.values():
+        most = _nested(each, path) if nested else None
+        if most is None:
+            arms = {k: dict(path(k)) for k in each}
+            apart: dict[int, set[int]] = {
+                k: {j for j in each if _apart(arms[k], arms[j])} for k in each
+            }
+            most = _split(each, apart)
+        found += most
+    return sorted(found)
+
+
+class _TangledError(Exception):
+    """Branches that do not nest: a branch under two arms."""
+
+
+class _Arm:
+    """A node of the tree of branch executions the tones playing on a line
+    lie in (each in one arm of the one around it, or in none): how many
+    tones lie in no branch below it, by branch below it and arm the node of
+    that arm, and the most tones below it that can play together (``most``;
+    ``best``: of each branch below it, its arm's with the most)."""
+
+    __slots__ = ("parent", "via", "here", "arms", "best", "most")
+
+    def __init__(self, parent: _Arm | None, via: Any) -> None:
+        self.parent, self.via = parent, via
+        self.here = self.most = 0
+        self.arms: dict[Any, dict[Any, _Arm]] = {}
+        self.best: dict[Any, int] = {}
+
+
+class _Playing:
+    """The tones playing on a line in one copy of the loops around them, as
+    a tree of ``_Arm``: of a branch only one arm plays, and of the tones in
+    an arm, those of different branches below it all can. Adding, taking
+    away and counting a tone take time in the branches around it, not in
+    the tones playing."""
+
+    __slots__ = ("root", "under")
+
+    def __init__(self) -> None:
+        self.root = _Arm(None, None)
+        # By branch, the arm it lies in, the same for every tone.
+        self.under: dict[Any, _Arm] = {}
+
+    def add(self, path: _Path, count: int) -> int:
+        """Add *count* tones (or take away) of *path* (``_Path``); how many
+        more of them all can play together."""
+        before = self.root.most
+        node = self.root
+        for branch, arm in path:
+            if self.under.setdefault(branch, node) is not node:
+                raise _TangledError
+            arms = node.arms.setdefault(branch, {})
+            node = arms.get(arm) or arms.setdefault(arm, _Arm(node, branch))
+        node.here += count
+        node.most += count
+        while node.parent is not None:
+            parent = node.parent
+            old = parent.best.get(node.via, 0)
+            new = max(child.most for child in parent.arms[node.via].values())
+            if new == old:
+                break
+            parent.best[node.via] = new
+            parent.most += new - old
+            node = parent
+        return self.root.most - before
+
+    def beside(self, path: _Path) -> int:
+        """The most tones playing that can play together with one of *path*
+        (``add``), in no branch execution around it in another arm."""
+        node: _Arm | None = self.root
+        found = 0
+        for branch, arm in path:
+            if self.under.get(branch, node) is not node:
+                raise _TangledError
+            if node is not None:
+                found += node.most - node.best.get(branch, 0)
+                node = node.arms.get(branch, {}).get(arm)
+        return found + (0 if node is None else node.most)
+
+
 class _AtOnce:
     """The tones a shared line plays at once past its ``max_concurrent_tones``:
     how often a tone starts with the line full, and the first time."""
@@ -317,20 +501,82 @@ class _AtOnce:
     def sweep(self, played: Sequence[tuple[int, int, Mapping[str, Any], Any]]) -> None:
         """Count *played* ((start, end, event, copy)), sorted by start; a tone
         ending at a cycle frees the line for one starting then. Events of one
-        copy in different arms of a branch never play together."""
-        from .controller import _exclusive
+        copy in different arms of a branch never play together (a walk tells
+        branch executions apart by id, as ``controller._exclusive``), so a
+        tone starts with the line full when the most tones playing then that
+        can all play together with it in one execution fill it: those of each
+        copy found in the tree of branches they lie in (``_Playing``), else
+        (branches that do not nest) ``_split``."""
+        count, first, playing = self.count, self.first, self.playing
+        try:
+            self._sweep(played, True)
+        except _TangledError:
+            self.count, self.first, self.playing = count, first, playing
+            self._sweep(played, False)
 
-        active: list[tuple[int, int, Mapping[str, Any], Any]] = []
-        for item in played:
-            start, _, event, copy = item
-            active = [a for a in active if a[1] > start]
-            together = [a for a in active if a[3] != copy or not _exclusive(a[2], event)]
-            if len(together) >= self.line.tones:
-                if self.first is None or start < self.first:
-                    self.first = start
-                    self.playing = [a[2] for a in together] + [event]
+    def _sweep(
+        self, played: Sequence[tuple[int, int, Mapping[str, Any], Any]], nested: bool
+    ) -> None:
+        tones = self.line.tones
+        # Without branches every tone playing plays together.
+        nested = nested and any(item[2]["conditions"] for item in played)
+        paths: list[_Path | None] = [None] * len(played)
+
+        def path(k: int) -> _Path:
+            found = paths[k]
+            if found is None:
+                found = paths[k] = tuple(
+                    (c["branch"], c["arm"]) for c in played[k][2]["conditions"]
+                )
+            return found
+
+        copies = [item[3] for item in played]
+        # While the line is full, the tones playing as trees by copy, and the
+        # most of them that can play together.
+        trees: dict[Any, _Playing] | None = None
+        playing = 0
+        active: list[int] = []
+        for k, (start, _, event, copy) in enumerate(played):
+            ended = [a for a in active if played[a][1] <= start]
+            if ended:
+                active = [a for a in active if played[a][1] > start]
+            if len(active) < tones:
+                # Not full, whatever plays together.
+                trees = None
+                active.append(k)
+                continue
+            if not nested:
+                most = len(active)
+            else:
+                if trees is None:
+                    trees, playing, ended = {}, 0, []
+                    for a in active:
+                        tree = trees.setdefault(copies[a], _Playing())
+                        playing += tree.add(path(a), 1)
+                for a in ended:
+                    playing += trees[copies[a]].add(path(a), -1)
+                tree = trees.setdefault(copy, _Playing())
+                most = playing - tree.root.most + tree.beside(path(k))
+            if most >= tones and nested and self.first is not None and start >= self.first:
                 self.count += 1
-            active.append(item)
+            elif most >= tones:
+                # Which tones, for the message (and how many, without the tree).
+                mine = dict(path(k))
+                together = [
+                    a
+                    for a in active
+                    if not (mine and copies[a] == copy and _apart(dict(path(a)), mine))
+                ]
+                if any(path(a) for a in together):
+                    together = _most_together(together, path, copies, nested)
+                if len(together) >= tones:
+                    if self.first is None or start < self.first:
+                        self.first = start
+                        self.playing = [played[a][2] for a in together] + [event]
+                    self.count += 1
+            if trees is not None:
+                playing += tree.add(path(k), 1)
+            active.append(k)
 
     def message(self, lines: Sequence[Mapping[str, Any]]) -> str | None:
         if not self.count:
@@ -608,18 +854,27 @@ _TONED = frozenset({"play", "drive", "readout"})
 
 class _Placed:
     """An event of format /2 on a handle of a shared line: its handle (the
-    line's index in the walk), its first start and end, and whether a rolled
-    loop repeats it."""
+    line's index in the walk), its first start and end, whether a rolled
+    loop repeats it, and by branch the arm it takes of each branch
+    execution around it (none when a rolled loop repeats it and it reaches
+    past one iteration, as its copies may then play beside others')."""
 
-    __slots__ = ("event", "handle", "start", "end", "last", "looped", "order")
+    __slots__ = ("event", "handle", "start", "end", "last", "looped", "order", "arms")
 
     def __init__(
-        self, event: dict[str, Any], handle: int, last: int, looped: bool, order: int
+        self,
+        event: dict[str, Any],
+        handle: int,
+        last: int,
+        looped: bool,
+        order: int,
+        arms: dict[Any, Any],
     ) -> None:
         self.event, self.handle, self.looped, self.order = event, handle, looped, order
         self.start = event["start_cycles"]
         self.end = self.start + event["duration_cycles"]
         self.last = last
+        self.arms = arms
 
 
 def _placed(
@@ -629,81 +884,129 @@ def _placed(
     (*shared*: by handle, its shared line), in program order."""
     found: dict[Physical, list[_Placed]] = {}
 
-    def visit(items: Sequence[dict[str, Any]], extra: int, looped: bool) -> None:
-        # extra: the cycles the rolled loops around *items* move their last copy by.
+    def visit(
+        items: Sequence[dict[str, Any]], extra: int, loops: tuple[tuple[int, int], ...]
+    ) -> None:
+        # extra: the cycles the rolled loops around *items* move their last copy by;
+        # loops: the first iteration (start, end) of each.
         for event in items:
             if event["kind"] == "loop":
                 more = (event["trips"] - 1) * event["period_cycles"]
-                visit(event["body"], extra + more, True)
+                first = event["start_cycles"], event["start_cycles"] + event["period_cycles"]
+                visit(event["body"], extra + more, (*loops, first))
                 continue
             line = event.get("line")
             if event["kind"] not in _ON_LINE or line is None:
                 continue
             physical_line = shared[line]
             if physical_line is not None:
-                last = event["start_cycles"] + event["duration_cycles"] + extra
+                start = event["start_cycles"]
+                end = start + event["duration_cycles"]
+                arms: dict[Any, Any] = {}
+                if all(lo <= start and end <= hi for lo, hi in loops):
+                    arms = {c["branch"]: c["arm"] for c in event.get("conditions") or ()}
                 placed = found.setdefault(physical_line, [])
-                placed.append(_Placed(event, line, last, looped, len(placed)))
+                placed.append(_Placed(event, line, end + extra, bool(loops), len(placed), arms))
 
-    visit(events, 0, False)
+    visit(events, 0, ())
     return found
 
 
-def _lowest_free(busy: list[tuple[int, int]], start: int, slots: int) -> int | None:
-    """The lowest slot no interval of *busy* ((end, slot)) holds at *start*,
-    those ending by then dropped; ``None`` when all *slots* are held."""
-    busy[:] = [(end, slot) for end, slot in busy if end > start]
-    held = {slot for _, slot in busy}
-    return next((slot for slot in range(slots) if slot not in held), None)
+def _free(
+    busy: list[tuple[int, int, Mapping[Any, Any]]], start: int, arms: Any, slots: int
+) -> int | None:
+    """The lowest slot no interval of *busy* ((end, slot, its arms)) holds
+    at *start*, those ending by then dropped, an interval with arms
+    ``_apart`` from *arms* holding none (``None`` for *arms*: every one
+    holds its slot); ``None`` when all *slots* are held."""
+    busy[:] = [held for held in busy if held[0] > start]
+    taken = {slot for _, slot, other in busy if arms is None or not _apart(arms, other)}
+    return next((slot for slot in range(slots) if slot not in taken), None)
 
 
-def _slots(line: Physical, placed: list[_Placed]) -> dict[int, int]:
+def _slots(line: Physical, placed: list[_Placed], apart: bool = False) -> dict[int, int]:
     """By handle, the tone slot of each handle of *line* the program uses,
     when each can keep one for the whole program: handles whose events span
     overlapping stretches get different slots, lowest free first, in the
     order of their first event; ``{}`` when that takes more slots than the
-    line has."""
+    line has. With *apart*, two handles that never play together (in other
+    arms of one branch execution, every tone of both) may share a slot."""
     spans: dict[int, list[int]] = {}
+    arms: dict[int, dict[Any, Any]] = {}
     for p in placed:
         if p.event["kind"] not in _TONED:
             continue
         span = spans.setdefault(p.handle, [p.start, p.last])
         span[0] = min(span[0], p.start)
         span[1] = max(span[1], p.last)
-    busy: list[tuple[int, int]] = []
+        common = arms.setdefault(p.handle, p.arms)
+        arms[p.handle] = {b: arm for b, arm in common.items() if p.arms.get(b) == arm}
+    busy: list[tuple[int, int, Mapping[Any, Any]]] = []
     given: dict[int, int] = {}
     for handle, (start, end) in sorted(spans.items(), key=lambda item: (item[1][0], item[0])):
-        slot = _lowest_free(busy, start, line.tones)
+        slot = _free(busy, start, arms[handle] if apart else None, line.tones)
         if slot is None:
             return {}
         given[handle] = slot
-        busy.append((end, slot))
+        busy.append((end, slot, arms[handle]))
     return given
 
 
-def _slots_by_event(line: Physical, placed: list[_Placed]) -> dict[int, int]:
+# The steps (tones given a slot, first or again) the search of
+# ``_slots_by_event`` takes per tone before it gives up.
+_TRIES = 64
+
+
+def _slots_by_event(line: Physical, placed: list[_Placed], apart: bool) -> dict[int, int] | None:
     """By ``id`` of event, the tone slot of each event of *line*, when its
-    handles take turns at its slots: greedy interval colouring of its tones
-    in start order (then handle order), lowest free slot first."""
-    if any(p.looped for p in placed):
-        raise UnsupportedError(
-            f"format /2 gives each event of a rolled loop one tone slot in every "
-            f"iteration, and the handles of {line.label} take turns at its "
-            f"{line.tones} tones: give each handle a tone of its own "
-            "(max_concurrent_tones of at least the qudits it plays at), or unroll "
-            "the loop (unroll_threshold)"
-        )
+    handles take turns at its slots: its tones in start order (then handle
+    order), each the lowest slot no tone playing beside it holds; ``None``
+    when that takes more slots than the line has. With *apart*, a tone in
+    another arm of a branch execution than one playing does not hold its
+    slot, and where no slot is left the search goes back to the latest of
+    the tones that kept it from one, to try that one's next slot (one slot
+    for every path need not follow from the tones playing at once on each),
+    giving up past ``_TRIES`` steps per tone. Not for events a rolled loop
+    repeats."""
     toned = sorted(
         (p for p in placed if p.event["kind"] in _TONED), key=lambda p: (p.start, p.handle)
     )
-    busy: list[tuple[int, int]] = []
-    given: dict[int, int] = {}
-    for p in toned:
-        slot = _lowest_free(busy, p.start, line.tones)
-        # The compiler's tone check keeps the tones at once within the line's.
-        assert slot is not None
-        given[id(p.event)] = slot
-        busy.append((p.end, slot))
+    # By tone, the earlier tones that play beside it.
+    beside: list[list[int]] = []
+    active: list[int] = []
+    for k, p in enumerate(toned):
+        active = [j for j in active if toned[j].end > p.start]
+        beside.append([j for j in active if not (apart and _apart(p.arms, toned[j].arms))])
+        active.append(k)
+    chosen = [-1] * len(toned)
+    # By tone, the earlier tones whose slots left it none (conflict-directed
+    # backjumping: going back past a tone that is not one of them changes
+    # nothing that kept it from a slot).
+    why: list[set[int]] = [set() for _ in toned]
+    budget = _TRIES * len(toned) if apart else len(toned)
+    k = 0
+    while k < len(toned):
+        budget -= 1
+        if budget < 0:
+            return None
+        held: dict[int, int] = {}
+        for j in beside[k]:
+            held.setdefault(chosen[j], j)
+        nxt = next((s for s in range(chosen[k] + 1, line.tones) if s not in held), None)
+        if nxt is not None:
+            chosen[k] = nxt
+            k += 1
+            continue
+        why[k].update(held.values())
+        if not why[k]:
+            return None
+        back = max(why[k])
+        why[back] |= why[k] - {back}
+        for i in range(back + 1, k + 1):
+            chosen[i] = -1
+            why[i] = set()
+        k = back
+    given = {id(p.event): s for p, s in zip(toned, chosen, strict=True)}
     # A wait or frame update takes the slot of its handle's tone around it.
     previous: dict[int, int] = {}
     pending: dict[int, list[_Placed]] = {}
@@ -725,7 +1028,11 @@ def _tone_slots(
     placed_by_line: Mapping[Physical, list[_Placed]],
 ) -> tuple[dict[int, int], dict[int, int]]:
     """By ``id`` of event, the tone slot of each event *placed_by_line*
-    gives, and by handle, the slot of each handle that keeps one."""
+    gives, and by handle, the slot of each handle that keeps one. A handle
+    keeps one slot when the line has slots enough, else its tones take
+    turns at them; only where neither fits do tones in other arms of a
+    branch execution share slots, which the tones at once of the check
+    (most on any path) allow, and else not: one slot serves every path."""
     slot_of: dict[int, int] = {}
     handle_slot: dict[int, int] = {}
     for line, placed in placed_by_line.items():
@@ -735,13 +1042,37 @@ def _tone_slots(
             if line.tones == 1
             else _slots(line, placed)
         )
+        looped = any(p.looped for p in placed)
+        by_event = None
+        if not per_handle and not looped:
+            by_event = _slots_by_event(line, placed, False)
+        if not per_handle and by_event is None:
+            per_handle = _slots(line, placed, True)
         if per_handle:
             handle_slot.update(per_handle)
             for p in placed:
                 # A handle that only waits or changes frames takes slot 0.
                 slot_of[id(p.event)] = per_handle.get(p.handle, 0)
-        else:
-            slot_of.update(_slots_by_event(line, placed))
+            continue
+        if looped:
+            raise UnsupportedError(
+                f"format /2 gives each event of a rolled loop one tone slot in every "
+                f"iteration, and the handles of {line.label} take turns at its "
+                f"{line.tones} tones: give each handle a tone of its own "
+                "(max_concurrent_tones of at least the qudits it plays at), or unroll "
+                "the loop (unroll_threshold)"
+            )
+        if by_event is None:
+            by_event = _slots_by_event(line, placed, True)
+        if by_event is None:
+            raise UnsupportedError(
+                f"an export gives each tone of {line.label} one tone slot for every "
+                f"path, and found no such slots among its {line.tones} for its tones in "
+                "the arms of branches, though no path plays more at once: play some "
+                "after the others end (a sync of their lines between them), or raise "
+                "its max_concurrent_tones"
+            )
+        slot_of.update(by_event)
     return slot_of, handle_slot
 
 
