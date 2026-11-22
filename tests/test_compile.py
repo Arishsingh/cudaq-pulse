@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import array
 import math
+import pickle
 
 import cudaq_pulse as pulse
 import pytest
@@ -329,9 +330,102 @@ def test_generic_is_the_module_every_call_rebinds_from():
 def test_bind_of_a_module_with_its_values_takes_none():
     bound = _two_amplitudes.lower(Q[0], 0.1, 1e6)
     assert bound.parameters == ()
-    assert bound.bind([]).arguments == ()
+    # Binding no values keeps the call's values: bind returns the call itself.
+    assert bound.bind([]) is bound
+    assert bound.bind([]).arguments == (0.1, 1e6)
     with pytest.raises(pulse.InvalidTypeError, match=r"no float parameters; a module of one call"):
         bound.bind([0.2])
+
+
+@pulse.kernel
+def _amplitude(q0, amplitude: float):
+    drive(get_drive_line(q0), square(8, amplitude))
+
+
+@pulse.kernel
+def _waited(q0, tau: float):
+    d0 = get_drive_line(q0)
+    drive(d0, square(8, 0.1))
+    wait(d0, tau)
+    drive(d0, square(8, 0.1))
+
+
+@pulse.kernel
+def _placed_amplitude(q0: pulse.Qudit, amplitude: float):
+    drive(get_drive_line(q0), square(8, amplitude))
+
+
+def test_a_call_bound_with_no_values_exports_its_values():
+    again = _amplitude.lower(Q[0], 0.3).bind([])
+    assert again.arguments == (0.3,)
+    (event,) = again.export_to_controller()["events"]
+    assert event["amplitude"] == {"re": 0.3, "im": 0.0}
+    assert event["waveform"]["params"]["amplitude"] == 0.3
+
+
+def test_a_call_bound_with_no_values_keeps_the_wait_its_value_sets():
+    again = _waited.lower(Q[0], 30.0).bind([])
+    assert again.arguments == (30.0,)
+    assert again.schedule == _waited.lower(Q[0], 30.0).schedule
+    assert [e.start for e in again.schedule if e.kind == "drive"] == [0, 38]
+
+
+def test_a_call_with_runtime_qudits_bound_with_no_values_keeps_its_values_and_qudits():
+    call = _placed_amplitude.lower(Q[1], 0.2)
+    again = call.bind([])
+    assert again is call
+    assert (again.arguments, again.carriers, again.qudits) == ((0.2,), (1,), (1,))
+    (event,) = again.export_to_controller()["events"]
+    assert event["amplitude"] == {"re": 0.2, "im": 0.0}
+
+
+@pulse.kernel
+def _amplitudes(q0, amplitudes: list[float]):
+    d0 = get_drive_line(q0)
+    for amplitude in amplitudes:
+        drive(d0, square(8, amplitude))
+
+
+def _pickled(value):
+    return pickle.loads(pickle.dumps(value))
+
+
+def _limited(kernel):
+    """*kernel* compiled under limits that check each call's values when
+    they are bound."""
+    machine = pulse.ControlSystem(
+        controllers=[pulse.Controller(instruction_cycles=4, min_idle_cycles=4, max_amplitude=0.5)]
+    )
+    return pulse.compile(kernel, control_system=machine)
+
+
+_CALLS = {
+    "floats": lambda: _amplitude.lower(Q[0], 0.3),
+    "runtime_qudits": lambda: _placed_amplitude.lower(Q[1], 0.2),
+    "float_list": lambda: _amplitudes.lower(Q[0], [0.1, 0.2]),
+    "pickled": lambda: _pickled(_amplitude.lower(Q[0], 0.3)),
+    "pickled_runtime_qudits": lambda: _pickled(_placed_amplitude.lower(Q[1], 0.2)),
+    "limits_wait": lambda: _limited(_waited).lower(Q[0], 30.0),
+    "limits_runtime_qudits": lambda: _limited(_placed_amplitude).lower(Q[1], 0.2),
+}
+
+
+@pytest.mark.parametrize("name", list(_CALLS))
+def test_a_call_bound_with_no_values_is_that_call(name):
+    call = _CALLS[name]()
+    assert call.arguments
+    assert call.bind([]) is call
+    assert call.bind(()) is call
+
+
+@pytest.mark.parametrize("name", list(_CALLS))
+def test_a_call_refuses_values(name):
+    with pytest.raises(
+        pulse.InvalidTypeError,
+        match=r"got 1 value for a module with no float parameters; a module of one call has "
+        r"its values already",
+    ):
+        _CALLS[name]().bind([0.2])
 
 
 # ---------------------------------------------------------------------------

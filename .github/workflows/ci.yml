@@ -292,16 +292,21 @@ jobs:
       # records and which labels a failure (perf-gate.py --help). A layout
       # only row is compared with the base the change was applied to, which
       # the gate measures in this job when such a row fails (--help, base
-      # comparison).
+      # comparison). A pull request runs on its merge commit, applied to the
+      # tip of its base branch when GitHub made the merge: that is its base,
+      # not the commit the branch began at, which the event names; a push's
+      # base is the previous tip.
       - name: Perf gate
         env:
           PROCESSES: ${{ inputs.perf_baseline && 5 || 2 }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: >
-          uv run --no-sync python tools/perf-gate.py --processes "$PROCESSES"
-          ${BASE:+--base-commit "$BASE"}
-          --out perf-gate/perf_gate.json --dumps perf-gate/callgrind
-          --summary "$GITHUB_STEP_SUMMARY"
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base="$BEFORE"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then base="$(git rev-parse HEAD^1)"; fi
+          uv run --no-sync python tools/perf-gate.py --processes "$PROCESSES" \
+            ${base:+--base-commit "$base"} \
+            --out perf-gate/perf_gate.json --dumps perf-gate/callgrind \
+            --summary "$GITHUB_STEP_SUMMARY"
 
       # This run's measurements in the baseline's format; the summary of a
       # failed run gives the command that makes them the baseline.

@@ -32,10 +32,10 @@ Runs the cases of ``benchmarks/perf_gate/cases.py`` and compares them with
   in native code if it did not. A baseline without the work (format 1)
   labels only regressions and gains.
 
-With ``--base-commit``, the commit a change is applied to (CI passes a
-pull request's base, or a push's previous tip), a failure within
-``LAYOUT_SHIFT`` either way, with the baseline's Python work recorded, is
-compared with its base: if the change
+With ``--base-commit``, the commit a change is applied to (CI passes the
+first parent of a pull request's merge commit, or a push's previous tip),
+a failure within ``LAYOUT_SHIFT`` either way, with the baseline's Python
+work recorded, is compared with its base: if the change
 keeps the base's measured code (it touches only the package's Python
 sources and files this job never reads, as git says), the gate measures
 the base's Python sources on the same build, and a row that ran the
@@ -156,9 +156,11 @@ PYTHON_OR_TEXT = (
     "pyrightconfig.json",
     ".clang-format",
     "tools/check-*.py",
+    "tools/ci-changes.py",
     "tools/stubtest-allowlist.txt",
     "tools/tutorial-scripts.py",
     "benchmarks/baselines/*",
+    "challenges/*",
 )
 # Read by the perf-gate job, but only through the parts build_inputs() takes.
 BUILD_FILES = ("pyproject.toml", "uv.lock")
@@ -810,7 +812,9 @@ def build_inputs(rev: str) -> str | None:
     keep: dict[str, Any] = {
         "build-system": py.get("build-system"),
         "build": py.get("dependency-groups", {}).get("build"),
-        **{k: tool.get(k) for k in ("uv", "scikit-build", "setuptools_scm")},
+        **{k: tool.get(k) for k in ("uv", "setuptools_scm")},
+        # What goes into an sdist does not reach the build this job makes.
+        "scikit-build": {k: v for k, v in (tool.get("scikit-build") or {}).items() if k != "sdist"},
     }
     packages: dict[str, list[dict[str, Any]]] = {}
     for p in lock.get("package", []):
@@ -1165,10 +1169,11 @@ regressions, gains and "layout only":
 
 base comparison:
   A row's count also moves with the code merged before the change, so CI
-  gives the gate the commit the change was applied to (--base-commit: a
-  pull request's base, or a push's previous tip, which must be the tree's
-  first parent). A failure of at most 2% either way is then compared with
-  its base, if the change keeps the base's measured code: it touches only
+  gives the gate the commit the change was applied to (--base-commit: the
+  first parent of a pull request's merge commit, or a push's previous tip,
+  which must be the tree's first parent). A failure of at most 2% either
+  way is then compared with its base, if the change keeps the base's
+  measured code: it touches only
   the package's Python sources and files this job never reads
   (pyproject.toml and uv.lock only outside what the job builds), as git
   says. Native code,

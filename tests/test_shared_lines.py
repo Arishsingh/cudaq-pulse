@@ -6,6 +6,7 @@ tones it plays at once, and what the checks and the exports make of it."""
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import subprocess
 import sys
@@ -14,6 +15,8 @@ import cudaq_pulse as pulse
 import numpy as np
 import pytest
 from cudaq_pulse.controller import DriveLine, ReadoutLine, unroll
+
+from tests import _child
 
 
 def _system(readout_lines, drive_lines=(0, 1, 2, 3), **limits):
@@ -968,3 +971,321 @@ def test_a_shared_line_simulates_as_its_qudits_own_lines():
         _lowered(together, _system([0, 1], drive_lines=(0, 1)), 0, 1), shots_count=10
     )
     np.testing.assert_allclose(shared.density_matrix, plain.density_matrix)
+
+
+# A shared line plays at once only the tones that can play together in one
+# execution: of the tones playing when one starts, the most that lie in no
+# two different arms of one branch execution.
+
+
+def _feed_and_condition(tones):
+    """Qudits 0-3 on one feedline playing *tones* at once; qudit 4 on its own
+    readout line, read for the branches."""
+    return _system([ReadoutLine([0, 1, 2, 3], max_concurrent_tones=tones), 4], drive_lines=())
+
+
+@pulse.kernel
+def arms_and_a_third(q0, q1, q2, q3, q4):
+    r0 = get_readout_line(q0)
+    r1 = get_readout_line(q1)
+    r2 = get_readout_line(q2)
+    if readout(get_readout_line(q4), square(40, 0.05)):
+        readout(r0, square(400, 0.05))
+    else:
+        readout(r1, square(400, 0.05))
+    wait(r2, 200)
+    readout(r2, square(40, 0.05))
+
+
+@pulse.kernel
+def nested_arms(q0, q1, q2, q3, q4):
+    r4 = get_readout_line(q4)
+    r3 = get_readout_line(q3)
+    m = readout(r4, square(40, 0.05))
+    n = readout(r4, square(40, 0.05))
+    if m:
+        readout(get_readout_line(q0), square(400, 0.05))
+    else:
+        if n:
+            readout(get_readout_line(q1), square(400, 0.05))
+        else:
+            readout(get_readout_line(q2), square(400, 0.05))
+    wait(r3, 300)
+    readout(r3, square(40, 0.05))
+
+
+@pulse.kernel
+def elif_chain(q0, q1, q2, q3, q4):
+    r4 = get_readout_line(q4)
+    r3 = get_readout_line(q3)
+    m = readout(r4, square(40, 0.05))
+    n = readout(r4, square(40, 0.05))
+    if m:
+        readout(get_readout_line(q0), square(400, 0.05))
+    elif n:
+        readout(get_readout_line(q1), square(400, 0.05))
+    else:
+        readout(get_readout_line(q2), square(400, 0.05))
+    wait(r3, 300)
+    readout(r3, square(40, 0.05))
+
+
+@pulse.kernel(unroll_threshold=0)
+def arms_in_a_rolled_loop(q0, q1, q2, q3, q4):
+    r0 = get_readout_line(q0)
+    r1 = get_readout_line(q1)
+    r2 = get_readout_line(q2)
+    r4 = get_readout_line(q4)
+    for _ in range(4):
+        sync(r0, r1, r2, r4)
+        if readout(r4, square(40, 0.05)):
+            readout(r0, square(400, 0.05))
+        else:
+            readout(r1, square(400, 0.05))
+        wait(r2, 200)
+        readout(r2, square(40, 0.05))
+
+
+def _tones(events):
+    """(start, end, tone_slot, arm by branch) of each tone of exported
+    *events* on a shared line, a rolled loop's at its first iteration."""
+    for event in events:
+        if event["kind"] == "loop":
+            yield from _tones(event["body"])
+        elif event["kind"] in ("play", "drive", "readout") and "tone_slot" in event:
+            start = event["start_cycles"]
+            arms = {c["branch"]: c["arm"] for c in event.get("conditions") or ()}
+            yield start, start + event["duration_cycles"], event["tone_slot"], arms
+
+
+def _assert_slots_serve_every_path(program, tones):
+    """Each tone of *program* on its shared line has one of its *tones* tone
+    slots, and two that play at once share one only in other arms of one
+    branch execution."""
+    found = list(_tones(program["events"]))
+    assert found
+    for k, (start, end, slot, arms) in enumerate(found):
+        assert slot in range(tones)
+        for start2, end2, slot2, arms2 in found[:k]:
+            if slot2 == slot and start2 < end and start < end2:
+                assert any(arms2.get(branch, arm) != arm for branch, arm in arms.items())
+
+
+@pytest.mark.parametrize(
+    "kernel", [arms_and_a_third, nested_arms, elif_chain, arms_in_a_rolled_loop]
+)
+@pytest.mark.parametrize("schedule", ["asap", "alap", "rcp"])
+def test_tones_in_different_arms_of_a_branch_never_play_together(kernel, schedule):
+    # Each branch's arms play one readout at a time, beside one more on the
+    # line: two tones at once on a line that plays two, and two tone slots
+    # serve every path.
+    lowered = _lowered(kernel, _feed_and_condition(2), 0, 1, 2, 3, 4, schedule=schedule)
+    for version in (1, 2):
+        _assert_slots_serve_every_path(lowered.export_to_controller(version=version), 2)
+
+
+def test_tones_in_different_arms_share_a_tone_slot():
+    lowered = _lowered(arms_and_a_third, _feed_and_condition(2), 0, 1, 2, 3, 4)
+    for version, qudit in ((1, lambda e: e["qudit"]), (2, lambda e: e["qudits"][0])):
+        events = lowered.export_to_controller(version=version)["events"]
+        slots = {qudit(e): e["tone_slot"] for e in events if "tone_slot" in e}
+        assert slots == {0: 0, 1: 0, 2: 1}
+
+
+@pulse.kernel
+def three_arms(q0, q1, q2, q3, q4):
+    r4 = get_readout_line(q4)
+    m = readout(r4, square(40, 0.05))
+    n = readout(r4, square(40, 0.05))
+    if m:
+        readout(get_readout_line(q0), square(400, 0.05))
+    elif n:
+        readout(get_readout_line(q1), square(400, 0.05))
+    else:
+        readout(get_readout_line(q2), square(400, 0.05))
+
+
+def test_the_arms_of_an_elif_chain_at_once_share_one_slot():
+    # One readout plays at once on every path, so a two-tone line holds the
+    # three arms' readouts, which start together under alap, in one slot.
+    lowered = _lowered(three_arms, _feed_and_condition(2), 0, 1, 2, 3, 4, schedule="alap")
+    for version in (1, 2):
+        events = lowered.export_to_controller(version=version)["events"]
+        assert [e["tone_slot"] for e in events if "tone_slot" in e] == [0, 0, 0]
+
+
+@pulse.kernel
+def first_choice_undone(q0, q1, q2, q3, q4):
+    r2 = get_readout_line(q2)
+    r3 = get_readout_line(q3)
+    if readout(get_readout_line(q4), square(40, 0.05)):
+        readout(get_readout_line(q0), square(400, 0.05))
+    else:
+        readout(get_readout_line(q1), square(120, 0.05))
+        wait(r2, 80)
+        readout(r2, square(320, 0.05))
+    wait(r3, 200)
+    readout(r3, square(400, 0.05))
+
+
+def test_a_slot_that_leaves_a_later_tone_none_is_chosen_again():
+    # Lowest first, qudit 1's readout would take qudit 0's slot (other arms)
+    # and qudit 2's the other, leaving qudit 3's, beside qudits 0 and 2,
+    # none; qudit 1's takes the other slot instead.
+    lowered = _lowered(first_choice_undone, _feed_and_condition(2), 0, 1, 2, 3, 4, schedule="asap")
+    for version in (1, 2):
+        program = lowered.export_to_controller(version=version)
+        _assert_slots_serve_every_path(program, 2)
+        assert [e["tone_slot"] for e in program["events"] if "tone_slot" in e] == [0, 1, 0, 0, 1, 1]
+
+
+@pulse.kernel
+def slots_apart_and_together(q0, q1, q2, q3, q4):
+    r0 = get_readout_line(q0)
+    r3 = get_readout_line(q3)
+    readout(r0, square(100, 0.05))
+    if readout(get_readout_line(q4), square(40, 0.05)):
+        readout(get_readout_line(q1), square(400, 0.05))
+    else:
+        readout(get_readout_line(q2), square(80, 0.05))
+        wait(r3, 70)
+        readout(r3, square(290, 0.05))
+    wait(r0, 200)
+    readout(r0, square(200, 0.05))
+
+
+def test_tones_no_one_slot_each_serves_on_every_path_are_refused_at_export():
+    # No path plays more than two readouts at once, so the check accepts. But
+    # qudit 0's two readouts each play beside qudit 1's in the then arm, so
+    # on a line of two slots they take one slot, and in the else arm qudit
+    # 2's and 3's chain them, the first beside the one, the second beside the
+    # other, so they take different ones.
+    lowered = _lowered(
+        slots_apart_and_together, _feed_and_condition(2), 0, 1, 2, 3, 4, schedule="asap"
+    )
+    for version in (1, 2):
+        with pytest.raises(pulse.UnsupportedError, match="one tone slot for every path"):
+            lowered.export_to_controller(version=version)
+
+
+def _counted(tones, *arms):
+    """How often, and with which tones (by position), a line of *tones* is
+    full when each of tones playing at once from cycle 0, with *arms* (by
+    branch) each, starts."""
+    from types import SimpleNamespace
+
+    from cudaq_pulse._shared_lines import _AtOnce
+
+    events = [
+        {"index": k, "conditions": [{"branch": b, "arm": a} for b, a in each.items()]}
+        for k, each in enumerate(arms)
+    ]
+    count = _AtOnce(SimpleNamespace(tones=tones))
+    count.sweep([(0, 10, event, ()) for event in events])
+    return count.count, [e["index"] for e in count.playing]
+
+
+def test_branches_that_do_not_nest_count_without_the_tree():
+    # Branch 2 lies in no arm for tone 1 and in arm False of branch 1 for
+    # tone 2: not a tree, which a walk never gives. Tones 0 and 1 play
+    # together, tone 2 with neither, so tone 3 (in no branch) is the third.
+    nested = ({1: True}, {2: True}, {1: False, 2: False}, {})
+    assert _counted(2, *nested) == (1, [0, 1, 3])
+    assert _counted(3, *nested) == (0, [])
+    # Here every two tones of 0-3 apart are joined by a third neither is
+    # apart from (0-1-2-3 a path of "not apart"), so they split neither way
+    # and all count: never fewer than can play together.
+    path = ({1: True, 2: True}, {3: True}, {1: False}, {2: False, 3: False}, {})
+    assert _counted(3, *path) == (1, [0, 1, 2, 3, 4])
+
+
+# A shared line of h handles, each reading out once in every arm of an elif
+# chain of a arms of its own: 2**h paths of h tones at once. The check finds
+# the most that play together from how branches nest, in time polynomial in
+# the tones, run here in a child process stopped past a CPU and memory limit.
+_CHAINS_CPU_S = 10
+_CHAINS_RSS_MB = 800
+
+
+def _chains(handles, arms):
+    """The source of a kernel ``chains`` of *handles* x *arms* readouts."""
+    lines = ["@pulse.kernel", "def chains(qs):", f"    rm = get_readout_line(qs[{handles}])"]
+    lines += [f"    r{i} = get_readout_line(qs[{i}])" for i in range(handles)]
+    lines += [
+        f"    m{i}_{j} = readout(rm, square(40, 0.05))"
+        for i in range(handles)
+        for j in range(arms - 1)
+    ]
+    lines.append("    sync(rm, " + ", ".join(f"r{i}" for i in range(handles)) + ")")
+    for i in range(handles):
+        for j in range(arms):
+            test = "if" if j == 0 else "elif" if j < arms - 1 else "else"
+            lines.append(f"    {test} m{i}_{j}:" if j < arms - 1 else "    else:")
+            lines.append(f"        readout(r{i}, square(400, 0.05))")
+    return "\n".join(lines)
+
+
+_CHAINS = """
+import json
+import cudaq_pulse as pulse
+from cudaq_pulse.controller import ControllerLimitError, ReadoutLine
+
+{kernel}
+
+found = []
+for tones in ({handles}, {handles} - 1):
+    controller = pulse.Controller(
+        drive_lines=[],
+        readout_lines=[ReadoutLine(list(range({handles})), max_concurrent_tones=tones), {handles}],
+    )
+    system = pulse.quantum_system(
+        "transmon_surface17",
+        layout=list(range({handles} + 1)),
+        control_system=pulse.ControlSystem(controllers=[controller]),
+    )
+    try:
+        pulse.compile(chains, quantum_system=system).lower(system.qudits[: {handles} + 1])
+    except ControllerLimitError as error:
+        found.append(list(error.violations))
+    else:
+        found.append([])
+print(json.dumps(found))
+"""
+
+
+@pytest.mark.parametrize(("handles", "arms"), [(10, 5), (8, 8), (8, 13), (8, 25)])
+def test_tones_of_many_branches_are_counted_in_bounded_time(handles, arms):
+    code = _child.limits(_CHAINS_CPU_S, _CHAINS_RSS_MB) + _CHAINS.format(
+        kernel=_chains(handles, arms), handles=handles
+    )
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        env=env,
+        timeout=4 * _CHAINS_CPU_S,
+    )
+    assert out.returncode == 0, f"the child exited {out.returncode}: {out.stderr[-2000:]}"
+    fits, over = json.loads(out.stdout.splitlines()[-1])
+    # Each path plays one readout per handle at once: as many as the line
+    # plays fit, one fewer does not.
+    assert fits == []
+    assert len(over) == 1
+    assert f"plays {handles} tones at once" in over[0]
+
+
+@pytest.mark.parametrize("schedule", ["asap", "rcp"])
+def test_an_arm_and_a_tone_beside_it_still_overlap(schedule):
+    # On a line that plays one tone, the readout in either arm and the one
+    # beside it play together on every path.
+    with pytest.raises(pulse.controller.ControllerLimitError) as caught:
+        _lowered(arms_and_a_third, _feed_and_condition(1), 0, 1, 2, 3, 4, schedule=schedule)
+    assert list(caught.value.violations) == [
+        "the readout line of qudits 0..3 (controllers[0].readout_lines[0]) plays 2 tones at once "
+        "from cycle 200 (the readouts of qudits 0, 2); it plays at most 1 (max_concurrent_tones): "
+        "play some after the others end (a sync of their lines between them), or raise its "
+        "max_concurrent_tones"
+    ]
