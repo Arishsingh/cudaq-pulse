@@ -116,7 +116,9 @@ interface.
 
 `CUDAQ_PULSE_GPU_OPERATORS` chooses how `qop-to-cudm` builds the GPU
 backend's operator, as its `operators` option: `fused`, the default, sums
-the static terms and dissipators into a few dense operators and stores the
+the static terms and dissipators into a few dense operators, makes the
+time-dependent terms of one operator one term whose callback sums theirs
+(the pulses played on a qudit make one per quadrature), and stores the
 single-diagonal operators of modes of four or more levels by their diagonal;
 `banded` only does the latter; `dense` lowers every product to its own term
 of dense operators, as before either. Use it to tell whether a
@@ -296,7 +298,8 @@ instructions says its kind, and the summary counts them by kind:
 - **regression**: above the limit;
 - **gain**: more than 1% below; take a new baseline to keep it;
 - **layout only**: the same Python work as the baseline's (the summary's
-  "Python work" column says `same`) and a change of at most 2% either way.
+  "Python work" column says `same`), or as the base's where the row was
+  compared with its base (below), and a change of at most 2% either way.
   The instructions moved below Python, most likely in the layout of the
   interpreter's caches and memory: for example, one new class at import
   renumbers the interpreter's type version tags and changes its method
@@ -308,8 +311,9 @@ with the same work, says the change is in native code. Every kind fails. A
 baseline without Python work tells only regressions from gains.
 
 **Base comparison.** A count also moves with the code merged before a
-change, so the job compares a layout only row with the change's base (a
-pull request's base, or the previous tip of a push to main). If the change
+change, so the job compares a failure of at most 2% either way with the
+change's base (a pull request's base, or the previous tip of a push to
+main). If the change
 keeps the base's measured code, it touches only the package's Python
 sources and files the job never reads (tests, docs, examples, other
 workflows than `ci.yml`, the baselines; `pyproject.toml` and `uv.lock` only
@@ -317,7 +321,9 @@ outside what the job builds), the gate checks out the base's
 `core/frontend` over the tree's and measures it on the same build. A row
 whose case ran the same Python work there, and whose count the change moved
 by at most 0.95% either way from the base's, passes as `layout`, with a
-notice. Native code, build files, `ci.yml`, the gate and its cases are
+notice. For a slower row the base's Python work is the one compared, not
+the baseline's: code merged after the baseline was taken can change a
+case's work. A gain needs the baseline's work as well, so that it is kept. Native code, build files, `ci.yml`, the gate and its cases are
 measured code: such a change, or one git cannot compare, is judged by the
 limits. A gain that passes this way isn't kept, and hidden native work
 behind the same Python calls passes below 0.95% per change (up to 2% from
@@ -839,7 +845,7 @@ By making a contribution to this project, I certify that:
     this project or the open source license(s) involved.
 ```
 
-Use your real name and the email address you commit with. `git commit -s`
+Use a known identity and the email address you commit with. `git commit -s`
 (`--signoff`) adds the line from `user.name` and `user.email`:
 
 ```bash

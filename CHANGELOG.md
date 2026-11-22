@@ -81,6 +81,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   The buses are wiring, given when a description is loaded. There are
   none by default and spacing is off, and the export lists both only when
   set, so existing programs and exports are unchanged.
+- **An error code for kernels with their own schedule.**
+  `ErrorCode.SCHEDULE_BLOCK` (`"schedule_block"`) is the code of the
+  `CompilationError` that `schedule="rcp"` or `"alap_rcp"` raises for a
+  program calling kernels with their own `schedule=`, and of the one
+  `flatten_schedules=True` raises for a called kernel's
+  `max_duration_cycles`. A tool that compiles programs it did not write
+  retries with `flatten_schedules=True` on the code instead of matching
+  the message. The messages read as before; `fix` holds their fix.
 - **Phase gates.** `pulse.gates.Z`, `S` and `T` are virtual Z rotations by
   pi, pi / 2 and pi / 4. `get_calibration` gives each as a `VirtualZ`
   (`cudaq_pulse.quantum_systems.VirtualZ(phase_rad=...)`), derived on every
@@ -162,6 +170,33 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **Measurements keep the kernel's numbers under every schedule.**
+  `SimulationResult.measurements` gives each measurement the readout number
+  (the kernel's order of its readouts) and loop iteration the kernel gave it,
+  under `asap`, `alap`, `rcp` and `alap_rcp` alike. `asap` and `rcp` peel a
+  loop's first iterations (and some loops' last ones), and `rcp` and
+  `alap_rcp` run several iterations in each trip of a loop, which copied its
+  readouts and renumbered them by their place in the scheduled program: a
+  readout in a loop of three read as readout 0 at no iteration and readout 1
+  at iterations 0 and 1, and the readouts after the loop moved up by one.
+  Those measurements are now renumbered to the kernel's order (readout 0 at
+  iterations 0, 1 and 2), and a measurement a kernel returns after a loop of
+  readouts gives its outcome where it gave -1. Under every policy, a readout
+  in a loop that makes classical calls (which simulation unrolls) keeps its
+  number and reports its iteration where each round's readout had a number
+  of its own, and a readout whose waveform depends on a measurement (which
+  runs in both arms of an if on it) is one measurement, where its two copies
+  were two and the readouts after it moved up by one (a measurement returned
+  after it gave -1). The printed MLIR (`mlir("pulse")`) now carries the
+  kernel's numbers: the readouts of a module built from a kernel that has a
+  readout in a loop or after an if or a select carry
+  `pulse.readout_number` (elsewhere a readout's number is its place among
+  them, as before), and a readout copied out of a loop or into one
+  trip several times `pulse.readout_iteration` (see the `pulse.readout` op).
+  The schedule events and both export formats describe the scheduled
+  program as before: a peeled iteration's readout is at the top level, with
+  no iteration.
+
 - **Every schedule waits for readouts.** `asap` and `alap` (the default)
   now start an operation that depends on a readout (an arm of a branch on
   it, a pulse on a tone whose frame a branch on it changed, a value computed
@@ -185,6 +220,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   raise `ControllerLimitError`, or start its operations later by a line's
   delay, where it compiled before. Qudits of quantum systems that differ
   only in their control system get a program each.
+- **Long pulse sequences on the GPU.** With `backend="gpu"` and the
+  default operator lowering, the pulses played on one qudit are one
+  time-dependent term per quadrature, whose envelope callback sums theirs,
+  so the number of terms cuDensityMat applies at each step no longer grows
+  with the number of pulses. The drives now take two of an evolution's
+  1024 envelope callbacks per driven qudit, not two per pulse or pulse
+  train: a program of more than about 512 pulses that do not form a
+  train, which failed with "the drives of this program need more than
+  1024 envelope callbacks", now runs. The host still evaluates every
+  pulse's envelope at each step. The envelopes are added before they
+  scale the drive's operator, so results can differ from before in the
+  last bits. `CUDAQ_PULSE_GPU_OPERATORS=banded` or `dense` lowers as
+  before.
 - **Schedule plots look different.** `viz.plot_schedule`, `viz.save_schedule`
   and `timeline()` draw in the style of the documentation's figures: drives
   green, readouts rose, waits hatched grey and classical calls teal (colors
@@ -193,9 +241,53 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   row above the plot. The rows, bars, labels and axis limits, and the
   functions' arguments, are as before, and matplotlib is still imported only
   when a plot is drawn.
+- **Concurrency limits hold under every schedule.** A control system with
+  controllers given `max_concurrent_drives` or `max_concurrent_readouts`
+  now has them checked whatever the schedule: a program that plays more
+  drives or readouts at once than the limit fails to compile with a
+  `ControllerLimitError` naming the count, the first cycle where it
+  exceeds the limit and the limit, and suggesting `schedule="rcp"` or
+  `"alap_rcp"`, which keep to it. Before, only those two schedules used
+  the limits, and an `asap` or `alap` program past them compiled without
+  a word. They are counted as the `rcp` schedules count them, so a program
+  those schedules place fits; pulses in different arms of one branch never
+  count together. A long rolled loop is never counted iteration by
+  iteration: alone, from one iteration; beside other pulses, from the
+  iterations near where they start or end. Rolled loops of different
+  periods that could pass a limit together and are not settled that way
+  are counted one iteration at a time up to 65536 iterations. Past that,
+  a count over the limit near where they start or end is reported at its
+  cycle (not claimed as the first), and with none there compiling stops
+  with an `UnsupportedError` saying to sync their lines, give them fewer
+  iterations or use `rcp`.
+  Both now default to `None`, not given: the `rcp` schedules still play at
+  most 4 drives and 2 readouts at once, and nothing else checks them. A
+  system file written by an earlier version holds 4 and 2, which now count
+  as given; to leave them unchecked, set them to `null` in the file.
+- The first compile of a kernel with many measurement-conditioned ifs no
+  longer takes time in the square of their number.
+- **Control systems of many controllers build and compile faster.** Checking
+  that no `Controller` is listed twice and placing a link's controllers take
+  time in proportion to the number of controllers, not its square, and so
+  does finding the readout latency when controllers give one
+  `peer_latency_cycles` to all others (a controller with a mapping is still
+  compared with every other). Programs and errors are as before.
 
 ### Fixed
 
+- `rcp` and `alap_rcp` scheduled some rolled loops one iteration at a time,
+  in time and memory that grew with the trip count (a loop of 10**15
+  iterations did not finish): a loop beside a longer pulse on another line,
+  which its pulses reach only after many iterations; a loop whose
+  iterations take the lanes in turn, such as a loop in one arm of a
+  measured `if` whose other arm plays a pulse, or a loop that branches on a
+  readout in its body, also with many lanes; such loops in another loop or
+  holding one; and a loop whose lines move by periods of their own beside a
+  longer pulse. Such a loop is now scheduled in the time and memory of a
+  few iterations, with the same schedule as before. Under a control system
+  with controllers, a loop whose lines move by periods of their own still
+  takes time that grows with the trips in the controller check, as under
+  `asap`; that is a separate issue.
 - The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
   two inputs. A schedule block that yields one of its own arguments, passing
   an input through, is inlined with that input as its result; the passes

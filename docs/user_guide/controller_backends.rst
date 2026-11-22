@@ -608,7 +608,10 @@ suggesting a shared ``reference_clock_ghz`` or the tolerance it needs.
 Under ``rcp`` and ``alap_rcp``, ``max_concurrent_drives`` and
 ``max_concurrent_readouts`` count pulses on every controller: a pulse that
 follows another controller's on the same lane starts their start
-uncertainty after it, so the two never overlap.
+uncertainty after it, so the two never overlap. Given to a control system
+with controllers, they are checked under every schedule, counted the same
+way: a program that plays more at once fails to compile with a
+``ControllerLimitError`` naming the count and the first cycle.
 
 What the program computes at run time is converted by the same rule. A
 variable wait's ``length`` is clamped to its bounds, as the run clamps it

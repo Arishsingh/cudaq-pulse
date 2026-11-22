@@ -13,6 +13,11 @@ means the example also evolves the program with the NumPy reference
 schedules or metrics. `cudaq-pulse-opt` is installed with the package (from
 the `cudaq-pulse-tools` wheel, which `cudaq-pulse` requires).
 
+The [tutorials](https://nvidia.github.io/cudaq-pulse/tutorials/index.html)
+explain the same ideas step by step, and each one ends by naming the examples
+that take it further. If you are new to cudaq-pulse, start with
+[Your First Pulse Program](https://nvidia.github.io/cudaq-pulse/tutorials/first_pulse_program.html).
+
 | Example | What it shows | Runs on |
 | --- | --- | --- |
 | [`01_single_qubit_rabi.py`](01_single_qubit_rabi.py) | Rabi oscillation: an amplitude sweep that compiles once | CPU, simulates |

@@ -3,8 +3,10 @@
 """GPU simulations running at once each evaluate their own drive envelopes.
 
 Each run owns its waveform callbacks, so runs in flight together neither see
-each other's envelopes nor share a callback capacity: together these runs need
-more envelope callbacks than any one run may hold.
+each other's envelopes nor share a callback capacity. With dense operators,
+every pulse keeps a callback of its own, and together these runs need more
+envelope callbacks than any one run may hold; fused, each run's pulses share
+one callback per quadrature, which sums them.
 """
 
 from __future__ import annotations
@@ -56,7 +58,9 @@ def _lowered(index):
     return on(_target(), _pulse_train(0.001 * (index + 1)), Q[0])
 
 
-def test_concurrent_gpu_runs_match_their_sequential_results():
+@pytest.mark.parametrize("operators", ["dense", "fused"])
+def test_concurrent_gpu_runs_match_their_sequential_results(operators, monkeypatch):
+    monkeypatch.setenv("CUDAQ_PULSE_GPU_OPERATORS", operators)
     lowered = [_lowered(i) for i in range(_RUNS)]
     expected = [pulse.simulate(k).density_matrix for k in lowered]
     with ThreadPoolExecutor(max_workers=_RUNS) as pool:
