@@ -487,3 +487,71 @@ def test_compile_module_available():
     ck = _bell.lower(Q[0], Q[1])
     assert ck._module is not None
     assert ck.mlir() is not None
+
+
+@pulse.kernel
+def _stream(q0, amplitudes: list[float], count: int):
+    d0 = get_drive_line(q0)
+    for i in range(count):
+        drive(d0, square(20, amplitudes[i]))
+
+
+def test_a_call_with_seventy_thousand_values_is_bound():
+    # Finding what the values reach went a call deep for every op of the
+    # line: from about 65,500 values on, binding them crashed the process.
+    count = 70_000
+    call = pulse.compile(_stream).lower(Q[0], [float(i % 2) for i in range(count)], count)
+    assert call.mlir().count("pulse.drive ") == count
+    assert call.arguments[:3] == (0.0, 1.0, 0.0)
+
+
+_REACHED = {
+    "at the top": ("shift_phase(d0.tone, {x})", "drive(d0, square(16, {y}))"),
+    "in an arm": (
+        "m = readout(r0, square(40, 0.05))",
+        "if m:",
+        "    shift_phase(d0.tone, {x})",
+        "    drive(d0, square(16, {y}))",
+        "drive(d0, square(8, 0.1))",
+    ),
+    "in the other arm": (
+        "m = readout(r0, square(40, 0.05))",
+        "if m:",
+        "    drive(d0, square(8, 0.2))",
+        "else:",
+        "    shift_phase(d0.tone, 2 * {x} + 0.1)",
+        "    drive(d0, square(16, {y} / 2))",
+    ),
+    "in a loop": (
+        "for i in range(40):",
+        "    shift_phase(d0.tone, {x})",
+        "    drive(d0, square(16, {y}))",
+    ),
+    "in an arm in a loop": (
+        "for i in range(40):",
+        "    m = readout(r0, square(40, 0.05))",
+        "    if m:",
+        "        shift_phase(d0.tone, {x})",
+        "        drive(d0, square(16, {y}))",
+    ),
+}
+
+
+@pytest.mark.parametrize("where", list(_REACHED))
+@pytest.mark.parametrize("passes", [None, ("fold_phases",), ("fuse_pulses",)])
+def test_values_bound_inside_an_arm_or_a_loop_fold_as_literals_do(where, passes):
+    # The frame changes and square pulses the values reach are folded when
+    # they are bound, wherever they are: the call plays what the kernel
+    # written with the numbers plays.
+    def kernel(signature, x, y):
+        head = f"@pulse.kernel\ndef k(q0{signature}):\n    d0 = get_drive_line(q0)\n"
+        head += "    r0 = get_readout_line(q0)\n"
+        scope = {"pulse": pulse}
+        exec(head + "".join(f"    {line.format(x=x, y=y)}\n" for line in _REACHED[where]), scope)  # noqa: S102
+        return scope["k"]
+
+    options = {} if passes is None else {"passes": passes}
+    call = pulse.compile(kernel(", x: float, y: float", "x", "y"), **options).lower(Q[0], 0.25, 0.4)
+    literal = pulse.compile(kernel("", "0.25", "0.4"), **options).lower(Q[0])
+    assert call.export_to_controller()["events"] == literal.export_to_controller()["events"]
+    assert call.schedule == literal.schedule

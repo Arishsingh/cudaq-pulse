@@ -360,6 +360,31 @@ def test_the_events_of_a_long_line_are_listed_in_linear_time():
 
 
 @pytest.mark.scaling
+def test_the_values_of_a_long_list_are_bound_in_linear_time():
+    @pulse.kernel
+    def stream(q, amplitudes: list[float], count: int):
+        line = get_drive_line(q)
+        for i in range(count):
+            drive(line, square(20, amplitudes[i]))
+
+    compiled = pulse.compile(stream)
+    turn = [0]
+
+    def bind(count: int):
+        def run():
+            # Other values each time: a call's module is kept by its values.
+            turn[0] += 1
+            values = [float((i + turn[0]) % 7) / 8 for i in range(count)]
+            return compiled.lower(Q[0], values, count).mlir()
+
+        return run
+
+    # Eight times the values: about 10x the time when linear, 64x when what
+    # the values reach is gathered once per value.
+    _assert_linear("bind", {n: bind(n) for n in (1000, 8000)}, 8 * TOLERANCE)
+
+
+@pytest.mark.scaling
 def test_the_uses_of_a_line_in_the_arms_of_nested_ifs_are_checked_in_linear_time():
     # Each leaf of a tree of ifs nested `depth` deep reads out on one line:
     # 2**depth uses of it, no two on one path, which verify checks.
