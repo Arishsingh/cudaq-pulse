@@ -505,14 +505,12 @@ struct PulseVerifyPass
       for (mlir::OpOperand &use : value.getUses())
         if (!pulse::readsWithoutConsuming(use.getOwner()))
           users.push_back(use.getOwner());
-      for (size_t i = 0; i < users.size(); ++i)
-        for (size_t j = i + 1; j < users.size(); ++j)
-          if (!pulse::mutuallyExclusive(users[i], users[j])) {
-            where->emitError("linear pulse value is consumed more than once "
-                             "on one path");
-            hadError = true;
-            return;
-          }
+      if (!pulse::allMutuallyExclusive(users)) {
+        where->emitError("linear pulse value is consumed more than once "
+                         "on one path");
+        hadError = true;
+        return;
+      }
       for (mlir::Operation *user : users)
         for (mlir::Operation *loop = user->getParentOp(); loop;
              loop = loop->getParentOp()) {

@@ -266,6 +266,21 @@ quantum system gives the coupling of two of them, ``qs.coupling(a, b)``.
    for amplitude in (0.1, 0.2, 0.3):
        result = pulse.simulate(program, amplitude, t_end=20 * pulse.ns)
 
+``.rescheduled``
+   Whether a call's float values set a wait length, so its times come from
+   scheduling the module again with them bound (see :ref:`wait-lengths`),
+   read-only: ``False`` for a call whose values move no op, which keeps the
+   module's times, and for a module scheduled without values. Reading it
+   does no work.
+
+``.rescheduled_for_line_delays``
+   Whether the module was compiled again with only other line delays,
+   scheduling its kernel's earlier trace again instead of tracing it (see
+   :ref:`line-delays`), read-only; a call reads its module's. It does not
+   depend on ``.rescheduled``: a call of such a module whose float values
+   set a wait length is both. A loop that compiles each round can tell which
+   path each round took, and reading it does no work.
+
 Threads
 -------
 

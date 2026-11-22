@@ -152,3 +152,44 @@ func.func @readout_line_acquired_in_loop(%x: !pulse.waveform) {
   }
   return
 }
+
+// -----
+
+// The regions of an op that is not an scf.if may all run: a line used in two
+// cases of a switch is used twice on one path.
+func.func @uses_in_two_cases_of_a_switch(%x: !pulse.waveform, %k: index) {
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  // expected-error @+1 {{linear pulse value is consumed more than once on one path}}
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  scf.index_switch %k
+  case 0 {
+    %d, %t = pulse.drive %d0, %x, %t0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+    scf.yield
+  }
+  default {
+    %e, %u = pulse.drive %d0, %x, %t0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+    scf.yield
+  }
+  return
+}
+
+// -----
+
+// A use at each leaf of a tree of ifs: no two on one path.
+func.func @a_use_at_each_leaf_of_nested_ifs(%x: !pulse.waveform, %a: i1, %b: i1) {
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  scf.if %a {
+    scf.if %b {
+      %d, %t = pulse.drive %d0, %x, %t0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+    } else {
+      %d, %t = pulse.drive %d0, %x, %t0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+    }
+  } else {
+    scf.execute_region {
+      %d, %t = pulse.drive %d0, %x, %t0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+      scf.yield
+    }
+  }
+  return
+}
