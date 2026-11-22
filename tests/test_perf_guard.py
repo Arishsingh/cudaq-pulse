@@ -42,7 +42,7 @@ from cudaq_pulse.kernel.packed_ir_builder import PackedIRBuilder
 from tests._handles import Q, ladder_target
 from tests._ir import python_ir
 from tests._tools import missing
-from tests._work import cpu_seconds_each, native_seconds, python_work, seconds_each
+from tests._work import cpu_seconds_each, native_seconds_each, python_work, seconds_each
 from tests.kernel.ir_corpus import (
     bicycle_syndrome,
     dd_loop,
@@ -391,7 +391,7 @@ def test_the_uses_of_a_line_in_the_arms_of_nested_ifs_are_checked_in_linear_time
 
     # Eight times the uses: about 8x the time when linear, 64x when every two
     # of them are compared.
-    seconds = {d: native_seconds(program(d), ("run_passes",)) for d in (7, 10)}
+    seconds = native_seconds_each({d: program(d) for d in (7, 10)}, ("run_passes",))
     assert seconds[10] < seconds[7] * 8 * TOLERANCE, seconds
 
 
