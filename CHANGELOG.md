@@ -13,6 +13,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Added
 
+- **Challenges.** A `challenges/` folder with three starter problems, each with a
+  statement, a scorer and reference solutions: find a pi pulse of half the
+  calibrated length, measure a hidden qubit's T1 from shots, and find a
+  pulse's error by randomized benchmarking. A scorer loads a submission in a
+  process of its own and plays the pulses it reports itself, so the rules,
+  the tally and any hidden value stay out of a submission's process. The
+  folder is not part of the package or the built pages.
 - **Error codes.** Every `CompilationError` has a `code`, a
   `pulse.ErrorCode` (`unknown_name`, `wrong_argument`, `runtime_value`,
   `invalid_duration` and the others listed under Errors), so a program or
@@ -152,6 +159,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   once while it is in view, with Pause and step buttons, and its data
   comes from what the page compiles and simulates. Readers without
   JavaScript, or who ask for reduced motion, see the still frame.
+- **Whether a program was scheduled again.** `ScheduledKernel.rescheduled`
+  says whether a call's float values set a wait length, so its times come
+  from scheduling the module again with them bound; it is `False` for a
+  call whose values move no op, which keeps the module's times.
+  `ScheduledKernel.rescheduled_for_line_delays` says whether the module was
+  compiled again with only other line delays, scheduling its kernel's
+  earlier trace again instead of tracing it, and holds for its calls too. A
+  call of such a module whose values set a wait length is both. A loop that
+  compiles each round, as after a line-delay calibration, can check which
+  path each round took. Both are read-only, reading them does no work, and
+  copies and pickles keep them.
 
 - `UdpChannel` and `InProcess` print what they're set up with:
   `UdpChannel(('127.0.0.1', 50123), slot_bytes=65536, timeout_s=2.0)` and
@@ -159,6 +177,49 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **Controllers in the printed MLIR carry what they were given.** In
+  `pulse.control_system`, each `#pulse.controller` of a system of several
+  controllers gives the controller's own facts, in its own cycles, where it
+  listed its outcome latency to and start spread from every controller and
+  its start uncertainty in ns: `clock_ratio` (its cycles per program cycle,
+  an exact fraction), `feedback_latency_cycles`, `peer_latency_cycles` (one
+  value, or by controller index) and `start_uncertainty_cycles` (its clock
+  skew, plus one cycle without a shared reference clock), each left out at
+  its default. The scheduler derives the latencies and spreads from them as
+  before, so programs schedule as before, and the attribute grows with the
+  number of controllers where it grew with its square: compiling for 1,921
+  controllers no longer prints and parses 7.4 million numbers. For
+  `Controller(feedback_latency_cycles=6, peer_latency_cycles={1: 10})`, the
+  first of three controllers without a reference clock, where `mlir()`
+  printed
+
+  ```
+  #pulse.controller<outcome_latency_cycles = [6, 18, 8], spread_cycles = [0, 2, 2], uncertainty_ns = 5.000000e-01>
+  ```
+
+  it now prints
+
+  ```
+  #pulse.controller<feedback_latency_cycles = 6, peer_latency_cycles = {1 = 10}, start_uncertainty_cycles = 1>
+  ```
+
+  MLIR text with `outcome_latency_cycles`, `spread_cycles` or
+  `uncertainty_ns` no longer parses. In hand-written MLIR, a control system
+  of several controllers that give none of these facts is now scheduled as
+  several controllers whose latencies and spreads are 0, where without
+  tables it was scheduled as if on one controller (the compiler always wrote
+  the tables). `Controller.feedback_latency_cycles` must be a whole number
+  of cycles, like the other `*_cycles` fields: a whole value of another
+  type (`6.0`, `Fraction(6)`, `Decimal(6)`, numpy's `int64(6)`) is 6 as
+  before, while `2.5`, `inf` and `nan`, which it accepted (`inf` then failed
+  to compile), now raise `InvalidValueError`, and `True` and numpy's
+  `True_` raise `InvalidTypeError`. A system whose latency between two
+  controllers exceeds 2**63 - 1 program cycles, which failed with an
+  unreadable MLIR error, now raises `InvalidValueError` naming the two
+  controllers.
+- **Faster compiles of branches beside long lists of lines.** Tracing a
+  measurement-conditioned `if` in a kernel that keeps many lines or tones
+  in a list costs less; the programs compiled are unchanged.
 - **Measurements keep the kernel's numbers under every schedule.**
   `SimulationResult.measurements` gives each measurement the readout number
   (the kernel's order of its readouts) and loop iteration the kernel gave it,
@@ -209,6 +270,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   raise `ControllerLimitError`, or start its operations later by a line's
   delay, where it compiled before. Qudits of quantum systems that differ
   only in their control system get a program each.
+- **Long pulse sequences on the GPU.** With `backend="gpu"` and the
+  default operator lowering, the pulses played on one qudit are one
+  time-dependent term per quadrature, whose envelope callback sums theirs,
+  so the number of terms cuDensityMat applies at each step no longer grows
+  with the number of pulses. The drives now take two of an evolution's
+  1024 envelope callbacks per driven qudit, not two per pulse or pulse
+  train: a program of more than about 512 pulses that do not form a
+  train, which failed with "the drives of this program need more than
+  1024 envelope callbacks", now runs. The host still evaluates every
+  pulse's envelope at each step. The envelopes are added before they
+  scale the drive's operator, so results can differ from before in the
+  last bits. `CUDAQ_PULSE_GPU_OPERATORS=banded` or `dense` lowers as
+  before.
 - **Schedule plots look different.** `viz.plot_schedule`, `viz.save_schedule`
   and `timeline()` draw in the style of the documentation's figures: drives
   green, readouts rose, waits hatched grey and classical calls teal (colors
@@ -240,9 +314,87 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   most 4 drives and 2 readouts at once, and nothing else checks them. A
   system file written by an earlier version holds 4 and 2, which now count
   as given; to leave them unchecked, set them to `null` in the file.
+- The first compile of a kernel with many measurement-conditioned ifs no
+  longer takes time in the square of their number.
+- **Control systems of many controllers build and compile faster.** Checking
+  that no `Controller` is listed twice and placing a link's controllers take
+  time in proportion to the number of controllers, not its square, and so
+  does finding the readout latency when controllers give one
+  `peer_latency_cycles` to all others (a controller with a mapping is still
+  compared with every other). Programs and errors are as before.
+- **Verifying a line used in many branches takes time in proportion to its
+  uses.** The `verify` pass checked that a line or tone is used at most once
+  on every path by comparing every two of its uses; it now looks at each use
+  once, so a long chain of `m and n` conditions, which gives a line
+  thousands of uses, no longer spends most of its compile in `verify`.
+  Programs and errors are as before.
 
 ### Fixed
 
+- `rcp` and `alap_rcp` scheduled some rolled loops one iteration at a time,
+  in time and memory that grew with the trip count (a loop of 10**15
+  iterations did not finish): a loop beside a longer pulse on another line,
+  which its pulses reach only after many iterations; a loop whose
+  iterations take the lanes in turn, such as a loop in one arm of a
+  measured `if` whose other arm plays a pulse, or a loop that branches on a
+  readout in its body, also with many lanes; such loops in another loop or
+  holding one; and a loop whose lines move by periods of their own beside a
+  longer pulse. Such a loop is now scheduled in the time and memory of a
+  few iterations, with the same schedule as before. Under a control system
+  with controllers, a loop whose lines move by periods of their own still
+  takes time that grows with the trips in the controller check, as under
+  `asap`; that is a separate issue.
+- `sync()` with one line passed twice, as `sync(a, b, a)` or
+  `sync(*controls, *targets)` with a line in both lists, is a
+  `CompilationError` at the call that names the two places (`sync(): lines
+  1 and 3 are the same line; a line is in step with itself, so pass it
+  once`). It failed in the pass pipeline with `linear pulse value is
+  consumed more than once` and no kernel line, or at a later `drive()` with
+  `argument 3 must be a tone, got NoneType None`, and without the verify
+  pass it compiled with the sync left out. A list that repeats a line,
+  `sync([a, b, a])`, was already refused, and now names the places too.
+- A name, or a place of a list, that the two arms of an `if` on a
+  measurement bind to different lines or tones (as `a, b = b, a` in one arm
+  does) is not one line after the `if`. An operation on it could compile
+  into a program that used one path's line or tone on both paths
+  (`drive(a, waveform, tone=t)`; `wait(a, n)` without the verify pass; two
+  names of `line.tones[(1, 2)]` tones swapped), or fail with
+  `drive(): argument 3 must be a tone, got NoneType None`. It is now a
+  `CompilationError` at the `if`, which names the name or list place and
+  says what to write instead. A loop compiled as one loop that would carry
+  such a name to its next iteration is the same error, and names
+  `unroll_threshold=` as the way to compile it when no iteration reads the
+  name. A kernel that binds such a name in each
+  arm and does not use it after the `if`, which the verify pass refused
+  with `linear pulse value is consumed more than once`, compiles.
+- `export_to_controller` no longer stops on an assertion for a program
+  the check accepted whose tones on a shared readout line, in different
+  arms of one branch, play at once: the three arms of `if m: ... elif n:
+  ... else: ...` each reading out at the same cycle on a line of two tones
+  (`AssertionError`; under `python -O`, format 1 dropped a readout's
+  `tone_slot` and format 2 wrote `"tone_slot": null`). Tones in different
+  arms of one branch execution now share a slot where the line's slots
+  would not serve them otherwise.
+- A shared readout line counts at once only the tones that can play
+  together. A tone that starts while readouts in the then and else arms of
+  one branch play counted both, so a line that plays two tones refused `if
+  m: readout(r0, ...) else: readout(r1, ...)` beside one more readout
+  ("plays 3 tones at once"), though only one arm plays. It now counts the
+  most tones that lie in no two different arms of one branch execution:
+  through nested branches, `elif` chains and branches in a rolled loop, in
+  time polynomial in the tones playing. A line is still refused when more
+  tones than it holds play at once, no two in different arms of one branch
+  execution; its message names those tones. Two branches that test one
+  measurement (`if m: ...` then `if not m: ...`) are two branch
+  executions, so their arms still count together. A program can now
+  compile and simulate and still not export: when its tones fit the line
+  on every path but no one tone slot per tone serves every path,
+  `export_to_controller` raises `UnsupportedError`
+  (`slots_apart_and_together` in `tests/test_shared_lines.py`).
+- A list place or name bound in an arm of a measured `if` to an older name of
+  its line (`t = a; drive(a, w); if m: lines[0] = t`) holds the line, as
+  outside an `if`, instead of failing to compile; and a helper that binds a
+  parameter to another value (`x = y`) no longer rebinds the caller's name.
 - The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
   two inputs. A schedule block that yields one of its own arguments, passing
   an input through, is inlined with that input as its result; the passes
@@ -408,6 +560,38 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   instances of 'str' and 'int'`. It now raises `InvalidValueError` naming
   the bad key (`levels keys are qudit indices (ints from 0), got '1'`), as
   a bad key on its own did.
+- Binding no values to the module of one call
+  (`kernel.lower(q, 0.3).bind([])`) returned the module without the call's
+  values, and without its qudits for a kernel with `Qudit` or `Register`
+  parameters: its export had `null` where the values go
+  (`"amplitude": null`), a call whose value sets a wait's length raised
+  `IndexError`, and a call with runtime qudits or `list[float]` parameters
+  could not be exported. It now returns the call itself, with its values
+  and qudits. Binding values to a call with runtime qudits or
+  `list[float]` parameters raises the `InvalidTypeError` other calls
+  raise, where it returned a program without its qudits or with the wrong
+  values. One such bind worked before and is now that error: a call with
+  `list[float]` parameters bound with as many values as it has
+  (`kernel.lower(q, [0.1, 0.2]).bind([0.4, 0.5])`). For other values, lower
+  the kernel again with them (`kernel.lower(q, [0.4, 0.5])`).
+- Compiling for a `ControlSystem` checked a rolled loop whose lines move by
+  periods of their own (lines that do not sync, a measured `if` whose arms
+  take different times) iteration by iteration, in time and memory that grew
+  with its trip count without bound. It is now checked from one copy
+  of its body and each line's period, as a bare `Controller` checks it, in
+  the time of a few iterations whatever its trip count. So is a pulse that
+  depends on a readout whose line has another period, which drifts towards
+  or away from it each iteration: the copies too early for the feedback
+  latency are each reported, as before. The checks report the same
+  violations as before.
+- A controller check paired a pulse in one arm of a measured `if` with the
+  pulses of a rolled loop in the other arm, though only one arm plays:
+  `if m: drive(d, w)` with `else: for _ in range(10): drive(d, w)` was
+  refused under every schedule ("drive at 2400 starts 0 cycles after the
+  drive at 2400"), as were loops in both arms or in nested arms, for
+  spacing, detectors and calls that hold the lines. The pulses of an arm
+  are paired only with those that can play with them, as when the loop is
+  unrolled.
 
 ## [0.1.0] - 2026-11-13
 

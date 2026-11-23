@@ -460,7 +460,8 @@ runtime parameters, so a sweep over a delay compiles once:
   kernels see the rounded length, and other lines are not held back by the
   wait. ``lower()`` only binds the values; the schedule, ``mlir()`` and the
   simulation of a call come from the module with them bound and scheduled
-  again, which takes tens of microseconds, not a compile.
+  again, which takes tens of microseconds, not a compile: such a call is
+  ``rescheduled``.
 - ``wait(line, length, bounds=(lowest, highest))`` bounds the length, in
   cycles or as times; ``highest`` may be ``None``, and without ``bounds`` the length
   only has to be non-negative. A call whose length is not finite, is

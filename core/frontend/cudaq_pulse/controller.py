@@ -2376,12 +2376,16 @@ def _limit_violations(
 
 
 def _exclusive(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
-    """Whether two events lie in different arms of one branch execution."""
+    """Whether two events lie in different arms of one branch execution. A
+    walk numbers each execution of a branch apart, so the events of one
+    branch id are of one execution, a loop in an arm or not; a summarizing
+    walk's copies of a loop share its body's ids, and its callers compare
+    only events of one copy (``_loops._Pairs``)."""
     if not a["conditions"] or not b["conditions"]:
         return False
-    arms = {(c["branch"], tuple(a["iteration"])): c["arm"] for c in a["conditions"]}
+    arms = {c["branch"]: c["arm"] for c in a["conditions"]}
     for c in b["conditions"]:
-        arm = arms.get((c["branch"], tuple(b["iteration"])))
+        arm = arms.get(c["branch"])
         if arm is not None and arm != c["arm"]:
             return True
     return False
@@ -2425,6 +2429,7 @@ def _violations(
     timed: Sequence[Mapping[str, Any]] | None = None,
     answers: Sequence[Mapping[str, Any]] | None = None,
     updates: Sequence[Mapping[str, Any]] | None = None,
+    peaks: dict[str, float | None] | None = None,
 ) -> list[str]:
     """The limits *events* exceed. With *clocks*, the events are in the
     controller's own cycles: the native walk's, with *off* its line events
@@ -2441,7 +2446,9 @@ def _violations(
     has them, are the timed drives and readouts of *events* and its answers,
     in order; then only the update-bus check reads all of *events*, or only
     *updates*, the frame updates, drives and readouts of *events* on the
-    controller's lines, when the caller has them."""
+    controller's lines, when the caller has them. *peaks* holds the sampled
+    peak of each envelope (``_over_amplitude``), shared with the checks of
+    other controllers of the same events."""
     if clocks is None:
         found = []
     else:
@@ -2468,7 +2475,8 @@ def _violations(
     shared = limits.waveform_memory is WaveformMemoryScope.SHARED
     stored: dict[Any, int] = {}
     unknown_stored = 0
-    peaks: dict[str, float | None] = {}
+    if peaks is None:
+        peaks = {}
     for line, items in sorted(by_line.items()):
         for previous, event in _pairs(items):
             distance = event["start_cycles"] - previous["start_cycles"]
@@ -3147,7 +3155,6 @@ def _compile_check(
     # Loops of lines of different periods summarized too, then not, then none.
     passes: tuple[bool | None, ...] = (True, False, None)
     if system is not None:
-        passes = (False, None)
         if (
             repeats is None
             or not system._lines_up
@@ -3242,12 +3249,14 @@ def _system_call_violations(lowered: ScheduledKernel) -> Sequence[str]:
             # A controller counting cycles of its own is walked in full.
             if any(c.ratio != 1 for c in clocks.controllers):
                 repeats = None
-        # Summarized while the system's controllers line up, else every iteration.
+        # Summarized while the system's controllers line up, loops of lines
+        # of different periods too, then not, else every iteration.
+        periods: list[tuple[int, int, int]] | None = []
         while True:
             lines, events, _, off, problems = _walk(
                 lowered,
                 own=_native_clock(clocks),
-                summary=None if repeats is None else (repeats, None),
+                summary=None if repeats is None else (repeats, periods),
             )
             if not repeats:
                 break
@@ -3256,11 +3265,14 @@ def _system_call_violations(lowered: ScheduledKernel) -> Sequence[str]:
             # A summarizing walk's problems name only the copies it plays.
             if not problems:
                 parts = system._summarized(
-                    lowered, lines, events, repeats, clocks, off, None, None, None
+                    lowered, lines, events, repeats, clocks, off, None, None, None, periods or ()
                 )
                 if parts is not None:
                     return finished(parts)
-            repeats = None
+            if periods is not None and not problems:
+                repeats, periods = [], None
+            else:
+                repeats = None
         return system._violations(lowered, lines, events, clocks, off, problems, True, None, None)
     assert machine.controller is not None
     return _limit_violations(lowered, machine.controller, clocks)

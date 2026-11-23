@@ -66,10 +66,15 @@ the program clock, as its period in femtoseconds, an exact fraction
 (``#pulse.line``: ``drive`` or ``readout``, the qudits it reaches, the most
 tones it plays at once, its delay in program cycles and the index of its
 controller); and its controllers (``#pulse.controller``: the program cycles
-between the instants it can start an operation, ``grid_cycles``; the outcome
-latency to and the start spread from each other controller and its start
-uncertainty; whether its frames persist between shots and whether it blocks
-on calls; and the longest the program may be, ``max_duration_cycles``):
+between the instants it can start an operation, ``grid_cycles``; its own
+cycles per program cycle, ``clock_ratio``, and in its own cycles its
+``feedback_latency_cycles``, its ``peer_latency_cycles`` (one value for
+every other controller, or by controller index, ``{1 = 10}``) and its
+``start_uncertainty_cycles``, from which the scheduler derives how long an
+outcome takes to reach each controller and how far apart two controllers'
+starts may be; whether its frames persist between shots and whether it
+blocks on calls; and the longest the program may be,
+``max_duration_cycles``):
 
 .. code-block:: mlir
 
@@ -79,10 +84,9 @@ on calls; and the longest the program may be, ``max_duration_cycles``):
                 #pulse.line<readout, qudits = [0, 1, 2, 3], max_concurrent_tones = 4,
                             controller = 1>],
        controllers = [
-         #pulse.controller<outcome_latency_cycles = [0, 6], spread_cycles = [0, 6],
-                           uncertainty_ns = 1.0>,
-         #pulse.controller<grid_cycles = 2, outcome_latency_cycles = [6, 0],
-                           spread_cycles = [6, 0], uncertainty_ns = 2.0,
+         #pulse.controller<feedback_latency_cycles = 40, peer_latency_cycles = {1 = 12},
+                           start_uncertainty_cycles = 2>,
+         #pulse.controller<grid_cycles = 2, clock_ratio = 1/2, start_uncertainty_cycles = 2,
                            blocks_on_calls>]>} {
    }
 
@@ -185,8 +189,10 @@ then a ``cudm.evolve`` with the chosen integrator. The constant Hamiltonian
 terms and the dissipators that act on few levels become a few dense operators,
 as CUDA-Q builds them: where a group of modes is small enough, one
 superoperator on its ket and bra sides; otherwise one operator per group of
-modes on each side, which also takes the dissipators' anticommutators. Each
-time-dependent term stays a term of its own. On a mode of four or more
+modes on each side, which also takes the dissipators' anticommutators.
+Time-dependent terms of the same operator become one term whose envelope
+callback sums theirs: the pulses played on one qudit make one term per
+quadrature, however many there are. On a mode of four or more
 levels, an operator with a single nonzero diagonal (a lowering, raising or
 number operator, or a sum of diagonal terms) is stored multi-diagonal, by that
 diagonal. The pass option ``max-fused-dimension`` (16) bounds the size of a

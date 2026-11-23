@@ -6,7 +6,9 @@ fine delay, and a change of delays alone schedules again."""
 
 from __future__ import annotations
 
+import copy
 import json
+import pickle
 
 import cudaq_pulse as pulse
 import pytest
@@ -213,10 +215,6 @@ def _outputs(lowered):
     )
 
 
-def _retimed(lowered):
-    return lowered.generic.metrics.trace_ms == 0.0
-
-
 MIXED = {"clock_ghz": 1.0, "max_fine_delay_ns": 1.0}
 # Traced with the first, then scheduled again with each of the others.
 DELAYS = (
@@ -239,9 +237,9 @@ def test_new_delays_alone_schedule_again_to_the_same_bytes(kernel, args, schedul
     for k, delays in enumerate(DELAYS):
         machine = _delayed(delays, **controller)
         again = pulse.compile(kernel, schedule=schedule, control_system=machine).lower(*args)
-        assert _retimed(again) == (k > 0)
+        assert again.rescheduled_for_line_delays == (k > 0)
         full = pulse.compile(_fresh(kernel), schedule=schedule, control_system=machine).lower(*args)
-        assert not _retimed(full)
+        assert not full.rescheduled_for_line_delays
         assert _outputs(again) == _outputs(full)
 
 
@@ -252,7 +250,88 @@ def test_a_program_without_delays_is_traced_as_before():
     machine = _delayed({("drive", 0): 1.0})
     pulse.compile(kernel, control_system=machine).lower(Q[0], Q[1])
     # The same delays again trace again, as without them.
-    assert not _retimed(pulse.compile(kernel, control_system=machine).lower(Q[0], Q[1]))
+    again = pulse.compile(kernel, control_system=machine).lower(Q[0], Q[1])
+    assert not again.rescheduled_for_line_delays
+
+
+def test_a_module_scheduled_again_for_new_delays_and_its_calls_say_so():
+    kernel = _fresh(rabi)
+    first = pulse.compile(kernel, control_system=_delayed({("drive", 0): 1.0})).lower(Q[0], 0.3)
+    again = pulse.compile(kernel, control_system=_delayed({("drive", 0): 2.5})).lower(Q[0], 0.3)
+    assert not first.rescheduled_for_line_delays
+    assert not first.generic.rescheduled_for_line_delays
+    assert again.rescheduled_for_line_delays and again.generic.rescheduled_for_line_delays
+    assert again.generic.bind([0.5]).rescheduled_for_line_delays
+    # A call bound again, with no values, reads its module's mark too.
+    assert not first.bind([]).rescheduled_for_line_delays
+    assert again.bind([]).rescheduled_for_line_delays
+    module = pulse.compile(_fresh(two_lines)).lower(Q[0], Q[1])
+    assert not module.bind([]).bind([]).rescheduled_for_line_delays
+    # The amplitude moves no op: no call is scheduled again for its values.
+    assert not any(p.rescheduled for p in (first, again, again.generic.bind([0.5])))
+    # A copy is the program itself, and a pickle keeps how it was made.
+    for program in (first, again, again.generic):
+        assert copy.copy(program) is program and copy.deepcopy(program) is program
+        restored = pickle.loads(pickle.dumps(program))
+        assert restored.rescheduled_for_line_delays == program.rescheduled_for_line_delays
+        assert restored.rescheduled == program.rescheduled
+    with pytest.raises(AttributeError):
+        again.rescheduled_for_line_delays = False  # type: ignore[misc]
+    assert again.rescheduled_for_line_delays
+
+
+@pulse.kernel
+def waited(q, tau: float):
+    d = get_drive_line(q)
+    r = get_readout_line(q)
+    drive(d, square(8, 0.1))
+    wait(d, tau)
+    sync(d, r)
+    readout(r, square(40, 0.05))
+
+
+def test_a_module_checked_per_call_is_rescheduled_for_new_delays():
+    # With a float wait, each call's values are checked against the
+    # controller when they are bound. Each call is scheduled again with its
+    # value, and the module is scheduled again only when compiled again for
+    # new delays: a call of that module is both.
+    kernel = _fresh(waited)
+    first = pulse.compile(kernel, control_system=_delayed({("drive", 0): 1.0})).lower(Q[0], 30.0)
+    again = pulse.compile(kernel, control_system=_delayed({("drive", 0): 2.5})).lower(Q[0], 30.0)
+    assert first.rescheduled and not first.rescheduled_for_line_delays
+    assert not first.generic.rescheduled and not first.generic.rescheduled_for_line_delays
+    assert again.rescheduled and again.rescheduled_for_line_delays
+    assert not again.generic.rescheduled and again.generic.rescheduled_for_line_delays
+
+
+CALIBRATION = {"amplitude": 0.1}
+
+
+@pulse.kernel
+def calibrated(q):
+    d = get_drive_line(q)
+    drive(d, square(8, CALIBRATION["amplitude"]))
+
+
+@pulse.kernel
+def on_any_qudit(q: pulse.Qudit):
+    d = get_drive_line(q)
+    drive(d, square(8, 0.1))
+
+
+def test_a_kernel_is_traced_again_when_its_trace_cannot_be_reused(monkeypatch):
+    first, then, last = (_delayed({("drive", 0): ns}) for ns in (1.0, 2.5, 0.5))
+    # A kernel with qudit parameters is traced for every compile.
+    kernel = _fresh(on_any_qudit)
+    pulse.compile(kernel, control_system=first).lower(Q[0])
+    assert not pulse.compile(kernel, control_system=then).lower(Q[0]).rescheduled_for_line_delays
+    # A change to what the kernel read traces it again, and that trace is
+    # scheduled again for the next delays.
+    kernel = _fresh(calibrated)
+    pulse.compile(kernel, control_system=first).lower(Q[0])
+    monkeypatch.setitem(CALIBRATION, "amplitude", 0.2)
+    assert not pulse.compile(kernel, control_system=then).lower(Q[0]).rescheduled_for_line_delays
+    assert pulse.compile(kernel, control_system=last).lower(Q[0]).rescheduled_for_line_delays
 
 
 @pytest.mark.slow
@@ -275,7 +354,7 @@ def test_new_delays_schedule_the_matrix_again_to_the_same_bytes():
         full = matrix.compile_case(case, kernel=_fresh(kernel), control_system=then).lower(
             Q[0], Q[1], matrix.LOOP, matrix.FLOAT_TAU
         )
-        if not _retimed(again):
+        if not again.rescheduled_for_line_delays:
             continue
         assert _outputs(again) == _outputs(full), case
         checked += 1
