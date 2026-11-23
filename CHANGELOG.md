@@ -562,6 +562,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   such waits at distance 41. The check now compiles for any number of
   waits and accepts and refuses the same calls as before; waits of one
   length and bounds share one test.
+- `TransmonModel(levels={0: 4, "1": 2})`, levels keyed by an int and a key
+  of another type, failed with `TypeError: '<' not supported between
+  instances of 'str' and 'int'`. It now raises `InvalidValueError` naming
+  the bad key (`levels keys are qudit indices (ints from 0), got '1'`), as
+  a bad key on its own did.
 - Binding no values to the module of one call
   (`kernel.lower(q, 0.3).bind([])`) returned the module without the call's
   values, and without its qudits for a kernel with `Qudit` or `Register`
