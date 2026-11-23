@@ -17,6 +17,7 @@ import cudaq_pulse as pulse
 from _qubit import benchmark_system, calibrated
 
 channel = os.fdopen(os.dup(sys.stdout.fileno()), "w")  # the scorer's line; prints go to stderr
+os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
 sys.stdout = sys.stderr
 PUBLIC = benchmark_system(0.0, 0.0)  # 0 is no decay
 x90, y90, _, measurement = (

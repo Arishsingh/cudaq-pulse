@@ -290,6 +290,8 @@ ignore = ["UP018"]
 "examples/**" = ["E501"]
 # Long printed result lines in the scorers.
 "challenges/**" = ["E501"]
+# The kernel to fix: one of its mistakes is a misspelled op.
+"challenges/fix_the_kernel/broken.py" = ["F821"]
 
 [tool.mypy]
 strict = true

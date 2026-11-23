@@ -20,6 +20,20 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   process of its own and plays the pulses it reports itself, so the rules,
   the tally and any hidden value stay out of a submission's process. The
   folder is not part of the package or the built pages.
+- **Three more challenges.** `challenges/` gains three starter problems:
+  make a five-qubit parity check finish sooner without changing its
+  circuit, on a control system that plays two readouts at once; find the
+  five mistakes in a kernel, scored on what it plays for cases the scorer
+  draws; and bring a qubit in an unknown state to its ground state within
+  1200 ns with a measurement and a conditional pulse, scored on states only
+  the scorer knows. As for the first three, a submission is loaded in a
+  process of its own, and the scorer checks and plays the pulses it reports.
+  All six scorers now share one exchange with that process: it runs in a
+  session of its own with a time limit, what a submission prints or raises
+  is shown on marked lines, a scorer loads and uses all it needs before it
+  starts a submission, and a seed that is not a whole number gets the usage
+  line. `challenges/README.rst` says what a scorer reads and what it cannot
+  check.
 - **Error codes.** Every `CompilationError` has a `code`, a
   `pulse.ErrorCode` (`unknown_name`, `wrong_argument`, `runtime_value`,
   `invalid_duration` and the others listed under Errors), so a program or
