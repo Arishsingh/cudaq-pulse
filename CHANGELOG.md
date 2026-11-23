@@ -361,6 +361,26 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A controller check no longer walks every round of a long loop.**
+  `controller.check(program, controller)` for a controller with a shared
+  line walked every iteration of a loop kept as a loop, so its time and
+  memory grew with the iterations. It now counts such a loop from one
+  round, as compiling for the controller does: a loop of 2.7e9 rounds is
+  checked with the work of one of a thousand. Where the rounds cannot be
+  counted from one (their pulses interleave with others on the line, or
+  their lines repeat by periods of their own on a shared line), `check`
+  and `compile` play them round by round, as before.
+- **A check that sees it would play more than 1,048,576 rounds of loops
+  one by one stops before it starts.** `compile` and `controller.check`
+  went on to walk every round of such loops, until memory ran out for long
+  ones. Where the check's summary of the loops shows how many rounds the
+  walk would play, they now raise an `UnsupportedError` that says so. A
+  program that walked more rounds than that and was checked, given the
+  memory, is refused: give the loops fewer iterations, or a `sync` of
+  their lines in each round so that the rounds can be counted from one. A
+  check that takes no summary of the loops (for example for a controller
+  that blocks on calls, lists the updates on its buses, or counts cycles
+  of its own) walks every round as before.
 - **A controller description written again is the one loaded.**
   `pulse.controller(path)` kept a file's parsed description by the file's
   modification time alone, so a file written twice within one tick of the
