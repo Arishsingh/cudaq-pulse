@@ -129,10 +129,10 @@ simulation does not work: a driver too old for the extra, both extras
 installed, or a library that does not load.
 
 Without a usable GPU, everything except GPU simulation still works, including
-the CPU reference (`pulse.simulate(..., backend="cpu")`, the default). GPU
-simulation fails with a specific error rather than degrading:
+CPU simulation, the default. GPU simulation (`backend="gpu"`) fails with a
+specific error rather than degrading:
 
-| Situation | Error raised by `pulse.simulate(..., backend="gpu")` |
+| Situation | Error raised by GPU simulation |
 | --- | --- |
 | Wheel without GPU support (macOS, or a compiler-only source build) | `GpuSupportNotBuiltError` |
 | GPU support built in, but no CUDA extra, both extras, or a library fails to load | `GpuRuntimeLoadError` |
@@ -151,7 +151,10 @@ import cudaq_pulse as pulse
 @pulse.kernel
 def rabi_oscillation(qubit, amplitude: float, duration, sigma):
     drive_line = get_drive_line(qubit)
+    readout_line = get_readout_line(qubit)
     drive(drive_line, gaussian(duration, amplitude, sigma))
+    sync(drive_line, readout_line)
+    return readout(readout_line, readout_line.get_calibration(pulse.gates.READOUT))
 
 
 qs = pulse.quantum_system("transmon_surface17")
@@ -159,21 +162,20 @@ qubit = qs.qudits[0]
 duration = 32 * pulse.ns
 sigma = 8 * pulse.ns
 
-# NumPy reference, no GPU needed
-result = pulse.simulate(rabi_oscillation, qubit, 0.5, duration, sigma)
-print(f"P(1) = {result.level_population(1):.3f}")  # P(1) = 0.972
+# A call compiles the kernel and simulates one shot on the CPU, no GPU needed.
+outcome = rabi_oscillation(qubit, 0.5, duration, sigma)
+print(outcome)  # the readout's outcome: 1 in about 96 shots of 100
 print(rabi_oscillation.lower(qubit, 0.5, duration, sigma).mlir())  # the scheduled Pulse MLIR
 ```
 
-`pulse.simulate(kernel, *args)` compiles the call for the quantum system of its
-qudit handles, with frequencies from the quantum system, and evolves it; this
-pulse leaves the qubit almost fully excited. `kernel.lower(*args)`
-compiles the call without running it. Calling the
-kernel, `rabi_oscillation(qubit, 0.5, duration, sigma)`, compiles and runs it
-in one step, and `pulse.compile(kernel)` compiles ahead of the call. The
-pulse's values are arguments of the kernel: the kernel is compiled for its
-duration and sigma, and a `float` parameter stays symbolic, so a sweep over
-the amplitude compiles once. The compiler
+Calling the kernel compiles it for the quantum system of its qudit handles,
+with frequencies from the quantum system, simulates one shot and returns what
+the kernel returns: here the outcome of its readout. This pulse leaves the
+qubit almost fully excited, so most shots read 1. `kernel.lower(*args)`
+compiles the call without running it, and `pulse.compile(kernel)` compiles
+ahead of the call. The pulse's values are arguments of the kernel: the
+kernel is compiled for its duration and sigma, and a `float` parameter stays
+symbolic, so a sweep over the amplitude compiles once. The compiler
 traces the Python kernel, builds Pulse dialect IR, applies the selected
 transformations, and emits scheduled MLIR. The wheel also installs
 `cudaq-pulse-opt`, the MLIR driver for the pulse dialects:

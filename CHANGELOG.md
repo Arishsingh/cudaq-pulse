@@ -341,7 +341,9 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `examples/21_calibration_protocol.py` the kernels take the pulse shape
   (pulse time, readout time, readout amplitude) the same way. Every example
   compiles to the same program and prints what it printed. Kernels may read
-  module-level values as before.
+  module-level values as before. The quick example of the README and of
+  Getting Started now reads the qubit out and runs by calling the kernel,
+  which returns the outcome of one simulated shot.
 
 ### Fixed
 
