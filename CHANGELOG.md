@@ -174,6 +174,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 - `UdpChannel` and `InProcess` print what they're set up with:
   `UdpChannel(('127.0.0.1', 50123), slot_bytes=65536, timeout_s=2.0)` and
   `<InProcess serving decode, estimate>`.
+- **Doctor lists the controller backends.** `python -m cudaq_pulse.doctor`
+  prints the installed controller backends next to the quantum systems
+  (`none` when there are none), so the advice in `--system` to run the
+  doctor for them is true.
 
 ### Changed
 
@@ -331,6 +335,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A value that is not a real number fails at `bind()`, on every bind.**
+  `module.bind([True, 1e6])`, or a str, a complex number or `None` for a
+  value, was an `InvalidTypeError` at `bind()` only on the first bind of a
+  module; on every later bind of the same module the call was made and the
+  error came where it was used (printed, simulated, exported). It is now
+  raised by `bind()` each time, naming the parameter. A call's `arguments`
+  are floats on every bind as well: `bind([1, 2])` kept `(1, 2)` on a later
+  bind and `(1.0, 2.0)` on the first. An iterator of values, which the
+  first bind of a module refused and later binds took, is taken by both.
+  An infinity is still reported where the module is used. Binding floats
+  does the work it did; a number of another type (an int, a numpy scalar)
+  is made a plain float where it is bound. `bind()` refuses a numpy bool
+  (`np.True_`) as it refuses a `bool`; it was taken as `1.0`.
 - Binding the values of a call with a long `list[float]` parameter crashed
   the process (a segmentation fault) from about 65,500 values on, when the
   kernel was compiled with `fold_phases` or `fuse_pulses` (both are default
@@ -409,6 +426,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   operation or type, such as one with only classical calls, is scheduled
   like any other; the schedule passes wrote the pulse dialect's schedule
   state without loading the dialect.
+- `python -m cudaq_pulse --quantum-system NAME -m MODULE args` passes the
+  arguments after the module name to the module, dashes included, as
+  `python -m` does. The launcher used to reject them (`give either a script
+  path or -m MODULE`) or take them as its own options (`--quiet`,
+  `unrecognized arguments: --sort-keys`), so only a module without arguments
+  could run. The launcher's own options (`--quantum-system`, `--quiet`) now
+  come before `-m`; after the module name they go to the module.
 - On one controller whose clock is not the program's, `rcp` and `alap_rcp`
   waited the feedback latency in the controller's cycles as if they were the
   program's: they failed their own check (100 cycles at 0.5 GHz are 400 of
@@ -442,6 +466,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   at its path (`qudits[0].t1_us`) with the value. Such values used to build
   without an error, and a negative T1 or T2 was taken as 0 (no decay) when
   simulating.
+- A parameter drift model's values are checked where the model returns
+  them: a `start()` or `advance()` that returns a qudit with a value a
+  quantum system cannot have raises `InvalidValueError`, which names the
+  method and lists each problem (`advance().t1_us`) with the value. It
+  used to surface at the next `simulate` as a problem in the system's
+  definition. A failed `advance()` moves no qudit and not the drift clock.
+  When a model goes bad as `simulate` advances the clock after its shots,
+  `simulate` raises the error after the shots have run and returns no result.
 - A frame change made after a wait on its tone's line acted where the
   tone's previous drive or readout ended, before the wait:
   `shift_frequency(tone, +d)`, a wait of `T` and `shift_frequency(tone, -d)`
