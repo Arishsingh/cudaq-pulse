@@ -343,6 +343,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   once for each content it has had. An installed description, loaded by
   its name, is still kept by its file's modification time: nothing writes
   those while a program runs.
+- **A value that is not a real number fails at `bind()`, on every bind.**
+  `module.bind([True, 1e6])`, or a str, a complex number or `None` for a
+  value, was an `InvalidTypeError` at `bind()` only on the first bind of a
+  module; on every later bind of the same module the call was made and the
+  error came where it was used (printed, simulated, exported). It is now
+  raised by `bind()` each time, naming the parameter. A call's `arguments`
+  are floats on every bind as well: `bind([1, 2])` kept `(1, 2)` on a later
+  bind and `(1.0, 2.0)` on the first. An iterator of values, which the
+  first bind of a module refused and later binds took, is taken by both.
+  An infinity is still reported where the module is used. Binding floats
+  does the work it did; a number of another type (an int, a numpy scalar)
+  is made a plain float where it is bound. `bind()` refuses a numpy bool
+  (`np.True_`) as it refuses a `bool`; it was taken as `1.0`.
 - Binding the values of a call with a long `list[float]` parameter crashed
   the process (a segmentation fault) from about 65,500 values on, when the
   kernel was compiled with `fold_phases` or `fuse_pulses` (both are default
