@@ -362,6 +362,70 @@ def test_the_events_of_a_long_line_are_listed_in_linear_time():
 
 
 @pytest.mark.scaling
+def test_a_rolled_round_with_branches_is_not_scheduled_pair_by_pair_of_lines():
+    from cudaq_pulse.controller import ReadoutLine
+    from cudaq_pulse.quantum_systems import PhysicalQudit
+
+    def scheduled(n: int) -> float:
+        # A round of n qudits on controllers of seven, kept as a loop: one
+        # sync joins every line, neighbours are synced in pairs, and every
+        # second qudit is read out and driven again where its result is set.
+        groups = [list(range(k, min(n, k + 7))) for k in range(0, n, 7)]
+        controllers = [
+            Controller(
+                clock_ghz=2.0,
+                drive_lines=g,
+                readout_lines=[ReadoutLine(g, max_concurrent_tones=len(g))],
+                supports=["play", "readout", "wait", "sync", "branch", "loop"],
+                feedback_latency_cycles=400,
+                peer_latency_cycles=400,
+            )
+            for g in groups
+        ]
+        system = pulse.quantum_system(
+            name=f"round{n}",
+            qudits={i: PhysicalQudit(i, 4.5e9 + 1.0e3 * i, 37.7, 9.2) for i in range(n)},
+            control_system=ControlSystem(controllers=controllers, reference_clock_ghz=2.0),
+        )
+
+        def kernel():
+            # Made anew for each compile: a kernel keeps what it compiled.
+            @pulse.kernel
+            def rounds(qudits):
+                for _ in range(1000):
+                    lines = [get_drive_line(q) for q in qudits]
+                    for line in lines:
+                        drive(line, square(48, 0.25))
+                    sync(*lines, *[get_readout_line(q) for q in qudits])
+                    for first in (0, 1):
+                        for i in range(first, n - 1, 2):
+                            sync(get_drive_line(qudits[i]), get_drive_line(qudits[i + 1]))
+                            drive(get_drive_line(qudits[i]), square(48, 0.25))
+                    for i in range(0, n, 2):
+                        line = get_drive_line(qudits[i])
+                        answer = get_readout_line(qudits[i])
+                        sync(line, answer)
+                        if readout(answer, square(1000, 0.05)):
+                            drive(line, square(48, 0.25))
+
+            return rounds
+
+        return min(
+            pulse.compile(kernel(), quantum_system=system)
+            .lower(system.qudits[0:n])
+            .metrics.schedule_ms
+            for _ in range(3)
+        )
+
+    # Four times the qudits: the conditions are four times as many and each
+    # reads four times the lines. Pairing the lines of every condition with
+    # the lines it decides takes 64 times as long; the stage as a whole has
+    # parts that take 16.
+    small, large = scheduled(100), scheduled(400)
+    assert large < small * 8 * TOLERANCE, (small, large)
+
+
+@pytest.mark.scaling
 def test_the_values_of_a_long_list_are_bound_in_linear_time():
     @pulse.kernel
     def stream(q, amplitudes: list[float], count: int):

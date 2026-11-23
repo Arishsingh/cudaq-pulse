@@ -335,6 +335,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A loop kept as a loop, with measurement-conditioned branches in its
+  body, no longer takes time that grows with the cube of its lines to
+  schedule.** For such a loop on several controllers the scheduler paired
+  every line a branch's condition reads with every line the branch
+  decides, to find which groups of lines hold each other back. Where a
+  `sync` in the body joins all the lines, as a round of an error-correcting
+  code does, each of those is most of the lines: a round of 1,088 qudits
+  took about 60 times as long to schedule as one of 272. The groups are
+  paired, not the lines, which gives the same schedule; the round of
+  1,088 qudits now takes about 18 times as long as the one of 272, and is
+  scheduled over 30 times faster than it was.
 - **A value that is not a real number fails at `bind()`, on every bind.**
   `module.bind([True, 1e6])`, or a str, a complex number or `None` for a
   value, was an `InvalidTypeError` at `bind()` only on the first bind of a
