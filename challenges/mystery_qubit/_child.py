@@ -15,10 +15,11 @@ import sys
 
 import cudaq_pulse as pulse
 import numpy as np
-from _qubit import mystery_system
+from _qubit import MAX_DRIVE_CYCLES, mystery_system
 from cudaq_pulse.controller import sample_waveform
 
 channel = os.fdopen(os.dup(sys.stdout.fileno()), "w")  # the scorer's line; prints go to stderr
+os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
 sys.stdout = sys.stderr
 PUBLIC = mystery_system(0.0)  # T1 left blank (0 is no decay)
 
@@ -48,7 +49,13 @@ class Lab:
     def run(kernel, *args, shots_count):
         program = pulse.compile(kernel, quantum_system=PUBLIC).lower(*args)
         drives, readouts, others = [], [], []
-        for event in program.export_to_controller()["events"]:
+        events = program.export_to_controller()["events"]
+        driven = sum(int(e["duration_cycles"]) for e in events if e["kind"] == "drive")
+        if driven > MAX_DRIVE_CYCLES:  # the scorer refuses it too; here it is not even sent
+            raise RuntimeError(
+                f"the drive pulses of the kernel last {driven} clock cycles in all; a kernel has at most {MAX_DRIVE_CYCLES} ({MAX_DRIVE_CYCLES // 2000} microseconds) of them"
+            )
+        for event in events:
             if event["kind"] == "drive":
                 drives.append(numbers(event))
             elif event["kind"] == "readout":
