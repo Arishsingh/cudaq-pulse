@@ -421,6 +421,33 @@ def test_the_uses_of_a_line_in_the_arms_of_nested_ifs_are_checked_in_linear_time
 
 
 @pytest.mark.scaling
+def test_rcp_takes_a_lane_in_logarithmic_time():
+    def program(lanes: int):
+        machine = ControlSystem(max_concurrent_drives=lanes)
+
+        @pulse.kernel
+        def kernel(qudits):
+            for q in qudits:
+                line = get_drive_line(q)
+                for i in range(400):
+                    drive(line, square(8 + 0 * i, 0.1))
+
+        return lambda: pulse.compile(
+            kernel,
+            schedule="rcp",
+            control_system=machine,
+            passes=("verify",),
+            unroll_threshold=100_000,
+        ).lower(Q[0:16])
+
+    # 128 times the lanes, of which the 16 lines never take more than 16:
+    # about the same time when a pulse takes a lane in logarithmic time,
+    # several times more when it compares every lane.
+    seconds = native_seconds_each({lanes: program(lanes) for lanes in (64, 8192)})
+    assert seconds[8192] < seconds[64] * 2.5, seconds
+
+
+@pytest.mark.scaling
 def test_a_long_program_is_exported_and_checked_in_linear_time():
     limits = Controller(
         instruction_cycles=2,
