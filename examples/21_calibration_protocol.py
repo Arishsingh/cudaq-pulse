@@ -214,7 +214,7 @@ def adaptive_t1(
 
 
 @pulse.kernel
-def shot_end(q, pi_amp: float):
+def shot_end(q, pi_amp: float, pulse_time, readout_time, readout_amplitude):
     """Read out, then reset from the result (active reset)."""
     d = get_drive_line(q)
     r = get_readout_line(q)
@@ -227,7 +227,7 @@ def shot_end(q, pi_amp: float):
 
 
 @pulse.kernel
-def settle_and_read(q, settle):
+def settle_and_read(q, settle, readout_time, readout_amplitude):
     """Read out, then wait *settle* for the qubit to relax (passive reset)."""
     d = get_drive_line(q)
     r = get_readout_line(q)
@@ -239,7 +239,7 @@ def settle_and_read(q, settle):
 
 
 @pulse.kernel
-def assignment(q, pi_amp: float, settle=0 * pulse.ns):
+def assignment(q, pi_amp: float, pulse_time, readout_time, readout_amplitude, settle=0 * pulse.ns):
     """Assignment errors; with a *settle* time, a passive reset of that length
     after each readout instead of the active one."""
     d = get_drive_line(q)
@@ -248,21 +248,21 @@ def assignment(q, pi_amp: float, settle=0 * pulse.ns):
     if settle:
         wait(d, settle)
     else:
-        shot_end(q, pi_amp)
+        shot_end(q, pi_amp, pulse_time, readout_time, readout_amplitude)
     for _ in range(shots_per_setting):
         if settle:
-            ground.append(settle_and_read(q, settle))
+            ground.append(settle_and_read(q, settle, readout_time, readout_amplitude))
             drive(d, square(pulse_time, pi_amp))
-            excited.append(settle_and_read(q, settle))
+            excited.append(settle_and_read(q, settle, readout_time, readout_amplitude))
         else:
-            ground.append(shot_end(q, pi_amp))
+            ground.append(shot_end(q, pi_amp, pulse_time, readout_time, readout_amplitude))
             drive(d, square(pulse_time, pi_amp))
-            excited.append(shot_end(q, pi_amp))
+            excited.append(shot_end(q, pi_amp, pulse_time, readout_time, readout_amplitude))
     return assignment_errors.submit(ground, excited).result()
 
 
 @pulse.kernel
-def ramsey(q, pi_amp: float, mean_hz: float):
+def ramsey(q, pi_amp: float, mean_hz: float, pulse_time, readout_time, readout_amplitude):
     d = get_drive_line(q)
     minus = []
     zero = []
@@ -278,7 +278,7 @@ def ramsey(q, pi_amp: float, mean_hz: float):
             shift_phase(d.tone, shift)
             drive(d, square(pulse_time, pi_amp * 0.5))
             shift_phase(d.tone, -shift)
-            m = shot_end(q, pi_amp)
+            m = shot_end(q, pi_amp, pulse_time, readout_time, readout_amplitude)
             if k == 0:
                 minus.append(m)
             elif k == 1:
@@ -289,28 +289,54 @@ def ramsey(q, pi_amp: float, mean_hz: float):
 
 
 @pulse.kernel
-def train_shot(q, amplitude: float, pulses: int, pi_amp: float):
+def train_shot(
+    q, amplitude: float, pulses: int, pi_amp: float, pulse_time, readout_time, readout_amplitude
+):
     d = get_drive_line(q)
     for _ in range(pulses):
         drive(d, square(pulse_time, amplitude))
-    return shot_end(q, pi_amp)
+    return shot_end(q, pi_amp, pulse_time, readout_time, readout_amplitude)
 
 
 @pulse.kernel
-def amplitude(q, amplitude: float, pulses: int, pi_amp: float):
+def amplitude(
+    q, amplitude: float, pulses: int, pi_amp: float, pulse_time, readout_time, readout_amplitude
+):
     """Correct the amplitude of a pulse from trains of *pulses* of them."""
     minus = []
     zero = []
     plus = []
     for _ in range(shots_per_setting):
-        minus.append(train_shot(q, amplitude * (1.0 - 0.5 / pulses_per_train), pulses, pi_amp))
-        zero.append(train_shot(q, amplitude, pulses, pi_amp))
-        plus.append(train_shot(q, amplitude * (1.0 + 0.5 / pulses_per_train), pulses, pi_amp))
+        minus.append(
+            train_shot(
+                q,
+                amplitude * (1.0 - 0.5 / pulses_per_train),
+                pulses,
+                pi_amp,
+                pulse_time,
+                readout_time,
+                readout_amplitude,
+            )
+        )
+        zero.append(
+            train_shot(q, amplitude, pulses, pi_amp, pulse_time, readout_time, readout_amplitude)
+        )
+        plus.append(
+            train_shot(
+                q,
+                amplitude * (1.0 + 0.5 / pulses_per_train),
+                pulses,
+                pi_amp,
+                pulse_time,
+                readout_time,
+                readout_amplitude,
+            )
+        )
     return amplitude_estimator.submit(minus, zero, plus, amplitude).result()
 
 
 @pulse.kernel
-def decay(q, pi_amp: float, t1_cycles: float):
+def decay(q, pi_amp: float, t1_cycles: float, pulse_time, readout_time, readout_amplitude):
     d = get_drive_line(q)
     second, third = decay_delays.submit(t1_cycles).result()
     first_bits = []
@@ -319,13 +345,13 @@ def decay(q, pi_amp: float, t1_cycles: float):
     for _ in range(shots_per_setting):
         drive(d, square(pulse_time, pi_amp))
         wait(d, first_delay)
-        first_bits.append(shot_end(q, pi_amp))
+        first_bits.append(shot_end(q, pi_amp, pulse_time, readout_time, readout_amplitude))
         drive(d, square(pulse_time, pi_amp))
         wait(d, second, bounds=wait_range_cycles)
-        second_bits.append(shot_end(q, pi_amp))
+        second_bits.append(shot_end(q, pi_amp, pulse_time, readout_time, readout_amplitude))
         drive(d, square(pulse_time, pi_amp))
         wait(d, third, bounds=wait_range_cycles)
-        third_bits.append(shot_end(q, pi_amp))
+        third_bits.append(shot_end(q, pi_amp, pulse_time, readout_time, readout_amplitude))
     return decay_estimator.submit(
         first_bits, second_bits, third_bits, second - first_delay_cycles, t1_cycles
     ).result()
@@ -339,6 +365,9 @@ def tracked_t1(
     rate: float,
     error_1to0: float,
     error_0to1: float,
+    pulse_time,
+    readout_time,
+    readout_amplitude,
     settle=0 * pulse.ns,
 ):
     """Adaptive T1; with a *settle* time, a passive reset of that length after
@@ -349,26 +378,49 @@ def tracked_t1(
         drive(d, square(pulse_time, pi_amp))
         wait(d, w, bounds=wait_range_cycles)
         if settle:
-            m = settle_and_read(q, settle)
+            m = settle_and_read(q, settle, readout_time, readout_amplitude)
         else:
-            m = shot_end(q, pi_amp)
+            m = shot_end(q, pi_amp, pulse_time, readout_time, readout_amplitude)
         shape, rate, w = adaptive_t1.submit([m], shape, rate, w, error_1to0, error_0to1).result()
     return shape, rate
 
 
 @pulse.kernel
-def calibration_chain(q, t1_guess_cycles: float):
+def calibration_chain(q, t1_guess_cycles: float, pulse_time, readout_time, readout_amplitude):
     d = get_drive_line(q)
     # The adaptive tracker's likelihood holds only assignment errors: an
     # active reset would add a preparation error that depends on the last
     # outcome, so its shots and the errors it uses reset passively.
-    error_1to0, error_0to1 = assignment(q, nominal_pi_amplitude, settle_time)
-    detuning, _ = ramsey(q, nominal_pi_amplitude, 0.0)
+    error_1to0, error_0to1 = assignment(
+        q, nominal_pi_amplitude, pulse_time, readout_time, readout_amplitude, settle_time
+    )
+    detuning, _ = ramsey(q, nominal_pi_amplitude, 0.0, pulse_time, readout_time, readout_amplitude)
     shift_frequency(d.tone, detuning)
-    pi_amp, _ = amplitude(q, nominal_pi_amplitude, pulses_per_train, nominal_pi_amplitude)
-    half_amp, _ = amplitude(q, pi_amp * 0.5, 2 * pulses_per_train, pi_amp)
-    t1, _ = decay(q, pi_amp, t1_guess_cycles)
-    tracked_t1(q, pi_amp, 3.0, 3.0 * t1, error_1to0, error_0to1, settle_time)
+    pi_amp, _ = amplitude(
+        q,
+        nominal_pi_amplitude,
+        pulses_per_train,
+        nominal_pi_amplitude,
+        pulse_time,
+        readout_time,
+        readout_amplitude,
+    )
+    half_amp, _ = amplitude(
+        q, pi_amp * 0.5, 2 * pulses_per_train, pi_amp, pulse_time, readout_time, readout_amplitude
+    )
+    t1, _ = decay(q, pi_amp, t1_guess_cycles, pulse_time, readout_time, readout_amplitude)
+    tracked_t1(
+        q,
+        pi_amp,
+        3.0,
+        3.0 * t1,
+        error_1to0,
+        error_0to1,
+        pulse_time,
+        readout_time,
+        readout_amplitude,
+        settle_time,
+    )
 
 
 # ── Frequency binary search ─────────────────────────────────────────────────
@@ -415,7 +467,7 @@ def search_step(
 
 
 @pulse.kernel
-def binary_search(q, rounds: int):
+def binary_search(q, rounds: int, pulse_time, readout_time, readout_amplitude):
     d = get_drive_line(q)
     r = get_readout_line(q)
     previous = readout(r, square(readout_time, readout_amplitude))
@@ -495,7 +547,7 @@ if __name__ == "__main__":
     print("=== 1. The calibration chain, on the controller ===")
     start = time.perf_counter()
     compiled = pulse.compile(calibration_chain, quantum_system=qs, control_system=control_system)
-    scheduled = compiled.lower(q, 20_000.0 * clock_ghz)
+    scheduled = compiled.lower(q, 20_000.0 * clock_ghz, pulse_time, readout_time, readout_amplitude)
     compile_s = time.perf_counter() - start
     end_cycles = max(
         e.start_cycles + e.duration_cycles
@@ -530,7 +582,7 @@ if __name__ == "__main__":
     rounds = 15
     scheduled = pulse.compile(
         binary_search, quantum_system=qs, control_system=control_system
-    ).lower(q, rounds)
+    ).lower(q, rounds, pulse_time, readout_time, readout_amplitude)
     errors, sigmas = [], []
     for seed in range(4):
         offset = (seed - 1.5) * 300e3
@@ -553,7 +605,7 @@ if __name__ == "__main__":
     )
 
     print("\n=== 3. What the estimators cost the controller ===")
-    scheduled = compiled.lower(q, 20_000.0 * clock_ghz)
+    scheduled = compiled.lower(q, 20_000.0 * clock_ghz, pulse_time, readout_time, readout_amplitude)
     print(scheduled.controller_usage)
     slow = dataclasses.replace(processor, cycles_per_op=processor.cycles_per_op.replace(exp=400))
     slow_system = pulse.ControlSystem(
@@ -562,7 +614,7 @@ if __name__ == "__main__":
     print("  with exp at 400 cycles:")
     try:
         pulse.compile(calibration_chain, quantum_system=qs, control_system=slow_system).lower(
-            q, 20_000.0 * clock_ghz
+            q, 20_000.0 * clock_ghz, pulse_time, readout_time, readout_amplitude
         )
     except controller.ControllerLimitError as error:
         for violation in error.violations:

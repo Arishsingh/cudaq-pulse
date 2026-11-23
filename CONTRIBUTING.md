@@ -184,6 +184,10 @@ from the page. After editing a tutorial's code, run
 `python tools/tutorial-scripts.py` to update its script;
 `tests/test_tutorial_scripts.py` fails on a stale one and runs each script.
 
+As a matter of style, examples show a kernel's calibration values (pulse
+durations, sigmas, amplitudes) as its arguments rather than as a
+module-level dictionary; a kernel that reads module-level constants is fine.
+
 ## Sanitizers
 
 `-DCUDAQ_PULSE_SANITIZERS="address;undefined"` (or `thread`) instruments

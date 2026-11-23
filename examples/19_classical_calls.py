@@ -36,15 +36,6 @@ from cudaq_pulse import ControlSystem
 from cudaq_pulse.classical import Link, emulation
 from cudaq_pulse.quantum_systems import PhysicalQudit
 
-# A 20 ns pi pulse: with H = amplitude * X / 2, this amplitude (rad/ns)
-# rotates by pi.
-cal = {
-    "pi_duration": 20 * pulse.ns,
-    "pi_amp": math.pi / 20,
-    "readout_duration": 500 * pulse.ns,
-    "short_readout_duration": 200 * pulse.ns,
-}
-
 # Two links, by name: one to a GPU decoder, and the controller's own FPGA
 # logic. Functions name the link their requests travel on. A GPU decoder
 # answers in a few microseconds (measured round trips are about 3-4 us), so
@@ -67,16 +58,16 @@ def decode(syndrome: pulse.Bits) -> bool:
 
 
 @pulse.kernel
-def decoded_feed_forward(qudit):
+def decoded_feed_forward(qudit, pi_duration, pi_amp, readout_duration):
     """Measure, decode, and correct; the raw measurement if the decoder is late."""
     drive_line = get_drive_line(qudit)
     readout_line = get_readout_line(qudit)
 
     decode_deadline = 4 * pulse.us
-    m = readout(readout_line, square(cal["readout_duration"], 0.05))
+    m = readout(readout_line, square(readout_duration, 0.05))
     in_time, correction = decode.submit([m]).result(timeout=decode_deadline)
     sync(drive_line, readout_line)
-    pi_pulse = square(cal["pi_duration"], cal["pi_amp"])
+    pi_pulse = square(pi_duration, pi_amp)
     if in_time:
         if correction:
             drive(drive_line, pi_pulse)
@@ -120,12 +111,14 @@ def update_t1(
 
 
 @pulse.kernel
-def track_t1(qudit, rounds: int, alpha: float, beta: float, first_wait):
+def track_t1(
+    qudit, rounds: int, alpha: float, beta: float, first_wait, pi_duration, pi_amp, readout_duration
+):
     """Excite, wait, measure, update the estimate, reset; repeat."""
     drive_line = get_drive_line(qudit)
     readout_line = get_readout_line(qudit)
-    pi_pulse = square(cal["pi_duration"], cal["pi_amp"])
-    readout_pulse = square(cal["short_readout_duration"], 0.05)
+    pi_pulse = square(pi_duration, pi_amp)
+    readout_pulse = square(readout_duration, 0.05)
 
     drive(drive_line, pi_pulse)
     wait(drive_line, first_wait)
@@ -190,11 +183,15 @@ if __name__ == "__main__":
     # A 0.25 ns step resolves the third level's 200 MHz anharmonicity, with
     # 20 steps per period.
     dt_ns = 0.25
+    # A 20 ns pi pulse: with H = amplitude * X / 2, this amplitude (rad/ns)
+    # rotates by pi.
+    pi_duration = 20 * pulse.ns
+    pi_amp = math.pi / 20
 
     print("=== 1. Decoding with feed-forward ===")
     decoded = pulse.compile(
         decoded_feed_forward, quantum_system=qs, control_system=control_system
-    ).lower(q)
+    ).lower(q, pi_duration, pi_amp, readout_duration=500 * pulse.ns)
     print_report(decoded)
     # Branch on whether the answer is in time, with the decoder's latency
     # model (triangular over 3-4.5 us, mode 3.5 us): P(L <= 4 us) = 0.833.
@@ -210,7 +207,7 @@ if __name__ == "__main__":
     print("\n=== 2. Adaptive T1 tracking (3 rounds, true T1 = 10 us) ===")
     rounds, alpha0, beta0, first_wait = 3, 1.0, 5000.0, 5 * pulse.us  # prior T1 = 5 us
     tracker = pulse.compile(track_t1, quantum_system=qs, control_system=control_system).lower(
-        q, rounds, alpha0, beta0, first_wait
+        q, rounds, alpha0, beta0, first_wait, pi_duration, pi_amp, readout_duration=200 * pulse.ns
     )
     # The static schedule places each variable wait at its lower bound; every
     # segment after one shifts by the wait's actual length.

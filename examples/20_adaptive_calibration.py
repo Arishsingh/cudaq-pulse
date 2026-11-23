@@ -32,12 +32,9 @@ from cudaq_pulse.quantum_systems import transmon_surface17
 from cudaq_pulse.quantum_systems.drift import OrnsteinUhlenbeck, ParameterDrift, TelegraphT1
 
 # square(pi_duration, pi_amp) is a pi pulse; at half the amplitude, a pi/2.
-pulse_cal = {
-    "pi_duration": 20 * pulse.ns,
-    "pi_amp": math.pi / 20,
-    "readout_duration": 200 * pulse.ns,
-}
-pi_duration_ns = pulse_cal["pi_duration"] / pulse.ns
+pi_duration = 20 * pulse.ns
+pi_amp = math.pi / 20
+pi_duration_ns = pi_duration / pulse.ns
 control_system = ControlSystem(links={"controller": Link(fixed_ns=4, feedback_ns=8)})
 
 # ── 1. Frequency binary search in one shot ──────────────────────────────────
@@ -68,12 +65,12 @@ def frequency_estimator(
 
 
 @pulse.kernel
-def binary_search(q, rounds: int):
+def binary_search(q, rounds: int, pi_duration, pi_amp, readout_duration):
     d = get_drive_line(q)
     r = get_readout_line(q)
-    pi_pulse = square(pulse_cal["pi_duration"], pulse_cal["pi_amp"])
-    half_pi_pulse = square(pulse_cal["pi_duration"], pulse_cal["pi_amp"] / 2)
-    readout_pulse = square(pulse_cal["readout_duration"], 0.05)
+    pi_pulse = square(pi_duration, pi_amp)
+    half_pi_pulse = square(pi_duration, pi_amp / 2)
+    readout_pulse = square(readout_duration, 0.05)
     mean, sigma = 0.0, initial_sigma_hz
     gap_ns = initial_wait_ns - pi_duration_ns
     phase = initial_phase
@@ -103,9 +100,9 @@ def binary_search(q, rounds: int):
 
 
 @pulse.kernel
-def t1_shot(q, wait_ns: int):
+def t1_shot(q, wait_ns: int, pi_duration, pi_amp):
     d = get_drive_line(q)
-    drive(d, square(pulse_cal["pi_duration"], pulse_cal["pi_amp"]))
+    drive(d, square(pi_duration, pi_amp))
     wait(d, wait_ns * pulse.ns)
 
 
@@ -124,7 +121,7 @@ if __name__ == "__main__":
     )
     scheduled = pulse.compile(
         binary_search, quantum_system=qs, control_system=control_system
-    ).lower(q, 2)
+    ).lower(q, 2, pi_duration, pi_amp, readout_duration=200 * pulse.ns)
     result = pulse.simulate(scheduled, quantum_system=detuned, dt_ns=0.25)
     print(f"  true detuning {offset_hz / 1e3:.0f} kHz; prior 0 +- {initial_sigma_hz / 1e6:.0f} MHz")
     for branch in sorted(result.branches, key=lambda branch: -branch.probability):
@@ -195,7 +192,9 @@ if __name__ == "__main__":
     # differ by the qubit's thermal population, which the probability leaves out.
     wait_ns = 8000
     t1_now = qpu.true_qudits[0].t1_us
-    p_full = pulse.simulate(compiled.lower(qpu.qudits[0], wait_ns), dt_ns=0.25).level_population(1)
+    p_full = pulse.simulate(
+        compiled.lower(qpu.qudits[0], wait_ns, pi_duration, pi_amp), dt_ns=0.25
+    ).level_population(1)
     print(
         f"  check at {wait_ns / 1e3:.0f} us: simulated P(1) = {p_full:.3f}, "
         f"from the true T1 {cal.survival_probability(wait_ns + 20, t1_now):.3f}"

@@ -13,19 +13,19 @@ only run it.
 
    import cudaq_pulse as pulse
 
-   cal = {"x_duration": 20 * pulse.ns, "x_sigma": 5 * pulse.ns}
-
    @pulse.kernel
-   def rabi(qubit, amplitude: float):
+   def rabi(qubit, amplitude: float, duration, sigma):
        drive_line = get_drive_line(qubit)
-       drive(drive_line, gaussian(cal["x_duration"], amplitude, cal["x_sigma"]))
+       drive(drive_line, gaussian(duration, amplitude, sigma))
 
    qs = pulse.quantum_system("transmon_surface17")
    q = qs.qudits[0]
+   duration = 20 * pulse.ns
+   sigma = 5 * pulse.ns
 
-   rabi(q, 0.3)                    # compiles, then runs; returns None
-   rabi(q, 0.4)                    # same compilation, new amplitude
-   scheduled = rabi.lower(q, 0.3)   # compiles (or reuses), does not run
+   rabi(q, 0.3, duration, sigma)                    # compiles, then runs; returns None
+   rabi(q, 0.4, duration, sigma)                    # same compilation, new amplitude
+   scheduled = rabi.lower(q, 0.3, duration, sigma)   # compiles (or reuses), does not run
    print(scheduled.mlir())
 
 Arguments
@@ -114,7 +114,7 @@ never evicted.
 
    sweep = pulse.compile(rabi)
    for amplitude in (0.1, 0.2, 0.3):
-       sweep(q, amplitude)          # one compilation for the whole sweep
+       sweep(q, amplitude, duration, sigma)   # one compilation for the whole sweep
 
    pinned = pulse.compile(rabi, quantum_system=qs, schedule="asap")
 
@@ -262,7 +262,7 @@ quantum system gives the coupling of two of them, ``qs.coupling(a, b)``.
 
 .. code-block:: python
 
-   program = rabi.lower(q, 0.3).generic
+   program = rabi.lower(q, 0.3, duration, sigma).generic
    for amplitude in (0.1, 0.2, 0.3):
        result = pulse.simulate(program, amplitude, t_end=20 * pulse.ns)
 

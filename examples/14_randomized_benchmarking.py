@@ -15,15 +15,6 @@ import random
 import cudaq_pulse as pulse
 import numpy as np
 
-# A 20 ns DRAG X90 for the 17-qubit transmon quantum system.
-cal = {
-    "x_duration": 20 * pulse.ns,
-    "x_sigma": 5 * pulse.ns,
-    "drag_beta": 0.25 * pulse.ns,
-    "half_pi_amp": 0.13,
-    "readout_duration": 500 * pulse.ns,
-}
-
 _NATIVE = {
     "X90": np.array([[1, -1j], [-1j, 1]]) / math.sqrt(2),
     "Y90": np.array([[1, -1], [1, 1]]) / math.sqrt(2),
@@ -74,15 +65,16 @@ def rb_sequence(depth, seed):
 
 
 @pulse.kernel
-def clifford_sequence(qudit, gates):
+def clifford_sequence(qudit, gates, x_duration, x_sigma, drag_beta, half_pi_amp, readout_duration):
     """Apply native gates (``"X90"`` or ``"Y90"``), then read out.
 
-    *gates* is a tuple of names, so the loop unrolls while tracing.
+    *gates* is a tuple of names, so the loop unrolls while tracing. The X90
+    is a DRAG pulse of *x_duration*, *x_sigma*, *drag_beta* and *half_pi_amp*.
     """
     drive_line = get_drive_line(qudit)
     readout_line = get_readout_line(qudit)
 
-    x90 = drag(cal["x_duration"], cal["half_pi_amp"], cal["x_sigma"], cal["drag_beta"])
+    x90 = drag(x_duration, half_pi_amp, x_sigma, drag_beta)
 
     for gate in gates:
         if gate == "Y90":
@@ -93,23 +85,34 @@ def clifford_sequence(qudit, gates):
             drive(drive_line, x90)
 
     sync(drive_line, readout_line)
-    readout(readout_line, square(cal["readout_duration"], 0.05))
+    readout(readout_line, square(readout_duration, 0.05))
 
 
 if __name__ == "__main__":
     qs = pulse.quantum_system("transmon_surface17")
     qudit = qs.qudits[0]
     rb = pulse.compile(clifford_sequence, quantum_system=qs)
+    # A 20 ns DRAG X90 for the 17-qubit transmon quantum system, and its readout.
+    x_duration = 20 * pulse.ns
+    x_sigma = 5 * pulse.ns
+    drag_beta = 0.25 * pulse.ns
+    half_pi_amp = 0.13
+    readout_duration = 500 * pulse.ns
 
     print("=== RB sequence (depth=2, seed=42) ===")
     gates = rb_sequence(2, 42)
     print(f"  native gates: {' '.join(gates)}")
-    print(rb.lower(qudit, gates).mlir())
+    scheduled = rb.lower(
+        qudit, gates, x_duration, x_sigma, drag_beta, half_pi_amp, readout_duration
+    )
+    print(scheduled.mlir())
 
     print("\n=== Survival probability against depth (CPU simulation) ===")
     for depth in [1, 5, 10, 20]:
         gates = rb_sequence(depth, seed=depth)
-        scheduled = rb.lower(qudit, gates)
+        scheduled = rb.lower(
+            qudit, gates, x_duration, x_sigma, drag_beta, half_pi_amp, readout_duration
+        )
         survival = pulse.simulate(scheduled, dt_ns=0.25).level_population(0)
         print(
             f"  depth={depth:3d} ({len(gates):3d} pulses): P(0) = {survival:.3f}, "
