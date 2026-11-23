@@ -32,7 +32,6 @@
 #include <thread>
 #include <unordered_map>
 
-#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/AsmParser/AsmParser.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -5853,12 +5852,31 @@ private:
   void foldBinding(mlir::ModuleOp module, llvm::ArrayRef<mlir::Value> values) {
     bool phases = false, amplitudes = false;
     if (!rewrites_.empty()) {
-      llvm::SetVector<mlir::Operation *> reached;
-      for (mlir::Value value : values)
-        mlir::getForwardSlice(value, &reached);
-      for (mlir::Operation *op : reached) {
+      // What the values reach, as mlir::getForwardSlice gathers it (the
+      // users of a value, the ops in a user's regions, and the users of
+      // all their results), with each op looked at once and without
+      // recursion: the ops of one line follow one another, as many deep
+      // as the line has ops, and the slice is taken a call deep for each.
+      // A user with regions is in `reached` once it and all it holds have
+      // been walked, so a loop that many of the values reach is walked once.
+      llvm::SmallVector<mlir::Value, 16> open(values.begin(), values.end());
+      llvm::DenseSet<mlir::Operation *> reached;
+      auto reach = [&](mlir::Operation *op) {
+        if (!reached.insert(op).second)
+          return;
         phases |= mlir::isa<pulse::ShiftPhaseOp>(op);
         amplitudes |= mlir::isa<pulse::SquarePulseOp>(op);
+        for (mlir::Value result : op->getResults())
+          open.push_back(result);
+      };
+      while (!open.empty() && !(phases && amplitudes)) {
+        mlir::Value value = open.pop_back_val();
+        for (mlir::Operation *user : value.getUsers()) {
+          if (user->getNumRegions() == 0)
+            reach(user);
+          else if (!reached.contains(user))
+            user->walk(reach);
+        }
       }
     }
 

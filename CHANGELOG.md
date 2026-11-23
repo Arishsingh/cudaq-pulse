@@ -331,6 +331,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- Binding the values of a call with a long `list[float]` parameter crashed
+  the process (a segmentation fault) from about 65,500 values on, when the
+  kernel was compiled with `fold_phases` or `fuse_pulses` (both are default
+  passes), and below that took time that grew with the square of the number
+  of values: 16,000 values took four times as long as 8,000. The values are
+  now bound in time proportional to their number, at any number; a call
+  with 70,000 values binds, and 16,000 take twice as long as 8,000.
 - `rcp` and `alap_rcp` scheduled some rolled loops one iteration at a time,
   in time and memory that grew with the trip count (a loop of 10**15
   iterations did not finish): a loop beside a longer pulse on another line,
