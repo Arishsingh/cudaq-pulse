@@ -1309,21 +1309,59 @@ class _Lines:
     """
 
     # ``watched``, set only while a measurement-conditioned arm is traced:
-    # for each arm around the trace, its record of changed containers and
-    # the containers it copies when they first change. ``plain``, set by the
+    # for each arm around the trace, innermost first, its record of changed
+    # containers, the containers it copies when they first change, its
+    # ``slotlog`` and the ids of the lists of lines and tones it puts back
+    # from that log (copied, as they were when the arm began, only if code
+    # changes them). ``plain``, set by the
     # first such if: id -> (list, length) for lists whose first `length`
     # entries hold no line or tone. Both are read with getattr. ``journal``,
     # set by the first such if, which makes these channels
     # ``_branch_journal.JournalLines``: while an if is traced, each channel
     # cell an op rebound since the if began, with its value then (results
     # written back by an if or a rolled loop are to cells already in it),
-    # else None.
-    __slots__ = ("held", "shared", "log", "watched", "plain", "journal")
+    # else None. ``slotlog``, set with ``journal``: while an if's arm is
+    # traced, each list slot written since the arm began, keyed by
+    # (id(list), index), with (list, index, the value it held then), else
+    # None; an if puts its arms' writes back from it instead of copying the
+    # lists of lines and tones the kernel holds. ``canon``: the ids of the
+    # lists the last if's then arm put back, in order, whose slot records it
+    # made canonical (None: none yet, or a call the trace does not follow
+    # may have moved their items); ``places``: by list id, [the list, the
+    # places each line or tone (by id) was recorded at in it, the list's
+    # length when last looked at]. ``between``: from the first such if on,
+    # the record of what code changes between ifs (``_branch_journal.
+    # _Between``), last among ``watched``; ``dirty``: whether the next if
+    # records every slot of the lists it puts back (code may have moved
+    # their items since the last one).
+    __slots__ = (
+        "held",
+        "shared",
+        "log",
+        "watched",
+        "plain",
+        "journal",
+        "slotlog",
+        "canon",
+        "places",
+        "between",
+        "dirty",
+        "unwatched",
+    )
 
     if TYPE_CHECKING:
-        watched: tuple[tuple[dict[int, tuple[Any, Any]], tuple[Any, ...]], ...]
+        # Each arm's (changed containers, containers copied when they first
+        # change, slot log, lists put back from it, their lengths); the
+        # record between ifs is (that record, (), None, True, None).
+        watched: tuple[tuple[Any, Any, Any, Any, Any], ...]
         plain: dict[int, tuple[list[Any], int]]
         journal: dict[_Chan, IRValue] | None
+        slotlog: dict[tuple[int, int], tuple[list[Any], int, IRValue]] | None
+        canon: tuple[int, ...] | None
+        places: dict[int, list[Any]]
+        between: Any
+        dirty: bool
+        unwatched: bool
 
     def __init__(self) -> None:
         self.held: dict[tuple[Any, ...], _Held] = {}
@@ -2435,15 +2473,17 @@ class PulseIREmitter:
         # slots the trace rebinds, is copied now, and its slots tracked again
         # after the first arm.
         containers: list[Any] = [v for v in saved_locals.values() if isinstance(v, _MUTABLE)]
-        lazy: list[tuple[Any, int]] = []
+        # A _branch_journal.Logged at an if holding lists of lines.
+        lazy: Any = []
         if containers:
             found = containers
             containers = []
-            rebound = set(map(id, map(_first, self._slots.values())))
             # id -> (list, n): the list's first n entries hold no line or
             # tone, looked at once each while they stay in it, unless a call
-            # the trace does not follow ran. A line or tone a traced change
-            # puts in a list has its slot tracked (rebound).
+            # the trace does not follow ran.
+            journal_lines: Any = self._lines
+            if getattr(journal_lines, "between", None) is not None:
+                journal_lines.take_plain()
             plain = getattr(self._lines, "plain", None)
             if plain is None:
                 plain = self._lines.plain = {}
@@ -2456,23 +2496,33 @@ class PulseIREmitter:
                 if v.__class__ is dict or v.__class__ is not list and not isinstance(v, list):
                     lazy.append((v, len(v)))
                     continue
-                if id(v) not in rebound:
-                    seen = plain.get(id(v))
-                    i = 0 if seen is None or seen[0] is not v else seen[1]
-                    n = len(v)
-                    if i > n:
-                        i = 0
-                    while i < n:
-                        x = v[i]
-                        if x.__class__ is IRValue and x.vtype in LINEAR_TYPES:
-                            break
-                        i += 1
-                    else:
-                        plain[id(v)] = (v, n)
-                        lazy.append((v, n))
-                        continue
-                    plain.pop(id(v), None)
-                containers.append((v, list(v)))
+                seen = plain.get(id(v))
+                i = 0 if seen is None or seen[0] is not v else seen[1]
+                n = len(v)
+                if i > n:
+                    i = 0
+                while i < n:
+                    x = v[i]
+                    if x.__class__ is IRValue and x.vtype in LINEAR_TYPES:
+                        break
+                    i += 1
+                else:
+                    plain[id(v)] = (v, n)
+                    lazy.append((v, n))
+                    continue
+                plain.pop(id(v), None)
+                # A list holding lines or tones is not copied: each arm puts
+                # back what it wrote into the list's slots from its slot log
+                # (copy None), and copies the list, as it was when the arm
+                # began, only if code changes it (_materialize). A subclass
+                # is copied as before: its own indexing runs as often as it did.
+                containers.append((v, None if v.__class__ is list else list(v)))
+            if any(copy is None for _, copy in containers):
+                # Lists of lines put back from the arms' slot logs: the
+                # containers copied when first changed become a record of the
+                # if's slot logs (_branch_journal.Logged).
+                journal_class: Any = _journal_lines or _load_journal_lines()
+                lazy = journal_class.logged(self, containers, lazy)
 
         # JournalLines from the first such if on (_branch_journal).
         lines: Any = self._lines
@@ -2531,7 +2581,32 @@ class PulseIREmitter:
             # The containers the then arm changed, put back (after the
             # channels: neither reads the other).
             if containers:
+                undo: dict[int, list[tuple[int, IRValue]]] | None = None
+                # The lists put back, in order: their records are made
+                # canonical as each is put back, from the records written
+                # since the last if unless the lists differ from its own.
+                canon = tuple(id(obj) for obj, _ in containers if isinstance(obj, list))
+                # Or every one if code may have moved the items of one since
+                # (_branch_journal.Logged.fresh).
+                started = lazy.__class__ is not list
+                if started:
+                    then_log = lazy.log
+                    then_made = lazy.made
+                full = started and (lazy.fresh or lines.dirty or lines.canon != canon)
                 for obj, copy in containers:
+                    if copy is None:
+                        copy = then_made.get(id(obj))
+                        if copy is None:
+                            # Only the slots the then arm wrote, put back.
+                            if undo is None:
+                                undo = lines.log_by_list(then_log)
+                            slots = self._slots
+                            for i, old in undo.get(id(obj), ()):
+                                slots.pop(id(obj[i]), None)
+                                obj[i] = old
+                                slots[id(old)] = (obj, i, old)
+                            lines.canonical_list(self, obj, full)
+                            continue
                     # lines.restore_container, inline for lists, dicts and sets.
                     if isinstance(obj, list):
                         obj[:] = copy
@@ -2551,6 +2626,11 @@ class PulseIREmitter:
                         obj.update(copy)
                     else:
                         lines.restore_container(self, obj, copy)
+                if started:
+                    lines.canon = canon
+                    lines.dirty = False
+                    logged: Any = self._slots
+                    logged.written.clear()
                 if then_copies:
                     for obj, copy in then_copies:
                         lines.restore_container(self, obj, copy)
@@ -2559,10 +2639,23 @@ class PulseIREmitter:
                     # arms join (an if without else) changes nothing: each
                     # container holds the copy it was put back to just before.
                     else_locals, else_slots, else_copies = dict(self.locals), [], []
+                    else_log: Any = {}
+                    else_made: dict[int, list[Any]] = {}
                 else:
                     else_locals, else_slots, else_copies = self._trace_arm(
                         view, index, join, else_start, (containers, lazy)
                     )
+                    if started:
+                        else_log = lazy.log
+                        else_made = lazy.made
+                if started:
+                    # What the arms wrote into list slots counts, for an if
+                    # around this one, as written by its arm.
+                    around_log = lines.slotlog
+                    if around_log is not None:
+                        for arm_log in (then_log, else_log):
+                            for key, noted in arm_log.items():
+                                around_log.setdefault(key, noted)
             else:
                 if then_copies:
                     for obj, copy in then_copies:
@@ -2659,7 +2752,10 @@ class PulseIREmitter:
             # that each arm yields a value once.
             listed: list[tuple[Any, int, IRValue, IRValue, IRValue | None]] = []
             if then_slots or else_slots:
-                originals = {id(obj): copy for obj, copy in containers}
+                originals = {id(obj): copy for obj, copy in containers if copy is not None}
+                if lazy.__class__ is not list:
+                    for made in (else_made, then_made):
+                        originals.update(made)
                 if lazy:
                     for obj, copy in then_copies + else_copies:
                         originals[id(obj)] = copy
@@ -2674,7 +2770,14 @@ class PulseIREmitter:
                     carrying = {(id(a), id(b)) for _, a, b in results}
                     carrying.update((id(a), id(b)) for _, _, a, b in slot_results)
                 for key, obj in keys.items():
-                    old = originals[key[0]][key[1]]
+                    copied: Any = originals.get(key[0])
+                    if copied is not None:
+                        old = copied[key[1]]
+                    else:
+                        # A list put back from the arms' slot logs: what the
+                        # slot held entering the if.
+                        entry: Any = then_log.get(key) or else_log.get(key)
+                        old = obj[key[1]] if entry is None else entry[2]
                     a = then_new.get(key, old)
                     b = else_new.get(key, old)
                     if a is b:
@@ -2747,10 +2850,15 @@ class PulseIREmitter:
             if listed:
                 for name, a, b in results:
                     carried.setdefault((id(a), id(b)), merged[name])
+                # The log of the arm around this if, if any.
+                around_log = getattr(lines, "slotlog", None)
             # A list slot that holds its channel's values takes the channel's result.
             for obj, i, a, b, out in listed:
                 out = carried.get((id(a), id(b)), out)
                 assert out is not None
+                if around_log is not None and obj.__class__ is list:
+                    at = i + len(obj) if i < 0 else i
+                    around_log.setdefault((id(obj), at), (obj, at, obj[i]))
                 obj[i] = out
                 self._slots[id(out)] = (obj, i, out)
             if chosen:
@@ -2871,8 +2979,12 @@ class PulseIREmitter:
     ) -> tuple[dict[str, StackVal], list[tuple[list[Any], int, IRValue]], list[tuple[Any, Any]]]:
         """Trace one arm until it reaches *join*; return its locals, rebound
         slots and the contents before it of the containers it changed. Of the
-        *snapshot* of containers the arm starts with, the first are copied and
-        the others (each with its length) are copied when first changed."""
+        *snapshot* of containers the arm starts with, those with a copy are
+        copied, those without (lists of lines and tones) are put back from
+        the arm's slot log (the containers copied when first changed are then
+        a ``_branch_journal.Logged``, which keeps that log), and the others
+        (each with its length) are copied when first changed."""
+        lazy: Any  # a _branch_journal.Logged at an if holding lists of lines
         containers, lazy = snapshot
         end = len(view.instrs)
         returns = join >= end
@@ -2891,9 +3003,14 @@ class PulseIREmitter:
         mutated: dict[int, tuple[Any, Any]] = {}
         self._mutated = mutated
         if lazy:
-            lines = self._lines
+            lines: Any = self._lines
             around = getattr(lines, "watched", ())
-            lines.watched = ((mutated, tuple(obj for obj, _ in lazy)), *around)
+            if lazy.__class__ is list:
+                lines.watched = ((mutated, tuple(obj for obj, _ in lazy)), *around)
+            else:
+                # Lists of lines put back from the arm's slot log
+                # (_branch_journal.Logged).
+                lazy.begin(lines, mutated, around)
         try:
             outcome = self._loop(view, start, branch, end, header)
         except _NotRollableError:
@@ -2904,6 +3021,8 @@ class PulseIREmitter:
             self._mutated = outer
             if lazy:
                 lines.watched = around
+                if lazy.__class__ is not list:
+                    lines.slotlog = lazy.around_log
             if outer is not None:
                 for key, entry in mutated.items():
                     outer.setdefault(key, entry)
@@ -2930,7 +3049,10 @@ class PulseIREmitter:
                 elif len(obj) != length:
                     break
             else:
-                slots = _slot_changes(containers + copies)
+                if lazy.__class__ is list:
+                    slots = _slot_changes(containers + copies)
+                else:
+                    slots = lazy.end(mutated, containers, copies)
         elif containers:
             slots = _slot_changes(containers)
         else:
@@ -3272,6 +3394,12 @@ class PulseIREmitter:
         """Remember what *obj* held before a rolled body or branch arm changed it."""
         mutated = self._mutated
         if mutated is not None and id(obj) not in mutated:
+            lines: Any = self._lines
+            arms = getattr(lines, "watched", None)
+            if arms and isinstance(obj, list):
+                lines.materialize(arms, obj)
+                if id(obj) in mutated:
+                    return
             if obj.__class__ in _CONTAINERS:
                 mutated[id(obj)] = (obj, obj.copy())
             elif isinstance(obj, _MUTABLE):
@@ -3573,11 +3701,13 @@ class PulseIREmitter:
                     # A call the trace does not follow may change any
                     # container an arm around it copies only when it first
                     # changes, and the lists known to hold no line or tone.
-                    lines = self._lines
-                    for mutated, watched in getattr(lines, "watched", ()):
+                    lines: Any = self._lines
+                    for mutated, watched, *arm in getattr(lines, "watched", ()):
                         for obj in watched:
                             if id(obj) not in mutated:
                                 mutated[id(obj)] = (obj, obj.copy())
+                        if arm:
+                            lines.untraced(self, mutated, arm[1], callable_val, call_args, kwargs)
                     plain = getattr(lines, "plain", None)
                     if plain:
                         plain.clear()

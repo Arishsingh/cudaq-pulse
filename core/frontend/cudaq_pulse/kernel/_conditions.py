@@ -559,10 +559,11 @@ def filtered(emitter: PulseIREmitter, containers: list[tuple[Any, Any]]) -> bool
     """Whether the arm just traced added to what a comprehension or
     generator expression builds."""
     yielded = emitter.locals.get(".yielded")
+    # A list put back from a slot log (no copy) keeps its length.
     return any(
         len(obj) != len(copy)
         for obj, copy in containers
-        if obj is yielded or any(obj is v for v in emitter.stack)
+        if copy is not None and (obj is yielded or any(obj is v for v in emitter.stack))
     )
 
 
