@@ -9,6 +9,7 @@ import dataclasses
 import io
 import json
 import math
+import os
 import pickle
 import tomllib
 import warnings
@@ -1019,6 +1020,52 @@ def test_a_description_file_reports_every_problem_with_its_line(tmp_path):
         "is not a controller field",
         3,
     )
+
+
+def test_a_description_file_written_again_is_the_one_loaded(tmp_path):
+    # Each write keeps the first one's time stamp, as writes within one tick
+    # of the file system's clock do, or a copy that keeps times.
+    path = tmp_path / "box.toml"
+
+    def write(text):
+        stamp = os.stat(path).st_mtime_ns if path.exists() else None
+        path.write_text(text)
+        if stamp is not None:
+            os.utime(path, ns=(stamp, stamp))
+            assert os.stat(path).st_mtime_ns == stamp
+
+    write('model = "lab.box"\nversion = "2"\ninstruction_cycles = 3\n')
+    first = pulse.controller(path, drive_lines=[0])
+    assert first.instruction_cycles == 3
+    assert pulse.controller(path) is pulse.controller(path)
+    write('model = "lab.box"\nversion = "2"\ninstruction_cycles = 7\n')
+    assert pulse.controller(path, drive_lines=[0]).instruction_cycles == 7
+    write('model = "lab.box"\nversion = "2"\nowner = "the lab"\n')
+    with pytest.raises(QuantumSystemDefinitionError) as raised:
+        pulse.controller(path)
+    assert [p.path for p in raised.value.problems] == ["owner"]
+    # The first content again is the controller parsed for it.
+    write('model = "lab.box"\nversion = "2"\ninstruction_cycles = 3\n')
+    assert pulse.controller(path, drive_lines=[0]) == first
+
+
+def test_a_description_file_changed_to_the_same_length_is_the_one_loaded(tmp_path):
+    path = tmp_path / "box.toml"
+    path.write_text('model = "lab.box"\nversion = "2"\ninstruction_cycles = 3\n')
+    stamp, size = os.stat(path).st_mtime_ns, os.stat(path).st_size
+    assert pulse.controller(path).instruction_cycles == 3
+    path.write_text('model = "lab.box"\nversion = "2"\ninstruction_cycles = 7\n')
+    os.utime(path, ns=(stamp, stamp))
+    assert (os.stat(path).st_mtime_ns, os.stat(path).st_size) == (stamp, size)
+    assert pulse.controller(path).instruction_cycles == 7
+
+
+def test_a_description_file_reads_as_text_whatever_its_line_ends(tmp_path):
+    path = tmp_path / "box.toml"
+    path.write_bytes(b'model = "lab.box"\r\nversion = "2"\r\ninstruction_cycle = 2\r\n')
+    with pytest.raises(QuantumSystemDefinitionError) as raised:
+        pulse.controller(path)
+    assert {p.path: p.line for p in raised.value.problems}["instruction_cycle"] == 3
 
 
 def test_a_system_file_from_another_description_version_is_noticed_once():

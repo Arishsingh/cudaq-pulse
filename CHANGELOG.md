@@ -335,6 +335,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A controller description written again is the one loaded.**
+  `pulse.controller(path)` kept a file's parsed description by the file's
+  modification time alone, so a file written twice within one tick of the
+  file system's clock, or copied with its time kept, loaded as its earlier
+  content, without an error. The file is now read at each call and parsed
+  once for each content it has had. An installed description, loaded by
+  its name, is still kept by its file's modification time: nothing writes
+  those while a program runs.
 - Binding the values of a call with a long `list[float]` parameter crashed
   the process (a segmentation fault) from about 65,500 values on, when the
   kernel was compiled with `fold_phases` or `fuse_pulses` (both are default
