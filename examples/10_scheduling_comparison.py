@@ -8,23 +8,21 @@ each policy, then prints the resulting timelines.
 
 import cudaq_pulse as pulse
 
-# Qubit i's pulses last base_duration + i * duration_step.
-cal = {"base_duration": 20 * pulse.ns, "duration_step": 10 * pulse.ns, "sigma": 5 * pulse.ns}
-
 
 @pulse.kernel
-def four_qudit(qs):
+def four_qudit(qs, base_duration, duration_step, sigma):
+    """Qubit i's pulses last base_duration + i * duration_step."""
     lines, tones = [], []
     for i in range(4):
         line = get_drive_line(qs[i])
         lines.append(line)
         tones.append(line.tone)
-    durations = [cal["base_duration"] + i * cal["duration_step"] for i in range(4)]
+    durations = [base_duration + i * duration_step for i in range(4)]
     for i in range(4):
-        drive(lines[i], gaussian(durations[i], 0.25, cal["sigma"]), tone=tones[i])
+        drive(lines[i], gaussian(durations[i], 0.25, sigma), tone=tones[i])
     sync(lines[0], lines[1], lines[2], lines[3])
     for i in range(4):
-        drive(lines[i], gaussian(durations[i], 0.25, cal["sigma"]), tone=tones[i])
+        drive(lines[i], gaussian(durations[i], 0.25, sigma), tone=tones[i])
 
 
 def print_timeline(scheduled: pulse.ScheduledKernel, label: str) -> int:
@@ -38,7 +36,10 @@ def print_timeline(scheduled: pulse.ScheduledKernel, label: str) -> int:
 
 
 def main():
-    args = [qs.qudits[:4]]
+    base_duration = 20 * pulse.ns
+    duration_step = 10 * pulse.ns
+    sigma = 5 * pulse.ns
+    args = [qs.qudits[:4], base_duration, duration_step, sigma]
     control_system = pulse.ControlSystem(max_concurrent_drives=2, line_switch_penalty_cycles=5)
     totals = {}
     for policy in ("asap", "alap", "rcp"):

@@ -632,6 +632,12 @@ def _bind_count_error(parameters: tuple[str, ...], values: Any) -> InvalidTypeEr
     )
 
 
+# The types of the values bind() has checked and taken as real numbers. What
+# the check decides about a value other than a NaN, it decides by the value's
+# type, so a value of one of these types needs no more than float().
+_REAL_TYPES: set[type] = {float, int}
+
+
 def _bind_checked(parameters: tuple[str, ...], values: Any) -> list[float]:
     """*values* as floats, one per parameter, or the error for their count or
     naming the first parameter whose value is not a real number, or is NaN."""
@@ -643,7 +649,11 @@ def _bind_checked(parameters: tuple[str, ...], values: Any) -> list[float]:
         raise _bind_count_error(parameters, values)
     out = []
     for name, v in zip(parameters, values, strict=False):
-        if isinstance(v, (bool, str, bytes)) or not hasattr(v, "__float__"):
+        if (
+            isinstance(v, (bool, str, bytes))
+            or not hasattr(v, "__float__")
+            or (type(v).__module__ == "numpy" and type(v).__name__ in ("bool", "bool_"))
+        ):
             raise InvalidTypeError(
                 f"bind(): the value of {name!r} must be a real number, got {type(v).__name__} {v!r}"
             )
@@ -772,10 +782,13 @@ class ScheduledKernel:
         order. Too few or too many values are an ``InvalidTypeError`` naming
         the parameters, and a wait length computed from the values that is not
         a non-negative number of cycles within the wait's bounds a
-        ``ValueError``. A value that is not a real number (a bool or a str) is
-        an ``InvalidTypeError``, and a NaN an ``InvalidValueError``, each
-        naming the parameter; an infinity is an ``InvalidValueError`` naming
-        it where the module is used: run, simulated, exported or printed.
+        ``ValueError``. A value that is not a real number (a bool, a numpy
+        bool or a str) is an ``InvalidTypeError``, and a NaN an
+        ``InvalidValueError``, each raised here and naming the parameter, on
+        the first bind of a module and on every later one; an infinity is an
+        ``InvalidValueError`` naming it where the module is used: run,
+        simulated, exported or printed. The call's ``arguments`` are floats,
+        whatever real numbers were given.
 
         A module of one call, as ``lower()`` with values returns, has no
         parameters left: binding no values returns that call, and binding any
@@ -785,9 +798,12 @@ class ScheduledKernel:
             arguments = tuple(values)
         except (TypeError, AttributeError):
             # How many values a generic module takes is kept by its first
-            # bind; a call's view keeps none and takes none.
+            # bind, which then binds as every later one does; a call's view
+            # keeps none and takes none.
             if self._generic is None:
-                self._arity = len(self.parameters)
+                if not hasattr(self, "_arity"):
+                    self._arity = len(self.parameters)
+                    return self.bind(values)
             elif not _bind_checked(self.parameters, values):
                 # A call's values are bound: binding none keeps them.
                 return self
@@ -795,8 +811,29 @@ class ScheduledKernel:
         if len(arguments) != arity:
             raise _bind_count_error(self.parameters, arguments)
         for v in arguments:
-            if v.__class__ is float and v != v:
-                _bind_checked(self.parameters, arguments)
+            if v.__class__ is not float or v != v:
+                # Numbers of types the check has passed before (an int, a
+                # numpy scalar) are made floats as they are; any other
+                # value, or a NaN, goes to the check, for the error naming
+                # its parameter or for the values as floats.
+                if _REAL_TYPES.issuperset(map(type, arguments)):
+                    try:
+                        floats = tuple(map(float, arguments))
+                        total = sum(floats)
+                    except Exception:
+                        # One that float() does not take (an int too large):
+                        # the check raises for it, or for a NaN before it.
+                        total = math.nan
+                    if total == total:
+                        arguments = floats
+                    else:
+                        # A NaN among them, or infinities of both signs.
+                        arguments = tuple(_bind_checked(self.parameters, arguments))
+                else:
+                    floats = tuple(_bind_checked(self.parameters, arguments))
+                    _REAL_TYPES.update(map(type, arguments))
+                    arguments = floats
+                break
         # The view is made here as in _with_values: a call to it would be a
         # third of a bind.
         waits = self.waits

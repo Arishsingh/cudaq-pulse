@@ -238,6 +238,20 @@ def _two_amplitudes(q0, amplitude: float, detuning: float):
     drive(d0, square(40, amplitude))
 
 
+def _unbound_module():
+    """The module of a kernel made here, so nothing has bound its values: a
+    module's first bind is told from its later ones."""
+
+    @pulse.kernel
+    def two(q0, amplitude: float, detuning: float):
+        d0 = get_drive_line(q0)
+        drive(d0, square(40, amplitude))
+        shift_frequency(d0.tone, detuning)
+        drive(d0, square(40, amplitude))
+
+    return two.lower(Q[0], 0.1, 1e6).generic
+
+
 def test_bind_takes_one_real_number_per_parameter():
     generic = _two_amplitudes.lower(Q[0], 0.1, 1e6).generic
     assert generic.parameters == ("amplitude", "detuning")
@@ -291,14 +305,127 @@ def test_bind_names_the_parameters_when_the_count_does_not_fit(values, message):
         ),
         ([0.2, 1j], pulse.InvalidTypeError, r"'detuning' must be a real number, got complex"),
         ([0.2, None], pulse.InvalidTypeError, r"'detuning' must be a real number, got NoneType"),
-        ([0.2, -math.inf], pulse.InvalidValueError, r"argument 'detuning' is -inf; a float"),
     ],
 )
-def test_a_bound_value_that_does_not_fit_fails_where_the_module_is_used(values, error, message):
-    bound = _two_amplitudes.lower(Q[0], 0.1, 1e6).generic.bind(values)
-    for use in (bound.mlir, lambda: pulse.simulate(bound)):
+def test_a_bound_value_that_is_not_a_real_number_fails_where_it_is_bound(values, error, message):
+    # The first bind of a module and a later one.
+    generic = _unbound_module()
+    for _ in range(2):
         with pytest.raises(error, match=message):
-            use()
+            generic.bind(values)
+        assert generic.bind([0.3, 2e6]).arguments == (0.3, 2e6)
+
+
+def test_the_values_of_a_call_are_floats_whatever_numbers_were_bound():
+    generic = _unbound_module()
+    for _ in range(2):
+        for values in ([1, 2], (_Real(1.0), 2), [1.0, 2.0]):
+            arguments = generic.bind(values).arguments
+            assert arguments == (1.0, 2.0)
+            assert [type(v) for v in arguments] == [float, float]
+
+
+def test_the_first_bind_of_a_module_takes_what_a_later_one_takes():
+    for values in (
+        lambda: iter([0.2, 2e6]),
+        lambda: (v for v in (0.2, 2e6)),
+        lambda: {0.2: 0, 2e6: 1},
+    ):
+        generic = _unbound_module()
+        first, later = generic.bind(values()), generic.bind(values())
+        assert first.arguments == later.arguments == (0.2, 2e6)
+        assert first.mlir() == later.mlir()
+    for values in (lambda: iter([0.2]), lambda: 0.2, lambda: None):
+        generic = _unbound_module()
+        errors = []
+        for _ in range(2):
+            with pytest.raises(pulse.InvalidTypeError) as raised:
+                generic.bind(values())
+            errors.append(str(raised.value))
+            generic.bind([0.3, 2e6])
+        assert errors[0] == errors[1]
+
+
+class _Volts(float):
+    pass
+
+
+def test_a_number_of_another_type_is_bound_as_a_plain_float():
+    np = pytest.importorskip("numpy")
+    kinds = (
+        lambda: [np.float64(0.25), np.float64(2e6)],
+        lambda: [np.float32(0.25), np.float32(2e6)],
+        lambda: [_Volts(0.25), _Volts(2e6)],
+        lambda: [0.25, np.float64(2e6)],
+        lambda: np.array([0.25, 2e6]),
+        lambda: [_Real(0.25), 2_000_000],
+        lambda: [np.float16(0.25), np.int64(2_000_000)],
+        lambda: [0.25, np.int32(2_000_000)],
+    )
+    for values in kinds:
+        generic = _unbound_module()
+        for _ in range(3):
+            arguments = generic.bind(values()).arguments
+            assert arguments == (0.25, 2e6)
+            assert [type(v) for v in arguments] == [float, float]
+
+
+def test_a_bad_value_beside_a_number_of_another_type_fails_where_it_is_bound():
+    np = pytest.importorskip("numpy")
+    generic = _unbound_module()
+    refused = (
+        ([np.float64(0.2), True], "'detuning' must be a real number, got bool"),
+        ([1, True], "'detuning' must be a real number, got bool"),
+        ([_Volts(0.2), "1e6"], "'detuning' must be a real number, got str"),
+        ([np.int64(1), None], "'detuning' must be a real number, got NoneType"),
+    )
+    for _ in range(3):
+        for values, message in refused:
+            with pytest.raises(pulse.InvalidTypeError, match=message):
+                generic.bind(values)
+        with pytest.raises(
+            pulse.InvalidValueError, match=r"bind\(\): the value of 'detuning' is nan"
+        ):
+            generic.bind([1, np.float64("nan")])
+        both = generic.bind([np.float64(math.inf), np.float64(-math.inf)])
+        assert both.arguments == (math.inf, -math.inf)
+        # A NaN before a number float() does not take is the error, as it
+        # is whatever the types bound before.
+        with pytest.raises(pulse.InvalidValueError, match=r"the value of 'amplitude' is nan"):
+            generic.bind([math.nan, 10**400])
+        with pytest.raises(OverflowError):
+            generic.bind([1, 10**400])
+        # The numbers beside the refused values are still taken.
+        assert generic.bind([np.float64(0.2), np.int64(1)]).arguments == (0.2, 1.0)
+
+
+def test_a_numpy_bool_is_refused_as_a_bool_is():
+    np = pytest.importorskip("numpy")
+    for values, name in (
+        ([np.True_, 1e6], "amplitude"),
+        ([0.2, np.False_], "detuning"),
+        ([np.int64(1), np.True_], "detuning"),
+        (np.array([True, False]), "amplitude"),
+    ):
+        generic = _unbound_module()
+        for _ in range(3):
+            with pytest.raises(
+                pulse.InvalidTypeError,
+                match=rf"bind\(\): the value of '{name}' must be a real number, got bool",
+            ):
+                generic.bind(values)
+            generic.bind([0.3, 2])
+
+
+def test_an_infinite_bound_value_fails_where_the_module_is_used():
+    generic = _unbound_module()
+    for _ in range(2):
+        bound = generic.bind([0.2, -math.inf])
+        for use in (bound.mlir, lambda bound=bound: pulse.simulate(bound)):
+            with pytest.raises(
+                pulse.InvalidValueError, match=r"argument 'detuning' is -inf; a float"
+            ):
+                use()
 
 
 def test_a_nan_value_fails_where_it_is_bound():

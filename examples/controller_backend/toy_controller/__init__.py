@@ -96,24 +96,25 @@ if __name__ == "__main__":
         },
         clock_ghz=1.0,
     )
-    cal = {
-        "x_duration": 40 * pulse.ns,
-        "x_sigma": 10 * pulse.ns,
-        "readout_duration": 200 * pulse.ns,
-    }
 
     @pulse.kernel
-    def drive_and_measure(q):
+    def drive_and_measure(q, x_duration, x_sigma, readout_duration):
         drive_line = get_drive_line(q)
         readout_line = get_readout_line(q)
-        drive(drive_line, gaussian(cal["x_duration"], 0.5, cal["x_sigma"]))
+        drive(drive_line, gaussian(x_duration, 0.5, x_sigma))
         sync(drive_line, readout_line)
-        readout(readout_line, square(cal["readout_duration"], 0.05))
+        readout(readout_line, square(readout_duration, 0.05))
 
     compiled = pulse.compile(
         drive_and_measure, quantum_system=qs, control_system=backend.control_system()
     )
-    program = backend.emit(compiled.lower(qs.qudits[0]).export_to_controller())
+    scheduled = compiled.lower(
+        qs.qudits[0],
+        x_duration=40 * pulse.ns,
+        x_sigma=10 * pulse.ns,
+        readout_duration=200 * pulse.ns,
+    )
+    program = backend.emit(scheduled.export_to_controller())
     print(program, end="")
     print(backend.run(program, shots_count=2))
     backends.unregister("toy")

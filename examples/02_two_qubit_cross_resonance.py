@@ -14,28 +14,19 @@ amplitudes and durations here are illustrative, not calibrated for it.
 
 import cudaq_pulse as pulse
 
-cal = {
-    "x_duration": 20 * pulse.ns,
-    "x_sigma": 5 * pulse.ns,
-    "drag_beta": 0.25 * pulse.ns,
-    "cr_duration": 100 * pulse.ns,
-    "cr_width": 80 * pulse.ns,
-}
-
 
 @pulse.kernel
-def echoed_cr(qudit_ctrl, qudit_tgt):
+def echoed_cr(qudit_ctrl, qudit_tgt, x_duration, x_sigma, drag_beta, cr_duration, cr_width):
     """Echoed cross-resonance CNOT from *qudit_ctrl* to *qudit_tgt*."""
     drive_line_ctrl = get_drive_line(qudit_ctrl)
     drive_line_tgt = get_drive_line(qudit_tgt)
 
     sync(drive_line_ctrl, drive_line_tgt)
 
-    x_duration, x_sigma, beta = cal["x_duration"], cal["x_sigma"], cal["drag_beta"]
-    sx_pulse = drag(x_duration, 0.025, x_sigma, beta)
-    x_ctrl = drag(x_duration, 0.047, x_sigma, beta)
-    cr = gaussian_square(cal["cr_duration"], 0.10, x_sigma, cal["cr_width"])
-    cr_neg = gaussian_square(cal["cr_duration"], -0.10, x_sigma, cal["cr_width"])
+    sx_pulse = drag(x_duration, 0.025, x_sigma, drag_beta)
+    x_ctrl = drag(x_duration, 0.047, x_sigma, drag_beta)
+    cr = gaussian_square(cr_duration, 0.10, x_sigma, cr_width)
+    cr_neg = gaussian_square(cr_duration, -0.10, x_sigma, cr_width)
 
     drive(drive_line_tgt, sx_pulse)
     drive(drive_line_ctrl, cr, tone=drive_line_tgt.tone)
@@ -46,6 +37,13 @@ def echoed_cr(qudit_ctrl, qudit_tgt):
 
 if __name__ == "__main__":
     qs = pulse.quantum_system("transmon_surface17")
-    scheduled = pulse.compile(echoed_cr, quantum_system=qs).lower(qs.qudits[0], qs.qudits[1])
+    x_duration = 20 * pulse.ns
+    x_sigma = 5 * pulse.ns
+    drag_beta = 0.25 * pulse.ns
+    cr_duration = 100 * pulse.ns
+    cr_width = 80 * pulse.ns  # the flat top of the cross-resonance pulse
+    scheduled = pulse.compile(echoed_cr, quantum_system=qs).lower(
+        qs.qudits[0], qs.qudits[1], x_duration, x_sigma, drag_beta, cr_duration, cr_width
+    )
     print(scheduled.mlir())
     print(f"  Compile metrics: {scheduled.metrics}")

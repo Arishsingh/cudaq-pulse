@@ -1206,7 +1206,7 @@ public:
         if (mlir::isa<classical::SubmitOp, classical::WaitOp>(op) ||
             op->hasAttr("classical.variable"))
           for (const Sample &sample : list)
-            forwardStarts[{op, sample.iteration}] = sample.start;
+            forwardStarts[op][sample.iteration] = sample.start;
       forwardExtrapolations = extrapolations;
     }
     samples.clear();
@@ -4204,10 +4204,13 @@ private:
   /// forwardStartOf in iteration `at` of the loops around `op`, `loops`.
   int64_t forwardStartAt(mlir::Operation *op, llvm::ArrayRef<int64_t> at,
                          llvm::ArrayRef<mlir::scf::ForOp> loops) const {
-    std::pair<mlir::Operation *, llvm::SmallVector<int64_t, 2>> key{
-        op, llvm::SmallVector<int64_t, 2>(at)};
-    auto it = forwardStarts.find(key);
-    if (it != forwardStarts.end())
+    auto starts = forwardStarts.find(op);
+    if (starts == forwardStarts.end())
+      return 0;
+    const auto &byIteration = starts->second;
+    llvm::SmallVector<int64_t, 2> key(at);
+    auto it = byIteration.find(key);
+    if (it != byIteration.end())
       return it->second;
     // The latest iteration simulated before this one of the innermost loop
     // the forward pass extrapolated, in the same iteration of the loops
@@ -4224,14 +4227,13 @@ private:
         }
       if (!period)
         continue;
-      key.second.assign(at.begin(), at.begin() + level + 1);
-      auto before = forwardStarts.lower_bound(key);
-      if (before == forwardStarts.begin())
+      key.assign(at.begin(), at.begin() + level + 1);
+      auto before = byIteration.lower_bound(key);
+      if (before == byIteration.begin())
         continue;
       --before;
-      const auto &seen = before->first.second;
-      if (before->first.first != op ||
-          static_cast<int64_t>(seen.size()) <= level ||
+      const auto &seen = before->first;
+      if (static_cast<int64_t>(seen.size()) <= level ||
           !std::equal(at.begin(), at.begin() + level, seen.begin()))
         continue;
       llvm::SmallVector<int64_t, 2> moved(at);
@@ -4240,12 +4242,12 @@ private:
              (at[level] - seen[level]) * *period;
     }
     // Otherwise the latest simulated iteration before this one.
-    key.second.assign(at.begin(), at.end());
-    auto before = forwardStarts.lower_bound(key);
-    if (before == forwardStarts.begin())
+    key.assign(at.begin(), at.end());
+    auto before = byIteration.lower_bound(key);
+    if (before == byIteration.begin())
       return 0;
     --before;
-    if (before->first.first != op || at.empty())
+    if (at.empty())
       return 0;
     return before->second;
   }
@@ -4262,12 +4264,13 @@ private:
     for (mlir::Operation *op : pinned) {
       if (!loop->isProperAncestor(op))
         continue;
-      std::pair<mlir::Operation *, llvm::SmallVector<int64_t, 2>> key{
-          op,
-          llvm::SmallVector<int64_t, 2>(saved.begin(), saved.begin() + depth)};
-      for (auto it = forwardStarts.lower_bound(key);
-           it != forwardStarts.end() && it->first.first == op; ++it) {
-        const auto &at = it->first.second;
+      auto starts = forwardStarts.find(op);
+      if (starts == forwardStarts.end())
+        continue;
+      llvm::SmallVector<int64_t, 2> key(saved.begin(), saved.begin() + depth);
+      for (auto it = starts->second.lower_bound(key);
+           it != starts->second.end(); ++it) {
+        const auto &at = it->first;
         if (at.size() <= depth ||
             !std::equal(saved.begin(), saved.begin() + depth, at.begin()) ||
             at[depth] >= k)
@@ -5005,7 +5008,12 @@ private:
   llvm::DenseMap<mlir::Operation *, std::pair<llvm::SmallVector<BlockRequest>,
                                               llvm::SmallVector<BlockRequest>>>
       blockRequests;
-  std::map<std::pair<mlir::Operation *, llvm::SmallVector<int64_t, 2>>, int64_t>
+  /// The forward start of each op, by iteration of the loops around it: kept
+  /// per op, each op's ordered by iteration only, so that no tree is ordered
+  /// by the ops' addresses (it would take another shape, and make another
+  /// number of comparisons, in another build).
+  llvm::DenseMap<mlir::Operation *,
+                 std::map<llvm::SmallVector<int64_t, 2>, int64_t>>
       forwardStarts;
   /// The ops the backward pass placed at their forward starts.
   llvm::SmallPtrSet<mlir::Operation *, 8> pinned;

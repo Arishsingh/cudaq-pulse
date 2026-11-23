@@ -987,20 +987,25 @@ same name:
    qs = pulse.quantum_system(
        name="one-qubit", qudits={0: PhysicalQudit(0, 5.0e9, 50.0, 30.0, anharmonicity_hz=-2.0e8)}, clock_ghz=1.0
    )
-   cal = {"x_duration": 40 * pulse.ns, "x_sigma": 10 * pulse.ns, "readout_duration": 200 * pulse.ns}
 
 
    @pulse.kernel
-   def drive_and_measure(q):
+   def drive_and_measure(q, x_duration, x_sigma, readout_duration):
        drive_line = get_drive_line(q)
        readout_line = get_readout_line(q)
-       drive(drive_line, gaussian(cal["x_duration"], 0.5, cal["x_sigma"]))
+       drive(drive_line, gaussian(x_duration, 0.5, x_sigma))
        sync(drive_line, readout_line)
-       readout(readout_line, square(cal["readout_duration"], 0.05))
+       readout(readout_line, square(readout_duration, 0.05))
 
 
    compiled = pulse.compile(drive_and_measure, quantum_system=qs, control_system=backend.control_system())
-   program = compiled.lower(qs.qudits[0]).export_to_controller()
+   scheduled = compiled.lower(
+       qs.qudits[0],
+       x_duration=40 * pulse.ns,
+       x_sigma=10 * pulse.ns,
+       readout_duration=200 * pulse.ns,
+   )
+   program = scheduled.export_to_controller()
    print(backend.run(backend.emit(program), shots_count=1))
    # [['0 drive line 0 gaussian at 5e+09 Hz', '40 readout line 1 square at 5e+09 Hz']]
 

@@ -18,15 +18,6 @@ import math
 import cudaq_pulse as pulse
 from cudaq_pulse.controller import sample_waveform
 
-cal = {
-    "duration": 20 * pulse.ns,
-    "sigma": 5 * pulse.ns,
-    "drag_beta": 0.25 * pulse.ns,
-    "tanh_sigma": 2 * pulse.ns,
-    "flat_top_duration": 60 * pulse.ns,
-    "flat_top_width": 40 * pulse.ns,
-}
-
 
 def half_sine(t):
     """Half a sine period over 40 clock cycles (20 ns at 2 GHz), for custom():
@@ -47,23 +38,32 @@ NAMES = [
 
 
 @pulse.kernel
-def every_envelope(qudit):
+def every_envelope(
+    qudit, duration, sigma, drag_beta, tanh_sigma, flat_top_duration, flat_top_width
+):
     """Play each built-in envelope once, in the order of NAMES."""
     d = get_drive_line(qudit)
-    duration, sigma = cal["duration"], cal["sigma"]
     drive(d, gaussian(duration, 0.3, sigma))
     drive(d, square(duration, 0.2 + 0.1j))
-    drive(d, drag(duration, 0.3, sigma, cal["drag_beta"]))
+    drive(d, drag(duration, 0.3, sigma, drag_beta))
     drive(d, cosine(duration, 0.3))
-    drive(d, tanh_ramp(duration, 0.3, cal["tanh_sigma"]))
-    drive(d, gaussian_square(cal["flat_top_duration"], 0.3, sigma, cal["flat_top_width"]))
+    drive(d, tanh_ramp(duration, 0.3, tanh_sigma))
+    drive(d, gaussian_square(flat_top_duration, 0.3, sigma, flat_top_width))
     drive(d, custom(duration, half_sine))
     drive(d, custom_samples([0.0, 0.1, 0.2, 0.3, 0.2, 0.1, 0.0, -0.1]))
 
 
 def main():
     qs = pulse.quantum_system("transmon_surface17")
-    program = pulse.compile(every_envelope, quantum_system=qs).lower(qs.qudits[0])
+    program = pulse.compile(every_envelope, quantum_system=qs).lower(
+        qs.qudits[0],
+        duration=20 * pulse.ns,
+        sigma=5 * pulse.ns,
+        drag_beta=0.25 * pulse.ns,
+        tanh_sigma=2 * pulse.ns,
+        flat_top_duration=60 * pulse.ns,
+        flat_top_width=40 * pulse.ns,
+    )
     drives = [e for e in program.export_to_controller()["events"] if e["kind"] == "drive"]
     envelopes = {}
     print(f"{'waveform':<16} {'cycles':>6} {'ns':>6} {'peak |I|':>9} {'peak |Q|':>9}")

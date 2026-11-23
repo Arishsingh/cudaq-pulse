@@ -13,16 +13,9 @@ import math
 import cudaq_pulse as pulse
 from cudaq_pulse.compiler import DEFAULT_PASSES
 
-cal = {
-    "x_duration": 20 * pulse.ns,
-    "x_sigma": 5 * pulse.ns,
-    "idle": 50 * pulse.ns,
-    "square_duration": 25 * pulse.ns,
-}
-
 
 @pulse.kernel
-def pipeline_demo(qudit_0, qudit_1):
+def pipeline_demo(qudit_0, qudit_1, x_duration, x_sigma, idle, square_duration):
     """A 2-qubit program with redundancies for the pipeline to clean up.
 
     Includes:
@@ -35,28 +28,32 @@ def pipeline_demo(qudit_0, qudit_1):
     drive_line_1 = get_drive_line(qudit_1)
 
     shift_phase(drive_line_0.tone, math.pi / 4)
-    gaussian_envelope = gaussian(cal["x_duration"], 0.3, cal["x_sigma"])
+    gaussian_envelope = gaussian(x_duration, 0.3, x_sigma)
     drive(drive_line_0, gaussian_envelope)
 
-    wait(drive_line_0, cal["idle"])
-    wait(drive_line_0, cal["idle"])
+    wait(drive_line_0, idle)
+    wait(drive_line_0, idle)
 
-    square_pulse_1 = square(cal["square_duration"], 0.2)
+    square_pulse_1 = square(square_duration, 0.2)
     drive(drive_line_0, square_pulse_1)
-    square_pulse_2 = square(cal["square_duration"], 0.2)
+    square_pulse_2 = square(square_duration, 0.2)
     drive(drive_line_0, square_pulse_2)
 
-    gaussian_envelope_2 = gaussian(cal["x_duration"], 0.3, cal["x_sigma"])
+    gaussian_envelope_2 = gaussian(x_duration, 0.3, x_sigma)
     drive(drive_line_1, gaussian_envelope_2)
 
 
 def main():
+    x_duration = 20 * pulse.ns
+    x_sigma = 5 * pulse.ns
+    idle = 50 * pulse.ns
+    square_duration = 25 * pulse.ns
     scheduled = pulse.compile(
         pipeline_demo,
         schedule="alap",
         quantum_system=qs,
         passes=(*DEFAULT_PASSES, pulse.Pass.MERGE_WAITS),
-    ).lower(qs.qudits[0], qs.qudits[1])
+    ).lower(qs.qudits[0], qs.qudits[1], x_duration, x_sigma, idle, square_duration)
 
     print("=== Compiled MLIR (first 30 lines) ===")
     for line in scheduled.mlir().splitlines()[:30]:
