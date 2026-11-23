@@ -95,42 +95,66 @@ amplitude = P["amplitude"]
 decay = P["decay"]
 assignment = P["assignment"]
 TRAIN = P["pulses_per_train"]
+# The pulse shape the example's kernels take.
+PULSE_TIME, READOUT_TIME, READOUT_AMP = P["pulse_time"], P["readout_time"], P["readout_amplitude"]
 
 
 @pulse.kernel
 def att_paper(q):
     # Prior (3, 450 us) as a rate in clock cycles; a 800 us passive reset.
-    tracked_t1(q, PI_AMP, 3.0, 450_000.0 * CLOCK, 0.11, 0.14, 1_600_000)
+    tracked_t1(
+        q,
+        PI_AMP,
+        3.0,
+        450_000.0 * CLOCK,
+        0.11,
+        0.14,
+        PULSE_TIME,
+        READOUT_TIME,
+        READOUT_AMP,
+        1_600_000,
+    )
 
 
 @pulse.kernel
 def step_assignment(q):
-    assignment(q, PI_AMP, P["settle_time"])
+    assignment(q, PI_AMP, PULSE_TIME, READOUT_TIME, READOUT_AMP, P["settle_time"])
 
 
 @pulse.kernel
 def step_ramsey(q):
-    ramsey(q, PI_AMP, 0.0)
+    ramsey(q, PI_AMP, 0.0, PULSE_TIME, READOUT_TIME, READOUT_AMP)
 
 
 @pulse.kernel
 def step_pi(q):
-    amplitude(q, PI_AMP, TRAIN, PI_AMP)
+    amplitude(q, PI_AMP, TRAIN, PI_AMP, PULSE_TIME, READOUT_TIME, READOUT_AMP)
 
 
 @pulse.kernel
 def step_half_pi(q):
-    amplitude(q, PI_AMP * 0.5, 2 * TRAIN, PI_AMP)
+    amplitude(q, PI_AMP * 0.5, 2 * TRAIN, PI_AMP, PULSE_TIME, READOUT_TIME, READOUT_AMP)
 
 
 @pulse.kernel
 def step_decay(q):
-    decay(q, PI_AMP, 20_000.0 * CLOCK)
+    decay(q, PI_AMP, 20_000.0 * CLOCK, PULSE_TIME, READOUT_TIME, READOUT_AMP)
 
 
 @pulse.kernel
 def step_tracked(q):
-    tracked_t1(q, PI_AMP, 3.0, 3.0 * 20_000.0 * CLOCK, 0.03, 0.02, P["settle_time"])
+    tracked_t1(
+        q,
+        PI_AMP,
+        3.0,
+        3.0 * 20_000.0 * CLOCK,
+        0.03,
+        0.02,
+        PULSE_TIME,
+        READOUT_TIME,
+        READOUT_AMP,
+        P["settle_time"],
+    )
 
 
 def _shares(result, shots_count):
@@ -175,7 +199,7 @@ def binary_search(n, seed):
     dev = transmon_surface17()
     lowered = pulse.compile(
         P["binary_search"], quantum_system=dev, control_system=P["control_system"]
-    ).lower(dev.qudits[0], 15)
+    ).lower(dev.qudits[0], 15, PULSE_TIME, READOUT_TIME, READOUT_AMP)
     rng = np.random.default_rng(seed)
     errors, sigmas = [], []
     start = time.perf_counter()
@@ -209,7 +233,7 @@ def chain(n, seed):
     dev = transmon_surface17()
     lowered = pulse.compile(
         P["calibration_chain"], quantum_system=dev, control_system=P["control_system"]
-    ).lower(dev.qudits[0], 20_000.0 * CLOCK)
+    ).lower(dev.qudits[0], 20_000.0 * CLOCK, PULSE_TIME, READOUT_TIME, READOUT_AMP)
     true_system = P["chain_system"](dev)
     rows = []
     start = time.perf_counter()

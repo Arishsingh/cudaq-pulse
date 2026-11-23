@@ -31,8 +31,10 @@ Limits
 - A kernel plays drive pulses and waits, and ends in exactly one readout.
 - The readout is a square pulse, as the calibrated one is.
 - At most 100,000 shots in 200 runs per qubit.
-- A kernel has at most 64 drive pulses and lasts at most 2 ms.
+- A kernel has at most 64 drive pulses and lasts at most 2 ms. Its drive pulses last at most
+  10 microseconds in all; waits do not count.
 - A run with a seed given repeats known qubits, so it prints its rungs but no score.
+- A run of the scorer lasts at most 15 minutes.
 
 Rungs
 -----

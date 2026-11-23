@@ -33,55 +33,46 @@ import cudaq_pulse as pulse
 
 rounds = 2
 data_qudits = 4
-cal = {
-    "x_duration": 20 * pulse.ns,
-    "x_sigma": 5 * pulse.ns,
-    "drag_beta": 0.25 * pulse.ns,
-    "cr_duration": 100 * pulse.ns,
-    "cr_width": 80 * pulse.ns,
-    "readout_duration": 400 * pulse.ns,
-    "dd_tau": 60 * pulse.ns,
-}
 
 
 @pulse.kernel(schedule="asap")
-def single_qudit_layer(lines, tones):
+def single_qudit_layer(lines, tones, x_duration, x_sigma, drag_beta):
     """A sqrt(X) on every data qubit, all starting together."""
     for i in range(len(lines)):
-        drive(
-            lines[i], drag(cal["x_duration"], 0.25, cal["x_sigma"], cal["drag_beta"]), tone=tones[i]
-        )
+        drive(lines[i], drag(x_duration, 0.25, x_sigma, drag_beta), tone=tones[i])
 
 
 @pulse.kernel
-def cross_resonance(control, target_tone):
+def cross_resonance(control, target_tone, cr_duration, x_sigma, cr_width):
     """Drive the control qubit at the target's frequency."""
-    cr = gaussian_square(cal["cr_duration"], 0.05, cal["x_sigma"], cal["cr_width"])
+    cr = gaussian_square(cr_duration, 0.05, x_sigma, cr_width)
     drive(control, cr, tone=target_tone)
 
 
 @pulse.kernel(schedule="alap")
-def measure_and_reset(drive_line, readout_line):
+def measure_and_reset(drive_line, readout_line, x_duration, x_sigma, drag_beta, readout_duration):
     """Read the ancilla out, then flip it back to 0 if it was 1."""
     sync(drive_line, readout_line)
-    result = readout(readout_line, square(cal["readout_duration"], 0.05))
+    result = readout(readout_line, square(readout_duration, 0.05))
     if result:
-        drive(drive_line, drag(cal["x_duration"], 0.5, cal["x_sigma"], cal["drag_beta"]))
+        drive(drive_line, drag(x_duration, 0.5, x_sigma, drag_beta))
     return result
 
 
 @pulse.kernel(schedule="asap")
-def xy4(line, tone, tau):
+def xy4(line, tone, tau, x_duration, x_sigma, drag_beta):
     """X, Y, X, Y pi pulses, each followed by an idle of tau."""
     for phase in (0.0, 1.5708, 0.0, 1.5708):
         shift_phase(tone, phase)
-        drive(line, drag(cal["x_duration"], 0.5, cal["x_sigma"], cal["drag_beta"]), tone=tone)
+        drive(line, drag(x_duration, 0.5, x_sigma, drag_beta), tone=tone)
         shift_phase(tone, -phase)
         wait(line, tau)
 
 
 @pulse.kernel
-def stabilizer_cycle(qudits):
+def stabilizer_cycle(
+    qudits, x_duration, x_sigma, drag_beta, cr_duration, cr_width, readout_duration, dd_tau
+):
     ancilla = get_drive_line(qudits[0])
     readout_line = get_readout_line(qudits[0])
     lines, tones = [], []
@@ -91,13 +82,13 @@ def stabilizer_cycle(qudits):
         tones.append(line.tone)
 
     for _ in range(rounds):
-        single_qudit_layer(lines, tones)
+        single_qudit_layer(lines, tones, x_duration, x_sigma, drag_beta)
         for i in range(data_qudits):
-            cross_resonance(ancilla, tones[i])
-        single_qudit_layer(lines, tones)
-        measure_and_reset(ancilla, readout_line)
+            cross_resonance(ancilla, tones[i], cr_duration, x_sigma, cr_width)
+        single_qudit_layer(lines, tones, x_duration, x_sigma, drag_beta)
+        measure_and_reset(ancilla, readout_line, x_duration, x_sigma, drag_beta, readout_duration)
         for i in range(data_qudits):
-            xy4(lines[i], tones[i], cal["dd_tau"])
+            xy4(lines[i], tones[i], dd_tau, x_duration, x_sigma, drag_beta)
 
 
 def first_round(scheduled: pulse.ScheduledKernel) -> dict[int, list[tuple[str, int, int]]]:
@@ -127,15 +118,24 @@ def report(label: str, scheduled: pulse.ScheduledKernel) -> None:
 
 def main():
     qs = pulse.quantum_system("transmon_surface17")
-    qudits = [qs.qudits[: 1 + data_qudits]]
-    report(
-        "per-kernel schedules",
-        stabilizer_cycle.lower(*qudits),
-    )
-    report(
-        "flattened into one ALAP schedule",
-        pulse.compile(stabilizer_cycle, flatten_schedules=True).lower(*qudits),
-    )
+    for label, cycle in (
+        ("per-kernel schedules", stabilizer_cycle),
+        (
+            "flattened into one ALAP schedule",
+            pulse.compile(stabilizer_cycle, flatten_schedules=True),
+        ),
+    ):
+        scheduled = cycle.lower(
+            qs.qudits[: 1 + data_qudits],
+            x_duration=20 * pulse.ns,
+            x_sigma=5 * pulse.ns,
+            drag_beta=0.25 * pulse.ns,
+            cr_duration=100 * pulse.ns,
+            cr_width=80 * pulse.ns,
+            readout_duration=400 * pulse.ns,
+            dd_tau=60 * pulse.ns,
+        )
+        report(label, scheduled)
 
 
 if __name__ == "__main__":

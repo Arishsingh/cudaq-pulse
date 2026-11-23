@@ -18,17 +18,9 @@ amplitudes and durations here are illustrative, not calibrated for it.
 
 import cudaq_pulse as pulse
 
-cal = {
-    "x_duration": 20 * pulse.ns,
-    "x_sigma": 5 * pulse.ns,
-    "drag_beta": 0.25 * pulse.ns,
-    "cr_duration": 100 * pulse.ns,
-    "cr_width": 80 * pulse.ns,
-}
-
 
 @pulse.kernel
-def ghz_3(qudit_0, qudit_1, qudit_2):
+def ghz_3(qudit_0, qudit_1, qudit_2, x_duration, x_sigma, drag_beta, cr_duration, cr_width):
     """3-qubit GHZ state: H(qudit_0) - CNOT(0,1) - CNOT(1,2).
 
     Each CNOT is an echoed cross-resonance gate:
@@ -39,11 +31,10 @@ def ghz_3(qudit_0, qudit_1, qudit_2):
     drive_line_1 = get_drive_line(qudit_1)
     drive_line_2 = get_drive_line(qudit_2)
 
-    x_duration, x_sigma, beta = cal["x_duration"], cal["x_sigma"], cal["drag_beta"]
-    sx_pulse = drag(x_duration, 0.25, x_sigma, beta)
-    x_pi = drag(x_duration, 0.50, x_sigma, beta)
-    cr_pos = gaussian_square(cal["cr_duration"], 0.05, x_sigma, cal["cr_width"])
-    cr_neg = gaussian_square(cal["cr_duration"], -0.05, x_sigma, cal["cr_width"])
+    sx_pulse = drag(x_duration, 0.25, x_sigma, drag_beta)
+    x_pi = drag(x_duration, 0.50, x_sigma, drag_beta)
+    cr_pos = gaussian_square(cr_duration, 0.05, x_sigma, cr_width)
+    cr_neg = gaussian_square(cr_duration, -0.05, x_sigma, cr_width)
 
     # H(qudit_0) = Rz(pi) SX Rz(pi/2)
     shift_phase(drive_line_0.tone, 3.14159)
@@ -70,7 +61,7 @@ def ghz_3(qudit_0, qudit_1, qudit_2):
 
 
 @pulse.kernel
-def ghz_n(qudit_0, qudit_1, qudit_count):
+def ghz_n(qudit_0, qudit_1, qudit_count, x_duration, x_sigma, drag_beta, cr_duration, cr_width):
     """N-qubit GHZ state using a loop of CNOT gates.
 
     The outer structure: H on qudit_0, then CNOT chain.
@@ -80,11 +71,10 @@ def ghz_n(qudit_0, qudit_1, qudit_count):
     drive_line_0 = get_drive_line(qudit_0)
     drive_line_1 = get_drive_line(qudit_1)
 
-    x_duration, x_sigma, beta = cal["x_duration"], cal["x_sigma"], cal["drag_beta"]
-    sx_pulse = drag(x_duration, 0.25, x_sigma, beta)
-    x_pi = drag(x_duration, 0.50, x_sigma, beta)
-    cr_pos = gaussian_square(cal["cr_duration"], 0.05, x_sigma, cal["cr_width"])
-    cr_neg = gaussian_square(cal["cr_duration"], -0.05, x_sigma, cal["cr_width"])
+    sx_pulse = drag(x_duration, 0.25, x_sigma, drag_beta)
+    x_pi = drag(x_duration, 0.50, x_sigma, drag_beta)
+    cr_pos = gaussian_square(cr_duration, 0.05, x_sigma, cr_width)
+    cr_neg = gaussian_square(cr_duration, -0.05, x_sigma, cr_width)
 
     # H(qudit_0)
     shift_phase(drive_line_0.tone, 3.14159)
@@ -104,14 +94,29 @@ def ghz_n(qudit_0, qudit_1, qudit_count):
 
 if __name__ == "__main__":
     qs = pulse.quantum_system("transmon_surface17")
+    x_duration = 20 * pulse.ns
+    x_sigma = 5 * pulse.ns
+    drag_beta = 0.25 * pulse.ns
+    cr_duration = 100 * pulse.ns
+    cr_width = 80 * pulse.ns  # the flat top of the cross-resonance pulse
+
     print("=== 3-qubit GHZ (explicit) ===")
     scheduled = pulse.compile(ghz_3, quantum_system=qs).lower(
-        qs.qudits[0], qs.qudits[1], qs.qudits[2]
+        qs.qudits[0],
+        qs.qudits[1],
+        qs.qudits[2],
+        x_duration,
+        x_sigma,
+        drag_beta,
+        cr_duration,
+        cr_width,
     )
     print(scheduled.mlir())
     print(f"  Compile metrics: {scheduled.metrics}")
 
     print("\n=== N-qubit GHZ (loop-based, N=5) ===")
-    scheduled = pulse.compile(ghz_n, quantum_system=qs).lower(qs.qudits[0], qs.qudits[1], 5)
+    scheduled = pulse.compile(ghz_n, quantum_system=qs).lower(
+        qs.qudits[0], qs.qudits[1], 5, x_duration, x_sigma, drag_beta, cr_duration, cr_width
+    )
     print(scheduled.mlir())
     print(f"  Compile metrics: {scheduled.metrics}")

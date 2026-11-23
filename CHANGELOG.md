@@ -20,6 +20,20 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   process of its own and plays the pulses it reports itself, so the rules,
   the tally and any hidden value stay out of a submission's process. The
   folder is not part of the package or the built pages.
+- **Three more challenges.** `challenges/` gains three starter problems:
+  make a five-qubit parity check finish sooner without changing its
+  circuit, on a control system that plays two readouts at once; find the
+  five mistakes in a kernel, scored on what it plays for cases the scorer
+  draws; and bring a qubit in an unknown state to its ground state within
+  1200 ns with a measurement and a conditional pulse, scored on states only
+  the scorer knows. As for the first three, a submission is loaded in a
+  process of its own, and the scorer checks and plays the pulses it reports.
+  All six scorers now share one exchange with that process: it runs in a
+  session of its own with a time limit, what a submission prints or raises
+  is shown on marked lines, a scorer loads and uses all it needs before it
+  starts a submission, and a seed that is not a whole number gets the usage
+  line. `challenges/README.rst` says what a scorer reads and what it cannot
+  check.
 - **Error codes.** Every `CompilationError` has a `code`, a
   `pulse.ErrorCode` (`unknown_name`, `wrong_argument`, `runtime_value`,
   `invalid_duration` and the others listed under Errors), so a program or
@@ -347,9 +361,42 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   once, so a long chain of `m and n` conditions, which gives a line
   thousands of uses, no longer spends most of its compile in `verify`.
   Programs and errors are as before.
+- **Examples show calibration values as kernel arguments.** A style change
+  to the examples: where a kernel of the README, the user guide or
+  `examples/` read its pulse durations, sigmas and amplitudes from a
+  calibration dictionary defined beside it (`cal["duration"]`), it now
+  takes them as parameters and the call passes them:
+  `rabi_oscillation(qubit, 0.5, duration, sigma)`. In
+  `examples/21_calibration_protocol.py` the kernels take the pulse shape
+  (pulse time, readout time, readout amplitude) the same way. Every example
+  compiles to the same program and prints what it printed. Kernels may read
+  module-level values as before. The quick example of the README and of
+  Getting Started now reads the qubit out and runs by calling the kernel,
+  which returns the outcome of one simulated shot.
 
 ### Fixed
 
+- **A controller description written again is the one loaded.**
+  `pulse.controller(path)` kept a file's parsed description by the file's
+  modification time alone, so a file written twice within one tick of the
+  file system's clock, or copied with its time kept, loaded as its earlier
+  content, without an error. The file is now read at each call and parsed
+  once for each content it has had. An installed description, loaded by
+  its name, is still kept by its file's modification time: nothing writes
+  those while a program runs.
+- **A value that is not a real number fails at `bind()`, on every bind.**
+  `module.bind([True, 1e6])`, or a str, a complex number or `None` for a
+  value, was an `InvalidTypeError` at `bind()` only on the first bind of a
+  module; on every later bind of the same module the call was made and the
+  error came where it was used (printed, simulated, exported). It is now
+  raised by `bind()` each time, naming the parameter. A call's `arguments`
+  are floats on every bind as well: `bind([1, 2])` kept `(1, 2)` on a later
+  bind and `(1.0, 2.0)` on the first. An iterator of values, which the
+  first bind of a module refused and later binds took, is taken by both.
+  An infinity is still reported where the module is used. Binding floats
+  does the work it did; a number of another type (an int, a numpy scalar)
+  is made a plain float where it is bound. `bind()` refuses a numpy bool
+  (`np.True_`) as it refuses a `bool`; it was taken as `1.0`.
 - Binding the values of a call with a long `list[float]` parameter crashed
   the process (a segmentation fault) from about 65,500 values on, when the
   kernel was compiled with `fold_phases` or `fuse_pulses` (both are default

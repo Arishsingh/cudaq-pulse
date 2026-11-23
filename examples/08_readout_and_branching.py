@@ -10,17 +10,9 @@ import math
 
 import cudaq_pulse as pulse
 
-cal = {
-    "x_duration": 20 * pulse.ns,
-    "x_sigma": 5 * pulse.ns,
-    "drag_beta": 0.25 * pulse.ns,
-    "readout_duration": 500 * pulse.ns,
-    "shot_gap": 250 * pulse.ns,
-}
-
 
 @pulse.kernel
-def measure_single_qudit(qudit):
+def measure_single_qudit(qudit, x_duration, x_sigma, drag_beta, readout_duration):
     """Prepare |1> and measure.
 
     Demonstrates the readout channel: get_readout_line returns the readout
@@ -29,17 +21,17 @@ def measure_single_qudit(qudit):
     drive_line = get_drive_line(qudit)
     readout_line = get_readout_line(qudit)
 
-    x_pulse = drag(cal["x_duration"], 0.5, cal["x_sigma"], cal["drag_beta"])
+    x_pulse = drag(x_duration, 0.5, x_sigma, drag_beta)
     drive(drive_line, x_pulse)
 
     sync(drive_line, readout_line)
 
-    readout_envelope = square(cal["readout_duration"], 0.05)
+    readout_envelope = square(readout_duration, 0.05)
     readout(readout_line, readout_envelope)
 
 
 @pulse.kernel
-def active_reset(qudit):
+def active_reset(qudit, x_duration, readout_duration):
     """Active reset: measure, and if excited, apply an X pulse.
 
     The ``if`` becomes an scf.if region: compiling keeps it as a branch on
@@ -48,7 +40,7 @@ def active_reset(qudit):
     drive_line = get_drive_line(qudit)
     readout_line = get_readout_line(qudit)
 
-    readout_envelope = square(cal["readout_duration"], 0.05)
+    readout_envelope = square(readout_duration, 0.05)
     result = readout(readout_line, readout_envelope)
 
     sync(drive_line, readout_line)
@@ -56,12 +48,14 @@ def active_reset(qudit):
     if result:
         # A pi pulse: with H = amplitude * X / 2, this amplitude (rad/ns)
         # rotates by pi in 20 ns.
-        x_pulse = square(cal["x_duration"], math.pi / 20)
+        x_pulse = square(x_duration, math.pi / 20)
         drive(drive_line, x_pulse)
 
 
 @pulse.kernel
-def repeated_measurement(qudit, shot_count):
+def repeated_measurement(
+    qudit, shot_count, x_duration, x_sigma, drag_beta, readout_duration, shot_gap
+):
     """Repeated preparation and measurement in a single kernel.
 
     A for loop wrapping prepare-measure cycles.
@@ -69,20 +63,20 @@ def repeated_measurement(qudit, shot_count):
     drive_line = get_drive_line(qudit)
     readout_line = get_readout_line(qudit)
 
-    x_half = drag(cal["x_duration"], 0.25, cal["x_sigma"], cal["drag_beta"])
+    x_half = drag(x_duration, 0.25, x_sigma, drag_beta)
 
     for _shot in range(shot_count):
         drive(drive_line, x_half)
         sync(drive_line, readout_line)
 
-        readout(readout_line, square(cal["readout_duration"], 0.05))
+        readout(readout_line, square(readout_duration, 0.05))
 
         sync(drive_line, readout_line)
-        wait(drive_line, cal["shot_gap"])
+        wait(drive_line, shot_gap)
 
 
 @pulse.kernel
-def ramsey_with_readout(qudit, tau):
+def ramsey_with_readout(qudit, tau, x_duration, x_sigma, drag_beta, readout_duration):
     """Ramsey experiment: pi/2 - tau - pi/2 - measure.
 
     Demonstrates the full single-qubit characterization loop with readout.
@@ -90,7 +84,7 @@ def ramsey_with_readout(qudit, tau):
     drive_line = get_drive_line(qudit)
     readout_line = get_readout_line(qudit)
 
-    half_pi = drag(cal["x_duration"], 0.25, cal["x_sigma"], cal["drag_beta"])
+    half_pi = drag(x_duration, 0.25, x_sigma, drag_beta)
 
     drive(drive_line, half_pi)
 
@@ -99,17 +93,26 @@ def ramsey_with_readout(qudit, tau):
     drive(drive_line, half_pi)
 
     sync(drive_line, readout_line)
-    readout(readout_line, square(cal["readout_duration"], 0.05))
+    readout(readout_line, square(readout_duration, 0.05))
 
 
 if __name__ == "__main__":
     qs = pulse.quantum_system("transmon_surface17")
+    x_duration = 20 * pulse.ns
+    x_sigma = 5 * pulse.ns
+    drag_beta = 0.25 * pulse.ns
+    readout_duration = 500 * pulse.ns
+
     print("=== Measure single qubit ===")
-    scheduled = pulse.compile(measure_single_qudit, quantum_system=qs).lower(qs.qudits[0])
+    scheduled = pulse.compile(measure_single_qudit, quantum_system=qs).lower(
+        qs.qudits[0], x_duration, x_sigma, drag_beta, readout_duration
+    )
     print(scheduled.mlir())
 
     print("\n=== Active reset (measurement-conditioned branch) ===")
-    scheduled = pulse.compile(active_reset, quantum_system=qs).lower(qs.qudits[0])
+    scheduled = pulse.compile(active_reset, quantum_system=qs).lower(
+        qs.qudits[0], x_duration, readout_duration
+    )
     print(scheduled.mlir())
 
     print("\n=== Simulating it (CPU reference) ===")
@@ -125,7 +128,9 @@ if __name__ == "__main__":
     )
     # Start in (|0> + |1>) / sqrt(2): each outcome is equally likely, and
     # either way the qubit ends in |0>.
-    scheduled = pulse.compile(active_reset, quantum_system=reset_demo).lower(reset_demo.qudits[0])
+    scheduled = pulse.compile(active_reset, quantum_system=reset_demo).lower(
+        reset_demo.qudits[0], x_duration, readout_duration
+    )
     result = pulse.simulate(
         scheduled, initial_state=[2**-0.5, 2**-0.5, 0.0], shots_count=1000, seed=7
     )
@@ -134,11 +139,16 @@ if __name__ == "__main__":
     print(f"  final |0> population: {result.level_population(0):.4f}")
 
     print("\n=== Repeated measurement (5 shots) ===")
-    scheduled = pulse.compile(repeated_measurement, quantum_system=qs).lower(qs.qudits[0], 5)
+    shot_gap = 250 * pulse.ns
+    scheduled = pulse.compile(repeated_measurement, quantum_system=qs).lower(
+        qs.qudits[0], 5, x_duration, x_sigma, drag_beta, readout_duration, shot_gap
+    )
     print(scheduled.mlir())
 
     print("\n=== Ramsey with readout (tau=200) ===")
     tau = 100 * pulse.ns
-    scheduled = pulse.compile(ramsey_with_readout, quantum_system=qs).lower(qs.qudits[0], tau)
+    scheduled = pulse.compile(ramsey_with_readout, quantum_system=qs).lower(
+        qs.qudits[0], tau, x_duration, x_sigma, drag_beta, readout_duration
+    )
     print(scheduled.mlir())
     print(f"  Compile metrics: {scheduled.metrics}")
