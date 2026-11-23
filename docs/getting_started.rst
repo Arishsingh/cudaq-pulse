@@ -91,23 +91,25 @@ generated MLIR:
 
    import cudaq_pulse as pulse
 
-   cal = {"duration": 32 * pulse.ns, "sigma": 8 * pulse.ns}
-
    @pulse.kernel
-   def rabi_oscillation(qubit, amplitude: float):
+   def rabi_oscillation(qubit, amplitude: float, duration, sigma):
        drive_line = get_drive_line(qubit)
-       drive(drive_line, gaussian(cal["duration"], amplitude, cal["sigma"]))
+       drive(drive_line, gaussian(duration, amplitude, sigma))
 
    qs = pulse.quantum_system("transmon_surface17")
    qubit = qs.qudits[0]
-   result = pulse.simulate(rabi_oscillation, qubit, 0.5)    # NumPy reference, no GPU needed
+   duration = 32 * pulse.ns
+   sigma = 8 * pulse.ns
+   # NumPy reference, no GPU needed
+   result = pulse.simulate(rabi_oscillation, qubit, 0.5, duration, sigma)
    print(f"P(1) = {result.level_population(1):.3f}")   # P(1) = 0.972
-   scheduled = rabi_oscillation.lower(qubit, 0.5)
+   scheduled = rabi_oscillation.lower(qubit, 0.5, duration, sigma)
    print(scheduled.mlir())
    print(f"Compiled in {scheduled.metrics.total_ms:.1f} ms")
 
 The pulse lasts 32 ns, 64 cycles of the quantum system's 2 GHz clock. A duration is
-an ``int`` number of cycles or a time with units; see :ref:`durations`.
+an ``int`` number of cycles or a time with units, and the kernel takes it as
+an argument, like the pulse's other values; see :ref:`durations`.
 
 The Compiler Pipeline
 ---------------------

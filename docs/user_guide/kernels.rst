@@ -43,21 +43,18 @@ Defining a Kernel
 
    import cudaq_pulse as pulse
 
-   cal = {
-       "x_duration": 20 * pulse.ns,
-       "x_sigma": 5 * pulse.ns,
-       "x_beta": 0.25 * pulse.ns,
-       "readout_duration": 500 * pulse.ns,
-   }
-
    @pulse.kernel
-   def my_kernel(qubit):
+   def my_kernel(qubit, x_duration, x_sigma):
        drive_line = get_drive_line(qubit)
-       waveform = gaussian(cal["x_duration"], 0.3, cal["x_sigma"])
+       waveform = gaussian(x_duration, 0.3, x_sigma)
        drive(drive_line, waveform)
 
-The kernels on this page read their pulse durations from this ``cal``; see
-:ref:`durations`.
+   x_duration = 20 * pulse.ns
+   x_sigma = 5 * pulse.ns
+   my_kernel(qs.qudits[0], x_duration, x_sigma)
+
+The kernels on this page take their pulse values as arguments, and the calls
+pass these; see :ref:`durations`.
 
 Qudit arguments are **qudit handles** of a quantum system: ``qs.qudits[i]``
 for one qudit, and ``qs.qudits[0:4]`` or ``qs.qudits[[0, 2]]``
@@ -83,19 +80,22 @@ parameters after it are keyword-only:
 .. code-block:: python
 
    @pulse.kernel
-   def x_all(amplitude: float, *qudits: pulse.Qudit, sigma=cal["x_sigma"]):
+   def x_all(amplitude: float, *qudits: pulse.Qudit, duration, sigma):
        for q in qudits:
-           drive(get_drive_line(q), gaussian(cal["x_duration"], amplitude, sigma))
+           drive(get_drive_line(q), gaussian(duration, amplitude, sigma))
 
    @pulse.kernel
-   def x_then_measure_first(*qudits: pulse.Qudit):
-       x_all(0.5, *qudits)
+   def x_then_measure_first(*qudits: pulse.Qudit, duration, sigma, readout_duration):
+       x_all(0.5, *qudits, duration=duration, sigma=sigma)
        first = get_readout_line(qudits[0])
        sync(first, *[get_drive_line(q) for q in qudits])
-       readout(first, square(cal["readout_duration"], 0.05))
+       readout(first, square(readout_duration, 0.05))
 
-   x_all(0.3, qs.qudits[0], qs.qudits[2])
-   x_then_measure_first(*qs.qudits[0:4])
+   readout_duration = 500 * pulse.ns
+   x_all(0.3, qs.qudits[0], qs.qudits[2], duration=x_duration, sigma=x_sigma)
+   x_then_measure_first(
+       *qs.qudits[0:4], duration=x_duration, sigma=x_sigma, readout_duration=readout_duration
+   )
 
 Annotated ``Qudit``, the qudits are runtime, as for a ``Register``
 parameter: one compilation serves every call with the same number of
@@ -131,21 +131,20 @@ them from a calibration the kernel closes over.
 
 .. code-block:: python
 
-   cal = {"x_duration": 20 * pulse.ns, "x_sigma": 5 * pulse.ns, "x_amp": 0.2}
-
    @pulse.kernel
-   def x_then_wait(qubit, gap):
+   def x_then_wait(qubit, gap, x_duration, x_sigma, x_amp):
        d = get_drive_line(qubit)
-       x = gaussian(cal["x_duration"], cal["x_amp"], cal["x_sigma"])
+       x = gaussian(x_duration, x_amp, x_sigma)
        drive(d, x)
        wait(d, gap)
        drive(d, x)
 
    fast = pulse.quantum_system("transmon_surface17", clock_ghz=2.0)
    slow = pulse.quantum_system("transmon_surface17", clock_ghz=1.0)
+   x_amp = 0.2
    gap = 100 * pulse.ns
-   x_then_wait.lower(fast.qudits[0], gap)  # 40, 200, 40 cycles
-   x_then_wait.lower(slow.qudits[0], gap)  # 20, 100, 20 cycles
+   x_then_wait.lower(fast.qudits[0], gap, x_duration, x_sigma, x_amp)  # 40, 200, 40 cycles
+   x_then_wait.lower(slow.qudits[0], gap, x_duration, x_sigma, x_amp)  # 20, 100, 20 cycles
 
 - A plain float in a duration is an error, since it could be cycles or
   nanoseconds; the error shows both spellings::
@@ -210,10 +209,10 @@ at trace time:
 .. code-block:: python
 
    @pulse.kernel
-   def echo_sequence(qubit, gap):
+   def echo_sequence(qubit, gap, x_duration, x_sigma):
        drive_line = get_drive_line(qubit)
        for i in range(5):
-           drive(drive_line, gaussian(cal["x_duration"], 0.3, cal["x_sigma"]))
+           drive(drive_line, gaussian(x_duration, 0.3, x_sigma))
            wait(drive_line, gap)
 
 A loop whose induction variable is never read, like the one above, is
@@ -280,23 +279,23 @@ held in lists stay threaded through the loop:
 .. code-block:: python
 
    @pulse.kernel
-   def sweep(qubits):
+   def sweep(qubits, x_duration):
        lines = [get_drive_line(q) for q in qubits]
        for amplitude in [0.1, 0.2, 0.3]:
            for line in lines:
-               drive(line, square(cal["x_duration"], amplitude))
+               drive(line, square(x_duration, amplitude))
 
 **If/else** with compile-time conditions:
 
 .. code-block:: python
 
    @pulse.kernel
-   def conditional_pulse(qubit, use_drag):
+   def conditional_pulse(qubit, use_drag, x_duration, x_sigma, x_beta):
        drive_line = get_drive_line(qubit)
        if use_drag:
-           waveform = drag(cal["x_duration"], 0.3, cal["x_sigma"], cal["x_beta"])
+           waveform = drag(x_duration, 0.3, x_sigma, x_beta)
        else:
-           waveform = gaussian(cal["x_duration"], 0.3, cal["x_sigma"])
+           waveform = gaussian(x_duration, 0.3, x_sigma)
        drive(drive_line, waveform)
 
 **Measurement feedback**: an ``if`` on a measurement result (``if result:`` or
@@ -305,13 +304,13 @@ held in lists stay threaded through the loop:
 .. code-block:: python
 
    @pulse.kernel
-   def active_reset(qubit):
+   def active_reset(qubit, x_duration, x_sigma, x_beta, readout_duration):
        drive_line = get_drive_line(qubit)
        readout_line = get_readout_line(qubit)
-       result = readout(readout_line, square(cal["readout_duration"], 0.05))
+       result = readout(readout_line, square(readout_duration, 0.05))
        sync(drive_line, readout_line)
        if result:
-           x = drag(cal["x_duration"], 0.5, cal["x_sigma"], cal["x_beta"])
+           x = drag(x_duration, 0.5, x_sigma, x_beta)
            drive(drive_line, x)
 
 An ``if`` on the answer of a classical call is kept the same way
@@ -434,23 +433,25 @@ runtime parameters, so a sweep over a delay compiles once:
    import numpy as np
 
    @pulse.kernel
-   def echo(qubit, tau: float):
+   def echo(qubit, tau: float, x_duration, x_sigma, x_beta, readout_duration):
        d = get_drive_line(qubit)
        r = get_readout_line(qubit)
-       x90 = drag(cal["x_duration"], 0.25, cal["x_sigma"], cal["x_beta"])
-       x180 = drag(cal["x_duration"], 0.5, cal["x_sigma"], cal["x_beta"])
+       x90 = drag(x_duration, 0.25, x_sigma, x_beta)
+       x180 = drag(x_duration, 0.5, x_sigma, x_beta)
        drive(d, x90)
        wait(d, tau / 2 * pulse.ns)
        drive(d, x180)
        wait(d, tau / 2 * pulse.ns)
        drive(d, x90)
        sync(d, r)
-       readout(r, square(cal["readout_duration"], 0.05))
+       readout(r, square(readout_duration, 0.05))
 
    q = qs.qudits[0]
+   x_beta = 0.25 * pulse.ns
    compiled_echo = pulse.compile(echo)
    for tau in np.linspace(0, 10_000, 1000):  # nanoseconds
-       compiled_echo.lower(q, tau)  # one compilation for the whole sweep
+       # one compilation for the whole sweep
+       compiled_echo.lower(q, tau, x_duration, x_sigma, x_beta, readout_duration)
 
 - Each call computes the length from its values, in clock cycles (here
   nanoseconds times ``qs.clock_ghz``), and rounds it to the nearest cycle,

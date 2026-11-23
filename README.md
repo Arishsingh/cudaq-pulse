@@ -147,30 +147,33 @@ for CUDA 12 or 13 is chosen from the installed extra; set
 ```python
 import cudaq_pulse as pulse
 
-cal = {"duration": 32 * pulse.ns, "sigma": 8 * pulse.ns}
-
 
 @pulse.kernel
-def rabi_oscillation(qubit, amplitude: float):
+def rabi_oscillation(qubit, amplitude: float, duration, sigma):
     drive_line = get_drive_line(qubit)
-    drive(drive_line, gaussian(cal["duration"], amplitude, cal["sigma"]))
+    drive(drive_line, gaussian(duration, amplitude, sigma))
 
 
 qs = pulse.quantum_system("transmon_surface17")
 qubit = qs.qudits[0]
+duration = 32 * pulse.ns
+sigma = 8 * pulse.ns
 
-result = pulse.simulate(rabi_oscillation, qubit, 0.5)  # NumPy reference, no GPU needed
+# NumPy reference, no GPU needed
+result = pulse.simulate(rabi_oscillation, qubit, 0.5, duration, sigma)
 print(f"P(1) = {result.level_population(1):.3f}")  # P(1) = 0.972
-print(rabi_oscillation.lower(qubit, 0.5).mlir())  # the scheduled Pulse MLIR
+print(rabi_oscillation.lower(qubit, 0.5, duration, sigma).mlir())  # the scheduled Pulse MLIR
 ```
 
 `pulse.simulate(kernel, *args)` compiles the call for the quantum system of its
 qudit handles, with frequencies from the quantum system, and evolves it; this
 pulse leaves the qubit almost fully excited. `kernel.lower(*args)`
 compiles the call without running it. Calling the
-kernel, `rabi_oscillation(qubit, 0.5)`, compiles and runs it in one step, and
-`pulse.compile(kernel)` compiles ahead of the call. A `float`
-parameter stays symbolic, so a sweep over it compiles once. The compiler
+kernel, `rabi_oscillation(qubit, 0.5, duration, sigma)`, compiles and runs it
+in one step, and `pulse.compile(kernel)` compiles ahead of the call. The
+pulse's values are arguments of the kernel: the kernel is compiled for its
+duration and sigma, and a `float` parameter stays symbolic, so a sweep over
+the amplitude compiles once. The compiler
 traces the Python kernel, builds Pulse dialect IR, applies the selected
 transformations, and emits scheduled MLIR. The wheel also installs
 `cudaq-pulse-opt`, the MLIR driver for the pulse dialects:

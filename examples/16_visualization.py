@@ -13,35 +13,25 @@ from collections.abc import Sequence
 
 import cudaq_pulse as pulse
 
-cal = {
-    "x_duration": 20 * pulse.ns,
-    "x_sigma": 5 * pulse.ns,
-    "drag_beta": 0.25 * pulse.ns,
-    "cr_duration": 150 * pulse.ns,
-    "cr_width": 130 * pulse.ns,
-    "idle": 100 * pulse.ns,
-    "readout_duration": 500 * pulse.ns,
-}
-
 
 @pulse.kernel
-def vis_demo(q0, q1, q2):
+def vis_demo(
+    q0, q1, q2, x_duration, x_sigma, drag_beta, cr_duration, cr_width, idle, readout_duration
+):
     d0 = get_drive_line(q0)
     d1 = get_drive_line(q1)
     d2 = get_drive_line(q2)
     r0 = get_readout_line(q0)
-    short = drag(cal["x_duration"], 0.25, cal["x_sigma"], cal["drag_beta"])
+    short = drag(x_duration, 0.25, x_sigma, drag_beta)
     drive(d0, short)
     drive(d1, short)
     drive(d2, short)
     sync(d0, d1, d2)
-    drive(
-        d0, gaussian_square(cal["cr_duration"], 0.05, cal["x_sigma"], cal["cr_width"]), tone=d1.tone
-    )
-    wait(d2, cal["idle"])
+    drive(d0, gaussian_square(cr_duration, 0.05, x_sigma, cr_width), tone=d1.tone)
+    wait(d2, idle)
     drive(d1, short)
     sync(d0, d1, d2, r0)
-    readout(r0, square(cal["readout_duration"], 0.05))
+    readout(r0, square(readout_duration, 0.05))
 
 
 def print_ascii_timeline(events: Sequence[pulse.compiler.ScheduledEvent], width: int = 70) -> None:
@@ -60,9 +50,19 @@ def print_ascii_timeline(events: Sequence[pulse.compiler.ScheduledEvent], width:
 
 
 def main():
-    args = list(qs.qudits[:3])
     for policy in ("asap", "alap"):
-        scheduled = pulse.compile(vis_demo, schedule=policy, quantum_system=qs).lower(*args)
+        scheduled = pulse.compile(vis_demo, schedule=policy, quantum_system=qs).lower(
+            qs.qudits[0],
+            qs.qudits[1],
+            qs.qudits[2],
+            x_duration=20 * pulse.ns,
+            x_sigma=5 * pulse.ns,
+            drag_beta=0.25 * pulse.ns,
+            cr_duration=150 * pulse.ns,
+            cr_width=130 * pulse.ns,  # the flat top of the cross-resonance pulse
+            idle=100 * pulse.ns,
+            readout_duration=500 * pulse.ns,
+        )
         print(f"\n=== {policy.upper()} schedule ===")
         print_ascii_timeline(scheduled.schedule)
 
