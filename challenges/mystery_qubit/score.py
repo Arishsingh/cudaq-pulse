@@ -22,13 +22,24 @@ can be repeated.
 import json
 import math
 import secrets
-import subprocess
 import sys
 from pathlib import Path
 
 import cudaq_pulse as pulse
 import numpy as np
-from _qubit import mystery_system
+from _qubit import MAX_DRIVE_CYCLES, mystery_system
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from _exchange import (  # noqa: E402  (after the path it is found on)
+    LAB_TIMEOUT_S,
+    InvalidSubmissionError,
+    read_message,
+    run_scorer,
+    said,
+    start_child,
+    stop_child,
+)
 
 T1_RANGE_US = (20.0, 200.0)
 QUBITS = 20
@@ -39,7 +50,7 @@ SILVER_SHOTS = 10_000  # per qubit, on average
 MAX_PULSES = 64  # drive pulses in one kernel
 CHUNK = 252  # the most samples one custom_samples() waveform holds
 MAX_CYCLES = 4_000_000  # 2 ms at the 2 GHz clock: the longest kernel
-CHILD = Path(__file__).with_name("_child.py")
+CHILD = HERE / "_child.py"
 
 
 class RefusedError(Exception):
@@ -51,6 +62,8 @@ def as_pulse(item):
     values = [*real, *imag, float(item["frequency_hz"]), float(item["phase_rad"])]
     if len(real) != len(imag) or not real or not all(math.isfinite(x) for x in values):
         raise RefusedError("a pulse could not be read")
+    if any(abs(x) > 1.0e6 for x in (*real, *imag)) or any(abs(x) > 1.0e12 for x in values):
+        raise RefusedError("a sample, frequency or phase is too large to read")
     start = int(item["start_cycles"])
     if not 0 <= start <= MAX_CYCLES or start + len(real) > MAX_CYCLES:
         raise RefusedError(f"a kernel lasts at most {MAX_CYCLES} clock cycles")
@@ -93,6 +106,10 @@ def replay(request, hidden, seed):
         raise RefusedError(f"a kernel lasts at most {MAX_CYCLES} clock cycles")
     if len(drives) > MAX_PULSES:
         raise RefusedError(f"a kernel has at most {MAX_PULSES} drive pulses")
+    if sum(len(real) for _, real, _, _, _ in drives) > MAX_DRIVE_CYCLES:
+        raise RefusedError(
+            f"the drive pulses of a kernel last at most {MAX_DRIVE_CYCLES} clock cycles in all"
+        )
     qudit = hidden.qudits[0]
     to_ns = 1.0 / hidden.clock_ghz
     native = hidden.qudit_freq[qudit.index]
@@ -116,7 +133,7 @@ def replay(request, hidden, seed):
     r_df = r_hz - native  # the readout tone starts at the qubit's frequency here
 
     @pulse.kernel
-    def played(target):
+    def driven(target):
         drive_line = get_drive_line(target)
         readout_line = get_readout_line(target)
         for gap, df, dphi, real, imag, count, has_imag in steps:
@@ -141,27 +158,12 @@ def replay(request, hidden, seed):
             shift_phase(readout_line.tone, r_rad)
         return readout(readout_line, square(r_count, r_amplitude))
 
-    program = pulse.compile(played, quantum_system=hidden, schedule="asap").lower(qudit)
+    program = pulse.compile(driven, quantum_system=hidden, schedule="asap").lower(qudit)
     result = pulse.simulate(program, shots_count=shots_count, seed=seed)
     records = np.asarray(result.records).reshape(-1)
     if records.size != shots_count:  # for example a sample too large to simulate
         raise RefusedError("the kernel could not be played for every shot; nothing was counted")
     return records
-
-
-def one_line(text):
-    """*text* from the submission's process as one short line of printable characters."""
-    return " ".join("".join(c if c.isprintable() else " " for c in str(text)).split())[:300]
-
-
-def ask(child):
-    line = child.stdout.readline()
-    if not line:
-        raise EOFError("the solution's process ended")
-    message = json.loads(line)
-    if not isinstance(message, dict):
-        raise ValueError("the solution's process sent something that is not a message")
-    return message
 
 
 def one_qubit(child, t1_us, noise, used):
@@ -170,13 +172,13 @@ def one_qubit(child, t1_us, noise, used):
     child.stdin.write("QUBIT\n")
     child.stdin.flush()
     while True:
-        message = ask(child)
+        message = read_message(child)
         if "estimate" in message:
             if used["shots"] == 0:
                 raise RuntimeError("no shots taken; only lab.run plays this qubit's true T1")
             return float(message["estimate"])
         if "error" in message:
-            raise RuntimeError(one_line(message["error"]))
+            raise RuntimeError(f"the solution raised:{said(message['error'])}")
         try:
             request = message["run"]
             shots_count = request.get("shots_count")
@@ -201,27 +203,64 @@ def one_qubit(child, t1_us, noise, used):
         child.stdin.flush()
 
 
+def warm_up():
+    """Everything the scorer does after the second process, done once before it starts."""
+    hidden = mystery_system(50.0)
+    native = hidden.qudit_freq[hidden.qudits[0].index]
+    pulse_of = {"re": [0.01] * 4, "im": [0.0] * 4, "frequency_hz": native, "phase_rad": 0.0}
+    request = {
+        "shots_count": 2,
+        "drives": [
+            {**pulse_of, "start_cycles": 0},
+            {
+                **pulse_of,
+                "start_cycles": 8,
+                "im": [0.01] * 4,
+                "frequency_hz": native + 1.0e6,
+                "phase_rad": 0.5,
+            },
+        ],
+        "readouts": [
+            {
+                "shape": "square",
+                "start_cycles": 16,
+                "duration_cycles": 600,
+                "re": 0.05,
+                "im": 0.0,
+                "frequency_hz": native + 1.0e6,
+                "phase_rad": 0.5,
+            }
+        ],
+        "others": [],
+    }
+    records = replay(request, hidden, int(np.random.default_rng([1, 2]).integers(2**31)))
+    json.loads(json.dumps({"records": [int(x) for x in records]}))
+
+
 def main(path, seed=None):
     given = seed is not None
     seed = seed if given else secrets.randbelow(2**31)
-    child = subprocess.Popen(
-        [sys.executable, str(CHILD), path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
-    )
+    warm_up()
+    child = start_child(CHILD, [path], text=True, time_limit_s=LAB_TIMEOUT_S)
     try:
         return rounds(child, seed, given)
+    except InvalidSubmissionError as error:
+        print(f"INVALID {error}\nBRONZE fail\nSILVER fail\nSCORE none")
+        return 1
     except Exception as error:  # the solution's process broke the exchange: nothing is scored
-        print(f"INVALID {one_line(error)}\nBRONZE fail\nSILVER fail\nSCORE none")
+        print(
+            f"INVALID the exchange with the solution's process broke:{said(error)}\nBRONZE fail\nSILVER fail\nSCORE none"
+        )
         return 1
     finally:
-        child.kill()
-        child.wait(timeout=30)
+        stop_child(child)
 
 
 def rounds(child, seed, given):
     """Every hidden qubit in turn; prints the result. Any error here ends the run as invalid."""
-    first = ask(child)
+    first = read_message(child)
     if "error" in first:
-        raise ValueError(f"the solution does not load: {one_line(first['error'])}")
+        raise InvalidSubmissionError(f"the solution does not load:{said(first['error'])}")
     rng = np.random.default_rng(seed)
     low, high = T1_RANGE_US
     # One qubit from each slice of the range (on a log scale), in shuffled order.
@@ -259,6 +298,4 @@ def rounds(child, seed, given):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3):
-        sys.exit("usage: python challenges/mystery_qubit/score.py solution.py [seed]")
-    sys.exit(main(sys.argv[1], *(int(value) for value in sys.argv[2:3])))
+    run_scorer(main, "usage: python challenges/mystery_qubit/score.py solution.py [seed]")

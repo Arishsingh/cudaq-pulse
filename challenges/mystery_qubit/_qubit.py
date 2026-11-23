@@ -5,6 +5,8 @@
 import cudaq_pulse as pulse
 from cudaq_pulse.quantum_systems import DragPulse, PhysicalQudit, ReadoutPulse
 
+MAX_DRIVE_CYCLES = 20_000  # the drive pulses of one kernel, in all: 10 us at the 2 GHz clock
+
 
 def mystery_system(t1_us):
     calibrations = {
