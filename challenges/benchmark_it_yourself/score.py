@@ -30,13 +30,24 @@ model. It is printed after the estimate, never before.
 import json
 import math
 import secrets
-import subprocess
 import sys
 from pathlib import Path
 
 import cudaq_pulse as pulse
 import numpy as np
 from _qubit import benchmark_system
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from _exchange import (  # noqa: E402  (after the path it is found on)
+    LAB_TIMEOUT_S,
+    InvalidSubmissionError,
+    read_message,
+    run_scorer,
+    said,
+    start_child,
+    stop_child,
+)
 
 RUNS = 5
 T1_RANGE_US = (8.0, 80.0)
@@ -45,7 +56,7 @@ BRONZE_FACTOR = 1.5
 SILVER_TOLERANCE, SILVER_SEQUENCES = 0.10, 8
 MIN_SEQUENCES, MIN_PULSES, MAX_PULSES = 2, 20, 6000  # per call of error_per_gate
 PULSE_CYCLES = 80  # a calibrated X90 or Y90: 40 ns at the 2 GHz clock
-CHILD = Path(__file__).with_name("_child.py")
+CHILD = HERE / "_child.py"
 
 
 class RefusedError(Exception):
@@ -53,7 +64,7 @@ class RefusedError(Exception):
 
 
 @pulse.kernel
-def played(qudit, steps, measured):
+def driven(qudit, steps, measured):
     drive_line = get_drive_line(qudit)
     readout_line = get_readout_line(qudit)
     x90 = drive_line.get_calibration(pulse.gates.X90)
@@ -102,7 +113,7 @@ def replay(request, hidden, count):
         clock, phase = start + PULSE_CYCLES, turn
     if readouts and readouts[0] != clock:
         raise RefusedError("the readout follows the last pulse at once; no wait before it")
-    program = pulse.compile(played, quantum_system=hidden, schedule="asap").lower(
+    program = pulse.compile(driven, quantum_system=hidden, schedule="asap").lower(
         hidden.qudits[0], tuple(steps), bool(readouts)
     )
     result = pulse.simulate(program, dt_ns=0.25)
@@ -111,7 +122,7 @@ def replay(request, hidden, count):
 
 def reference(hidden):
     """(error, leakage) of the calibrated X90 on the hidden qubit, from the six axis states."""
-    program = pulse.compile(played, quantum_system=hidden, schedule="asap").lower(
+    program = pulse.compile(driven, quantum_system=hidden, schedule="asap").lower(
         hidden.qudits[0], ((0.0, 0.0, "X90"),), False
     )
     ideal = np.array([[1, -1j], [-1j, 1]]) / math.sqrt(2)
@@ -125,31 +136,16 @@ def reference(hidden):
     return 1 - fidelity, leakage
 
 
-def one_line(text):
-    """*text* from the submission's process as one short line of printable characters."""
-    return " ".join("".join(c if c.isprintable() else " " for c in str(text)).split())[:300]
-
-
-def ask(child):
-    line = child.stdout.readline()
-    if not line:
-        raise EOFError("the submission's process ended")
-    message = json.loads(line)
-    if not isinstance(message, dict):
-        raise ValueError("the submission's process sent something that is not a message")
-    return message
-
-
 def one_run(child, seed, hidden, count):
     """The submission's estimate for one hidden qubit; its sequences are played and counted here."""
     child.stdin.write(f"SEED {seed}\n")
     child.stdin.flush()
     while True:
-        message = ask(child)
+        message = read_message(child)
         if "estimate" in message:
             return float(message["estimate"])
         if "error" in message:
-            raise ValueError(one_line(message["error"]))
+            raise InvalidSubmissionError(f"it raised:{said(message['error'])}")
         try:
             answer = {"populations": replay(message["run"], hidden, count)}
         except RefusedError as refused:
@@ -160,18 +156,31 @@ def one_run(child, seed, hidden, count):
         child.stdin.flush()
 
 
+def warm_up():
+    """Everything the scorer does after the second process, done once before it starts."""
+    hidden = benchmark_system(20.0, 20.0)
+    request = {
+        "pulses": [[0, "X90", 0.0], [PULSE_CYCLES, "Y90", 0.5]],
+        "readouts": [2 * PULSE_CYCLES],
+        "others": [],
+    }
+    populations = replay(request, hidden, {"sequences": 0, "pulses": 0})
+    json.loads(json.dumps({"populations": populations}))
+    reference(hidden)
+    float(np.random.default_rng(1).uniform(0.0, 1.0))
+
+
 def main(path, seed=None):
     given = seed is not None
     seed = seed if given else secrets.randbelow(2**31)
     rng = np.random.default_rng(seed)
-    child = subprocess.Popen(
-        [sys.executable, str(CHILD), path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
-    )
+    warm_up()
+    child = start_child(CHILD, [path], text=True, time_limit_s=LAB_TIMEOUT_S)
     runs = []
     try:
-        first = ask(child)
+        first = read_message(child)
         if "error" in first:
-            raise ValueError(f"it does not load: {one_line(first['error'])}")
+            raise InvalidSubmissionError(f"it does not load:{said(first['error'])}")
         for run in range(1, RUNS + 1):
             t1_us = float(rng.uniform(*T1_RANGE_US))
             t2_us = float(rng.uniform(T2_RANGE_US[0], min(T2_RANGE_US[1], 2 * t1_us)))
@@ -180,7 +189,7 @@ def main(path, seed=None):
             estimate = one_run(child, run, hidden, count)
             enough = count["sequences"] >= MIN_SEQUENCES and count["pulses"] >= MIN_PULSES
             if not enough or not 0 < estimate < math.inf:
-                raise ValueError(
+                raise InvalidSubmissionError(
                     f"run {run} gave {estimate!r} from {count['sequences']} sequences and {count['pulses']} pulses; an estimate is a positive number from at least {MIN_SEQUENCES} sequences and {MIN_PULSES} pulses"
                 )
             error, leakage = reference(hidden)
@@ -188,12 +197,16 @@ def main(path, seed=None):
             print(
                 f"RUN {run} estimate={estimate:.4e} reference={error:.4e} (leakage {leakage:.1e}) ratio={estimate / error:.4f} sequences={count['sequences']} pulses={count['pulses']}"
             )
-    except Exception as problem:  # the file does not load, breaks a rule or the exchange, or fails
-        print(f"INVALID {one_line(problem)}\nBRONZE fail\nSILVER fail\nSCORE none")
+    except InvalidSubmissionError as problem:  # the file does not load, breaks a rule or fails
+        print(f"INVALID {problem}\nBRONZE fail\nSILVER fail\nSCORE none")
+        return 1
+    except Exception as problem:  # the submission's process broke the exchange
+        print(
+            f"INVALID the exchange with the submission's process broke:{said(problem)}\nBRONZE fail\nSILVER fail\nSCORE none"
+        )
         return 1
     finally:
-        child.kill()
-        child.wait(timeout=30)
+        stop_child(child)
     worst, most = max(abs(ratio - 1) for ratio, _ in runs), max(sequences for _, sequences in runs)
     bronze = all(1 / BRONZE_FACTOR <= ratio <= BRONZE_FACTOR for ratio, _ in runs)
     silver = worst <= SILVER_TOLERANCE and most <= SILVER_SEQUENCES
@@ -213,6 +226,4 @@ def main(path, seed=None):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3):
-        sys.exit("usage: python challenges/benchmark_it_yourself/score.py my_rb.py [seed]")
-    sys.exit(main(sys.argv[1], *(int(value) for value in sys.argv[2:3])))
+    run_scorer(main, "usage: python challenges/benchmark_it_yourself/score.py my_rb.py [seed]")

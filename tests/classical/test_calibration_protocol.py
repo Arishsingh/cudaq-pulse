@@ -23,16 +23,29 @@ if not _EXAMPLE.exists():
 P = runpy.run_path(str(_EXAMPLE), run_name="calibration_protocol")
 PI_AMP, CLOCK = P["nominal_pi_amplitude"], P["clock_ghz"]
 amplitude, tracked_t1, TRAIN = P["amplitude"], P["tracked_t1"], P["pulses_per_train"]
+# The pulse shape the example's kernels take.
+PULSE_TIME, READOUT_TIME, READOUT_AMP = P["pulse_time"], P["readout_time"], P["readout_amplitude"]
 
 
 @pulse.kernel
 def _pi_step(q):
-    amplitude(q, PI_AMP, TRAIN, PI_AMP)
+    amplitude(q, PI_AMP, TRAIN, PI_AMP, PULSE_TIME, READOUT_TIME, READOUT_AMP)
 
 
 @pulse.kernel
 def _adaptive_t1(q):
-    tracked_t1(q, PI_AMP, 3.0, 450_000.0 * CLOCK, 0.11, 0.14, 1_600_000)
+    tracked_t1(
+        q,
+        PI_AMP,
+        3.0,
+        450_000.0 * CLOCK,
+        0.11,
+        0.14,
+        PULSE_TIME,
+        READOUT_TIME,
+        READOUT_AMP,
+        1_600_000,
+    )
 
 
 _calibration_chain = P["calibration_chain"]
@@ -40,8 +53,8 @@ _calibration_chain = P["calibration_chain"]
 
 @pulse.kernel
 def _two_chains(q, p, t1_guess_cycles: float):
-    _calibration_chain(q, t1_guess_cycles)
-    _calibration_chain(p, t1_guess_cycles)
+    _calibration_chain(q, t1_guess_cycles, PULSE_TIME, READOUT_TIME, READOUT_AMP)
+    _calibration_chain(p, t1_guess_cycles, PULSE_TIME, READOUT_TIME, READOUT_AMP)
 
 
 def _device(quantum_system):
@@ -109,7 +122,7 @@ def test_the_binary_search_narrows_on_the_controller():
     dev, q = _device(target)
     lowered = pulse.compile(
         P["binary_search"], quantum_system=dev, control_system=P["control_system"]
-    ).lower(q, 15)
+    ).lower(q, 15, PULSE_TIME, READOUT_TIME, READOUT_AMP)
     for seed, offset in enumerate((-200e3, 120e3)):
         result = pulse.simulate(
             lowered,
@@ -138,7 +151,7 @@ def _chain():
 
 def test_the_chain_fits_the_declared_controller():
     compiled, _, q = _chain()
-    lowered = compiled.lower(q, 20_000.0 * CLOCK)
+    lowered = compiled.lower(q, 20_000.0 * CLOCK, PULSE_TIME, READOUT_TIME, READOUT_AMP)
     report = lowered.controller_usage
     assert report.violations == () and report.off_board == ()
     rows = [f for c in report.controllers for p in c.processors for f in p.functions]
@@ -158,13 +171,13 @@ def test_a_slower_controller_rejects_the_chain_at_compile_time():
     )
     slow = pulse.compile(P["calibration_chain"], quantum_system=dev, control_system=system)
     with pytest.raises(controller.ControllerLimitError, match="adaptive_t1__1 computes for about"):
-        slow.lower(q, 20_000.0 * CLOCK)
+        slow.lower(q, 20_000.0 * CLOCK, PULSE_TIME, READOUT_TIME, READOUT_AMP)
 
 
 def test_two_qudits_calibrate_side_by_side():
     chain, dev, _ = _chain()
     q, p = dev.qudits[:2]
-    one = chain.lower(q, 20_000.0 * CLOCK)
+    one = chain.lower(q, 20_000.0 * CLOCK, PULSE_TIME, READOUT_TIME, READOUT_AMP)
     two = pulse.compile(_two_chains, quantum_system=dev, control_system=P["control_system"]).lower(
         q, p, 20_000.0 * CLOCK
     )

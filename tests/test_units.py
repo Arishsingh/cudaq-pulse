@@ -505,22 +505,24 @@ def test_timeout_misuse(timeout, message):
 # ── One kernel, two clocks ───────────────────────────────────────────────────
 
 
-cal = {"x_duration": 20 * ns, "x_sigma": 5 * ns, "x_amplitude": 0.2, "gap": 0.1 * us}
-
-
 @pulse.kernel
-def x_then_wait(q):
+def x_then_wait(q, gap, x_duration, x_sigma, x_amplitude):
     d = get_drive_line(q)
-    drive(d, gaussian(cal["x_duration"], cal["x_amplitude"], cal["x_sigma"]))
-    wait(d, cal["gap"])
-    drive(d, gaussian(cal["x_duration"], cal["x_amplitude"], cal["x_sigma"]))
+    drive(d, gaussian(x_duration, x_amplitude, x_sigma))
+    wait(d, gap)
+    drive(d, gaussian(x_duration, x_amplitude, x_sigma))
 
 
 def test_one_kernel_compiles_for_devices_with_different_clocks():
     fast = pulse.quantum_system("transmon_surface17", clock_ghz=2.0)
     slow = pulse.quantum_system("transmon_surface17", clock_ghz=1.0)
-    on_fast = pulse.compile(x_then_wait, quantum_system=fast).lower(fast.qudits[0])
-    on_slow = pulse.compile(x_then_wait, quantum_system=slow).lower(slow.qudits[0])
+    x_duration, x_sigma, x_amplitude, gap = 20 * ns, 5 * ns, 0.2, 0.1 * us
+    on_fast = pulse.compile(x_then_wait, quantum_system=fast).lower(
+        fast.qudits[0], gap, x_duration, x_sigma, x_amplitude
+    )
+    on_slow = pulse.compile(x_then_wait, quantum_system=slow).lower(
+        slow.qudits[0], gap, x_duration, x_sigma, x_amplitude
+    )
     assert _events(on_fast) == [("drive", 0, 40), ("wait", 40, 200), ("drive", 240, 40)]
     assert _events(on_slow) == [("drive", 0, 20), ("wait", 20, 100), ("drive", 120, 20)]
     # The same nanoseconds on both.

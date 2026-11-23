@@ -13,8 +13,6 @@ into ``cudaq-pulse-opt`` as plugins; see ``cpp/DriveCount.cpp``.
 
 import cudaq_pulse as pulse
 
-cal = {"x_duration": 20 * pulse.ns, "x_sigma": 5 * pulse.ns, "drag_beta": 0.25 * pulse.ns}
-
 
 def concurrent_drive_violations(
     scheduled: pulse.ScheduledKernel, max_drives: int
@@ -37,14 +35,17 @@ def concurrent_drive_violations(
 
 
 @pulse.kernel
-def parallel_x(qs):
+def parallel_x(qs, x_duration, x_sigma, drag_beta):
     for i in range(4):
         line = get_drive_line(qs[i])
-        drive(line, drag(cal["x_duration"], 0.25, cal["x_sigma"], cal["drag_beta"]))
+        drive(line, drag(x_duration, 0.25, x_sigma, drag_beta))
 
 
 def main() -> None:
-    args = [qs.qudits[:4]]
+    x_duration = 20 * pulse.ns
+    x_sigma = 5 * pulse.ns
+    drag_beta = 0.25 * pulse.ns
+    args = [qs.qudits[:4], x_duration, x_sigma, drag_beta]
 
     asap = pulse.compile(parallel_x, schedule="asap", quantum_system=qs).lower(*args)
     print("ASAP violations of a 2-drive limit:", concurrent_drive_violations(asap, 2))

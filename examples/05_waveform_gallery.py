@@ -10,18 +10,6 @@ import math
 
 import cudaq_pulse as pulse
 
-cal = {
-    "duration": 20 * pulse.ns,
-    "sigma": 5 * pulse.ns,
-    "drag_beta": 0.25 * pulse.ns,
-    "square_duration": 50 * pulse.ns,
-    "cosine_duration": 30 * pulse.ns,
-    "tanh_duration": 40 * pulse.ns,
-    "tanh_sigma": 2.5 * pulse.ns,
-    "flat_top_duration": 100 * pulse.ns,
-    "flat_top_width": 80 * pulse.ns,
-}
-
 # ── 1. Every waveform constructor ────────────────────────────────────────────
 
 
@@ -32,28 +20,38 @@ def sine_envelope(t):
 
 
 @pulse.kernel
-def waveform_showcase(qudit):
+def waveform_showcase(
+    qudit,
+    duration,
+    sigma,
+    drag_beta,
+    square_duration,
+    cosine_duration,
+    tanh_duration,
+    tanh_sigma,
+    flat_top_duration,
+    flat_top_width,
+):
     """Drive a qubit with each built-in waveform type sequentially."""
     drive_line = get_drive_line(qudit)
-    duration, sigma = cal["duration"], cal["sigma"]
 
     # Gaussian — the workhorse of single-qubit gates
     drive(drive_line, gaussian(duration, 0.3, sigma))
 
     # Square — constant amplitude, simplest envelope
-    drive(drive_line, square(cal["square_duration"], 0.5))
+    drive(drive_line, square(square_duration, 0.5))
 
     # DRAG — derivative removal by adiabatic gate, reduces leakage
-    drive(drive_line, drag(duration, 0.25, sigma, cal["drag_beta"]))
+    drive(drive_line, drag(duration, 0.25, sigma, drag_beta))
 
     # Cosine — smooth rise/fall for flux pulses
-    drive(drive_line, cosine(cal["cosine_duration"], 0.4))
+    drive(drive_line, cosine(cosine_duration, 0.4))
 
     # Tanh ramp — sigmoidal edges for adiabatic state transfer
-    drive(drive_line, tanh_ramp(cal["tanh_duration"], 0.35, cal["tanh_sigma"]))
+    drive(drive_line, tanh_ramp(tanh_duration, 0.35, tanh_sigma))
 
     # Gaussian square — flat top with Gaussian rise/fall, used in echoed-CR
-    flat_top = gaussian_square(cal["flat_top_duration"], 0.1, sigma, cal["flat_top_width"])
+    flat_top = gaussian_square(flat_top_duration, 0.1, sigma, flat_top_width)
     drive(drive_line, flat_top)
 
     # Custom — a Python function of time, sampled once per clock cycle
@@ -67,12 +65,12 @@ def waveform_showcase(qudit):
 
 
 @pulse.kernel
-def waveform_algebra(qudit):
+def waveform_algebra(qudit, duration, sigma):
     """Combine waveforms using the built-in algebraic operations."""
     drive_line = get_drive_line(qudit)
 
-    gaussian_envelope = gaussian(cal["duration"], 0.3, cal["sigma"])
-    square_envelope = square(cal["duration"], 0.1)
+    gaussian_envelope = gaussian(duration, 0.3, sigma)
+    square_envelope = square(duration, 0.1)
 
     # Addition — superpose two envelopes (e.g. DRAG = Gaussian + derivative)
     combined = wf_add(gaussian_envelope, square_envelope)
@@ -140,13 +138,29 @@ def derivative_pulse(qudit, beta: float):
 
 if __name__ == "__main__":
     qs = pulse.quantum_system("transmon_surface17")
+    duration = 20 * pulse.ns
+    sigma = 5 * pulse.ns
+
     print("=== Waveform Showcase ===")
-    scheduled = pulse.compile(waveform_showcase, quantum_system=qs).lower(qs.qudits[0])
+    scheduled = pulse.compile(waveform_showcase, quantum_system=qs).lower(
+        qs.qudits[0],
+        duration,
+        sigma,
+        drag_beta=0.25 * pulse.ns,
+        square_duration=50 * pulse.ns,
+        cosine_duration=30 * pulse.ns,
+        tanh_duration=40 * pulse.ns,
+        tanh_sigma=2.5 * pulse.ns,
+        flat_top_duration=100 * pulse.ns,
+        flat_top_width=80 * pulse.ns,
+    )
     print(scheduled.mlir())
     print(f"  Compile metrics: {scheduled.metrics}")
 
     print("\n=== Waveform Algebra ===")
-    scheduled = pulse.compile(waveform_algebra, quantum_system=qs).lower(qs.qudits[0])
+    scheduled = pulse.compile(waveform_algebra, quantum_system=qs).lower(
+        qs.qudits[0], duration, sigma
+    )
     print(scheduled.mlir())
 
     print("\n=== Derivative Pulse ===")
