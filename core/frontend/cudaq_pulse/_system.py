@@ -2726,24 +2726,41 @@ def _toml_line(text: str, key: str) -> int | None:
     return None if match is None else text.count("\n", 0, match.start()) + 1
 
 
-_PARSED: dict[tuple[str, int], Controller] = {}
+_PARSED: dict[tuple[str, bytes], Controller] = {}
 
 
-def _description(path: str, mtime_ns: int) -> Controller:
-    """The controller a description file states, parsed once per version of
-    the file."""
-    key = (path, mtime_ns)
+def _description(path: str) -> Controller:
+    """The controller the description file at *path* states. The file is
+    read each time and parsed once for each content it has had, so a file
+    written again is the file read, whatever its time stamp says."""
+    with open(path, "rb") as f:
+        content = f.read()
+    key = (path, content)
     parsed = _PARSED.get(key)
     if parsed is None:
-        parsed = _PARSED[key] = _parse_description(path)
+        # As a file opened as text reads: UTF-8, any line end as a newline.
+        text = content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        parsed = _PARSED[key] = _parse_description(path, text)
     return parsed
 
 
-def _parse_description(path: str) -> Controller:
+_INSTALLED: dict[tuple[str, int], Controller] = {}
+
+
+def _installed_description(path: str) -> Controller:
+    """``_description`` for a description installed with cudaq-pulse, which
+    nothing writes while a program runs: parsed once per time stamp, without
+    reading the file again."""
+    key = (path, os.stat(path).st_mtime_ns)
+    parsed = _INSTALLED.get(key)
+    if parsed is None:
+        parsed = _INSTALLED[key] = _description(path)
+    return parsed
+
+
+def _parse_description(path: str, text: str) -> Controller:
     import tomllib
 
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
@@ -2802,7 +2819,10 @@ def load_controller(description: str | os.PathLike[str], /, **wiring: Any) -> Co
     ``pulse.controller("vendor.model", drive_lines=..., readout_lines=...)``.
 
     *description* is the name of an installed description or the path of a
-    TOML file. Each file is parsed once. *wiring* sets any field of
+    TOML file. A file given by its path is read at each call and parsed
+    once for each content it has had, so a file written again is the file
+    loaded; an installed description, given by its name, is parsed once
+    for each modification time of its file. *wiring* sets any field of
     ``Controller``: its lines, detectors and peers, and overrides of the
     description's values.
     """
@@ -2816,12 +2836,12 @@ def load_controller(description: str | os.PathLike[str], /, **wiring: Any) -> Co
                 + (f" (did you mean {hint!r}?)" if hint else "")
                 + f"; installed: {', '.join(installed) or 'none'}, or give the path of a .toml file"
             )
+        base = _installed_description(os.path.realpath(path))
     else:
         path = os.fspath(description)
         if not os.path.isfile(path):
             raise NotFoundError(f"no controller description file {path!r}")
-    path = os.path.realpath(path)
-    base = _description(path, os.stat(path).st_mtime_ns)
+        base = _description(os.path.realpath(path))
     if not wiring:
         return base
     names = [f.name for f in fields(Controller)]
