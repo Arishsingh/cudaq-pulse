@@ -20,13 +20,22 @@ only drive pulses, waits and frame changes; at most MAX_DURATION_NS in all; ever
 MAX_AMPLITUDE in magnitude; every pulse within MAX_DETUNING_HZ of the qubit's 0-1 frequency.
 """
 
-import json
 import math
-import subprocess
 import sys
 from pathlib import Path
 
 import cudaq_pulse as pulse
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from _exchange import (  # noqa: E402  (after the path it is found on)
+    InvalidSubmissionError,
+    ask_child,
+    digits,
+    read_pulses,
+    run_scorer,
+    said,
+)
 
 QUDIT = "Z4"
 MAX_DURATION_NS = 20.0  # half of the shipped X pulse
@@ -34,67 +43,22 @@ MAX_AMPLITUDE = 0.5  # the shipped X pulse peaks at 0.13
 MAX_DETUNING_HZ = 50.0e6
 BRONZE_P1 = 0.98
 SILVER_P1, SILVER_P2 = 0.999, 2.0e-4
-CHILD_TIMEOUT_S = 120
 MAX_PULSES = 64
-CHILD = Path(__file__).with_name("_child.py")
-
-
-def one_line(text):
-    """*text* from the submission's process as one short line of printable characters."""
-    return " ".join("".join(c if c.isprintable() else " " for c in str(text)).split())[:300]
-
-
-class InvalidSubmissionError(Exception):
-    """The submission cannot be scored; the message says why."""
+MAX_PROBLEMS = 8  # printed
+CHILD = HERE / "_child.py"
 
 
 def read_submission(path):
     """The pulses of the file's pi_pulse as plain numbers, from the second process."""
-    try:
-        done = subprocess.run(
-            [sys.executable, str(CHILD), path, QUDIT],
-            capture_output=True,
-            text=True,
-            timeout=CHILD_TIMEOUT_S,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise InvalidSubmissionError(f"it did not compile within {CHILD_TIMEOUT_S} s") from None
-    lines = [line for line in done.stdout.splitlines() if line.startswith("PULSES ")]
-    if done.returncode != 0 or not lines:
-        last = one_line((done.stderr.strip().splitlines() or ["no message"])[-1])
-        raise InvalidSubmissionError(f"it does not load or compile: {last}")
-    try:
-        data = json.loads(lines[-1][len("PULSES ") :])
-        others = [one_line(kind)[:40] for kind in data["others"]]
-        total = int(data["total_cycles"])
-        pulses = []
-        for item in data["pulses"]:
-            real, imag = [float(x) for x in item["re"]], [float(x) for x in item["im"]]
-            if len(real) != len(imag) or not real:
-                raise ValueError("samples")
-            pulses.append(
-                {
-                    "start": int(item["start_cycles"]),
-                    "samples": [complex(a, b) for a, b in zip(real, imag, strict=True)],
-                    "frequency_hz": float(item["frequency_hz"]),
-                    "phase_rad": float(item["phase_rad"]),
-                }
-            )
-    except (KeyError, TypeError, ValueError, OverflowError):
-        raise InvalidSubmissionError("its pulses could not be read") from None
-    numbers = [x for p in pulses for s in p["samples"] for x in (s.real, s.imag)]
-    numbers += [x for p in pulses for x in (p["frequency_hz"], p["phase_rad"])]
-    if not all(math.isfinite(x) for x in numbers):
-        raise InvalidSubmissionError(
-            "a pulse has a sample, frequency or phase that is not a finite number"
-        )
-    return sorted(pulses, key=lambda p: p["start"]), others, total
+    data = ask_child(CHILD, [path, QUDIT])
+    if "error" in data:
+        raise InvalidSubmissionError(f"it does not load or compile:{said(data['error'])}")
+    return read_pulses(data)
 
 
 def check(pulses, others, total, system, qudit):
     """(problems, duration in ns, peak amplitude) of the pulses against the limits."""
-    problems = [f"it has a {kind}; only drive pulses and waits are allowed" for kind in others]
+    problems = [f"it has {kind}; only drive pulses and waits are allowed" for kind in others]
     if len(pulses) > MAX_PULSES:
         problems.append(f"it has {len(pulses)} pulses; the limit is {MAX_PULSES}")
     end, peak, busy = max(total, 0), 0.0, 0  # waits after the last pulse count
@@ -114,7 +78,9 @@ def check(pulses, others, total, system, qudit):
     if duration_ns > MAX_DURATION_NS:
         problems.append(f"it lasts {duration_ns:g} ns; the limit is {MAX_DURATION_NS:g} ns")
     if peak > MAX_AMPLITUDE:
-        problems.append(f"a sample reaches {peak:.4f}; the limit is {MAX_AMPLITUDE:g}")
+        problems.append(
+            f"a sample reaches {digits(peak, MAX_AMPLITUDE)}; the limit is {MAX_AMPLITUDE:g}"
+        )
     return problems, duration_ns, peak
 
 
@@ -141,7 +107,7 @@ def replay(pulses, system, qudit):
         frequency, frame = p["frequency_hz"], p["phase_rad"]
 
     @pulse.kernel
-    def played(target):
+    def driven(target):
         line = get_drive_line(target)
         for gap_ns, df, dphi, real, imag, count in steps:
             if gap_ns > 0:
@@ -153,13 +119,26 @@ def replay(pulses, system, qudit):
             quadrature = wf_mul(custom_samples(imag), square(count, 1j))
             drive(line, wf_add(custom_samples(real), quadrature))
 
-    program = pulse.compile(played, quantum_system=system, schedule="asap").lower(qudit)
+    program = pulse.compile(driven, quantum_system=system, schedule="asap").lower(qudit)
     return pulse.simulate(program, initial_state=[1.0, 0.0, 0.0]).level_populations(qudit)
+
+
+def warm_up(system, qudit):
+    """Everything the scorer does after the second process, done once before it starts."""
+    pulses = [
+        {"start": 4 * n, "samples": [0.01 + 0.01j] * 4, "frequency_hz": hz, "phase_rad": n}
+        for n, hz in enumerate(
+            (system.qudit_freq[qudit.index], 1.0e6 + system.qudit_freq[qudit.index])
+        )
+    ]
+    check(pulses, ["a readout"], 8, system, qudit)
+    replay(pulses, system, qudit)
 
 
 def main(path):
     system = pulse.quantum_system("transmon_surface17")
     qudit = system.qudit(QUDIT)
+    warm_up(system, qudit)
     p1 = p2 = 0.0
     try:
         pulses, others, total = read_submission(path)
@@ -169,7 +148,7 @@ def main(path):
     except InvalidSubmissionError as error:
         print(f"INVALID {error}\nBRONZE fail\nSILVER fail\nSCORE none")
         return 1
-    for problem in problems:
+    for problem in problems[:MAX_PROBLEMS]:
         print(f"INVALID {problem}")
     bronze = not problems and p1 >= BRONZE_P1
     silver = not problems and p1 >= SILVER_P1 and p2 <= SILVER_P2
@@ -182,6 +161,4 @@ def main(path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: python challenges/pi_pulse/score.py my_pulse.py")
-    sys.exit(main(sys.argv[1]))
+    run_scorer(main, "usage: python challenges/pi_pulse/score.py my_pulse.py", seeded=False)

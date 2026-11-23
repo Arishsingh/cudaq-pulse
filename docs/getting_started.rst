@@ -84,30 +84,46 @@ is not set up.`` and names the extra and driver that enable GPU simulation.
 Hello World
 -----------
 
-Define a pulse kernel, compile it, simulate it on the CPU, and inspect the
-generated MLIR:
+Define a pulse kernel, run it by calling it, and inspect the generated MLIR:
 
 .. code-block:: python
 
    import cudaq_pulse as pulse
 
-   cal = {"duration": 32 * pulse.ns, "sigma": 8 * pulse.ns}
-
    @pulse.kernel
-   def rabi_oscillation(qubit, amplitude: float):
+   def rabi_oscillation(qubit, amplitude: float, duration, sigma):
        drive_line = get_drive_line(qubit)
-       drive(drive_line, gaussian(cal["duration"], amplitude, cal["sigma"]))
+       readout_line = get_readout_line(qubit)
+       drive(drive_line, gaussian(duration, amplitude, sigma))
+       sync(drive_line, readout_line)
+       return readout(readout_line, readout_line.get_calibration(pulse.gates.READOUT))
 
    qs = pulse.quantum_system("transmon_surface17")
    qubit = qs.qudits[0]
-   result = pulse.simulate(rabi_oscillation, qubit, 0.5)    # NumPy reference, no GPU needed
-   print(f"P(1) = {result.level_population(1):.3f}")   # P(1) = 0.972
-   scheduled = rabi_oscillation.lower(qubit, 0.5)
+   duration = 32 * pulse.ns
+   sigma = 8 * pulse.ns
+   # A call compiles the kernel and simulates one shot on the CPU, no GPU needed.
+   outcome = rabi_oscillation(qubit, 0.5, duration, sigma)
+   print(outcome)   # the readout's outcome: 1 in about 96 shots of 100
+   scheduled = rabi_oscillation.lower(qubit, 0.5, duration, sigma)
    print(scheduled.mlir())
    print(f"Compiled in {scheduled.metrics.total_ms:.1f} ms")
 
-The pulse lasts 32 ns, 64 cycles of the quantum system's 2 GHz clock. A duration is
-an ``int`` number of cycles or a time with units; see :ref:`durations`.
+A call returns what the kernel returns, here the outcome of its readout. The
+pulse lasts 32 ns, 64 cycles of the quantum system's 2 GHz clock. A duration is
+an ``int`` number of cycles or a time with units, and the kernel takes it as
+an argument, like the pulse's other values; see :ref:`durations`.
+
+For populations, many shots or other options, ``pulse.simulate`` takes the
+kernel and the same arguments and returns the result:
+
+.. code-block:: python
+
+   result = pulse.simulate(rabi_oscillation, qubit, 0.5, duration, sigma)
+   print(f"P(1) = {result.level_population(1):.3f}")   # P(1) = 0.962
+
+   shots = pulse.simulate(rabi_oscillation, qubit, 0.5, duration, sigma, shots_count=1000, seed=7)
+   print(int((shots.records == 1).sum()), "of 1000 shots read 1")   # 955 of 1000 shots read 1
 
 The Compiler Pipeline
 ---------------------

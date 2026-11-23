@@ -38,6 +38,7 @@ Limits
 - One call of ``error_per_gate`` plays at least 2 sequences and 20 pulses, and at most 6,000
   pulses.
 - A run with a seed given repeats known qubits, so it prints its rungs but no score.
+- A run of the scorer lasts at most 15 minutes.
 
 Rungs
 -----

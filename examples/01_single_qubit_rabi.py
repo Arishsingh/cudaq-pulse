@@ -11,8 +11,6 @@ compiled for a pinned quantum system and for a quantum system with another clock
 
 import cudaq_pulse as pulse
 
-cal = {"rabi_duration": 50 * pulse.ns, "readout_duration": 500 * pulse.ns}
-
 
 @pulse.kernel
 def rabi(qudit, duration, amplitude: float):
@@ -22,7 +20,7 @@ def rabi(qudit, duration, amplitude: float):
 
 
 @pulse.kernel
-def rabi_with_readout(qudit, duration, amplitude):
+def rabi_with_readout(qudit, duration, amplitude, readout_duration):
     """Rabi experiment with measurement — the full circuit."""
     drive_line = get_drive_line(qudit)
     readout_line = get_readout_line(qudit)
@@ -30,15 +28,17 @@ def rabi_with_readout(qudit, duration, amplitude):
     drive(drive_line, square(duration, amplitude))
 
     sync(drive_line, readout_line)
-    readout(readout_line, square(cal["readout_duration"], 0.05))
+    readout(readout_line, square(readout_duration, 0.05))
 
 
 if __name__ == "__main__":
     qs = pulse.quantum_system("transmon_surface17")
     qudit = qs.qudits[0]
+    duration = 50 * pulse.ns
+    readout_duration = 500 * pulse.ns
 
     print("=== Compiled for the qubit's quantum system ===")
-    scheduled = rabi.lower(qudit, cal["rabi_duration"], 0.5)
+    scheduled = rabi.lower(qudit, duration, 0.5)
     print(scheduled.mlir())
     print(f"  Compile metrics: {scheduled.metrics}")
 
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # Pinning the quantum system compiles for it ahead of the call.
     sweep = pulse.compile(rabi, quantum_system=qs)
     for amplitude in [0.0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12]:
-        scheduled = sweep.lower(qudit, cal["rabi_duration"], amplitude)
+        scheduled = sweep.lower(qudit, duration, amplitude)
         p1 = pulse.simulate(scheduled).level_population(1)
         print(f"  amplitude={amplitude:.2f}: P(1) = {p1:.3f}")
     print(f"  compiled {sweep.cache_info().compiled} time(s) for the whole sweep")
@@ -54,11 +54,11 @@ if __name__ == "__main__":
     print("\n=== The same kernel on a quantum system with a 1 GHz clock ===")
     slow = pulse.quantum_system("transmon_surface17", clock_ghz=1.0)
     for quantum_system in (qs, slow):
-        scheduled = rabi.lower(quantum_system.qudits[0], cal["rabi_duration"], 0.5)
+        scheduled = rabi.lower(quantum_system.qudits[0], duration, 0.5)
         cycles = scheduled.schedule[0].duration_cycles
-        print(f"  {quantum_system.clock_ghz:g} GHz: {cal['rabi_duration']} is {cycles} cycles")
+        print(f"  {quantum_system.clock_ghz:g} GHz: {duration} is {cycles} cycles")
 
     print("\n=== With readout ===")
-    scheduled = rabi_with_readout.lower(qudit, cal["rabi_duration"], 0.5)
+    scheduled = rabi_with_readout.lower(qudit, duration, 0.5, readout_duration)
     print(scheduled.mlir())
     print(f"  Compile metrics: {scheduled.metrics}")
