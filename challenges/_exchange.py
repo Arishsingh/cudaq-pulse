@@ -160,10 +160,14 @@ def start_child(child, arguments, text=False, time_limit_s=None):
 
 
 def _in_session(session):
-    """The processes whose session is *session*, as ps lists them; none where there is no ps."""
+    """The processes whose session is *session*, of those ps lists; none where there is no ps.
+
+    The session is asked of the system for each process: the session column of ps is not the
+    session's number on every system (macOS prints 0 in it).
+    """
     try:
         listed = subprocess.run(
-            ["ps", "-A", "-o", "pid=", "-o", "sess="],
+            ["ps", "-A", "-o", "pid="],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -172,8 +176,14 @@ def _in_session(session):
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return []
-    rows = (line.split() for line in listed.splitlines())
-    return [int(row[0]) for row in rows if len(row) == 2 and row[1] == str(session)]
+    found = []
+    for word in listed.split():
+        try:
+            if os.getsid(int(word)) == session:
+                found.append(int(word))
+        except (OSError, ValueError):  # it ended since ps listed it, or may not be asked about
+            pass
+    return found
 
 
 def stop_child(process):
