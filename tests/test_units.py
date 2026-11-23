@@ -578,6 +578,11 @@ def test_simulate_checks_a_time_as_its_number_of_ns(time, message):
         pulse.simulate(_pulse_then_idle, Q[0], **time)
 
 
+def test_simulate_names_the_bad_dt_ns_value():
+    with pytest.raises(pulse.InvalidValueError, match=r"dt_ns must be positive, got -1(?:\.0)?"):
+        pulse.simulate(_pulse_then_idle, Q[0], dt_ns=-1)
+
+
 def test_a_classical_function_takes_its_latencies_as_times():
     @pulse.classical(
         max_latency_ns=0.4 * us, min_latency_ns=100 * ns, deadline_ns=2 * us, link="controller"

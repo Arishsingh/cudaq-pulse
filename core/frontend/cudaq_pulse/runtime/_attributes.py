@@ -43,8 +43,10 @@ def _level_attributes(
         dims = tuple(levels[q] if q in levels else model.levels_of(q) for q in qudits)
     else:
         dims = (int(levels),) * len(qudits)
-    if any(d < 2 for d in dims):
-        raise InvalidValueError("every qudit needs at least two levels")
+    for q, d in zip(qudits, dims, strict=False):
+        if d < 2:
+            noun = "level" if d == 1 else "levels"
+            raise InvalidValueError(f"qudit {q} has {d} {noun}; every qudit needs at least two")
     # Qudits the program does not use are not simulated, and keep the levels
     # they would have.
     extent = _extent(qudits)

@@ -665,6 +665,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   does the work it did; a number of another type (an int, a numpy scalar)
   is made a plain float where it is bound. `bind()` refuses a numpy bool
   (`np.True_`) as it refuses a `bool`; it was taken as `1.0`.
+- `pulse.simulate` now names the value it rejected in its `dt_ns` error and
+  the qudit and its level count in the error for fewer than two levels, also
+  when a per-qudit `levels` mapping is used.
+
 - Binding the values of a call with a long `list[float]` parameter crashed
   the process (a segmentation fault) from about 65,500 values on, when the
   kernel was compiled with `fold_phases` or `fuse_pulses` (both are default
