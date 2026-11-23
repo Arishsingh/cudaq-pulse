@@ -335,6 +335,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **Checking `max_concurrent_drives` and `max_concurrent_readouts` no
+  longer takes time that grows with the square of the pulses at once.** The
+  count of a control system's drives and readouts at once went through
+  every pulse in flight at each pulse, so a program in which all qudits
+  play together (a round of an error-correcting code) paid for each pulse
+  against every other, in `compile` and again in `check`. Eight times the
+  drives at once took about 60 times as long to count; they now take about
+  11 times. What is counted, and each message, is the same.
 - **A value that is not a real number fails at `bind()`, on every bind.**
   `module.bind([True, 1e6])`, or a str, a complex number or `None` for a
   value, was an `InvalidTypeError` at `bind()` only on the first bind of a
