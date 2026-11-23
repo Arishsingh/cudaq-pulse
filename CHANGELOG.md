@@ -178,6 +178,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   prints the installed controller backends next to the quantum systems
   (`none` when there are none), so the advice in `--system` to run the
   doctor for them is true.
+- **Control systems compared, and a page for the built-in chip.** A new
+  tutorial, One QPU, Several Control Systems, puts five control systems
+  under `transmon_surface17`, each defined on the page: one controller with
+  fast or slow feedback, a controller per readout feedline, separate drive
+  and readout modules (refused without a shared reference clock, with the
+  compiler's message), and a limit of six drives at once. It compares the
+  length of an active reset and of one surface-code round, the reset's
+  ground-state population, and the error a data qubit picks up while it
+  waits for a round; `examples/30_control_systems_compared.py` is the same
+  comparison as one file. A new user guide page, The transmon_surface17
+  Quantum System, shows the chip's layout and couplings, its frequency
+  plan, its readout feedlines, its coherence, its calibrated gates and what
+  the simulator models of each, and one error correction cycle. Its
+  numbers, tables and figures are written from the system by a script, and
+  a test fails when the page and the system differ.
 
 ### Changed
 
