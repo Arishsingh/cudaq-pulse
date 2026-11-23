@@ -10,21 +10,13 @@ from __future__ import annotations
 
 import math
 import re
-import time
 
 import cudaq_pulse as pulse
 import pytest
 from cudaq_pulse.kernel.ir_builder import Parameter
 
 from tests._handles import Q
-from tests._work import python_work
-
-
-def _seconds(fn) -> float:
-    t0 = time.perf_counter()
-    fn()
-    return time.perf_counter() - t0
-
+from tests._work import cpu_seconds_each, python_work
 
 # ===========================================================================
 # Helper frequencies
@@ -639,9 +631,8 @@ class TestE2ESweeps:
         # The Python work, counted, and the best of twenty times.
         work = {"compile": python_work(recompile), "specialize": python_work(specialize)}
         assert work["specialize"]["lines"] < work["compile"]["lines"], work
-        compile_ms, specialize_ms = (
-            1000 * min(_seconds(fn) for _ in range(20)) for fn in (recompile, specialize)
-        )
+        times = cpu_seconds_each({"compile": recompile, "specialize": specialize}, repeats=20)
+        compile_ms, specialize_ms = 1000 * times["compile"], 1000 * times["specialize"]
         assert specialize_ms < compile_ms, (
             f"specialize ({specialize_ms:.2f}ms) should be faster than compile ({compile_ms:.2f}ms)"
         )

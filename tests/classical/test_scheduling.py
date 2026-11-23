@@ -14,7 +14,11 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from tests._handles import Q
-from tests._work import cpu_seconds, native_seconds, python_work
+from tests._work import (
+    cpu_seconds_each,
+    native_seconds_each,
+    python_work,
+)
 from tests.property_settings import examples
 
 POLICIES = ("asap", "alap", "rcp", "alap_rcp")
@@ -366,7 +370,7 @@ def test_very_many_calls_schedule_in_linear_time(links):
     # The Python work is counted, the same at any load. The time, which also
     # takes in native code, is the best of five in CPU time: one wall-clock
     # sample per size failed on a loaded machine.
-    timings, work = {}, {}
+    runs, work = {}, {}
     for n in (250, 2000):
         kernel = _many(n, links)
 
@@ -374,13 +378,14 @@ def test_very_many_calls_schedule_in_linear_time(links):
             return pulse.compile(kernel, schedule="asap").lower(Q[0])
 
         work[n] = python_work(run)
-        timings[n] = cpu_seconds(run)
+        runs[n] = run
         calls = run().classical_report()
         assert len(calls) == n
         # Each call waits for the previous drive; answers are due 41 later.
         assert calls[-1].due_cycles == calls[-1].submit_cycles + 1 + 40
     # 8x the calls: 8x the time when linear, 64x when quadratic.
     assert all(work[2000][count] <= 8 * work[250][count] for count in work[250]), work
+    timings = cpu_seconds_each(runs)
     assert timings[2000] < 24 * timings[250], timings
 
 
@@ -420,10 +425,11 @@ def test_shots_that_branch_on_one_answer_schedule_in_linear_time():
     # Every shot of a round branches on the answer the round before sent its
     # measurements to; the time, native, is of whole compiles (a program
     # lowers once, so lowering it again would time nothing).
-    timings = {}
+    runs = {}
     for n in (100, 1600):
         kernel = _shots(n)
-        timings[n] = native_seconds(lambda kernel=kernel: pulse.compile(kernel).lower(Q[0]))
+        runs[n] = lambda kernel=kernel: pulse.compile(kernel).lower(Q[0])
+    timings = native_seconds_each(runs)
     # 16x the shots: 16x the time when linear, 256x when quadratic.
     assert timings[1600] < 64 * timings[100], timings
 

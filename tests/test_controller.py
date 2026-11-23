@@ -17,7 +17,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from tests._handles import Q, ladder_target
-from tests._work import native_seconds
+from tests._work import native_seconds_each
 from tests.classical.fake_cudaq_qec import qec
 from tests.property_settings import examples
 
@@ -404,7 +404,7 @@ def test_a_branch_on_each_of_many_qudits_is_walked_in_linear_time():
     # line's time. The time, native, is of whole compiles and exports.
     machine = ControlSystem(controllers=[Controller(feedback_latency_cycles=50)])
     wide = ladder_target(512).qudits
-    timings = {}
+    runs = {}
     for n in (64, 512):
         kernel = _reset_each(n)
 
@@ -412,9 +412,10 @@ def test_a_branch_on_each_of_many_qudits_is_walked_in_linear_time():
             compiled = pulse.compile(kernel, schedule="rcp", control_system=machine)
             compiled.lower(wide[0:n]).export_to_controller()
 
-        timings[n] = native_seconds(
-            run, methods=("controller_events", "controller_program"), repeats=3
-        )
+        runs[n] = run
+    timings = native_seconds_each(
+        runs, methods=("controller_events", "controller_program"), repeats=3
+    )
     # 8x the branches: 8x the time when linear, 64x when quadratic.
     assert timings[512] < 24 * timings[64], timings
 

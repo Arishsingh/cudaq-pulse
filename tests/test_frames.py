@@ -23,7 +23,7 @@ from cudaq_pulse.controller import unroll
 from cudaq_pulse.quantum_systems import PhysicalQudit
 
 from tests import _child
-from tests._work import native_seconds, python_work
+from tests._work import native_seconds_each, python_work
 
 _FREQUENCY_HZ = 5.0e9
 _CLOCK_GHZ = 2.0
@@ -634,7 +634,7 @@ def test_a_run_of_branches_places_its_frame_changes_in_linear_time():
     # Each branch passes its tone through the arm that does not play, so a
     # change is free where the branches before it, all of them, leave its
     # tone. The Python work is counted; the schedule, native, is timed.
-    work, timings = {}, {}
+    work, runs = {}, {}
     for n in (250, 2000):
         kernel = _branches(n)
 
@@ -642,7 +642,8 @@ def test_a_run_of_branches_places_its_frame_changes_in_linear_time():
             return pulse.compile(kernel).lower(Q[0])
 
         work[n] = python_work(run)
-        timings[n] = native_seconds(run)
+        runs[n] = run
+    timings = native_seconds_each(runs)
     # 8x the branches: 8x the time when linear, 64x when quadratic. The bound
     # is between them, past the caches a larger program misses.
     assert all(work[2000][count] <= 8 * work[250][count] for count in work[250]), work

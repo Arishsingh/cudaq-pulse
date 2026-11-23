@@ -35,7 +35,7 @@ from cudaq_pulse.quantum_systems.base import (
 )
 from cudaq_pulse.quantum_systems.models import SimulationModel
 
-from tests._work import native_seconds
+from tests._work import native_seconds_each
 
 TRANSMON_SURFACE17 = "transmon_surface17"
 
@@ -745,15 +745,13 @@ def test_rounds_on_two_controllers_that_branch_on_an_answer_schedule_in_linear_t
     # comes from; the time, native, is of whole compiles (a program lowers
     # once, so lowering it again would time nothing).
     qpu = _two_box_qpu()
-    timings = {}
+    runs = {}
     for n in (100, 1600):
         kernel = _answered_rounds(n)
-        timings[n] = native_seconds(
-            lambda kernel=kernel: pulse.compile(
-                kernel, quantum_system=qpu, schedule=schedule
-            ).lower(qpu.qudits[0], qpu.qudits[2]),
-            repeats=3,
-        )
+        runs[n] = lambda kernel=kernel: pulse.compile(
+            kernel, quantum_system=qpu, schedule=schedule
+        ).lower(qpu.qudits[0], qpu.qudits[2])
+    timings = native_seconds_each(runs, repeats=3)
     # 16x the shots: 16x the time when linear, 256x when quadratic. 1600
     # shots outgrow a shared runner's caches, which can take it past 64x.
     assert timings[1600] < 128 * timings[100], timings
