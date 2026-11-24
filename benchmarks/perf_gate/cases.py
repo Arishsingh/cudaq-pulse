@@ -108,6 +108,13 @@ def _json_bytes(program: object) -> dict[str, int]:
     return {"export_bytes": len(text.encode())}
 
 
+def _event_count(program: Any) -> dict[str, int]:
+    # Phases that are not whole numbers in binary can round differently in
+    # their last bit from one platform to another and print with another
+    # number of digits, so such a program is sized by its events.
+    return {"export_events": len(program["events"])}
+
+
 def _schedule_size(events: Any) -> dict[str, int]:
     end = max(e.start_cycles + e.duration_cycles for e in events)
     return {"schedule_events": len(events), "schedule_cycles": end}
@@ -297,6 +304,22 @@ def _export_to_controller_sampled() -> Op:
     return lambda i: lowered.export_to_controller(rate)
 
 
+def _export_to_controller_detuned() -> Op:
+    # A tone moved off its qudit's frequency: every pulse after the change
+    # carries a phase that the export works out at the pulse's time, where
+    # the other export cases carry phase 0 throughout.
+    @pulse.kernel
+    def train(q):
+        d = get_drive_line(q)
+        shift_frequency(d.tone, 3.0e6)
+        for _ in range(1000):
+            drive(d, square(16, 0.1))
+            shift_phase(d.tone, 0.37)
+
+    lowered = pulse.compile(train, quantum_system=_DEVICE, unroll_threshold=10**6).lower(Q[0])
+    return lambda i: lowered.export_to_controller()
+
+
 def _export_to_emulator() -> Op:
     lowered = pulse.compile(
         _calls.many_calls(64, 4), quantum_system=_DEVICE, schedule="asap"
@@ -420,6 +443,13 @@ CASES: tuple[Case, ...] = (
         _export_to_controller_sampled,
         3,
         sizes=_json_bytes,
+    ),
+    Case(
+        "export_to_controller_detuned",
+        "controller program of 1000 pulses on a tone moved 3 MHz off its qudit",
+        _export_to_controller_detuned,
+        3,
+        sizes=_event_count,
     ),
     Case(
         "export_to_emulator",
