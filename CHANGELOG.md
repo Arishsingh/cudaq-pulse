@@ -405,6 +405,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   of each wait on a 2 GHz clock, with no error. It is now an
   `InvalidTypeError` that names the element, and so is an element that is
   not a number, which said only that the argument was a list.
+- **A loop that hands each classical call's answer to the next call now
+  compiles.** With a wait whose length is an answer in it
+  (`tau = f.submit(tau).result()` then `wait(line, tau, bounds=...)`), the
+  time to schedule doubled with every round, so a loop of some thirty rounds
+  did not finish. To find a wait's length the scheduler went back from the
+  answer through the call to every call before it, by two ways each. It now
+  follows arithmetic only, and computes a term that others share once. The
+  schedules are the same.
 - **A kernel with many measurement-conditioned `if`s no longer takes memory
   and time that grow with the square of their number to trace.** Each `if`
   kept its own copy of the whole kernel's instructions, so a kernel of n

@@ -882,6 +882,32 @@ def test_a_sweep_of_a_wait_from_an_answer_and_a_float_compiles_once(monkeypatch)
     _sweep(pulse.compile(t1), [float(4 * i + 1) for i in range(1000)], monkeypatch)
 
 
+@pytest.mark.scaling
+def test_a_loop_that_hands_each_answer_to_the_next_call_compiles_in_linear_time():
+
+    @pulse.classical(max_latency_ns=50, name="perf_next_tau")
+    def next_tau(x: float) -> float:
+        return 2.0 * x
+
+    def program(n: int):
+        @pulse.kernel
+        def adaptive(q, tau0: float):
+            d = get_drive_line(q)
+            tau = tau0
+            for _ in range(n):
+                tau = next_tau.submit(tau).result()
+                drive(d, square(40, 0.1))
+                wait(d, tau, bounds=(16, 4000))
+
+        return lambda: pulse.compile(adaptive).lower(Q[0], 10.0)
+
+    # Twice the rounds: about 2x the time when linear. The scheduler asks for
+    # each wait's length; a walk from it through the calls behind it, by each
+    # call's link and by its argument, took 2^10 times the time for ten more
+    # rounds. The sizes are small so that this fails and does not hang.
+    _assert_linear("compile", {n: program(n) for n in (10, 20)}, 2 * TOLERANCE)
+
+
 # Peak memory a simulation of two qutrits may add: their 9 x 9 density matrix
 # and operators are tiny, so this only fails if the space grows with the
 # qudits' indices (3^14 states for qudits 13 and 3).
