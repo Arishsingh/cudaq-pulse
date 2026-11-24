@@ -943,10 +943,16 @@ def _unrolled_loops() -> list[tuple[Any, int | None, int, list[tuple[bc.DecodedC
     found: list[tuple[Any, int | None, int, list[tuple[bc.DecodedCode, int]]]] = []
     for depth in range(len(frames) - 1, -1, -1):
         prog, index, stack = frames[depth]
+        # A Region's list also holds the ends of the ifs being traced inside
+        # it: its own instructions are its function's, with its own ends.
+        own: bc.DecodedCode = prog
+        ends: set[int] = set()
+        if isinstance(prog, bc.Region):
+            own, ends = prog.base, prog.ends()
         headers = [
             i
-            for i, (op, arg) in enumerate(prog.instrs[:index])
-            if op is FOR_ITER and i < index < arg[0]
+            for i, (op, arg) in enumerate(own.instrs[:index])
+            if op is FOR_ITER and i < index < arg[0] and i not in ends
         ]
         loops = [v for v in stack if type(v) is _Loop or type(v) is _Unrolled]
         if len(loops) != len(headers):
@@ -1732,6 +1738,7 @@ class PulseIREmitter:
         "_unroll",
         "_one_arm",
         "_dict_items",
+        "_owned",
     )
 
     # The slots' types, for type checkers: annotations in the class body
@@ -1746,6 +1753,9 @@ class PulseIREmitter:
         _acquired: list[int]
         _lines: _Lines
         _unroll: int
+        # Each function's instructions with the ends of the measured ifs
+        # being traced written in (_bytecode_normalize.region).
+        _owned: dict[int, list[Any]]
         # Names a measurement-conditioned if bound in one arm only, with the
         # branch instruction; set by the first such if.
         _one_arm: dict[str, tuple[bc.DecodedCode, int]]
@@ -2413,7 +2423,6 @@ class PulseIREmitter:
         if negated:
             then_start, else_start = else_start, then_start
         join = bc.join_point(prog, index)
-        view = bc.region_view(prog, join)
         returns = join >= len(prog.instrs)
 
         builder = self.b
@@ -2480,6 +2489,16 @@ class PulseIREmitter:
                 h.seq = seq
             lines.__class__ = _journal_lines or _load_journal_lines()
             lines.journal = None
+        # The arms stop at join: written into the function's instructions
+        # until the finally below.
+        if returns:
+            view = prog
+        else:
+            try:
+                owned = self._owned
+            except AttributeError:
+                owned = self._owned = {}
+            view = bc.region(prog, join, owned)
         outer = lines.journal
         journal: dict[Any, IRValue] = {}
         lines.journal = journal
@@ -2753,6 +2772,8 @@ class PulseIREmitter:
                 _restore_channels(held, held_count, ())
         finally:
             lines.journal = outer
+            if view is not prog:
+                bc.end_region(view)
         if outer is not None:
             # The channels held before this if, for the if around it.
             for cell in journal:
