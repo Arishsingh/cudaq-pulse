@@ -347,8 +347,22 @@ def test_unrolling_a_flat_export_returns_it():
     assert unroll(flat) == flat and flat["format"] == FORMAT
 
 
+def _shape(value):
+    """`value` with every number replaced by its type: what is left is the
+    program's structure (events, their kinds and lines, nesting, keys)."""
+    if isinstance(value, dict):
+        return {
+            key: (item if key in ("kind", "op") else _shape(item)) for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_shape(item) for item in value]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return type(value).__name__
+    return value
+
+
 def test_a_repeating_loop_stays_one_loop_whatever_its_trip_count():
-    sizes = {}
+    shapes = {}
     for n in (8, 4000):
         program = (
             pulse.compile(_rounds(n), unroll_threshold=0)
@@ -358,9 +372,10 @@ def test_a_repeating_loop_stays_one_loop_whatever_its_trip_count():
         (loop,) = [e for e in program["events"] if e["kind"] == "loop"]
         assert loop["trips"] + loop.get("first_iteration", 0) <= n
         assert all(event["iteration"] == [None] for event in loop["body"])
-        sizes[n] = len(json.dumps(program))
-    # Only the numbers grow: times and the trip count take more digits.
-    assert sizes[4000] < sizes[8] + 64, sizes
+        shapes[n] = _shape(program)
+    # Only the numbers differ (times, the trip count, phases): the export's
+    # events, their kinds, nesting and keys are the same at any trip count.
+    assert shapes[4000] == shapes[8]
 
 
 def test_a_loop_body_carries_its_period_and_phase_steps():
