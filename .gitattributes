@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Pull requests add their CHANGELOG entries at the same place. A merge keeps
+# the lines of both sides instead of stopping on a conflict.
+CHANGELOG.md merge=union
