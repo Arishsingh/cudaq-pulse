@@ -24,15 +24,9 @@ struct ControllerExpressions {
 
   /// A number computed from constants alone, else NaN.
   static double numberOf(mlir::Value value) {
-    pulse::AffineNumbers computed;
-    return numberOf(value, computed);
-  }
-
-  /// numberOf(), with what the arithmetic it follows computes in `computed`.
-  static double numberOf(mlir::Value value, pulse::AffineNumbers &computed) {
     if (auto constant = pulse::constantNumber(value))
       return *constant;
-    if (auto affine = pulse::affineNumber(value, computed);
+    if (auto affine = pulse::affineNumber(value);
         affine && affine->isConstant())
       return affine->evaluate({});
     return kUnknown;
@@ -42,10 +36,17 @@ struct ControllerExpressions {
   /// asks again at every execution and at every node of an expression.
   double number(mlir::Value value) {
     auto [found, inserted] = numbers.try_emplace(value);
-    if (inserted)
-      found->second = numberOf(value, affines);
+    if (inserted) {
+      found->second = kUnknown;
+      if (auto constant = pulse::constantNumber(value))
+        found->second = *constant;
+      else if (auto affine = pulse::affineNumber(value, affines);
+               affine && affine->isConstant())
+        found->second = affine->evaluate({});
+    }
     return found->second;
   }
+  // What the arithmetic of the program computes of its arguments.
   pulse::AffineNumbers affines;
   llvm::DenseMap<mlir::Value, double> numbers;
 
@@ -134,12 +135,15 @@ struct ControllerExpressions {
   llvm::DenseMap<mlir::Value, int32_t> made;
   // In one attempt: the values `made` got, those of them made whole (over
   // no operand not yet made), and the operands not yet made.
-  std::vector<mlir::Value> entered, whole, missing;
+  llvm::SmallVector<mlir::Value> entered, whole, missing;
   // How many terms deep an expression is made by calls of its terms.
   static constexpr int kInline = 48;
   // How many terms deep the text of an expression nests at most: a term
   // that deep is named. It is the deepest an expression was ever written.
   static constexpr int kNested = 65;
+  // Expressions by their place in `expressions`: the one map of the walks
+  // over them.
+  using Places = llvm::SmallDenseMap<int32_t, int32_t, 8>;
 
   int32_t add(Expression expression) {
     expressions.push_back(std::move(expression));
@@ -246,7 +250,13 @@ struct ControllerExpressions {
         expressions[index].plain = true;
       return index;
     }
-    std::vector<mlir::Value> todo{value};
+    return deep(value, mark);
+  }
+
+  /// expression() of a value with operands not yet made: the attempt that
+  /// began at `mark` is undone, and each operand is made on its own first.
+  LLVM_ATTRIBUTE_NOINLINE int32_t deep(mlir::Value value, size_t mark) {
+    llvm::SmallVector<mlir::Value> todo{value};
     for (;;) {
       // What the attempt made is not kept: it is over operands not made.
       // What it made whole is made on its own next, and kept, so that no
@@ -254,8 +264,8 @@ struct ControllerExpressions {
       expressions.resize(mark);
       for (mlir::Value attempted : entered)
         made.erase(attempted);
-      todo.insert(todo.end(), missing.begin(), missing.end());
-      todo.insert(todo.end(), whole.begin(), whole.end());
+      todo.append(missing.begin(), missing.end());
+      todo.append(whole.begin(), whole.end());
       for (;;) {
         mlir::Value next = todo.back();
         if (todo.size() > 1 && made.count(next)) {
@@ -266,7 +276,7 @@ struct ControllerExpressions {
         whole.clear();
         missing.clear();
         mark = expressions.size();
-        index = make(next, 0);
+        int32_t index = make(next, 0);
         if (!missing.empty())
           break;
         if (todo.size() == 1)
@@ -329,11 +339,11 @@ struct ControllerExpressions {
   template <typename Leaf>
   void eachRecord(int32_t root, Leaf leaf) {
     llvm::SmallVector<int32_t, 16> todo{root};
-    llvm::SmallDenseSet<int32_t, 8> entered;
+    Places entered;
     while (!todo.empty()) {
       int32_t index = todo.pop_back_val();
       Expression &e = expressions[index];
-      if (e.tabled && !entered.insert(index).second)
+      if (e.tabled && !entered.try_emplace(index, 0).second)
         continue;
       if (e.kind == Expression::Readout || e.kind == Expression::Answer)
         leaf(e);
@@ -641,16 +651,21 @@ struct ControllerExpressions {
   /// [low, high) `shift` later, the rest the same.
   bool sameExpression(int32_t x, int32_t y, int64_t low, int64_t high,
                       int64_t shift) const {
-    // The pairs still to compare, and those of terms others use that were
-    // entered.
+    // The pairs still to compare, and of the terms others use that were
+    // entered, the one each was compared with. The two expressions are made
+    // from the same values in two iterations, so they share alike: a term
+    // meets one partner.
     llvm::SmallVector<std::pair<int32_t, int32_t>, 16> todo{{x, y}};
-    llvm::SmallDenseSet<std::pair<int32_t, int32_t>, 4> entered;
+    Places entered;
     while (!todo.empty()) {
       auto pair = todo.pop_back_val();
       const Expression &p = expressions[pair.first],
                        &q = expressions[pair.second];
-      if (p.tabled && !entered.insert(pair).second)
-        continue;
+      if (p.tabled) {
+        auto [found, fresh] = entered.try_emplace(pair.first, pair.second);
+        if (!fresh && found->second == pair.second)
+          continue;
+      }
       if (p.kind != q.kind || p.term != q.term || p.name != q.name ||
           p.type != q.type || p.result != q.result ||
           p.of.size() != q.of.size() || !same(p.number, q.number))
@@ -674,30 +689,31 @@ struct ControllerExpressions {
   void namedTerms(int32_t root, llvm::SmallVectorImpl<int32_t> &named) const {
     if (expressions[root].plain)
       return;
+    // How many terms use each term others may use, then how deep each term
+    // reached is written.
     llvm::SmallVector<int32_t, 32> todo{root}, reached;
-    llvm::SmallDenseMap<int32_t, unsigned, 8> uses;
+    Places count;
     while (!todo.empty()) {
       int32_t index = todo.pop_back_val();
       const Expression &e = expressions[index];
       if (e.kind != Expression::Op)
         continue;
-      if (e.tabled && ++uses[index] > 1)
+      if (e.tabled && ++count[index] > 1)
         continue;
       reached.push_back(index);
       todo.append(e.of.begin(), e.of.end());
     }
     // A term's operands are made before it.
     llvm::sort(reached);
-    llvm::SmallDenseMap<int32_t, int, 32> deep;
+    Places deep;
     for (int32_t index : reached) {
       const Expression &e = expressions[index];
-      int depth = 0;
+      int32_t depth = 0;
       for (int32_t operand : e.of)
-        if (auto found = deep.find(operand); found != deep.end())
-          depth = std::max(depth, found->second);
+        depth = std::max(depth, deep.lookup(operand));
       ++depth;
       bool name = index != root &&
-                  ((e.tabled && uses.lookup(index) > 1) || depth >= kNested);
+                  ((e.tabled && count.lookup(index) > 1) || depth >= kNested);
       if (name)
         named.push_back(index);
       deep[index] = name ? 0 : depth;
@@ -708,50 +724,64 @@ struct ControllerExpressions {
   /// `leaf(index)` writes what is no term, `reference(n)` a use of named
   /// term n, and `node(e, of, table)` term `e` over the written operands
   /// `of`, the root with the `table` of the named terms when there are any.
-  template <typename Leaf, typename Reference, typename Node, typename List,
-            typename Set>
-  nb::object written(int32_t root, Leaf leaf, Reference reference, Node node,
-                     List list, Set set) const {
+  LLVM_ATTRIBUTE_NOINLINE nb::object written(
+      int32_t root, llvm::function_ref<nb::object(int32_t)> leaf,
+      llvm::function_ref<nb::object(int)> reference,
+      llvm::function_ref<nb::object(const Expression &, nb::handle, nb::handle)>
+          node) const {
     if (expressions[root].kind != Expression::Op)
       return leaf(root);
     llvm::SmallVector<int32_t, 8> named;
     namedTerms(root, named);
-    llvm::SmallDenseMap<int32_t, int, 8> names;
+    Places names;
     for (size_t n = 0; n < named.size(); ++n)
-      names[named[n]] = static_cast<int>(n);
-    struct Frame {
+      names[named[n]] = static_cast<int32_t>(n);
+    auto list = [](size_t size) {
+      PyObject *made = PyList_New(static_cast<Py_ssize_t>(size));
+      if (!made)
+        throw nb::python_error();
+      return nb::steal(made);
+    };
+    auto set = [](nb::handle to, size_t at, nb::object value) {
+      if (PyList_SetItem(to.ptr(), static_cast<Py_ssize_t>(at),
+                         value.release().ptr()) != 0)
+        throw nb::python_error();
+    };
+    // The terms being written, innermost last: each with its operands
+    // written so far.
+    struct Open {
       int32_t index;
-      nb::list of;
-      size_t next = 0;
+      nb::object of;
+      size_t next;
     };
     auto tree = [&](int32_t top, nb::handle table) -> nb::object {
-      std::vector<Frame> open;
-      open.push_back({top, list(expressions[top].of.size())});
+      llvm::SmallVector<Open, 8> open;
+      open.push_back({top, list(expressions[top].of.size()), 0});
       for (;;) {
-        Frame &frame = open.back();
-        const Expression &e = expressions[frame.index];
-        if (frame.next < e.of.size()) {
-          int32_t operand = e.of[frame.next];
+        Open &last = open.back();
+        const Expression &e = expressions[last.index];
+        if (last.next < e.of.size()) {
+          int32_t operand = e.of[last.next];
           if (expressions[operand].kind != Expression::Op)
-            set(frame.of, frame.next++, leaf(operand));
+            set(last.of, last.next++, leaf(operand));
           else if (auto found = names.find(operand); found != names.end())
-            set(frame.of, frame.next++, reference(found->second));
+            set(last.of, last.next++, reference(found->second));
           else
-            open.push_back({operand, list(expressions[operand].of.size())});
+            open.push_back({operand, list(expressions[operand].of.size()), 0});
           continue;
         }
         nb::object out =
-            node(e, frame.of, open.size() == 1 ? table : nb::handle());
+            node(e, last.of, open.size() == 1 ? table : nb::handle());
         open.pop_back();
         if (open.empty())
           return out;
-        Frame &parent = open.back();
-        set(parent.of, parent.next++, std::move(out));
+        Open &over = open.back();
+        set(over.of, over.next++, std::move(out));
       }
     };
     if (named.empty())
       return tree(root, nb::handle());
-    nb::list table = list(named.size());
+    nb::object table = list(named.size());
     for (size_t n = 0; n < named.size(); ++n)
       set(table, n, tree(named[n], nb::handle()));
     return tree(root, table);

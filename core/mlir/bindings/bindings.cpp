@@ -2897,10 +2897,6 @@ private:
           put(out, keys.type, keys.types[e.type]);
           put(out, keys.of, of);
           return out;
-        },
-        [](size_t size) { return list(size); },
-        [](nb::handle to, size_t at, nb::object value) {
-          set(to, at, std::move(value));
         });
   }
 
