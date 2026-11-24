@@ -105,7 +105,19 @@ def register_quantum_system(name: str, factory: QuantumSystemFactory) -> None:
 
 
 def available_quantum_systems() -> list[str]:
-    """Names that ``quantum_system()`` and ``CUDAQ_PULSE_QUANTUM_SYSTEM`` accept."""
+    """Names that ``quantum_system()`` and ``CUDAQ_PULSE_QUANTUM_SYSTEM`` accept.
+
+    The list is sorted, and it includes names added with
+    ``register_quantum_system``. Some names take an argument after a colon:
+    ``"transmon_lattice"`` on its own is an error — a lattice needs a qudit
+    count, so pass ``"transmon_lattice:4"`` (or ``"transmon_lattice:4:ring"``
+    for a ring topology).
+
+    Example::
+
+        available_quantum_systems()
+        ['transmon_lattice', 'transmon_surface17']
+    """
     registry = _registry()
     with _lock:
         return sorted(registry)
