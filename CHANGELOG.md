@@ -385,6 +385,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A kernel with many measurement-conditioned `if`s no longer takes memory
+  and time that grow with the square of their number to trace.** Each `if`
+  kept its own copy of the whole kernel's instructions, so a kernel of n
+  `if`s held n copies of itself: about 300 KB for each `if` of a kernel with
+  2,400 of them, and garbage collection walked the copies again and again.
+  A trace now keeps one copy per function and marks where each `if`'s
+  branches end in it while they are traced. An `if` costs about 12 KB,
+  whatever the length of the kernel, and the program compiled is the same.
 - **After a loop kept as a loop, the compact controller export
   (`export_to_controller(version=2)`) now carries the right phase on a tone
   that is retuned later.** At the end of a rolled loop, the export moved
@@ -468,6 +476,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   the sum of what they stand for as they come and go, and where none in
   flight is in a branch that sum is the bound. Where one is, those in
   flight are gone through as before. What it finds is the same.
+- **Checking a program against a control system of many controllers no
+  longer takes time that grows with their number times the program.**
+  Compiling for several controllers checked each one on a copy of every
+  event of the program, with the other controllers' pulses hidden, and
+  built the program's loops again for each. The loops are now built once
+  and each controller is checked on the pulses it plays. The limits found,
+  their wording and their order are the same.
 - **Loops that share a line with something else are counted from their
   periods.** On a line several qudits share, a loop kept as a loop was
   counted from one round only when nothing else played on the line

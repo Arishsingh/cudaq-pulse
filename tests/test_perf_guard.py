@@ -426,6 +426,58 @@ def test_a_rolled_round_with_branches_is_not_scheduled_pair_by_pair_of_lines():
 
 
 @pytest.mark.scaling
+def test_a_round_on_many_controllers_is_checked_in_linear_time():
+    from cudaq_pulse.controller import ReadoutLine, _compile_check
+    from cudaq_pulse.quantum_systems import PhysicalQudit
+
+    def program(n: int):
+        # A round of n qudits on controllers of seven, kept as a loop: a
+        # drive on every qudit, one sync of every line, and every second
+        # qudit read out and driven again where its result is set.
+        groups = [list(range(k, min(n, k + 7))) for k in range(0, n, 7)]
+        controllers = [
+            Controller(
+                clock_ghz=2.0,
+                drive_lines=g,
+                readout_lines=[ReadoutLine(g, max_concurrent_tones=len(g))],
+                supports=["play", "readout", "wait", "sync", "branch", "loop"],
+                feedback_latency_cycles=400,
+                peer_latency_cycles=400,
+            )
+            for g in groups
+        ]
+        system = pulse.quantum_system(
+            name=f"checked{n}",
+            qudits={i: PhysicalQudit(i, 4.5e9 + 1.0e3 * i, 37.7, 9.2) for i in range(n)},
+            control_system=ControlSystem(controllers=controllers, reference_clock_ghz=2.0),
+        )
+
+        @pulse.kernel
+        def rounds(qudits):
+            for _ in range(1000):
+                lines = [get_drive_line(q) for q in qudits]
+                for line in lines:
+                    drive(line, square(48, 0.25))
+                sync(*lines, *[get_readout_line(q) for q in qudits])
+                for i in range(0, n, 2):
+                    line = get_drive_line(qudits[i])
+                    answer = get_readout_line(qudits[i])
+                    sync(line, answer)
+                    if readout(answer, square(1000, 0.05)):
+                        drive(line, square(48, 0.25))
+
+        lowered = pulse.compile(rounds, quantum_system=system).lower(system.qudits[0:n])
+        machine = lowered.options.machine
+        # The check compiling makes of the program against its control system.
+        return lambda: _compile_check(lowered, machine.controller, machine._system)
+
+    # Eight times the qudits and the controllers: about 8x the time when
+    # each controller is checked on its own pulses, 64x when each is checked
+    # on a copy of every controller's.
+    _assert_linear("a round's check", {n: program(n) for n in (70, 560)}, 8 * TOLERANCE)
+
+
+@pytest.mark.scaling
 def test_the_pulses_at_once_are_counted_in_linear_time():
     from cudaq_pulse._concurrency import violations
     from cudaq_pulse.quantum_systems import PhysicalQudit
@@ -912,6 +964,39 @@ def test_compiling_calls_takes_little_memory_per_call():
         tracemalloc.stop()
     per_call = (peaks[4000] - peaks[500]) / 3500
     assert per_call < 2048, per_call
+
+
+def _if_chain(n):
+    src = (
+        "def k(a, b):\n    da = get_drive_line(a)\n    db = get_drive_line(b)\n"
+        "    m = readout(get_readout_line(b), square(40, 0.05))\n"
+        + "    if m:\n        shift_phase(da.tone, 0.1)\n    else:\n        wait(db, 8)\n" * n
+        + "    drive(da, square(40, 0.1))\n"
+    )
+    scope = dict(vars(pulse))
+    exec(compile(src, f"<{n} ifs>", "exec"), scope)
+    return pulse.kernel(scope["k"], unroll_threshold=0)
+
+
+@pytest.mark.scaling
+def test_tracing_measured_ifs_takes_little_memory_per_if():
+    # Each if's arms stop where they join: that end was written into a new
+    # copy of the whole function's instructions, kept for every if, so a
+    # function of n ifs held n copies of n ifs' instructions.
+    import tracemalloc
+
+    peaks = {}
+    for n in (300, 2400):
+        kernel = _if_chain(n)
+        pulse.compile(kernel).lower(Q[0], Q[1])
+        tracemalloc.start()
+        pulse.compile(_if_chain(n)).lower(Q[0], Q[1])
+        peaks[n] = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+    # About 12 KB an if (the if's own IR); 300 KB an if at 2,400 ifs when
+    # each kept its copy.
+    per_if = (peaks[2400] - peaks[300]) / 2100
+    assert per_if < 65536, per_if
 
 
 def _measured_line(n):
