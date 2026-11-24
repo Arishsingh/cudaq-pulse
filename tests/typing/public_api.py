@@ -30,6 +30,7 @@ from cudaq_pulse.quantum_systems import (
     Coupling,
     DispersiveReadout,
     DragPulse,
+    Drive,
     FluxCZ,
     MicrowaveDrive,
     PhysicalQudit,
@@ -261,6 +262,9 @@ DispersiveReadout(7.0e9)  # type: ignore[call-arg]
 DispersiveReadout(photon_number=4.0)  # type: ignore[call-arg]
 readout.linewidth_hz = 2.0e6  # type: ignore[misc]
 MicrowaveDrive(x_amplitude=0.2)  # type: ignore[call-arg]
+assert_type(Drive(amplitude_scale_rad_per_ns=0.2).amplitude_scale_rad_per_ns, float | None)
+assert_type(MicrowaveDrive().replace(amplitude_scale_rad_per_ns=0.2), MicrowaveDrive)
+Drive(0.2)  # type: ignore[call-arg]
 
 # A qudit's tuned pulses are its calibrations, by gate; get_calibration gives
 # each as the type of its gate, on the qudit, a handle or a kernel's line.

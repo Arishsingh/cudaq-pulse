@@ -207,6 +207,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   the simulator models of each, and one error correction cycle. Its
   numbers, tables and figures are written from the system by a script, and
   a test fails when the page and the system differ.
+- **A drive of no stated modality.** `Drive(amplitude_scale_rad_per_ns=...)`
+  states the Rabi rate of a pulse of amplitude 1 for a qudit whose drive is
+  not a microwave one, or whose modality the system leaves unsaid: the
+  field moved from `MicrowaveDrive` to its base, `Drive`, which can now be
+  given as a qudit's `drive`. The simulator and the derived calibrations
+  read it as they read a `MicrowaveDrive`'s, which keeps working unchanged,
+  and a system file holds it as `{"kind": "drive", ...}`. A subclass of
+  `Drive` the simulator has no model for is refused, as before; one with
+  fields of its own now states them in `_fields`.
 
 ### Changed
 
