@@ -361,6 +361,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   once, so a long chain of `m and n` conditions, which gives a line
   thousands of uses, no longer spends most of its compile in `verify`.
   Programs and errors are as before.
+- **`rcp` and `alap_rcp` take a lane in logarithmic time.** Each pulse took
+  the earliest free lane (the latest, backward) by comparing every lane, and
+  each branch copied every lane for each arm. On one controller, or on
+  several whose starts are known exactly, a pulse now takes it from a heap
+  of the lanes, in time logarithmic in their number; a branch puts back and
+  merges only the lanes its arms changed; and on several controllers, a
+  branch on readouts notes when the outcomes of each controller that read
+  them are ready, not when they reach every controller of the system.
+  Programs and errors are as before.
 - **Examples show calibration values as kernel arguments.** A style change
   to the examples: where a kernel of the README, the user guide or
   `examples/` read its pulse durations, sigmas and amplitudes from a
