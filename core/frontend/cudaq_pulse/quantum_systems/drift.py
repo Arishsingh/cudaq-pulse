@@ -110,7 +110,10 @@ class OrnsteinUhlenbeck:
                 f"OrnsteinUhlenbeck sigma must not be negative, got {self.sigma!r}"
             )
         if not _seconds(self.correlation_time, "OrnsteinUhlenbeck correlation_time") > 0:
-            raise InvalidValueError("OrnsteinUhlenbeck correlation_time must be positive")
+            raise InvalidValueError(
+                "OrnsteinUhlenbeck correlation_time must be positive, "
+                f"got {self.correlation_time!r}"
+            )
 
     def _step(self, x: float, seconds: float, rng: np.random.Generator) -> float:
         """The exact update of *x* over *seconds*."""
@@ -133,7 +136,9 @@ class TelegraphT1:
                 f"TelegraphT1 low_fraction is in (0, 1], got {self.low_fraction!r}"
             )
         if not _seconds(self.dwell_time, "TelegraphT1 dwell_time") > 0:
-            raise InvalidValueError("TelegraphT1 dwell_time must be positive")
+            raise InvalidValueError(
+                f"TelegraphT1 dwell_time must be positive, got {self.dwell_time!r}"
+            )
 
 
 def _hour() -> Time:
