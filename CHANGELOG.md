@@ -385,6 +385,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A function declaration no longer crashes the schedule passes.** A module
+  with a function that has no body, `func.func private @f(i64) -> i64`,
+  crashed `pulse-schedule-asap`, `-alap` and `-rcp`. A declaration is now
+  left as it is. Seen with hand-written IR.
+- **A call the schedule passes cannot time is refused.** Hand-written IR
+  with a `func.call` (or an op of another dialect) that takes or gives a
+  qudit, a line, a tone, a measurement or a classical handle was scheduled
+  as if the call took no time: the pulse after it started while the called
+  function's pulses still played, and `pulse-verify` accepted it. The
+  schedule passes and `pulse-verify` now stop with an error that names the
+  op and says to write the ops it stands for in its place. The schedule
+  passes also stop at an op that holds a region they do not go into
+  (they go into `scf.for`, `scf.if` and schedule blocks) and at a function
+  of several blocks, whose ops they left untimed. No kernel written in Python makes any of these, so no
+  kernel is affected.
 - **A controller check no longer walks every round of a long loop.**
   `controller.check(program, controller)` for a controller with a shared
   line walked every iteration of a loop kept as a loop, so its time and

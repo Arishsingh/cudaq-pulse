@@ -80,6 +80,7 @@
 #include "cudaq-pulse/Analysis/LineGrid.h"
 #include "cudaq-pulse/Analysis/LineTrace.h"
 #include "cudaq-pulse/Analysis/Timing.h"
+#include "cudaq-pulse/Analysis/Untimed.h"
 
 #include <map>
 
@@ -3877,7 +3878,16 @@ private:
     if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op))
       return forwardIf(branch);
     // Any other op releases its timed results when its timed operands are;
-    // with calls, every result is released when all its operands are.
+    // with calls, every result is released when all its operands are. That
+    // is wrong for an op that could itself play (Untimed.h).
+    if (pulse::untimed(op))
+      return pulse::emitUntimed(op);
+    // Nor does the pass go into the regions of an op that comes here.
+    if (op->getNumRegions())
+      return op->emitError("'")
+             << op->getName().getStringRef()
+             << "' holds ops the schedule passes do not go into; write them "
+                "in its place before scheduling";
     if (classical) {
       int64_t time = operandsReady(op);
       for (mlir::Value result : op->getResults())
@@ -6571,6 +6581,14 @@ scheduleRegion(mlir::Region &region, mlir::Operation *root, Resources resources,
 
 static mlir::LogicalResult schedule(mlir::func::FuncOp function,
                                     Resources resources, bool isAlap) {
+  // A declaration has no body to schedule.
+  if (function.isExternal())
+    return mlir::success();
+  // The passes time the ops of one block, in their order.
+  if (!function.getBody().hasOneBlock())
+    return function.emitError(
+        "the schedule passes time a function of one block; this one "
+        "branches between several");
   if (resources.enabled &&
       (resources.maxDrives <= 0 || resources.maxReadouts <= 0))
     return function.emitError("resource limits must be positive");

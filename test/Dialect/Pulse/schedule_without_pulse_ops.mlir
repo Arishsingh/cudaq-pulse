@@ -5,9 +5,9 @@
 // RUN: cudaq-pulse-opt %s --pulse-schedule-alap | FileCheck %s
 // RUN: cudaq-pulse-opt %s --pulse-schedule-rcp | FileCheck %s
 
-// A schedule pass marks every function with its schedule state, an attribute
-// of the pulse dialect. It did so without loading that dialect, and crashed
-// on a module that holds no pulse operation or type.
+// A schedule pass marks every function that has a body with its schedule
+// state, an attribute of the pulse dialect. It did so without loading that
+// dialect, and crashed on a module that holds no pulse operation or type.
 
 // CHECK-LABEL: func.func @no_pulse_operation
 // CHECK-SAME: attributes {pulse.schedule_state = #pulse.schedule_state<timed>}

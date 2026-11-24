@@ -282,3 +282,38 @@ func.func @time_read_and_two_drives(%d: !pulse.drive_line, %w: !pulse.waveform, 
   %d2, %t2 = pulse.drive %d, %w, %u : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
   return %tp, %d1, %d2 : !pulse.timepoint, !pulse.drive_line, !pulse.drive_line
 }
+
+// -----
+
+// A call that takes a line: the schedule passes would time it as nothing.
+func.func private @plays(%line: !pulse.drive_line, %tone: !pulse.tone) -> (!pulse.drive_line, !pulse.tone) {
+  return %line, %tone : !pulse.drive_line, !pulse.tone
+}
+
+func.func @call_that_takes_a_line(%line: !pulse.drive_line, %tone: !pulse.tone) -> (!pulse.drive_line, !pulse.tone) {
+  // expected-error @+1 {{'func.call' takes or gives a qudit, a line, a tone, a measurement or a classical handle, and the schedule passes cannot tell what it plays or how long it takes; write the ops it stands for in its place before scheduling}}
+  %out:2 = call @plays(%line, %tone) : (!pulse.drive_line, !pulse.tone) -> (!pulse.drive_line, !pulse.tone)
+  return %out#0, %out#1 : !pulse.drive_line, !pulse.tone
+}
+
+// -----
+
+// A call of numbers only is none of the passes' business.
+func.func private @doubled(%n: i64) -> i64
+
+func.func @call_of_numbers(%n: i64) -> i64 {
+  %m = call @doubled(%n) : (i64) -> i64
+  return %m : i64
+}
+
+// -----
+
+// Control flow other than scf.for and scf.if that gives a line: the schedule
+// passes do not go into it.
+func.func @region_that_gives_a_line(%line: !pulse.drive_line) -> !pulse.drive_line {
+  // expected-error @+1 {{'scf.execute_region' takes or gives a qudit, a line, a tone, a measurement or a classical handle, and the schedule passes cannot tell what it plays or how long it takes; write the ops it stands for in its place before scheduling}}
+  %out = scf.execute_region -> !pulse.drive_line {
+    scf.yield %line : !pulse.drive_line
+  }
+  return %out : !pulse.drive_line
+}
