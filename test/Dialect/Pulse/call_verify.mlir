@@ -165,3 +165,36 @@ func.func @held() attributes {pulse.schedule_state = #pulse.schedule_state<timed
   %a:5 = pulse.call @measure_and_drive(%r0, %u0, %d0, %t0) <{duration_cycles = 500 : i64, start_cycles = 0 : i64}> : (!r, !t, !d, !t) -> (!d, !t, !r, !t, !m)
   return
 }
+
+// -----
+
+!d = !pulse.drive_line
+!t = !pulse.tone
+!w = !pulse.waveform
+
+// Numbers are the values at the call: the amplitude (f64) and the length
+// (i64) of the written-out drive are the caller's.
+func.func private @scaled(%d: !d, %t: !t, %amp: f64, %len: i64) -> (!d, !t)
+    attributes {pulse.length_cycles = 24 : i64, pulse.schedule_state = #pulse.schedule_state<timed>} {
+  %z = arith.constant 0.0 : f64
+  %x = pulse.square %len, %amp, %z : i64, f64, f64 -> !w
+  %d1, %t1 = pulse.drive %d, %x, %t <{duration_cycles = 24 : i64, start_cycles = 0 : i64}> : !d, !w, !t -> !d, !t
+  return %d1, %t1 : !d, !t
+}
+
+// KEEP-LABEL: func.func @numbers
+// KEEP: pulse.call @scaled
+// CHECK-NOT: func.func private @scaled
+// CHECK-LABEL: func.func @numbers
+// CHECK: %[[AMP:.*]] = arith.constant 2.500000e-01 : f64
+// CHECK: %[[LEN:.*]] = arith.constant 24 : i64
+// CHECK: pulse.square %[[LEN]], %[[AMP]]
+// CHECK: pulse.drive {{.*}}<{duration_cycles = 24 : i64, start_cycles = 8 : i64}>
+func.func @numbers() attributes {pulse.schedule_state = #pulse.schedule_state<timed>} {
+  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %amp = arith.constant 0.25 : f64
+  %len = arith.constant 24 : i64
+  %a:2 = pulse.call @scaled(%d0, %t0, %amp, %len) <{duration_cycles = 24 : i64, start_cycles = 8 : i64}> : (!d, !t, f64, i64) -> (!d, !t)
+  return
+}
