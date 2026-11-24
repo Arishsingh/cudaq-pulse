@@ -106,6 +106,20 @@ def test_a_controller_checks_its_wiring_fields():
     assert isinstance(box, Controller)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"instruction_cycles": 0}, r"instruction_cycles must be at least 1, got 0$"),
+        ({"min_idle_cycles": -1}, r"min_idle_cycles cannot be negative, got -1$"),
+        ({"detector_recovery_cycles": -1}, r"detector_recovery_cycles cannot be negative, got -1$"),
+    ],
+    ids=["instruction_cycles", "min_idle_cycles", "detector_recovery_cycles"],
+)
+def test_a_controller_cycle_count_error_names_the_value(kwargs, message):
+    with pytest.raises(InvalidValueError, match=message):
+        pulse.Controller(**kwargs)
+
+
 def test_a_control_system_reports_every_wiring_problem_at_once():
     a = pulse.Controller(drive_lines=[0, 1], peer_latency_cycles={0: 4})
     b = pulse.Controller(drive_lines=[1, 2])
