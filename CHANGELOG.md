@@ -207,6 +207,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   the simulator models of each, and one error correction cycle. Its
   numbers, tables and figures are written from the system by a script, and
   a test fails when the page and the system differ.
+- **A shared drive line in the validation corpus.** `backends.validate` runs
+  two more programs: both qudits driven at once with the same envelope on
+  one drive line reaching both (`DriveLine([0, 1], max_concurrent_tones=2)`
+  in place of the controller's drive lines), then read out on the
+  controller's own readout lines. `shared_drive_line_two_tones` runs on the
+  corpus's system, whose qudits differ in frequency, so the line plays two
+  tones; `shared_drive_line_one_tone` runs on a system whose two qudits
+  share a frequency, so a backend whose line plays one tone for all its
+  qudits has a program it can emit. A backend with a drive line per qudit
+  refuses both, which counts as before. Every backend's report has two
+  more lines per format it reads.
 
 ### Changed
 
