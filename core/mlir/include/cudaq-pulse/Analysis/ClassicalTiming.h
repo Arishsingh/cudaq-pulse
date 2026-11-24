@@ -196,19 +196,49 @@ inline bool readers(mlir::Value value, const pulse::Controllers &controllers,
 /// Adds to `found` the controllers of the pulses that use `value`, or of
 /// the branches on it, each once; false if one of them is unknown, or
 /// `value` leaves what can be followed.
+///
+/// A value is followed through the results of the ops that use it: a
+/// branch on an answer gives the lines its arms touch, and a line goes on
+/// through every sync and branch after it. That can be as long as the
+/// program, so the walk keeps its own stack: per value its uses, and for
+/// the use at hand the results still to follow, in the order a recursion
+/// would visit them.
 inline bool takers(mlir::Value value, const pulse::Controllers &controllers,
                    pulse::AllocationTracer &trace,
                    llvm::SmallVectorImpl<int64_t> &found,
                    llvm::DenseSet<mlir::Value> &seen) {
-  if (!seen.insert(value).second)
-    return true;
   auto pulse = [&](mlir::Operation *op) {
     int64_t taker = controllers.of(op->getOperand(0), trace);
     if (!llvm::is_contained(found, taker))
       found.push_back(taker);
     return taker >= 0;
   };
-  for (mlir::OpOperand &use : value.getUses()) {
+  struct Frame {
+    mlir::Value::use_iterator use, end;
+    llvm::SmallVector<mlir::Value, 2> results;
+    unsigned next = 0;
+  };
+  llvm::SmallVector<Frame, 8> frames;
+  auto follow = [&](mlir::Value next) {
+    if (seen.insert(next).second)
+      frames.push_back({next.use_begin(), next.use_end(), {}, 0});
+  };
+  follow(value);
+  while (!frames.empty()) {
+    Frame &frame = frames.back();
+    if (frame.next < frame.results.size()) {
+      // Not `frame` after this: following a value may move the frames.
+      mlir::Value result = frame.results[frame.next++];
+      follow(result);
+      continue;
+    }
+    if (frame.use == frame.end) {
+      frames.pop_back();
+      continue;
+    }
+    mlir::OpOperand &use = *frame.use++;
+    frame.results.clear();
+    frame.next = 0;
     mlir::Operation *user = use.getOwner();
     if (mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp>(user)) {
       if (!pulse(user))
@@ -222,21 +252,19 @@ inline bool takers(mlir::Value value, const pulse::Controllers &controllers,
       });
       if (!known)
         return false;
-      for (mlir::Value result : branch.getResults())
-        if (!takers(result, controllers, trace, found, seen))
-          return false;
+      frame.results.append(branch.getResults().begin(),
+                           branch.getResults().end());
     } else if (mlir::isa<mlir::scf::YieldOp>(user)) {
       auto branch = mlir::dyn_cast<mlir::scf::IfOp>(user->getParentOp());
-      if (!branch || !takers(branch->getResult(use.getOperandNumber()),
-                             controllers, trace, found, seen))
+      if (!branch)
         return false;
+      frame.results.push_back(branch->getResult(use.getOperandNumber()));
     } else if (user->getNumRegions() || user->getNumResults() == 0 ||
                mlir::isa<SubmitOp>(user)) {
       return false;
     } else {
-      for (mlir::Value result : user->getResults())
-        if (!takers(result, controllers, trace, found, seen))
-          return false;
+      frame.results.append(user->getResults().begin(),
+                           user->getResults().end());
     }
   }
   return true;
