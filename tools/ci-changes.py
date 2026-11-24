@@ -33,6 +33,7 @@ META = (
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/CODEOWNERS",
     ".github/dependabot.yml",
+    ".gitattributes",
     ".gitignore",
     "CITATION.cff",
     "CODE_OF_CONDUCT.md",
