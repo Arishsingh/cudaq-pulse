@@ -382,6 +382,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   module-level values as before. The quick example of the README and of
   Getting Started now reads the qubit out and runs by calling the kernel,
   which returns the outcome of one simulated shot.
+- **`viz.save_schedule` takes a path-like path and names its keywords.**
+  `path` may be a `pathlib.Path` as well as a string, and the function takes
+  `figsize` and `title`, the two keywords of `plot_schedule`, where it passed
+  `**kwargs` on to it. Calls that worked still work; a type checker now
+  accepts a `Path` and rejects another keyword, such as `dpi=300`, which
+  type-checked and then raised `TypeError` inside `plot_schedule`.
 
 ### Fixed
 
