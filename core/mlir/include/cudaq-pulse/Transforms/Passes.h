@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -74,6 +75,13 @@ std::unique_ptr<mlir::Pass> createPulseScheduleRcpPass(int64_t maxDrives,
 /// cudaq-pulse-opt; the extension creates the pass above.
 std::unique_ptr<mlir::Pass> createPulseScheduleRcpOptionsPass();
 std::unique_ptr<mlir::Pass> createPulseInlineScheduleBlocksPass();
+std::unique_ptr<mlir::Pass> createPulseExpandCallsPass();
+/// Write out every placed pulse.call of `module`, callees first: a copy of
+/// the callee's ops at the call's start and periods, and a wait on each line
+/// the callee plays on where the call lasts longer than it. Callees no call
+/// runs any more are erased. With `callSites`, each copied op's
+/// location names the call (for pulse-verify's diagnostics).
+mlir::LogicalResult expandCalls(mlir::ModuleOp module, bool callSites);
 std::unique_ptr<mlir::Pass>
 createPulseClassicalCheckPass(int64_t readoutLatency);
 /// pulse-classical-check with its options, for cudaq-pulse-opt; the
@@ -118,6 +126,7 @@ inline void registerPulsePasses() {
   mlir::registerPass(createPulseScheduleAsapOptionsPass);
   mlir::registerPass(createPulseScheduleAlapOptionsPass);
   mlir::registerPass(createPulseInlineScheduleBlocksPass);
+  mlir::registerPass(createPulseExpandCallsPass);
   mlir::registerPass(createPulseClassicalCheckOptionsPass);
   mlir::registerPass(createPulseFrameChangesPass);
   mlir::registerPass(createPulseUnrollClassicalLoopsPass);
