@@ -86,8 +86,31 @@ frequency. A system file holds an offset as ``{"offset_hz": 1.5e8}`` and a
 missing frequency as ``null``. Either kind of program schedules, exports
 and simulates as that of the same system with frequencies does, less the
 reference. ``frequency_hz`` reads what the qudit was given (an ``Offset``,
-or ``None``, where the type says ``float``); ``qs.qudit_freq`` is the offset
-or 0. Parameter drift needs qudits with frequencies.
+or ``None``, where the type says ``float``); ``qs.qudit_freq`` and
+``qs.frequencies`` are plain numbers, the offset or 0. An ``Offset`` equals
+and is ordered against another ``Offset`` only: ``offset == 1.5e8`` is
+false and ``offset < 1.5e8`` is an ``InvalidTypeError`` (a ``TypeError``),
+as for a ``str`` and a number; ``float(offset)`` is the number.
+
+What needs a frequency such a system does not state is refused, each with
+an error that says so:
+
+- a readout's ``frequency_hz`` (``DispersiveReadout(frequency_hz=...)``):
+  leave it out, and the readout line plays at its qudit's own tone;
+- ``simulate(program, quantum_system=other)`` when ``other.frequency_frame``
+  is not that of the system the program was compiled for;
+- a ``Calibration`` of a system with couplings, which computes each
+  coupling's exchange at its qudits' absolute frequencies;
+- parameter drift;
+- on an ``"own_carrier"`` system, a control system that counts the tone
+  frequencies (``max_frequencies_per_line``) of a line several qudits share:
+  each qudit's own tone is 0 Hz from its own carrier, so the count cannot
+  tell them apart.
+
+``qs.transition_freq`` gives magnitudes on every system. Where frequencies
+are offsets a transition's frequency keeps its sign (a 1-2 tone is its
+anharmonicity below the 0-1 tone): ``line.tones`` and
+``qs.model.transitions_hz(qudit, levels)`` give it.
 
 A coupling's ``strength_hz`` is g / 2 pi; ``None`` says it is not measured
 yet, and such a system compiles, schedules and exports while

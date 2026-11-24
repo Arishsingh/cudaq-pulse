@@ -1437,7 +1437,7 @@ def build(
     builder.unroll_threshold = options.unroll_threshold
     builder.line_tones = target._line_tones
     if target._description._own_carrier:
-        _refuse_other_qudits_tones(builder, target)
+        _refuse_other_qudits_tones(builder, target, machine, fn, trace_args)
     builder.machine = machine
     builder.locate_structural = frozenset(parameters)
     plain = machine._plain
@@ -1743,34 +1743,143 @@ def _clocked_module(
     return fine_delays
 
 
-def _refuse_other_qudits_tones(builder: Any, target: QuantumSystem) -> None:
+def _refuse_other_qudits_tones(
+    builder: Any, target: QuantumSystem, machine: _MachineModel, fn: Any, trace_args: Sequence[Any]
+) -> None:
     """For a quantum system whose qudits give no frequencies: make *builder*
     refuse a drive or readout at the tone of another qudit. Each tone is
     then an offset from its own qudit's carrier, and the system does not
-    state how far apart two carriers are. Only such a system's builder is
-    wrapped; every other compile emits as it did."""
+    state how far apart two carriers are. A tone whose qudit the trace does
+    not know is refused too. Only such a system's builder is wrapped; every
+    other compile emits as it did.
+
+    Refused here as well, where only such a system comes: a control system
+    that counts the tone frequencies of a line several qudits share
+    (``_shared_line_counts``)."""
+    _shared_line_counts(target, machine)
     emit = builder.emit
+    lines = ("pulse.get_drive_line", "pulse.get_readout_line")
+    # The qudit (by the value it was made from) of each line and tone the
+    # builder made, for a value whose channel the trace does not record.
+    made: dict[int, int] = {}
+
+    def owner(value: Any) -> int | None:
+        chan = getattr(value, "chan", None)
+        return made.get(value.vid) if chan is None else chan.held.key[0]
+
+    def named(qref: int) -> str:
+        qudit = builder._qref_to_qudit.get(qref)
+        if qudit is None:
+            return "another qudit"
+        if qudit >= 0:
+            layout = target.layout
+            return f"qudit {layout.index(qudit) if qudit in layout else qudit}"
+        return _runtime_qudit(fn, trace_args, qudit)
 
     def checked(kind: str, operands: Any = (), result_types: Any = (), attrs: Any = None) -> Any:
-        if kind == "pulse.drive" or kind == "pulse.readout":
-            ours = getattr(operands[0], "chan", None)
-            theirs = getattr(operands[2], "chan", None)
+        played = kind == "pulse.drive" or kind == "pulse.readout"
+        ours = theirs = None
+        if played:
+            line, tone = operands[0], operands[2]
+            ours, theirs = owner(line), owner(tone)
+            chan = getattr(line, "chan", None)
+            if chan is not None and len(chan.held.cells) > 1 and chan.held.cells[1].value is tone:
+                # The line's own tone as it is now.
+                theirs = ours
+            op = kind.removeprefix("pulse.")
+            reason = (
+                f"the qudits of quantum system {target.name!r} give no frequency_hz, so each "
+                "tone is an offset from its own qudit's carrier and the system does not state "
+                "how far apart two carriers are"
+            )
+            if ours is None or theirs is None:
+                raise CompilationError(
+                    f"{op}(): the trace cannot tell which qudit's tone tone= is (the tone, or "
+                    "the line, is a value of its own: what a loop carries, or what the arms of "
+                    f"an if on a measurement bind differently); {reason}",
+                    code="control_system",
+                    fix="read the tone from its line where it is used, as line.tone or "
+                    "line.tones[(1, 2)], or give the qudits their frequencies",
+                )
+            # One qudit, by its index where the builder knows both.
+            mine, other = map(builder._qref_to_qudit.get, (ours, theirs))
+            if ours != theirs if mine is None or other is None else mine != other:
+                raise CompilationError(
+                    f"{op}(): tone= is the tone of {named(theirs)}, and the line is that of "
+                    f"{named(ours)}; {reason}",
+                    code="control_system",
+                    fix="give the qudits their frequencies, or drive the line at its own tone",
+                )
+        results = emit(kind, operands, result_types, attrs)
+        for result in results:
+            # An id is used again after the trace takes a body back.
+            made.pop(result.vid, None)
+        if played:
+            # Both known, or the drive was refused.
             if ours is not None and theirs is not None:
-                line, tone = ours.held.key[0], theirs.held.key[0]
-                if line != tone:
-                    qudits = builder._qref_to_qudit
-                    raise CompilationError(
-                        f"{kind.removeprefix('pulse.')}(): tone= is the tone of qudit "
-                        f"{qudits.get(tone)}, and the line is qudit {qudits.get(line)}'s; the "
-                        f"qudits of quantum system {target.name!r} give no frequency_hz, so "
-                        "each tone is an offset from its own qudit's carrier and the system "
-                        "does not state how far apart the two carriers are",
-                        code="control_system",
-                        fix="give the qudits their frequencies, or drive the line at its own tone",
-                    )
-        return emit(kind, operands, result_types, attrs)
+                made[results[0].vid], made[results[1].vid] = ours, theirs
+        elif kind in lines:
+            made[results[0].vid] = made[results[1].vid] = operands[0].vid
+        elif results and not kind.startswith("scf."):
+            # A tone or line an op makes from one of its kind is that one's
+            # qudit's; from several, in their order.
+            for vtype in ("tone", "drive_line", "readout_line"):
+                after = [r for r in results if r.vtype == vtype]
+                before = [o for o in operands if getattr(o, "vtype", None) == vtype]
+                if after and len(after) == len(before):
+                    for result, source in zip(after, before, strict=True):
+                        found = owner(source)
+                        if found is not None:
+                            made[result.vid] = found
+        return results
 
     builder.emit = checked
+
+
+def _runtime_qudit(fn: Any, trace_args: Sequence[Any], slot: int) -> str:
+    """How an error names the runtime qudit that traces as qudit *slot*
+    (-1 - k): by the kernel's parameter."""
+    from ._device import Qudit, Register
+
+    code = getattr(fn, "__code__", None)
+    names = code.co_varnames[: code.co_argcount] if code is not None else ()
+    for name, value in zip(names, trace_args, strict=False):
+        if value.__class__ is Qudit and value.index == slot:
+            return f"the qudit {name!r}"
+        if value.__class__ is Register:
+            for k, qudit in enumerate(value):
+                if qudit.index == slot:
+                    return f"the qudit {name}[{k}]"
+    return "a runtime qudit"
+
+
+def _shared_line_counts(target: QuantumSystem, machine: _MachineModel) -> None:
+    """Refuse a quantum system whose qudits give no frequencies on a
+    control system that counts the tone frequencies of a line several
+    qudits share (``max_frequencies_per_line``): each qudit's own tone is
+    0 Hz from its own carrier, so the tones of several qudits read as one
+    frequency and the count would pass what it should not."""
+    system = machine._system
+    if system is None:
+        return
+    from ._shared_lines import physical
+
+    shared = physical(system)
+    if shared is None:
+        return
+    for line in dict.fromkeys(shared.values()):
+        most = system.controllers[line.owner].max_frequencies_per_line
+        if most is not None:
+            raise CompilationError(
+                f"{line.label} is shared by several qudits and its controller holds {most} tone "
+                f"frequencies per line (max_frequencies_per_line), counted by their numbers; the "
+                f"qudits of quantum system {target.name!r} give no frequency_hz, so each qudit's "
+                "own tone is 0 Hz from its own carrier and the tones of several qudits count "
+                "as one",
+                code="control_system",
+                fix="give the qudits their frequencies (or an Offset each from one shared "
+                "reference), or give each qudit a line of its own",
+            )
 
 
 def _program_limits(machine: _MachineModel, program_ghz: float) -> str:

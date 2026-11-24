@@ -3037,14 +3037,10 @@ def _quantum_data(target: _Description) -> dict[str, Any]:
 
 
 def _write_offsets(qudits: list[dict[str, Any]]) -> None:
-    """Each of a file's *qudits* whose frequency is an ``Offset``, written
-    as the file holds one."""
-    from .quantum_systems.base import Offset
-
+    """The frequency of each of a file's *qudits*, an ``Offset``, written as
+    the file holds one."""
     for qudit in qudits:
-        frequency = qudit["frequency_hz"]
-        if frequency.__class__ is Offset:
-            qudit["frequency_hz"] = {"offset_hz": float(frequency)}
+        qudit["frequency_hz"] = {"offset_hz": float(qudit["frequency_hz"])}
 
 
 def _device_data(quantum_system: QuantumSystem) -> dict[str, Any]:
@@ -3061,9 +3057,8 @@ def _device_data(quantum_system: QuantumSystem) -> dict[str, Any]:
         data |= _quantum_data(base)
         # One look per file: qudits whose frequencies are offsets from a
         # shared reference are written as {"offset_hz": value}.
-        written = data["qudits"]
-        if written and written[0]["frequency_hz"].__class__ is not float:
-            _write_offsets(written)
+        if base._frame == "shared_reference":
+            _write_offsets(data["qudits"])
     data["layout"] = list(quantum_system.layout)
     if spec is None or quantum_system.clock_ghz != base.clock_ghz:
         data["clock_ghz"] = quantum_system.clock_ghz

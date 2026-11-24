@@ -200,7 +200,7 @@ def _build_surface17(calibration: Calibration | None) -> _Description:
         a, d = _k.INDEX[e.auxiliary], _k.INDEX[e.data]
         strength = None
         if calibration is not None:
-            at_a, at_d = qudits[a]._frame_hz, qudits[d]._frame_hz
+            at_a, at_d = qudits[a].frequency_hz, qudits[d].frequency_hz
             strength = calibration._exchange(idle_exchange, f"{e.auxiliary}-{e.data}", at_a, at_d)
             if strength is None:
                 strength = calibration._exchange(

@@ -659,20 +659,47 @@ def _simulation_model(target: Any) -> Callable[..., SimulationResult]:
 
 
 def _check_quantum_system(lowered: ScheduledKernel, quantum_system: Any) -> Any:
-    """The description of *quantum_system*, which defines every qudit of *lowered*."""
+    """The description of *quantum_system*, which defines every qudit of
+    *lowered* and measures its frequencies from what the program's are
+    measured from."""
     from .._device import QuantumSystem
 
     if not isinstance(quantum_system, QuantumSystem):
         raise InvalidTypeError(
             f"quantum_system must be a QuantumSystem, got {type(quantum_system).__name__}"
         )
-    quantum_system = quantum_system._description
-    missing = [q for q in lowered.qudits if q not in quantum_system.qudits]
-    if missing:
-        raise InvalidValueError(
-            f"the quantum system does not define qudits {missing} that the program uses"
-        )
-    return quantum_system
+    description = quantum_system._description
+    for qudit in lowered.qudits:
+        if qudit not in description.qudits:
+            missing = [q for q in lowered.qudits if q not in description.qudits]
+            raise InvalidValueError(
+                f"the quantum system does not define qudits {missing} that the program uses"
+            )
+    if description._frame != lowered.quantum_system._description._frame:
+        raise _frames_differ(lowered.quantum_system._description, description)
+    return description
+
+
+# What the frequencies of a system of each frequency_frame are.
+_FRAMES = {
+    "absolute": "its qudits give their frequencies",
+    "shared_reference": "its frequencies are offsets from a reference its qudits share",
+    "own_carrier": "each of its tones is an offset from its own qudit's carrier",
+}
+
+
+def _frames_differ(compiled: Any, simulated: Any) -> InvalidValueError:
+    """The refusal of a program compiled for *compiled* on *simulated*, a
+    system whose frequencies are measured from something else: the tones
+    would be numbers in one frame played on qudits in another."""
+    ours, theirs = compiled._frame, simulated._frame
+    return InvalidValueError(
+        f"the program was compiled for quantum system {compiled.name!r}, whose frequency_frame "
+        f"is {ours!r} ({_FRAMES[ours]}), and quantum_system= is {simulated.name!r}, whose "
+        f"frequency_frame is {theirs!r} ({_FRAMES[theirs]}): the program's tones would be read "
+        "against qudit frequencies measured from something else. Simulate it on a system of the "
+        f"same frequency_frame, or compile the kernel for {simulated.name!r}"
+    )
 
 
 _DEFAULT_STEP_NS = 0.05

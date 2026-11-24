@@ -277,8 +277,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   0 Hz is still refused, and a system file holds an offset as
   `{"offset_hz": ...}` and a missing frequency as `null`. Either kind of
   program compiles, exports and simulates as the same system with
-  frequencies does, less the reference. A system whose qudits give their
-  frequencies does no more work than before.
+  frequencies does, less the reference. What needs a frequency such a
+  system does not state is an error that says so: a readout's
+  `frequency_hz`, `simulate(program, quantum_system=other)` on a system of
+  another `frequency_frame`, a `Calibration` of its couplings, parameter
+  drift, and, without frequencies, a shared line whose controller counts
+  tone frequencies. An `Offset` equals and is ordered against another
+  `Offset` only. A system whose qudits give their frequencies does no more
+  work than before.
 - **A transition's frequency is the upper level's energy less the lower's.**
   `SimulationModel.transitions_hz` no longer takes its absolute value. For
   levels that ascend, which every shipped model's do, nothing changes; where

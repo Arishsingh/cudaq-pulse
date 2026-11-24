@@ -43,7 +43,13 @@ import numpy as np
 from .._device import QuantumSystem, Qudit, _Handles
 from .._errors import InvalidTypeError, InvalidValueError, UnsupportedError
 from .._units import Time
-from .base import MicrowaveDrive, PhysicalQudit, _HeldQudit, _qudit_value_problems
+from .base import (
+    MicrowaveDrive,
+    PhysicalQudit,
+    _frequency_frame,
+    _HeldQudit,
+    _qudit_value_problems,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -334,9 +340,19 @@ def _checked(qudit: Any, carrier: int, method: str) -> PhysicalQudit:
         )
     problems = _qudit_value_problems(qudit, f"{method}()")
     if problems:
+        frequency = qudit.frequency_hz
+        # Whatever class the model returned: a true value without an
+        # absolute frequency is refused, on a system with frequencies and on
+        # one whose qudits give offsets or none.
+        drifts = (
+            ""
+            if frequency is not None and _frequency_frame(frequency) == "absolute"
+            else f" (its frequency_hz is {frequency!r}: parameter_drift needs qudits with "
+            "frequencies, and a true value keeps one)"
+        )
         raise InvalidValueError(
             f"a drift model's {method}() returned qudit {carrier} with values a quantum system "
-            "cannot have",
+            f"cannot have{drifts}",
             problems=problems,
         )
     return qudit
