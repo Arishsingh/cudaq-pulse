@@ -2281,10 +2281,9 @@ class ControlSystem:
         if self._shares:
             from . import _shared_lines
 
-            if moves:
-                # Shared lines are counted of loops of one period.
-                return None
-            shared = _shared_lines.summarized(self, lowered, lines, events, repeats, unresolved)
+            shared = _shared_lines.summarized(
+                self, lowered, lines, events, repeats, unresolved, periods
+            )
             if shared is None:
                 return None
             found.extend(shared)
