@@ -228,7 +228,30 @@ class Qudit:
 
 
 class Register(Sequence[Qudit]):
-    """An ordered selection of qudit handles of one quantum system."""
+    """An ordered selection of qudit handles of one quantum system.
+    Make one from a system's qudits — ``system.qudits[0:4]`` takes the
+    first four, ``system.qudits[[0, 2]]`` takes qudits 0 and 2 — or pass
+    one to a kernel: a parameter annotated ``pulse.Register`` is a runtime
+    value, so the kernel compiles once and can be called on other qudits
+    of the system. A register supports ``len()``, indexing, slicing and
+    iteration: indexing with an ``int`` gives a ``Qudit``, while a slice
+    or a list of indexes gives another ``Register``.
+
+    Example::
+
+        qs = pulse.quantum_system("transmon_surface17")
+        reg = qs.qudits[0:4]
+        len(reg)
+        4
+        reg[1::2]
+        Register([1, 3])
+        [q.logical for q in reg]
+        [0, 1, 2, 3]
+
+    See "Quantum Systems" for how a system names its qudits, and the
+    kernel parameters section of "Calling and Compiling Kernels" for how
+    a register parameter is compiled.
+    """
 
     __slots__ = ("_qudits",)
 
