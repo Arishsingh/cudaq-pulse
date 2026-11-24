@@ -494,6 +494,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   is in, and refused a program whose arms never play together ("plays 2
   tones at once ... and does so 39 more times"). Such a loop is now
   counted by walking its rounds, which tells the arms apart.
+- **A long line after a branch on a classical answer no longer ends the
+  process.** On several controllers the scheduler finds which controllers
+  take a call's answer by following what the answer reaches: a branch on
+  it gives the lines its arms touch, and each line was followed through
+  every later sync and branch on it by a call per operation. About 34,000
+  operations on such a line (loops written out with a large
+  `unroll_threshold`, or a kernel that long) overflowed the stack: a
+  segmentation fault, no Python error. The lines are followed without
+  recursion, to the same controllers.
 - **A value that is not a real number fails at `bind()`, on every bind.**
   `module.bind([True, 1e6])`, or a str, a complex number or `None` for a
   value, was an `InvalidTypeError` at `bind()` only on the first bind of a
