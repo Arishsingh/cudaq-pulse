@@ -325,9 +325,6 @@ struct Resources {
   /// By qudit, the delay of its readout line (see LineDelays); empty
   /// without one.
   llvm::ArrayRef<int64_t> readoutDelays;
-  /// Test only: the cycles the alap last end moves early, read once per
-  /// compile from CUDAQ_PULSE_TEST_SHRINK_LAST_END (see schedule()).
-  int64_t testShrinkLastEnd = 0;
 };
 
 // ── Timelines ────────────────────────────────────────────────────────────
@@ -1244,18 +1241,45 @@ public:
     // block's body or holds a block keeps the makespan: a block's shape is
     // as it was.
     lastEnd = kNever;
-    if (tailNoted && !uncapped && !blocksAround()) {
-      for (auto &[op, list] : samples)
-        for (const Sample &sample : list)
-          forwardStarts[op][sample.iteration] = sample.start;
-      forwardExtrapolations = extrapolations;
-      lastEnd = writtenLastEnd() - resources.testShrinkLastEnd;
-    }
+    if (tailNoted && !uncapped && tailMayPassOps())
+      noteLastEnd();
     samples.clear();
     extrapolations.clear();
     covers.clear();
     resetLanes(makespan, /*backward=*/true);
     return backwardBlock(region->front());
+  }
+
+  /// Whether a hold or a sync may end after the forward schedule's last
+  /// operation. Where every iteration was simulated (no loop extrapolated,
+  /// none skipped) and none ends after the operations' ends, the makespan is
+  /// the last end, and the backward pass is the same without it.
+  bool tailMayPassOps() const {
+    return !extrapolations.empty() || !covers.empty() || tailsEnd > opsEnd;
+  }
+
+  /// Set the last end (see backward) from the forward schedule, outside a
+  /// region that is a schedule block's body or holds one.
+  LLVM_ATTRIBUTE_NOINLINE void noteLastEnd() {
+    if (blocksAround())
+      return;
+    for (auto &[op, list] : samples)
+      for (const Sample &sample : list)
+        forwardStarts[op][sample.iteration] = sample.start;
+    forwardExtrapolations = extrapolations;
+    lastEnd = writtenLastEnd() - testShrinkLastEnd();
+  }
+
+  /// Test only: CUDAQ_PULSE_TEST_SHRINK_LAST_END moves the last end that
+  /// many cycles early, to show a backward schedule that breaks it
+  /// scheduled again without it. Anything but a non-negative integer is
+  /// ignored.
+  static int64_t testShrinkLastEnd() {
+    int64_t cycles = 0;
+    if (const char *shrink = std::getenv("CUDAQ_PULSE_TEST_SHRINK_LAST_END"))
+      if (llvm::StringRef(shrink).getAsInteger(10, cycles) || cycles < 0)
+        cycles = 0;
+    return cycles;
   }
 
   /// The end of the last operation of the forward schedule as it is
@@ -1299,8 +1323,24 @@ public:
   /// Whether the forward pass noted a readout line's hold or a sync, either
   /// of which may end after the last operation.
   bool tailNoted = false;
+  /// The latest end the forward pass gave an operation, and the latest
+  /// hold or sync it noted (see tailMayPassOps).
+  int64_t opsEnd = 0, tailsEnd = 0;
   /// Schedule without the last end, as before it (see cappedHolds).
   bool uncapped = false;
+
+  /// Whether the round under the last end can be written (as
+  /// scheduleRounds checks every round) and keeps to it (cappedHolds).
+  LLVM_ATTRIBUTE_NOINLINE bool keepsLastEnd() {
+    bool written = !skippedNegative && !answeredEarly &&
+                   !(slotsOverrun && heldTooMany()) &&
+                   llvm::all_of(samples, [](const auto &entry) {
+                     return llvm::all_of(entry.second, [](const Sample &s) {
+                       return s.start >= 0;
+                     });
+                   });
+    return written && cappedHolds();
+  }
 
   /// Whether the backward schedule keeps to the last end: every op, pulse,
   /// wait or call, ends by it and, with lanes, starts no earlier than its
@@ -1332,6 +1372,11 @@ public:
   int64_t capAtLastEnd(mlir::Operation *op, int64_t end) {
     if (end <= lastEnd)
       return end;
+    return capPastLastEnd(op, end);
+  }
+
+  LLVM_ATTRIBUTE_NOINLINE int64_t capPastLastEnd(mlir::Operation *op,
+                                                 int64_t end) {
     auto loops = pulse::enclosingLoops(op, region->getParentOp());
     if (forwardStartAt(op, iteration, loops) + durationOf(op) > lastEnd)
       return end;
@@ -3821,6 +3866,7 @@ private:
       floors[t] = std::max(floors[t], start + duration + budget);
     for (int64_t c : held)
       heldFloors[c] = std::max(heldFloors[c], start + duration + budget);
+    opsEnd = std::max(opsEnd, start + duration);
     noteEnd(start + duration, t);
   }
 
@@ -3837,6 +3883,7 @@ private:
       readyAt[value] = start;
     if (wait->hasAttr("classical.blocking"))
       floors[t] = std::max(floors[t], start);
+    opsEnd = std::max(opsEnd, start);
     noteEnd(start, t);
   }
 
@@ -3849,7 +3896,10 @@ private:
                                   : resources.readoutLatency;
       if (resources.enabled)
         lineEnd += latency;
-      tailNoted = tailNoted || lineEnd != end;
+      if (lineEnd != end) {
+        tailNoted = true;
+        tailsEnd = std::max(tailsEnd, lineEnd);
+      }
       readyAt[readout.getResult()] = end + latency + readoutDelayOf(op);
     }
     readyAt[op->getResult(0)] = lineEnd;
@@ -3857,6 +3907,7 @@ private:
       readyAt[tone] = end;
     if (holding())
       noteHeldEnd(op, lineEnd);
+    opsEnd = std::max(opsEnd, end);
     noteEnd(lineEnd, t);
   }
 
@@ -3969,6 +4020,7 @@ private:
       for (mlir::Value result : sync.getResults())
         readyAt[result] = time;
       tailNoted = true;
+      tailsEnd = std::max(tailsEnd, time);
       noteEnd(time, t);
       return mlir::success();
     }
@@ -6558,25 +6610,10 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
         return mlir::failure();
       if (regrouped())
         continue;
-      // Handing out resources in reverse program order can need time before
-      // zero, take an answer before it is due, or leave a request kept at
-      // its forward start no slot; the forward resource schedule is always
-      // feasible.
-      auto feasibleOf = [](Scheduler<Gridded> &s) {
-        return !s.skippedNegative && !s.answeredEarly &&
-               !(s.slotsOverrun && s.heldTooMany()) &&
-               llvm::all_of(s.samples, [](const auto &entry) {
-                 return llvm::all_of(entry.second, [](const Sample &sample) {
-                   return sample.start >= 0;
-                 });
-               });
-      };
-      auto feasible = [&] { return feasibleOf(scheduler); };
       // A round under the last end that cannot be written or does not keep
       // to it is scheduled again without it, as before it; only where that
       // cannot be written either does the forward schedule stand.
-      if (scheduler.lastEnd != kNever &&
-          !(feasible() && scheduler.cappedHolds())) {
+      if (scheduler.lastEnd != kNever && !scheduler.keepsLastEnd()) {
         scheduler = Scheduler<Gridded>(region, resources, classical, grid,
                                        controllers, &timelines);
         scheduler.mayRegroup = regroups < kRegroupRounds;
@@ -6592,7 +6629,18 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
         if (regrouped())
           continue;
       }
-      if (!feasible()) {
+      // Handing out resources in reverse program order can need time before
+      // zero, take an answer before it is due, or leave a request kept at
+      // its forward start no slot; the forward resource schedule is always
+      // feasible.
+      bool feasible = !scheduler.skippedNegative && !scheduler.answeredEarly &&
+                      !(scheduler.slotsOverrun && scheduler.heldTooMany()) &&
+                      llvm::all_of(scheduler.samples, [](const auto &entry) {
+                        return llvm::all_of(entry.second, [](const Sample &s) {
+                          return s.start >= 0;
+                        });
+                      });
+      if (!feasible) {
         scheduler = Scheduler<Gridded>(region, resources, classical, grid,
                                        controllers, &timelines);
         scheduler.mayRegroup = false;
@@ -6766,14 +6814,6 @@ static mlir::LogicalResult schedule(mlir::func::FuncOp function,
   // An outcome waits for its readout to end on the delayed line, its fine
   // delay rounded up.
   resources.readoutDelays = clocks.readoutReady;
-  // Test only: CUDAQ_PULSE_TEST_SHRINK_LAST_END moves the alap last end that
-  // many cycles early, to show a backward schedule that breaks it scheduled
-  // again without it. Anything but a non-negative integer is ignored.
-  if (const char *shrink = std::getenv("CUDAQ_PULSE_TEST_SHRINK_LAST_END")) {
-    int64_t cycles = 0;
-    if (!llvm::StringRef(shrink).getAsInteger(10, cycles) && cycles >= 0)
-      resources.testShrinkLastEnd = cycles;
-  }
   int64_t waited = waitedLatency(
       function, readoutLatencyOf(resources, pulse::Controllers(clocks)));
   if (mlir::failed(scheduleRegion(
