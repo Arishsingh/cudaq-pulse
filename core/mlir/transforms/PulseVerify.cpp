@@ -26,6 +26,8 @@
 #define GET_OP_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseAttrs.h"
 #include "cudaq-pulse/Dialect/Pulse/PulseOps.h.inc"
+#define GET_OP_CLASSES
+#include "cudaq-pulse/Dialect/Pulse/PulseCallOp.h.inc"
 
 #include "cudaq-pulse/Dialect/Classical/ClassicalDialect.h.inc"
 #define GET_TYPEDEF_CLASSES
