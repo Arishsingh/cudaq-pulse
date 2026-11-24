@@ -6227,6 +6227,9 @@ scheduleRegion(mlir::Region &region, mlir::Operation *root, Resources resources,
 
 static mlir::LogicalResult schedule(mlir::func::FuncOp function,
                                     Resources resources, bool isAlap) {
+  // A declaration has no body to schedule.
+  if (function.isExternal())
+    return mlir::success();
   if (resources.enabled &&
       (resources.maxDrives <= 0 || resources.maxReadouts <= 0))
     return function.emitError("resource limits must be positive");

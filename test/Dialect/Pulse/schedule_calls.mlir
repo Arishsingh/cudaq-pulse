@@ -29,3 +29,17 @@ func.func @call_of_numbers(%line: !pulse.drive_line, %tone: !pulse.tone, %n: i64
   %d1, %t1 = pulse.drive %line, %x, %tone : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
   return %d1, %t1 : !pulse.drive_line, !pulse.tone
 }
+
+// A declaration has no body. The passes crashed on one; they leave it as it
+// is and schedule the functions beside it.
+// CHECK-LABEL: func.func private @declared(i64) -> i64
+// CHECK-NOT: pulse.schedule_state
+// CHECK-LABEL: func.func @beside_a_declaration
+// CHECK-SAME: attributes {pulse.schedule_state = #pulse.schedule_state<timed>}
+// CHECK: call @declared
+func.func private @declared(%n: i64) -> i64
+
+func.func @beside_a_declaration(%n: i64) -> i64 {
+  %m = call @declared(%n) : (i64) -> i64
+  return %m : i64
+}

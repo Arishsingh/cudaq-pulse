@@ -361,6 +361,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A function declaration no longer crashes the schedule passes.** A module
+  with a function that has no body, `func.func private @f(i64) -> i64`,
+  crashed `pulse-schedule-asap`, `-alap` and `-rcp`. A declaration is now
+  left as it is. Seen with hand-written IR.
 - **A call the schedule passes cannot time is refused.** Hand-written IR
   with a `func.call` (or an op of another dialect) that takes or gives a
   qudit, a line, a tone, a measurement or a classical handle was scheduled
