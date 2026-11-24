@@ -631,6 +631,11 @@ class SlotJournalLines(JournalLines):
             self.dirty = True
             if current is top:
                 top.clear()
+                # Each emitter from here to the trace's top took the record
+                # from the one that called it, so all that runs is noted in
+                # it from now on (an inlined call's ifs, too): this if records
+                # every slot, the next ones only what changed.
+                self.unwatched = False
             return True
         if top or current is not top:
             for obj, copy in containers:

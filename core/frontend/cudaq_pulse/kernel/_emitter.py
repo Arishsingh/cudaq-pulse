@@ -2632,6 +2632,14 @@ class PulseIREmitter:
                     lines.dirty = False
                     logged: Any = self._slots
                     logged.written.clear()
+                    # What the then arm wrote into list slots counts, for an
+                    # if around this one, as written by its arm, before the
+                    # else arm runs (a call it does not follow copies the
+                    # lists of that arm as they were when it began).
+                    around_log = lines.slotlog
+                    if around_log is not None:
+                        for key, noted in then_log.items():
+                            around_log.setdefault(key, noted)
                 if then_copies:
                     for obj, copy in then_copies:
                         lines.restore_container(self, obj, copy)
@@ -2650,13 +2658,11 @@ class PulseIREmitter:
                         else_log = lazy.log
                         else_made = lazy.made
                 if started:
-                    # What the arms wrote into list slots counts, for an if
-                    # around this one, as written by its arm.
+                    # And what the else arm wrote.
                     around_log = lines.slotlog
                     if around_log is not None:
-                        for arm_log in (then_log, else_log):
-                            for key, noted in arm_log.items():
-                                around_log.setdefault(key, noted)
+                        for key, noted in else_log.items():
+                            around_log.setdefault(key, noted)
             else:
                 if then_copies:
                     for obj, copy in then_copies:
