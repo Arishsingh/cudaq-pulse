@@ -229,6 +229,7 @@ class Qudit:
 
 class Register(Sequence[Qudit]):
     """An ordered selection of qudit handles of one quantum system.
+
     Make one from a system's qudits — ``system.qudits[0:4]`` takes the
     first four, ``system.qudits[[0, 2]]`` takes qudits 0 and 2 — or pass
     one to a kernel: a parameter annotated ``pulse.Register`` is a runtime
