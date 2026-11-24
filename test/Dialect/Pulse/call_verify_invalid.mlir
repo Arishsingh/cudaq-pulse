@@ -86,7 +86,6 @@ func.func @order(%q0: !pulse.qudit, %q1: !pulse.qudit) {
 
 func.func private @fetches(%q: i64) attributes {pulse.length_cycles = 0 : i64} {
   %qq = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit
-  // expected-warning @+2 {{drive line allocated but never used (qudit 0)}}
   // expected-error @+1 {{@fetches is run by pulse.call, and takes its lines and links as arguments; it cannot acquire one}}
   %d, %t = pulse.get_drive_line %qq : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   return
@@ -385,8 +384,10 @@ func.func private @pass(%d: !d, %t: !t) -> (!d, !t) attributes {pulse.length_cyc
   return %d, %t : !d, !t
 }
 
-// A warning of the program is given once, not again for its written-out copy.
+// The program's warnings are those of the program written out, each given
+// once: @pass plays nothing on the line it is handed.
 func.func @warned_once(%q: !pulse.qudit, %p: !pulse.qudit) {
+  // expected-warning @+1 {{drive line allocated but never used}}
   %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
   // expected-warning @+1 {{drive line allocated but never used}}
   %e0, %u0 = pulse.get_drive_line %p : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)

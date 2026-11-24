@@ -82,6 +82,13 @@ std::unique_ptr<mlir::Pass> createPulseExpandCallsPass();
 /// runs any more are erased. With `callSites`, each copied op's
 /// location names the call (for pulse-verify's diagnostics).
 mlir::LogicalResult expandCalls(mlir::ModuleOp module, bool callSites);
+
+/// pulse-verify's check of a module with placed pulse.call ops: each callee
+/// keeps the rules for one, no call runs back into itself, and the program
+/// with its calls written out passes every check.
+mlir::LogicalResult checkCalls(mlir::ModuleOp module);
+/// Whether `module` holds a pulse.call.
+bool moduleHasCalls(mlir::ModuleOp module);
 std::unique_ptr<mlir::Pass>
 createPulseClassicalCheckPass(int64_t readoutLatency);
 /// pulse-classical-check with its options, for cudaq-pulse-opt; the

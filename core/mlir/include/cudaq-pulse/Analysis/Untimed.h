@@ -31,10 +31,7 @@ namespace pulse {
 /// make anyway, so it is inlined and asks the common dialects first.
 LLVM_ATTRIBUTE_ALWAYS_INLINE bool untimed(mlir::Operation *op) {
   if (mlir::Dialect *dialect = op->getDialect()) {
-    // A pulse.call is not placed by the schedule passes yet.
-    if (mlir::isa<PulseDialect>(*dialect))
-      return mlir::isa<CallOp>(op);
-    if (mlir::isa<mlir::arith::ArithDialect>(*dialect) ||
+    if (mlir::isa<PulseDialect, mlir::arith::ArithDialect>(*dialect) ||
         mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp>(op))
       return false;
     llvm::StringRef name = dialect->getNamespace();
@@ -53,11 +50,6 @@ LLVM_ATTRIBUTE_ALWAYS_INLINE bool untimed(mlir::Operation *op) {
 
 /// The error for an op that is `untimed`.
 inline mlir::InFlightDiagnostic emitUntimed(mlir::Operation *op) {
-  if (mlir::isa<CallOp>(op))
-    return op->emitError("the schedule passes do not place a pulse.call "
-                         "yet; write the ops of @")
-           << mlir::cast<CallOp>(op).getCallee()
-           << " in its place before scheduling";
   return op->emitError("'")
          << op->getName().getStringRef()
          << "' takes or gives a qudit, a line, a tone, a measurement or a "

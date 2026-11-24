@@ -22,6 +22,8 @@
 #define GET_OP_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseCallOp.h.inc"
 
+#include <atomic>
+
 using namespace mlir;
 
 namespace pulse {
@@ -33,7 +35,17 @@ static bool isTimedValueType(Type type) {
          type.getDialect().getNamespace() == "classical";
 }
 
+/// Set when a pulse.call is verified: the passes look for calls only in a
+/// process that has one (callsVerified). Every module the passes see is
+/// verified first (parsed, or loaded), and no code builds a pulse.call; code
+/// that builds one and runs the passes without verifying it would have its
+/// calls go unseen.
+static std::atomic<bool> callVerified{false};
+
+bool callsVerified() { return callVerified.load(std::memory_order_relaxed); }
+
 LogicalResult CallOp::verify() {
+  callVerified.store(true, std::memory_order_relaxed);
   // A call takes lines, tones, measurements, links and numbers; qudits and
   // other values do not cross into a function scheduled on its own.
   for (auto [index, arg] : llvm::enumerate(getArgs())) {

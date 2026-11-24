@@ -66,8 +66,6 @@
 #define GET_OP_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseAttrs.h"
 #include "cudaq-pulse/Dialect/Pulse/PulseOps.h.inc"
-#define GET_OP_CLASSES
-#include "cudaq-pulse/Dialect/Pulse/PulseCallOp.h.inc"
 
 #include "cudaq-pulse/Dialect/Classical/ClassicalDialect.h.inc"
 #define GET_TYPEDEF_CLASSES
@@ -87,6 +85,12 @@
 
 #include <map>
 
+namespace pulse {
+/// Refuses each pulse.call of `function`: the schedule passes do not place
+/// one yet (PulseCallCheck.cpp).
+mlir::LogicalResult refuseCalls(mlir::func::FuncOp function);
+} // namespace pulse
+
 namespace {
 
 constexpr int64_t kNever = std::numeric_limits<int64_t>::max() / 4;
@@ -105,10 +109,9 @@ static bool isTimedOp(mlir::Operation *op) {
                    classical::SubmitOp, classical::WaitOp>(op);
 }
 
-/// The shape a scheduled `pulse.schedule_block`, or a function scheduled on
-/// its own, presents to its caller, in its local time. An offset of -1 marks an
-/// operand nothing in the block waits for, or a result that passes operand
-/// `source` through.
+/// The shape a scheduled `pulse.schedule_block` presents to its parent, in
+/// the block's local time. An offset of -1 marks an operand nothing in the
+/// block waits for, or a result that passes operand `source` through.
 struct BlockShape {
   int64_t length = 0;
   llvm::SmallVector<int64_t> in, out, source;
@@ -5853,12 +5856,12 @@ outermostBlocks(mlir::Region &region) {
   return blocks;
 }
 
-/// When a value from outside a block (or a function's argument) is first
-/// needed in it: the earliest local start of a timed op that depends on it,
-/// or of a branch arm conditioned on it. `owner` is the block or function.
+/// When a value from outside a block is first needed in it: the earliest
+/// local start of a timed op that depends on it, or of a branch arm
+/// conditioned on it.
 class FirstUse {
 public:
-  explicit FirstUse(mlir::Operation *owner) : owner(owner) {}
+  explicit FirstUse(pulse::ScheduleBlockOp block) : block(block) {}
 
   int64_t of(mlir::Value value) {
     earliest = kNever;
@@ -5880,7 +5883,7 @@ private:
 
   void visit(mlir::OpOperand &use) {
     mlir::Operation *op = use.getOwner();
-    if (op->getParentOp() == owner &&
+    if (op->getParentOp() == block &&
         op->hasTrait<mlir::OpTrait::IsTerminator>())
       return;
     if (!visited.insert(&use).second)
@@ -5918,7 +5921,7 @@ private:
       visitUses(result);
   }
 
-  mlir::Operation *owner;
+  pulse::ScheduleBlockOp block;
   llvm::DenseSet<mlir::OpOperand *> visited;
   int64_t earliest = kNever;
 };
@@ -5980,8 +5983,8 @@ static Readiness readinessOf(const Resources &resources,
                    controllers.enabled() ? &controllers : nullptr};
 }
 
-/// When each value in a scheduled block (or function) `body` becomes
-/// available, in local time, or which operand it passes through unchanged.
+/// When each value in a scheduled block becomes available, in local time,
+/// or which operand it passes through unchanged.
 class Availability {
 public:
   struct State {
@@ -5989,15 +5992,16 @@ public:
     int source = -1;
   };
 
-  Availability(mlir::Region &body, llvm::MutableArrayRef<int64_t> firstUse,
-               bool classical, const Readiness &readiness)
-      : body(body), firstUse(firstUse), classical(classical),
+  Availability(pulse::ScheduleBlockOp block,
+               llvm::MutableArrayRef<int64_t> firstUse, bool classical,
+               const Readiness &readiness)
+      : block(block), firstUse(firstUse), classical(classical),
         readiness(readiness) {
-    for (auto [index, arg] : llvm::enumerate(body.getArguments()))
+    for (auto [index, arg] : llvm::enumerate(block.getBody().getArguments()))
       state[arg] = State{0, static_cast<int>(index)};
   }
 
-  void run() { visitBlock(body.front()); }
+  void run() { visitBlock(block.getBody().front()); }
 
   State of(mlir::Value value) const { return state.lookup(value); }
 
@@ -6211,7 +6215,7 @@ private:
         state[result] = through;
   }
 
-  mlir::Region &body;
+  pulse::ScheduleBlockOp block;
   llvm::MutableArrayRef<int64_t> firstUse;
   bool classical;
   const Readiness &readiness;
@@ -6220,47 +6224,38 @@ private:
   llvm::SmallVector<int64_t, 2> iteration;
 };
 
-/// The shape of `body`, the body of `owner` (a schedule block or a
-/// function), which has a local schedule; a readout's outcome is usable as
-/// `readiness` says.
-static BlockShape measureShape(mlir::Operation *owner, mlir::Region &body,
-                               bool classical, const Readiness &readiness) {
-  BlockShape shape;
-  FirstUse firstUse(owner);
-  for (mlir::Value arg : body.getArguments()) {
-    int64_t first = firstUse.of(arg);
-    shape.in.push_back(first == kNever ? -1 : first);
-  }
-  Availability availability(body, shape.in, classical, readiness);
-  availability.run();
-  shape.length = availability.length;
-  for (mlir::Value value : body.front().getTerminator()->getOperands()) {
-    Availability::State s = availability.of(value);
-    shape.out.push_back(s.source >= 0 ? -1 : s.time);
-    shape.source.push_back(s.source);
-    // A measurement handed out is usable later than the block ends; the
-    // block does not last longer for it.
-    if (!mlir::isa<pulse::MeasurementType>(value.getType()))
-      shape.length = std::max(shape.length, s.source >= 0 ? 0 : s.time);
-  }
-  return shape;
-}
-
 /// Record the shape of `block`, whose body has a local schedule; a
 /// readout's outcome is usable as `readiness` says.
 static void writeShape(pulse::ScheduleBlockOp block, bool classical,
                        const Readiness &readiness) {
-  BlockShape shape = measureShape(block, block.getBody(), classical, readiness);
+  FirstUse firstUse(block);
+  llvm::SmallVector<int64_t> in;
+  for (mlir::Value arg : block.getBody().getArguments()) {
+    int64_t first = firstUse.of(arg);
+    in.push_back(first == kNever ? -1 : first);
+  }
+  Availability availability(block, in, classical, readiness);
+  availability.run();
+  llvm::SmallVector<int64_t> out, source;
+  int64_t length = availability.length;
+  for (mlir::Value value :
+       block.getBody().front().getTerminator()->getOperands()) {
+    Availability::State s = availability.of(value);
+    out.push_back(s.source >= 0 ? -1 : s.time);
+    source.push_back(s.source);
+    // A measurement handed out is usable later than the block ends; the
+    // block does not last longer for it.
+    if (!mlir::isa<pulse::MeasurementType>(value.getType()))
+      length = std::max(length, s.source >= 0 ? 0 : s.time);
+  }
   mlir::MLIRContext *context = block.getContext();
-  block->setAttr("length_cycles",
-                 mlir::IntegerAttr::get(mlir::IntegerType::get(context, 64),
-                                        shape.length));
-  block->setAttr("in_offset_cycles",
-                 mlir::DenseI64ArrayAttr::get(context, shape.in));
+  block->setAttr(
+      "length_cycles",
+      mlir::IntegerAttr::get(mlir::IntegerType::get(context, 64), length));
+  block->setAttr("in_offset_cycles", mlir::DenseI64ArrayAttr::get(context, in));
   block->setAttr("out_offset_cycles",
-                 mlir::DenseI64ArrayAttr::get(context, shape.out));
-  block->setAttr("out_source",
-                 mlir::DenseI64ArrayAttr::get(context, shape.source));
+                 mlir::DenseI64ArrayAttr::get(context, out));
+  block->setAttr("out_source", mlir::DenseI64ArrayAttr::get(context, source));
 }
 
 /// Replace `block` by its body.
@@ -6761,6 +6756,9 @@ static mlir::LogicalResult schedule(mlir::func::FuncOp function,
   // A declaration has no body to schedule.
   if (function.isExternal())
     return mlir::success();
+  // Nor do the passes place a pulse.call yet.
+  if (mlir::failed(pulse::refuseCalls(function))) [[unlikely]]
+    return mlir::failure();
   // The passes time the ops of one block, in their order.
   if (!function.getBody().hasOneBlock())
     return function.emitError(
@@ -7012,221 +7010,6 @@ struct PulseInlineScheduleBlocksPass
   }
 };
 
-/// For each line argument of `callee`, a function a pulse.call runs, the
-/// local end of the last drive, readout or wait on it (in the last iteration
-/// of the loops around it), where any plays on it.
-static llvm::DenseMap<unsigned, int64_t> lineEnds(mlir::func::FuncOp callee) {
-  llvm::DenseMap<unsigned, int64_t> ends;
-  mlir::Block &entry = callee.getBody().front();
-  llvm::DenseMap<mlir::Value, int> argOf;
-  auto rootArg = [&](mlir::Value line) -> int {
-    llvm::SmallVector<mlir::Value, 8> chain;
-    int found = -1;
-    for (mlir::Value value = line; value;
-         value = pulse::linearPredecessor(value)) {
-      if (auto known = argOf.find(value); known != argOf.end()) {
-        found = known->second;
-        break;
-      }
-      chain.push_back(value);
-      if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
-          argument && argument.getOwner() == &entry) {
-        found = static_cast<int>(argument.getArgNumber());
-        break;
-      }
-    }
-    for (mlir::Value value : chain)
-      argOf[value] = found;
-    return found;
-  };
-  callee.walk([&](mlir::Operation *op) {
-    if (!mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp>(op))
-      return;
-    llvm::SmallVector<int64_t, 2> last;
-    for (mlir::scf::ForOp loop : pulse::enclosingLoops(op, callee)) {
-      int64_t trips = pulse::constantTripCount(loop).value_or(1);
-      if (trips <= 0)
-        return;
-      last.push_back(trips - 1);
-    }
-    std::optional<int64_t> start = pulse::scheduledStart(op, last);
-    std::optional<int64_t> duration = pulse::durationCycles(op);
-    int arg = rootArg(op->getOperand(0));
-    if (!start || !duration || arg < 0)
-      return;
-    int64_t end = *start + *duration;
-    auto [it, inserted] = ends.try_emplace(static_cast<unsigned>(arg), end);
-    if (!inserted)
-      it->second = std::max(it->second, end);
-  });
-  return ends;
-}
-
-/// Write the placed `call` out: a copy of its callee's ops at the call's
-/// start and periods, as a placed schedule block is inlined. A call that lasts
-/// longer than its callee holds each line the callee plays on until its end: a
-/// wait after the line's last op. With `callSites`, each copied op's location
-/// names the call.
-static mlir::LogicalResult
-expandCall(pulse::CallOp call, mlir::func::FuncOp callee, bool callSites) {
-  std::optional<int64_t> start = call.getStartCycles();
-  if (!start)
-    return call.emitOpError("is not placed; schedule it before writing it "
-                            "out");
-  if (callee
-          .walk([](pulse::ReadoutOp readout) {
-            return readout->hasAttr(pulse::kReadoutNumberAttr) ||
-                           readout->hasAttr(pulse::kReadoutIterationAttr)
-                       ? mlir::WalkResult::interrupt()
-                       : mlir::WalkResult::advance();
-          })
-          .wasInterrupted())
-    return call.emitOpError("calls @")
-           << call.getCallee()
-           << ", whose readouts are numbered in the kernel "
-              "(pulse.readout_number); such a call cannot be written out";
-  if (callee
-          .walk([](pulse::ScheduleBlockOp) {
-            return mlir::WalkResult::interrupt();
-          })
-          .wasInterrupted())
-    return call.emitOpError("calls @")
-           << call.getCallee()
-           << ", which holds a pulse.schedule_block; write its blocks out "
-              "first";
-  llvm::ArrayRef<int64_t> outer = call.getPeriodCycles();
-  mlir::Block &body = callee.getBody().front();
-  mlir::IRMapping mapping;
-  mapping.map(body.getArguments(), call.getArgs());
-  mlir::OpBuilder builder(call);
-  auto shift = [&](mlir::Operation *op) {
-    std::optional<int64_t> local = pulse::startCycles(op);
-    if (!local)
-      return;
-    pulse::setStartCycles(op, *start + *local);
-    llvm::SmallVector<int64_t> periods(outer);
-    llvm::append_range(periods, pulse::periodCycles(op));
-    pulse::setPeriodCycles(op, periods);
-  };
-  for (mlir::Operation &op : body.without_terminator()) {
-    mlir::Operation *copy = builder.clone(op, mapping);
-    copy->walk(shift);
-    if (callSites)
-      copy->walk([&](mlir::Operation *inner) {
-        inner->setLoc(mlir::CallSiteLoc::get(inner->getLoc(), call.getLoc()));
-      });
-  }
-  llvm::SmallVector<mlir::Value> results;
-  for (mlir::Value value : body.getTerminator()->getOperands())
-    results.push_back(mapping.lookupOrDefault(value));
-  // The k-th line result continues the k-th line operand (pulse-verify).
-  int64_t duration = call.getDurationCycles().value_or(0);
-  auto length =
-      callee->getAttrOfType<mlir::IntegerAttr>(pulse::kLengthCyclesAttr);
-  if (length && duration > length.getInt()) {
-    llvm::DenseMap<unsigned, int64_t> ends = lineEnds(callee);
-    // Of each line type, the operands in order: the k-th result of a type
-    // continues the k-th operand of it.
-    llvm::DenseMap<mlir::Type, llvm::SmallVector<unsigned, 2>> operandsOf;
-    for (auto [index, arg] : llvm::enumerate(call.getArgs()))
-      if (isLineType(arg.getType()))
-        operandsOf[arg.getType()].push_back(static_cast<unsigned>(index));
-    llvm::DenseMap<mlir::Type, size_t> rankOf;
-    for (mlir::Value &result : results) {
-      if (!isLineType(result.getType()))
-        continue;
-      auto &operands = operandsOf[result.getType()];
-      size_t rank = rankOf[result.getType()]++;
-      if (rank >= operands.size())
-        return call.emitOpError("calls @")
-               << call.getCallee() << ", which returns a line it does not take";
-      unsigned arg = operands[rank];
-      auto end = ends.find(arg);
-      if (end == ends.end() || end->second >= duration)
-        continue;
-      mlir::Location loc = call.getLoc();
-      mlir::Value cycles = mlir::arith::ConstantIntOp::create(
-          builder, loc, duration - end->second, 64);
-      mlir::Value span = pulse::DurationFromIntOp::create(
-          builder, loc, pulse::DurationType::get(call.getContext()), cycles);
-      auto wait =
-          pulse::WaitOp::create(builder, loc, result.getType(), result, span);
-      // Its own setters: the generic setTiming has its hot callers.
-      wait.setStartCycles(*start + end->second);
-      wait.setDurationCycles(duration - end->second);
-      wait.setPeriodCycles(outer);
-      result = wait->getResult(0);
-    }
-  }
-  call->replaceAllUsesWith(results);
-  call->erase();
-  return mlir::success();
-}
-
-/// Write out every pulse.call of `module` (pulse::expandCalls).
-static mlir::LogicalResult expandAllCalls(mlir::ModuleOp module,
-                                          bool callSites) {
-  mlir::SymbolTable symbols(module);
-  llvm::DenseSet<mlir::Operation *> done, active, called;
-  bool failed = false;
-  std::function<void(mlir::func::FuncOp)> expandIn =
-      [&](mlir::func::FuncOp function) {
-        if (done.contains(function) || failed)
-          return;
-        if (!active.insert(function).second) {
-          function.emitError("calls itself through pulse.call");
-          failed = true;
-          return;
-        }
-        llvm::SmallVector<pulse::CallOp> calls;
-        function.walk([&](pulse::CallOp call) { calls.push_back(call); });
-        for (pulse::CallOp call : calls) {
-          auto callee = symbols.lookup<mlir::func::FuncOp>(call.getCallee());
-          if (!callee || callee.isExternal()) {
-            call.emitOpError("calls '")
-                << call.getCallee() << "', which has no body here";
-            failed = true;
-            return;
-          }
-          called.insert(callee);
-          expandIn(callee);
-          if (failed || mlir::failed(expandCall(call, callee, callSites))) {
-            failed = true;
-            return;
-          }
-        }
-        active.erase(function);
-        done.insert(function);
-      };
-  for (auto function :
-       llvm::make_early_inc_range(module.getOps<mlir::func::FuncOp>()))
-    expandIn(function);
-  if (failed)
-    return mlir::failure();
-  // A function a call ran plays on the lines it is given, so it is no
-  // program of its own: once no call runs it, it is taken out.
-  for (mlir::Operation *function : called)
-    if (mlir::SymbolTable::symbolKnownUseEmpty(function, module))
-      function->erase();
-  return mlir::success();
-}
-
-/// Write out every pulse.call of the module (pulse::expandCalls).
-struct PulseExpandCallsPass
-    : public mlir::PassWrapper<PulseExpandCallsPass,
-                               mlir::OperationPass<mlir::ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PulseExpandCallsPass)
-
-  llvm::StringRef getArgument() const override { return "pulse-expand-calls"; }
-  llvm::StringRef getDescription() const override {
-    return "Write out placed pulse.call ops at their starts";
-  }
-  void runOnOperation() override {
-    if (mlir::failed(expandAllCalls(getOperation(), false)))
-      signalPassFailure();
-  }
-};
-
 /// Whether `loop` holds a classical call or a variable wait.
 static bool holdsClassical(mlir::scf::ForOp loop) {
   return loop.getBody()
@@ -7314,13 +7097,5 @@ std::unique_ptr<mlir::Pass> createPulseScheduleRcpOptionsPass() {
 
 std::unique_ptr<mlir::Pass> createPulseInlineScheduleBlocksPass() {
   return std::make_unique<PulseInlineScheduleBlocksPass>();
-}
-
-std::unique_ptr<mlir::Pass> createPulseExpandCallsPass() {
-  return std::make_unique<PulseExpandCallsPass>();
-}
-
-mlir::LogicalResult expandCalls(mlir::ModuleOp module, bool callSites) {
-  return expandAllCalls(module, callSites);
 }
 } // namespace pulse
