@@ -261,6 +261,29 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   implementation replace the module's. A call of another function of the
   module that states its start (`pulse.start_cycles`, provisional) is written
   in place.
+- **Systems that do not state their frequencies.** A qudit may give its
+  frequency as an offset from a reference the system's qudits share,
+  `PhysicalQudit(1, Offset(1.5e8), t1, t2)` (`Offset` is a `float` that says
+  what it is measured from), or leave it out, `PhysicalQudit(0, None, t1,
+  t2)`, for a control stack that owns the carriers. With offsets, couplings
+  and drives at another qudit's tone compute on the offsets, and every
+  frequency of the system's programs is an offset from the shared
+  reference. Without any, each tone's frequency is an offset from its own
+  qudit's carrier (a line's tone is at 0 Hz), the system declares no
+  couplings (an interaction is a `ResidualZZ`), and a drive at another
+  qudit's tone is an error. `qs.frequency_frame` says which a system is:
+  `"absolute"`, `"shared_reference"` or `"own_carrier"`; the exports' keys
+  are unchanged. A system's qudits give their frequencies all one way,
+  0 Hz is still refused, and a system file holds an offset as
+  `{"offset_hz": ...}` and a missing frequency as `null`. Either kind of
+  program compiles, exports and simulates as the same system with
+  frequencies does, less the reference. A system whose qudits give their
+  frequencies does no more work than before.
+- **A transition's frequency is the upper level's energy less the lower's.**
+  `SimulationModel.transitions_hz` no longer takes its absolute value. For
+  levels that ascend, which every shipped model's do, nothing changes; where
+  frequencies are offsets, a qudit's 1-2 tone is its anharmonicity below
+  its 0-1 tone, as it must be, and no longer above.
 
 ### Changed
 

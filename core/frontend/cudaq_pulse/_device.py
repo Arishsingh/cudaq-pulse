@@ -40,7 +40,7 @@ from .quantum_systems._registry import (
     _registry,
     make_quantum_system,
 )
-from .quantum_systems.base import _DESCRIPTION_FIELDS, _TRANSMON, _Description
+from .quantum_systems.base import _DESCRIPTION_FIELDS, _DESCRIPTIONS, _TRANSMON, _Description
 from .quantum_systems.models import SimulationModel
 
 try:
@@ -447,7 +447,7 @@ class QuantumSystem:
             model = target.model if isinstance(target.model, SimulationModel) else SimulationModel()
             qudits = [target.qudits[p] for p in self.layout]
             levels = [model.levels_of(p) for p in self.layout]
-            f01 = np.array([q.frequency_hz for q in qudits], dtype=float)
+            f01 = np.array([q._frame_hz for q in qudits], dtype=float)
             energies = np.full((len(qudits), max(levels, default=model.levels)), np.nan)
             for row, qudit, n in zip(energies, qudits, levels, strict=False):
                 row[:n] = model.energies_hz(qudit, n)
@@ -639,6 +639,8 @@ class QuantumSystem:
         def coupling_map(self) -> list[tuple[int, ...]]: ...
         def connectivity_graph(self) -> dict[int, list[int]]: ...
         def drive_amplitude_scale(self, qudit_index: int) -> float: ...
+        @property
+        def frequency_frame(self) -> str: ...
 
         # Parameter drift: read by __getattr__ without drift, and set by the
         # drifting subclass (quantum_systems.drift).
@@ -679,6 +681,7 @@ class QuantumSystem:
             "coupling_map",
             "connectivity_graph",
             "drive_amplitude_scale",
+            "frequency_frame",
         }:
             return getattr(self.__dict__["_description"], name)
         if name == "true_qudits":
@@ -1011,7 +1014,7 @@ def _checked(config: Mapping[str, Any], source: str, problems: list[Problem]) ->
             )
         )
     spec = config.get("name")
-    described = spec if spec.__class__ is _Description else None
+    described = spec if spec.__class__ in _DESCRIPTIONS else None
     built = described is not None or "qudits" in config
     if not built and config.keys() & _BUILT_KEYS:
         for key in sorted(config.keys() & _BUILT_KEYS):

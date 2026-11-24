@@ -739,6 +739,9 @@ class _QuditFields:
     )
 
     index: int
+    # None on a qudit made without one (PhysicalQudit(0, None, ...)). Typed
+    # as the float every other qudit has, so that programs which compute
+    # with it check as before.
     frequency_hz: float
     t1_us: float
     t2_star_us: float
@@ -754,7 +757,14 @@ class _QuditFields:
     # What calibrations= gives, which get_calibration reads.
     _calibrations: Mapping[Any, DragPulse | VirtualZ | ReadoutPulse]
     metadata: Mapping[str, Any]
+    if TYPE_CHECKING:
+        # The frequency its frame turns at, which the models, the simulator
+        # and the exports compute with: ``frequency_hz``, read from the same
+        # slot under this name, or 0.0 for a qudit a system holds without one.
+        _frame_hz: float
 
+
+_QuditFields._frame_hz = _QuditFields.__dict__["frequency_hz"]
 
 # A qubit's fields but its metadata, in the order of PhysicalQudit's arguments.
 _QUDIT_STATE = attrgetter(*_QuditFields.__slots__[:-1])
@@ -763,6 +773,16 @@ _QUDIT_STATE = attrgetter(*_QuditFields.__slots__[:-1])
 class PhysicalQudit(_QuditFields):
     """One qudit of a quantum system.
 
+    ``frequency_hz`` is its 0-1 frequency, more than 0. ``None`` says the
+    system does not state it: every frequency of its programs is then an
+    offset from the qudit's own carrier (a tone at 0 Hz is on resonance,
+    ``set_frequency(tone, 1e6)`` is 1 MHz above it), as on a control stack
+    that owns the carrier and takes offsets only; a system whose qudits
+    give none declares no couplings, which act by the difference of two
+    qudits' frequencies. ``Offset(hz)`` gives the frequency as an offset
+    from one reference the system's qudits share and the system does not
+    state: every difference is then known, and couplings compute on the
+    offsets. A system's qudits give their frequencies all one way.
     ``anharmonicity_hz`` is where a level above the first sits off evenly
     spaced levels; ``None`` (the default) is a qudit that gives none, which
     a ``TransmonModel`` of more than two levels refuses, naming the qudit.
@@ -785,7 +805,7 @@ class PhysicalQudit(_QuditFields):
     def __init__(
         self,
         index: int,
-        frequency_hz: float,
+        frequency_hz: float | None,
         t1_us: float,
         t2_star_us: float,
         *,
@@ -805,7 +825,7 @@ class PhysicalQudit(_QuditFields):
         cls = self.__class__
         object.__setattr__(self, "__class__", _QuditFields)
         self.index = index
-        self.frequency_hz = frequency_hz
+        self.frequency_hz = frequency_hz  # type: ignore[assignment]
         self.t1_us = t1_us
         self.t2_star_us = t2_star_us
         self.anharmonicity_hz = anharmonicity_hz
@@ -933,6 +953,114 @@ class PhysicalQudit(_QuditFields):
 
 def _plain_value(value: Any) -> Any:
     return dict(value) if type(value) in (MappingProxyType, _Calibrations) else value
+
+
+class Offset(float):
+    """A qudit's frequency as an offset in Hz from one reference that the
+    system's qudits share and the system does not state:
+    ``PhysicalQudit(1, Offset(1.5e8), 50.0, 30.0)`` is 150 MHz above the
+    qudit at ``Offset(0.0)``. Every difference of two such qudits'
+    frequencies is known, so couplings and whatever derives from them
+    compute as on a system with frequencies, and every frequency of the
+    system's programs is an offset from the same reference.
+
+    It is a ``float`` that says what it is measured from: arithmetic on it
+    gives a plain ``float``, and it equals only another ``Offset`` of the
+    same value, so a qudit at ``Offset(5e9)`` is not the qudit at 5 GHz.
+    """
+
+    __slots__ = ()
+
+    def __eq__(self, other: object) -> bool:
+        return other.__class__ is Offset and float.__eq__(self, other)
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self) -> int:
+        return hash((Offset, float(self)))
+
+    def __repr__(self) -> str:
+        return f"Offset({float(self)!r})"
+
+
+def _offset_hz(frequency: Any) -> float | None:
+    """The offset a qudit's *frequency* gives, as an ``Offset`` or as a
+    system file holds one (``{"offset_hz": value}``), if it is finite."""
+    if frequency.__class__ is not Offset:
+        if not (isinstance(frequency, Mapping) and set(frequency) == {"offset_hz"}):
+            return None
+        frequency = frequency["offset_hz"]
+    return float(frequency) if _finite(frequency) else None
+
+
+class _HeldQudit(PhysicalQudit):
+    """A qudit whose frequency is not an absolute one (an ``Offset``, or
+    ``None``) as a quantum system holds it. It prints, compares, hashes,
+    pickles and is replaced as the ``PhysicalQudit`` it was made from."""
+
+    __slots__ = ()
+
+    @staticmethod
+    def of(qudit: PhysicalQudit) -> PhysicalQudit:
+        if isinstance(qudit, _HeldQudit):
+            return qudit
+        offset = _offset_hz(qudit.frequency_hz)
+        if offset is None:
+            made = PhysicalQudit.replace(qudit)
+            object.__setattr__(made, "__class__", _OwnCarrierQudit)
+        else:
+            made = PhysicalQudit.replace(qudit, frequency_hz=Offset(offset))
+            object.__setattr__(made, "__class__", _HeldQudit)
+        return made
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, PhysicalQudit):
+            return NotImplemented
+        return all(getattr(self, n) == getattr(other, n) for n in _QuditFields.__slots__)
+
+    __hash__ = PhysicalQudit.__hash__
+
+    def __repr__(self) -> str:
+        return repr(self.replace())
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return self.replace().__reduce__()
+
+    def replace(self, **changes: Any) -> PhysicalQudit:  # type: ignore[override]
+        """A ``PhysicalQudit`` with the fields *changes* names set to their values."""
+        values = {n: getattr(self, n) for n in _QuditFields.__slots__}
+        values["calibrations"] = values.pop("_calibrations")
+        values.update(changes)
+        return PhysicalQudit(**values)
+
+    __replace__ = replace  # type: ignore[assignment]
+
+
+class _OwnCarrierQudit(_HeldQudit):
+    """A qudit without a frequency (``frequency_hz=None``) as a quantum
+    system holds it: 0.0 is the frequency its frame turns at, so that every
+    frequency computed with it is an offset from its own carrier."""
+
+    __slots__ = ()
+    _frame_hz = 0.0
+
+
+class _HeldQudits:
+    """What ``_qudits_problems`` reports first, in place of a problem, for
+    qudits with nothing to report whose frequencies are all offsets from a
+    shared reference or all left out: ``qudits``, as the system holds them,
+    and ``own_carrier``, whether they are left out. ``_Description`` takes
+    it off the list of problems before it reads them."""
+
+    __slots__ = ("own_carrier", "qudits")
+
+    def __init__(self, qudits: Mapping[int, Any], own_carrier: bool) -> None:
+        self.own_carrier = own_carrier
+        self.qudits = {
+            index: _HeldQudit.of(q) if isinstance(q, PhysicalQudit) else q
+            for index, q in qudits.items()
+        }
 
 
 class Coupling:
@@ -1113,6 +1241,10 @@ class _Description:
 
     __slots__ = (*_DESCRIPTION_FIELDS, "__weakref__")
 
+    # Whether its qudits give no frequencies, each tone then an offset from
+    # its own qudit's carrier; a compile asks once.
+    _own_carrier: ClassVar[bool] = False
+
     name: str
     qudits: Mapping[int, PhysicalQudit]
     couplings: tuple[Coupling, ...]
@@ -1151,6 +1283,20 @@ class _Description:
         # Every problem with the target's qudits and entries, each at its path in it.
         problems = _qudits_problems(self.qudits) + _entries_problems(self)
         if problems:
+            # Qudits whose frequencies are all offsets, or all left out, come
+            # first in the list, as one _HeldQudits and never beside a
+            # problem of the qudits: a system whose qudits have frequencies
+            # has an empty list here and does no work for them.
+            held = problems[0] if problems[0].__class__ is _HeldQudits else None
+            if held is not None:
+                del problems[0]
+                if held.own_carrier:
+                    problems += _own_carrier_problems(self)
+                if not problems:
+                    set_(self, "qudits", MappingProxyType(held.qudits))
+                    if held.own_carrier:
+                        set_(self, "__class__", _OwnCarrierDescription)
+                    return
             raise QuantumSystemDefinitionError(
                 f"{_count(len(problems), 'problem')} in the quantum system {self.name!r}",
                 problems=problems,
@@ -1199,12 +1345,24 @@ class _Description:
         return len(self.qudits)
 
     @property
+    def frequency_frame(self) -> str:
+        """What the frequencies of the system and of its programs are
+        measured from: ``"absolute"`` (the qudits give their frequencies),
+        ``"shared_reference"`` (each qudit gives an ``Offset`` from one
+        reference the system does not state) or ``"own_carrier"`` (the
+        qudits give none: each tone's frequency is an offset from its own
+        qudit's carrier)."""
+        for qudit in self.qudits.values():
+            return _frequency_frame(qudit.frequency_hz)
+        return "absolute"
+
+    @property
     def qudit_indices(self) -> list[int]:
         return sorted(self.qudits.keys())
 
     @property
     def frequencies(self) -> dict[int, float]:
-        return {q.index: q.frequency_hz for q in self.qudits.values()}
+        return {q.index: q._frame_hz for q in self.qudits.values()}
 
     @property
     def anharmonicities(self) -> dict[int, float | None]:
@@ -1347,13 +1505,25 @@ def _entries_problems(target: _Description) -> list[Problem]:
     return problems
 
 
+class _OwnCarrierDescription(_Description):
+    """The description of a system whose qudits give no frequencies. Its
+    own class, so that the one question a compile asks of a description is
+    a class attribute and a system with frequencies stores nothing for it."""
+
+    __slots__ = ()
+    _own_carrier = True
+
+
+# The classes a description has.
+_DESCRIPTIONS = (_Description, _OwnCarrierDescription)
+
 # What the checks read of every qudit at once.
 _QUDIT_VALUES = attrgetter(
     "frequency_hz", "t1_us", "t2_star_us", "t2_echo_us", "thermal_population"
 )
 
 
-def _qudits_problems(qudits: Mapping[int, Any]) -> list[Problem]:
+def _qudits_problems(qudits: Mapping[int, Any]) -> list[Any]:
     """Every problem with the values of *qudits*, a system's qudits by index.
     Checks every qudit at once first, so the common case, where all of them
     are fine, stays cheap."""
@@ -1380,7 +1550,64 @@ def _qudits_problems(qudits: Mapping[int, Any]) -> list[Problem]:
     for index, qudit in qudits.items():
         if isinstance(qudit, PhysicalQudit):
             problems += _qudit_value_problems(qudit, f"qudits[{index}]")
+    # How the qudits give their frequencies: all one way.
+    ways: dict[str, list[int]] = {}
+    for index, qudit in qudits.items():
+        if isinstance(qudit, PhysicalQudit):
+            ways.setdefault(_frequency_frame(qudit.frequency_hz), []).append(index)
+    if len(ways) > 1:
+        from .._errors import _ranges
+
+        said = "; ".join(
+            f"{_FRAMES[way]} (qudits {_ranges(found)})" for way, found in sorted(ways.items())
+        )
+        # At the first qudit that differs from the one before it.
+        first = next(iter(ways.values()))
+        other = min(found[0] for found in ways.values() if found is not first)
+        problems.append(
+            Problem(
+                f"the qudits give their frequencies in more than one way: {said}",
+                path=f"qudits[{other}].frequency_hz",
+                fix="give every qudit its 0-1 frequency, every qudit an Offset from one shared "
+                "reference, or None to all of them",
+            )
+        )
+    elif not problems and "absolute" not in ways and ways:
+        return [_HeldQudits(qudits, own_carrier="own_carrier" in ways)]
     return problems
+
+
+_FRAMES = {
+    "absolute": "as frequencies",
+    "own_carrier": "not at all (None)",
+    "shared_reference": "as offsets from a shared reference",
+}
+
+
+def _frequency_frame(frequency: Any) -> str:
+    """What a qudit's *frequency* is measured from."""
+    if frequency is None:
+        return "own_carrier"
+    return "absolute" if _offset_hz(frequency) is None else "shared_reference"
+
+
+def _own_carrier_problems(description: _Description) -> list[Problem]:
+    """What a system whose qudits leave their frequencies out may not
+    declare: whatever acts by the difference of two qudits' frequencies,
+    which it does not state."""
+    if not description.couplings:
+        return []
+    pairs = ", ".join(str(tuple(c.qudits)) for c in description.couplings[:4])
+    more = "" if len(description.couplings) <= 4 else ", ..."
+    return [
+        Problem(
+            f"the qudits give no frequency_hz, and a coupling ({pairs}{more}) acts by the "
+            "difference of its qudits' frequencies, which the system then does not state",
+            path="couplings",
+            fix="give the qudits their frequencies, or state the interaction as a number: "
+            "residual_zz=[ResidualZZ((a, b), rate_hz=...)]",
+        )
+    ]
 
 
 def _qudit_value_problems(qudit: PhysicalQudit, where: str) -> list[Problem]:
@@ -1390,6 +1617,8 @@ def _qudit_value_problems(qudit: PhysicalQudit, where: str) -> list[Problem]:
     def check(field: str, ok: bool, message: str, fix: str) -> None:
         if not ok:
             value = getattr(qudit, field)
+            if field == "frequency_hz" and (value is None or _offset_hz(value) is not None):
+                return
             problems.append(
                 Problem(f"{value!r} {message}", path=f"{where}.{field}", value=value, fix=fix)
             )
@@ -1399,7 +1628,9 @@ def _qudit_value_problems(qudit: PhysicalQudit, where: str) -> list[Problem]:
         "frequency_hz",
         _finite(frequency) and frequency > 0,
         "is not a positive, finite number of Hz",
-        "give the 0-1 frequency in Hz, more than 0",
+        "give the 0-1 frequency in Hz, more than 0; or, for a system that does not state "
+        "it, Offset(hz) from a reference its qudits share, or None (null in a file) for "
+        "each qudit's own carrier",
     )
     for field, name in (("t1_us", "T1"), ("t2_star_us", "T2*")):
         value = getattr(qudit, field)

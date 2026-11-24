@@ -38,7 +38,13 @@ its qudit's 0-1 frequency on a drive line, and its readout's
 starts that tone's frame at this frequency, and its ``phase_rad`` advances
 from it when the tone is retuned, so a backend that plays a line's other
 frequencies (another transition's tone, a shifted frequency) as offsets
-from one oscillator needs nothing from the quantum system. A kernel with
+from one oscillator needs nothing from the quantum system. On a system
+that does not state its frequencies they are offsets:
+``quantum_system.frequency_frame`` is ``"shared_reference"`` when every
+``frequency_hz`` and ``native_frequency_hz`` is an offset from one reference
+the qudits share, and ``"own_carrier"`` when each line's native frequency
+is 0 and its events' frequencies are offsets from its own qudit's carrier
+(see :doc:`quantum_systems`); the export's keys are the same. A kernel with
 qudit parameters gives it as the slot's symbols instead (``s0.f01``,
 ``s0.f_ro``; see below) and its lines leave it out. ``events`` lists every drive, readout,
 wait, sync, classical call and frame update in program order, once per loop

@@ -1436,6 +1436,8 @@ def build(
     )
     builder.unroll_threshold = options.unroll_threshold
     builder.line_tones = target._line_tones
+    if target._description._own_carrier:
+        _refuse_other_qudits_tones(builder, target)
     builder.machine = machine
     builder.locate_structural = frozenset(parameters)
     plain = machine._plain
@@ -1739,6 +1741,36 @@ def _clocked_module(
             text += f", controllers = {controllers}"
         module.set_attributes(text + ">}")
     return fine_delays
+
+
+def _refuse_other_qudits_tones(builder: Any, target: QuantumSystem) -> None:
+    """For a quantum system whose qudits give no frequencies: make *builder*
+    refuse a drive or readout at the tone of another qudit. Each tone is
+    then an offset from its own qudit's carrier, and the system does not
+    state how far apart two carriers are. Only such a system's builder is
+    wrapped; every other compile emits as it did."""
+    emit = builder.emit
+
+    def checked(kind: str, operands: Any = (), result_types: Any = (), attrs: Any = None) -> Any:
+        if kind == "pulse.drive" or kind == "pulse.readout":
+            ours = getattr(operands[0], "chan", None)
+            theirs = getattr(operands[2], "chan", None)
+            if ours is not None and theirs is not None:
+                line, tone = ours.held.key[0], theirs.held.key[0]
+                if line != tone:
+                    qudits = builder._qref_to_qudit
+                    raise CompilationError(
+                        f"{kind.removeprefix('pulse.')}(): tone= is the tone of qudit "
+                        f"{qudits.get(tone)}, and the line is qudit {qudits.get(line)}'s; the "
+                        f"qudits of quantum system {target.name!r} give no frequency_hz, so "
+                        "each tone is an offset from its own qudit's carrier and the system "
+                        "does not state how far apart the two carriers are",
+                        code="control_system",
+                        fix="give the qudits their frequencies, or drive the line at its own tone",
+                    )
+        return emit(kind, operands, result_types, attrs)
+
+    builder.emit = checked
 
 
 def _program_limits(machine: _MachineModel, program_ghz: float) -> str:

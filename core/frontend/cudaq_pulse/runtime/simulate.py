@@ -696,7 +696,7 @@ def _default_step(
         for c in compiled.couplings:
             a, b = c.qudits
             if a in active and b in active:
-                detuning = abs(qudits[a].frequency_hz - qudits[b].frequency_hz)
+                detuning = abs(qudits[a]._frame_hz - qudits[b]._frame_hz)
                 if detuning > fastest:
                     fastest = detuning
     step = _DEFAULT_STEP_NS
@@ -750,7 +750,7 @@ def _fastest(
     for c in target.couplings:
         a, b = c.qudits
         if a in active and b in active:
-            detuning = abs(qudits[a].frequency_hz - qudits[b].frequency_hz)
+            detuning = abs(qudits[a]._frame_hz - qudits[b]._frame_hz)
             if detuning > fastest:
                 fastest, source = detuning, ("coupling", a, b)
     return fastest, source
@@ -763,7 +763,7 @@ _MAX_HZ_NS = 1e9 / _STEPS_PER_PERIOD * (1 + 1e-9)
 def _level_offsets_hz(model: Any, qudit: Any, levels: int) -> list[float]:
     """Each level's energy less that of evenly spaced levels at the 0-1
     frequency: the frequency it turns at in the qudit's frame."""
-    f01 = qudit.frequency_hz
+    f01 = qudit._frame_hz
     return [e - k * f01 for k, e in enumerate(model.energies_hz(qudit, levels))]
 
 

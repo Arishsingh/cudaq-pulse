@@ -299,6 +299,11 @@ assert_type(t.phase_rad, float)
 assert_type(t.replace(phase_rad=-t.phase_rad), VirtualZ)
 VirtualZ()  # type: ignore[call-arg]
 assert_type(qudit.replace(label="Q0"), PhysicalQudit)
+assert_type(qudit.frequency_hz + 1.0e6, float)
+PhysicalQudit(0, None, 50.0, 30.0)
+assert_type(pulse.quantum_systems.Offset(1.5e8) + 1.0, float)
+PhysicalQudit(1, pulse.quantum_systems.Offset(1.5e8), 50.0, 30.0)
+assert_type(qpu.frequency_frame, str)
 assert_type(qpu.qudits[0].get_calibration(pulse.gates.X90), DragPulse)
 gate: pulse.gates.Gate = pulse.gates.CZ
 
