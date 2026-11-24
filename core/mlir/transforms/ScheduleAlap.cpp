@@ -1714,14 +1714,73 @@ private:
     return latest;
   }
 
+  /// The earliest start of an op of each controller in an arm, as
+  /// (controller, start) pairs (`armStarts`).
+  using ArmStarts = llvm::SmallVector<std::pair<int64_t, int64_t>, 4>;
+
   /// The op or sync of `owner` (-1: of no one controller) in the arm being
-  /// scheduled backward starts at `start`.
+  /// scheduled backward starts at `start`. A start of kNever says nothing,
+  /// as for a controller with no op in the arm.
   void noteArmStart(int64_t owner, int64_t start) {
     if (owner < 0) {
       armStart = std::min(armStart, start);
       return;
     }
-    armStarts.note(owner, start);
+    if (start == kNever)
+      return;
+    if (armIndexed) {
+      if (static_cast<size_t>(owner) >= armSlots.size())
+        armSlots.resize(owner + 1, {0, 0});
+      auto &[stamp, at] = armSlots[owner];
+      if (stamp == armStamp) {
+        armStarts[at].second = std::min(armStarts[at].second, start);
+        return;
+      }
+      stamp = armStamp;
+      at = static_cast<uint32_t>(armStarts.size());
+      armStarts.push_back({owner, start});
+      return;
+    }
+    for (auto &[c, earliest] : armStarts)
+      if (c == owner) {
+        earliest = std::min(earliest, start);
+        return;
+      }
+    armStarts.push_back({owner, start});
+    if (armStarts.size() > kArmIndexedAfter)
+      indexArmStarts();
+  }
+
+  /// Index `armStarts` by controller (it is long).
+  void indexArmStarts() {
+    ++armStamp;
+    armIndexed = true;
+    for (auto [i, entry] : llvm::enumerate(armStarts)) {
+      if (static_cast<size_t>(entry.first) >= armSlots.size())
+        armSlots.resize(entry.first + 1, {0, 0});
+      armSlots[entry.first] = {armStamp, static_cast<uint32_t>(i)};
+    }
+  }
+
+  /// The arm's starts by controller, taken out: none are left.
+  ArmStarts takeArmStarts() {
+    ArmStarts taken;
+    if (!armStarts.empty()) {
+      taken = std::move(armStarts);
+      armStarts.clear();
+    }
+    armIndexed = false;
+    return taken;
+  }
+
+  /// Make `starts` the arm's starts by controller (there are none).
+  void putArmStarts(ArmStarts &starts) {
+    if (starts.empty())
+      return;
+    armStarts = std::move(starts);
+    starts.clear();
+    if (armStarts.size() > kArmIndexedAfter)
+      indexArmStarts();
   }
 
   /// How long after a lane's op of `owner` an op of `controller` may start
@@ -4616,17 +4675,15 @@ private:
       bool tracked = groups || unshifted;
       // The earliest starts of this iteration, in the arm the loop is in.
       int64_t armBefore = std::exchange(armStart, kNever);
-      ArmStarts armStartsBefore;
-      armStarts.moveTo(armStartsBefore);
+      ArmStarts armStartsBefore = takeArmStarts();
       mlir::LogicalResult simulated = backwardBlock(*loop.getBody());
       if (tracked)
         tracks.pop_back();
       if (mlir::failed(simulated))
         return mlir::failure();
       int64_t iterationArmStart = armStart;
-      ArmStarts iterationArmStarts;
-      armStarts.moveTo(iterationArmStarts);
-      armStartsBefore.moveTo(armStarts);
+      ArmStarts iterationArmStarts = takeArmStarts();
+      putArmStarts(armStartsBefore);
       armStart = std::min(armBefore, armStart);
       for (auto [c, start] : iterationArmStarts)
         noteArmStart(c, start);
@@ -4869,8 +4926,7 @@ private:
   mlir::LogicalResult backwardIf(mlir::scf::IfOp branch) {
     int64_t savedArmStart = armStart;
     armStart = kNever;
-    ArmStarts savedArmStarts;
-    armStarts.moveTo(savedArmStarts);
+    ArmStarts savedArmStarts = takeArmStarts();
     auto savedLinks = linkLate;
     size_t mark = beginArm();
     for (auto [value, result] :
@@ -4938,9 +4994,8 @@ private:
     }
     armStart = std::min(savedArmStart, armStart);
     // The arm's starts join the ones before the branch.
-    ArmStarts armOnly;
-    armStarts.moveTo(armOnly);
-    savedArmStarts.moveTo(armStarts);
+    ArmStarts armOnly = takeArmStarts();
+    putArmStarts(savedArmStarts);
     for (auto [c, start] : armOnly)
       noteArmStart(c, start);
     endArm();
@@ -5036,55 +5091,17 @@ private:
       armFloors;
   /// By controller, the earliest start of an op of it in the arm being
   /// scheduled; `armStart` has those of no one controller (backward).
-  /// Most arms hold ops of few controllers: a short list, indexed once it is
-  /// long. Empty (one controller, or an arm of no one controller's ops), it
-  /// costs nothing to save and restore.
-  class ArmStarts {
-  public:
-    void note(int64_t owner, int64_t start) {
-      if (index) {
-        auto [it, inserted] = index->try_emplace(owner, list.size());
-        if (inserted)
-          list.push_back({owner, start});
-        else
-          list[it->second].second = std::min(list[it->second].second, start);
-        return;
-      }
-      for (auto &[c, earliest] : list)
-        if (c == owner) {
-          earliest = std::min(earliest, start);
-          return;
-        }
-      list.push_back({owner, start});
-      if (list.size() > kIndexedAfter) {
-        index = std::make_unique<llvm::DenseMap<int64_t, unsigned>>();
-        for (auto [i, entry] : llvm::enumerate(list))
-          index->try_emplace(entry.first, static_cast<unsigned>(i));
-      }
-    }
-    bool empty() const { return list.empty(); }
-    void clear() {
-      list.clear();
-      index.reset();
-    }
-    /// Move the starts into `to` (empty), leaving none; nothing to do when
-    /// there are none.
-    void moveTo(ArmStarts &to) {
-      if (list.empty())
-        return;
-      to.list = std::move(list);
-      to.index = std::move(index);
-      clear();
-    }
-    auto begin() const { return list.begin(); }
-    auto end() const { return list.end(); }
-
-  private:
-    static constexpr size_t kIndexedAfter = 8;
-    llvm::SmallVector<std::pair<int64_t, int64_t>, 4> list;
-    std::unique_ptr<llvm::DenseMap<int64_t, unsigned>> index;
-  };
+  /// Most arms hold ops of few controllers, so this is a short list of
+  /// (controller, start); empty (one controller, or an arm of no one
+  /// controller's ops), it costs nothing to save and restore.
   ArmStarts armStarts;
+  /// Once `armStarts` is long, where each controller's entry is in it: the
+  /// entries stamped `armStamp` are its, older ones belong to lists since
+  /// put aside.
+  llvm::SmallVector<std::pair<uint64_t, uint32_t>, 0> armSlots;
+  uint64_t armStamp = 0;
+  bool armIndexed = false;
+  static constexpr size_t kArmIndexedAfter = 8;
   /// The controller of each lane's last op.
   Lanes driveOwners, readoutOwners;
   /// Per timeline, how many ops have taken its drive and readout lanes.
