@@ -611,6 +611,69 @@ def test_the_values_of_a_long_list_are_bound_in_linear_time():
     _assert_linear("bind", {n: bind(n) for n in (1000, 8000)}, 8 * TOLERANCE)
 
 
+def _doubled(first: str, line: str, last: str, times: int, **names: object) -> Callable[[], object]:
+    """A compile, traced afresh at every call, of a kernel that sets a value
+    with *first*, runs *line* on it *times* times and uses it with *last*."""
+    turn = [0]
+
+    def run():
+        turn[0] += 1
+        source = (
+            f"def k(q, x: float):\n    d = get_drive_line(q)\n    unused = {turn[0]}\n"
+            f"    {first}\n" + f"    {line}\n" * times + last
+        )
+        scope = dict(vars(pulse))
+        scope.update(names)
+        exec(compile(source, f"<doubled {times}>", "exec"), scope)
+        return pulse.compile(pulse.kernel(scope["k"])).lower(Q[0], 2.0**-times)
+
+    return run
+
+
+@pytest.mark.scaling
+def test_a_wait_length_that_doubles_a_term_is_traced_in_linear_time():
+    # v = v + v uses the line before it twice: written out, six more lines
+    # are 64 times the terms. Each walk of the value visited them all. The
+    # sizes are small so that this fails and does not hang.
+    runs = {
+        n: _doubled("v = x * 1.0", "v = v + v", "    wait(d, v, bounds=(0, 4000))\n", n)
+        for n in (6, 12)
+    }
+    _assert_linear("trace", runs, 2 * TOLERANCE)
+    # The error for the length names each line once: a megabyte written out.
+    with pytest.raises(ValueError) as raised:
+        pulse.compile(pulse.kernel(_doubled_kernel(16))).lower(Q[0], 1.0)
+    assert len(str(raised.value)) < 1000
+
+
+def _doubled_kernel(times: int):
+    source = (
+        "def k(q, x: float):\n    d = get_drive_line(q)\n    v = x * 1.0\n"
+        + "    v = v + v\n" * times
+        + "    wait(d, v, bounds=(0, 4000))\n"
+    )
+    scope = dict(vars(pulse))
+    exec(compile(source, f"<doubled {times}>", "exec"), scope)
+    return scope["k"]
+
+
+@pytest.mark.scaling
+@pytest.mark.parametrize(
+    ("line", "sizes"), [("c = c & c", (6, 12)), ("c = (c | c) & (c | e)", (4, 8))]
+)
+def test_a_condition_that_doubles_a_condition_is_traced_in_linear_time(line, sizes):
+    @pulse.classical(max_latency_ns=50, name="perf_doubled_flag")
+    def flag(x: float) -> bool:
+        return x > 1.0
+
+    first = "c = flag.submit(x).result(); e = flag.submit(x + 1.0).result(); c = c & e"
+    last = "    if c:\n        drive(d, square(40, 0.1))\n"
+    # The second line uses the one before it three times: 81 times the
+    # terms for four more lines.
+    runs = {n: _doubled(first, line, last, n, flag=flag) for n in sizes}
+    _assert_linear("trace", runs, 2 * TOLERANCE)
+
+
 @pytest.mark.scaling
 def test_the_uses_of_a_line_in_the_arms_of_nested_ifs_are_checked_in_linear_time():
     # Each leaf of a tree of ifs nested `depth` deep reads out on one line:
