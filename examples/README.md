@@ -17,6 +17,8 @@ The [tutorials](https://nvidia.github.io/cudaq-pulse/tutorials/index.html)
 explain the same ideas step by step, and each one ends by naming the examples
 that take it further. If you are new to cudaq-pulse, start with
 [Your First Pulse Program](https://nvidia.github.io/cudaq-pulse/tutorials/first_pulse_program.html).
+The built-in chip most examples run on is described in
+[The transmon_surface17 Quantum System](https://nvidia.github.io/cudaq-pulse/user_guide/transmon_surface17.html).
 
 | Example | What it shows | Runs on |
 | --- | --- | --- |
@@ -47,6 +49,7 @@ that take it further. If you are new to cudaq-pulse, start with
 | [`27_realtime_decoding.py`](27_realtime_decoding.py) | Real-time QEC decoding with a deadline and a fallback table: a CUDA-Q QEC decoder called with CUDA-Q QEC's own functions | CUDA-Q QEC (Linux) and an NVIDIA GPU for its decoder, simulates |
 | [`28_t_state_injection.py`](28_t_state_injection.py) | T-state injection with the virtual-Z `pulse.gates.T`, tomography, and a heralded repeat-until-success loop post-selected on a classical call's answer | CPU, simulates |
 | [`29_waveform_envelopes.py`](29_waveform_envelopes.py) | The samples each built-in envelope plays, from `sample_waveform`, printed and plotted | CPU |
+| [`30_control_systems_compared.py`](30_control_systems_compared.py) | One QPU under five control systems defined in the file: the length of an active reset and of a surface-code round, the reset's ground-state population and a data qubit's idle error | CPU, simulates |
 | [`custom_passes/python_pass.py`](custom_passes/python_pass.py) | A schedule check written in Python | CPU |
 | [`custom_passes/cpp/`](custom_passes/cpp) | An MLIR pass plugin for `cudaq-pulse-opt --load-pass-plugin` | CPU (builds with CMake) |
 | [`controller_backend/toy_controller/__init__.py`](controller_backend/toy_controller/__init__.py) | A toy controller backend found by its entry point: limits, `emit` and `run` | CPU |

@@ -8,6 +8,7 @@ them fails to compile, naming the limit, the count and the first cycle."""
 from __future__ import annotations
 
 import pickle
+import random
 
 import cudaq_pulse as pulse
 import pytest
@@ -340,3 +341,52 @@ def test_loops_of_different_periods_are_counted_copy_by_copy_up_to_a_bound():
         _lower(_drifting(10**15), system, "asap", *qudits)
     system = _system(max_concurrent_drives=2)
     _lower(_drifting(10**15), system, "asap", *system.qudits[:3])
+
+
+def _counted_plainly(limit, played):
+    """What ``_AtOnce.sweep`` finds, counted the plain way: at each pulse's
+    start, that pulse and every one before it that has not ended, in the
+    order they started."""
+    from cudaq_pulse._concurrency import _together
+
+    first, at_first, most = None, 0, 0
+    for k, (start, _, _, _) in enumerate(played):
+        flying = [p for p in played[:k] if p[1] > start] + [played[k]]
+        if len(flying) <= limit:
+            continue
+        count = _together(
+            [({(c["branch"], ()): c["arm"] for c in p[2]["conditions"]}, 1) for p in flying]
+        )
+        if count <= limit:
+            continue
+        if first is None or start < first:
+            first, at_first = start, count
+        elif start == first:
+            at_first = max(at_first, count)
+        most = max(most, count)
+    return first, at_first, most
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_the_sweep_counts_what_counting_every_pulse_in_flight_does(seed):
+    # Starts tie, a pulse ends at the cycle another starts, pulses of no
+    # length, and pulses in the arms of up to three branches.
+    from cudaq_pulse._concurrency import _AtOnce, _first
+
+    rng = random.Random(seed)
+    for _ in range(60):
+        played = []
+        for index in range(rng.randrange(1, 40)):
+            start = rng.randrange(0, 24) * 4
+            conditions = [
+                {"branch": b, "arm": rng.choice(("then", "else"))}
+                for b in range(3)
+                if rng.random() < 0.3
+            ]
+            event = {"index": index, "conditions": conditions}
+            played.append((start, start + rng.choice((0, 4, 4, 8, 20, 60)), event, ()))
+        played.sort(key=_first)
+        for limit in (1, 2, 5, 12):
+            count = _AtOnce(limit, [], {})
+            count.sweep(played)
+            assert (count.first, count.at_first, count.most) == _counted_plainly(limit, played)

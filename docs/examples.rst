@@ -145,6 +145,13 @@ Core Examples
        ``cudaq_pulse.controller.sample_waveform`` of the controller export,
        printed and plotted; the operations guide's waveform explorer is the
        interactive version
+   * - 30
+     - :example:`30_control_systems_compared.py <30_control_systems_compared.py>`
+     - One QPU under five control systems, each defined in the file: the
+       length of an active reset and of one surface-code round, the reset's
+       ground-state population and a data qubit's idle error, side by side;
+       the tutorial :doc:`tutorials/control_systems` builds it step by step
+       *(simulates)*
 
 Examples 24 to 26 send compiled programs between processes, which works
 because programs pickle; their worker processes use the ``spawn`` start
@@ -214,7 +221,8 @@ See :doc:`tutorials/isa_lowering` and :doc:`tutorials/isa_limits`
 Transmon Quantum System Examples
 --------------------------------
 
-**Transmon** (``examples/transmon/``):
+**Transmon** (``examples/transmon/``), on the built-in chip that
+:doc:`user_guide/transmon_surface17` describes:
 
 .. list-table:: Transmon examples
    :header-rows: 1

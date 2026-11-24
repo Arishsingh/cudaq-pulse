@@ -1,0 +1,423 @@
+<!--
+   SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+   SPDX-License-Identifier: Apache-2.0
+-->
+<svg role="img" aria-labelledby="title desc" xmlns:xlink="http://www.w3.org/1999/xlink" width="518.97pt" height="167.80pt" viewBox="0 0 518.97 167.80" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <title id="title">Five control systems compared</title>
+ <desc id="desc">Four bar charts side by side, one bar per control system: the length of the reset of Z4, the error of that reset, the length of one round of error correction, and the idle error of a data qubit over that round. one controller, 100 ns feedback: reset 380 ns with error 0.57%, round 1324 ns with idle error 1.23%; one controller, 400 ns feedback: reset 680 ns with error 1.64%, round 1624 ns with idle error 1.51%; a controller per feedline: reset 380 ns with error 0.57%, round 1324 ns with idle error 1.23%; drive and readout modules: reset 580 ns with error 1.28%, round 1524 ns with idle error 1.42%; six drive lanes: reset 380 ns with error 0.57%, round 1604 ns with idle error 1.50%.</desc>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 167.80
+L 518.97 167.80
+L 518.97 0
+L 0 0
+L 0 167.80
+z
+" style="fill: none"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 141.34 164.92
+L 224.52 164.92
+L 224.52 25.39
+L 141.34 25.39
+L 141.34 164.92
+z
+" style="fill: none"/>
+   </g>
+   <g id="matplotlib.axis_1"/>
+   <g id="matplotlib.axis_2">
+    <g id="ytick_1">
+     <g id="line2d_1"/>
+     <g id="text_1">
+      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #1a1a1a" x="137.84" y="42.57" transform="rotate(-0 137.84 42.57)">one controller, 100 ns feedback</text>
+     </g>
+    </g>
+    <g id="ytick_2">
+     <g id="line2d_2"/>
+     <g id="text_2">
+      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #1a1a1a" x="137.84" y="70.48" transform="rotate(-0 137.84 70.48)">one controller, 400 ns feedback</text>
+     </g>
+    </g>
+    <g id="ytick_3">
+     <g id="line2d_3"/>
+     <g id="text_3">
+      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #1a1a1a" x="137.84" y="98.38" transform="rotate(-0 137.84 98.38)">a controller per feedline</text>
+     </g>
+    </g>
+    <g id="ytick_4">
+     <g id="line2d_4"/>
+     <g id="text_4">
+      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #1a1a1a" x="137.84" y="126.29" transform="rotate(-0 137.84 126.29)">drive and readout modules</text>
+     </g>
+    </g>
+    <g id="ytick_5">
+     <g id="line2d_5"/>
+     <g id="text_5">
+      <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: end; fill: #1a1a1a" x="137.84" y="154.20" transform="rotate(-0 137.84 154.20)">six drive lanes</text>
+     </g>
+    </g>
+   </g>
+   <g id="patch_3">
+    <path d="M 141.34 46.32
+L 172.33 46.32
+L 172.33 32.36
+L 141.34 32.36
+z
+" clip-path="url(#pbc86cebe0c)" style="fill: #6b46c1"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 141.34 74.22
+L 196.79 74.22
+L 196.79 60.27
+L 141.34 60.27
+z
+" clip-path="url(#pbc86cebe0c)" style="fill: #6b46c1"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 141.34 102.13
+L 172.33 102.13
+L 172.33 88.18
+L 141.34 88.18
+z
+" clip-path="url(#pbc86cebe0c)" style="fill: #6b46c1"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 141.34 130.04
+L 188.64 130.04
+L 188.64 116.09
+L 141.34 116.09
+z
+" clip-path="url(#pbc86cebe0c)" style="fill: #6b46c1"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 141.34 157.95
+L 172.33 157.95
+L 172.33 143.99
+L 141.34 143.99
+z
+" clip-path="url(#pbc86cebe0c)" style="fill: #6b46c1"/>
+   </g>
+   <g id="line2d_6">
+    <path d="M 141.34 164.92
+L 141.34 25.39
+" clip-path="url(#pbc86cebe0c)" style="fill: none; stroke: #b8bdc2; stroke-width: 0.8; stroke-linecap: round"/>
+   </g>
+   <g id="text_6">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="175.33" y="41.42" transform="rotate(-0 175.33 41.42)">380</text>
+   </g>
+   <g id="text_7">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="199.79" y="69.33" transform="rotate(-0 199.79 69.33)">680</text>
+   </g>
+   <g id="text_8">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="175.33" y="97.23" transform="rotate(-0 175.33 97.23)">380</text>
+   </g>
+   <g id="text_9">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="191.64" y="125.14" transform="rotate(-0 191.64 125.14)">580</text>
+   </g>
+   <g id="text_10">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="175.33" y="153.05" transform="rotate(-0 175.33 153.05)">380</text>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #1a1a1a" transform="translate(141.34 10.18)">reset of Z4</text>
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #1a1a1a" transform="translate(141.34 20.39)">length (ns)</text>
+   </g>
+  </g>
+  <g id="axes_2">
+   <g id="patch_8">
+    <path d="M 232.84 164.92
+L 316.03 164.92
+L 316.03 25.39
+L 232.84 25.39
+L 232.84 164.92
+z
+" style="fill: none"/>
+   </g>
+   <g id="matplotlib.axis_3"/>
+   <g id="matplotlib.axis_4">
+    <g id="ytick_6">
+     <g id="line2d_7"/>
+    </g>
+    <g id="ytick_7">
+     <g id="line2d_8"/>
+    </g>
+    <g id="ytick_8">
+     <g id="line2d_9"/>
+    </g>
+    <g id="ytick_9">
+     <g id="line2d_10"/>
+    </g>
+    <g id="ytick_10">
+     <g id="line2d_11"/>
+    </g>
+   </g>
+   <g id="patch_9">
+    <path d="M 232.84 46.32
+L 252.12 46.32
+L 252.12 32.36
+L 232.84 32.36
+z
+" clip-path="url(#pf21da9b4d2)" style="fill: #6b46c1"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 232.84 74.22
+L 288.30 74.22
+L 288.30 60.27
+L 232.84 60.27
+z
+" clip-path="url(#pf21da9b4d2)" style="fill: #6b46c1"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 232.84 102.13
+L 252.12 102.13
+L 252.12 88.18
+L 232.84 88.18
+z
+" clip-path="url(#pf21da9b4d2)" style="fill: #6b46c1"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 232.84 130.04
+L 276.28 130.04
+L 276.28 116.09
+L 232.84 116.09
+z
+" clip-path="url(#pf21da9b4d2)" style="fill: #6b46c1"/>
+   </g>
+   <g id="patch_13">
+    <path d="M 232.84 157.95
+L 252.12 157.95
+L 252.12 143.99
+L 232.84 143.99
+z
+" clip-path="url(#pf21da9b4d2)" style="fill: #6b46c1"/>
+   </g>
+   <g id="line2d_12">
+    <path d="M 232.84 164.92
+L 232.84 25.39
+" clip-path="url(#pf21da9b4d2)" style="fill: none; stroke: #b8bdc2; stroke-width: 0.8; stroke-linecap: round"/>
+   </g>
+   <g id="text_12">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="255.12" y="41.42" transform="rotate(-0 255.12 41.42)">0.57</text>
+   </g>
+   <g id="text_13">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="291.30" y="69.33" transform="rotate(-0 291.30 69.33)">1.64</text>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="255.12" y="97.23" transform="rotate(-0 255.12 97.23)">0.57</text>
+   </g>
+   <g id="text_15">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="279.28" y="125.14" transform="rotate(-0 279.28 125.14)">1.28</text>
+   </g>
+   <g id="text_16">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="255.12" y="153.05" transform="rotate(-0 255.12 153.05)">0.57</text>
+   </g>
+   <g id="text_17">
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #1a1a1a" transform="translate(232.84 10.19)">reset of Z4</text>
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #1a1a1a" transform="translate(232.84 20.39)">error, 1 − P(0) (%)</text>
+   </g>
+  </g>
+  <g id="axes_3">
+   <g id="patch_14">
+    <path d="M 324.34 164.92
+L 407.53 164.92
+L 407.53 25.39
+L 324.34 25.39
+L 324.34 164.92
+z
+" style="fill: none"/>
+   </g>
+   <g id="matplotlib.axis_5"/>
+   <g id="matplotlib.axis_6">
+    <g id="ytick_11">
+     <g id="line2d_13"/>
+    </g>
+    <g id="ytick_12">
+     <g id="line2d_14"/>
+    </g>
+    <g id="ytick_13">
+     <g id="line2d_15"/>
+    </g>
+    <g id="ytick_14">
+     <g id="line2d_16"/>
+    </g>
+    <g id="ytick_15">
+     <g id="line2d_17"/>
+    </g>
+   </g>
+   <g id="patch_15">
+    <path d="M 324.34 46.32
+L 369.56 46.32
+L 369.56 32.36
+L 324.34 32.36
+z
+" clip-path="url(#p4a765722bd)" style="fill: #b8bdc2"/>
+   </g>
+   <g id="patch_16">
+    <path d="M 324.34 74.22
+L 379.80 74.22
+L 379.80 60.27
+L 324.34 60.27
+z
+" clip-path="url(#p4a765722bd)" style="fill: #b8bdc2"/>
+   </g>
+   <g id="patch_17">
+    <path d="M 324.34 102.13
+L 369.56 102.13
+L 369.56 88.18
+L 324.34 88.18
+z
+" clip-path="url(#p4a765722bd)" style="fill: #b8bdc2"/>
+   </g>
+   <g id="patch_18">
+    <path d="M 324.34 130.04
+L 376.39 130.04
+L 376.39 116.09
+L 324.34 116.09
+z
+" clip-path="url(#p4a765722bd)" style="fill: #b8bdc2"/>
+   </g>
+   <g id="patch_19">
+    <path d="M 324.34 157.95
+L 379.12 157.95
+L 379.12 143.99
+L 324.34 143.99
+z
+" clip-path="url(#p4a765722bd)" style="fill: #b8bdc2"/>
+   </g>
+   <g id="line2d_18">
+    <path d="M 324.34 164.92
+L 324.34 25.39
+" clip-path="url(#p4a765722bd)" style="fill: none; stroke: #b8bdc2; stroke-width: 0.8; stroke-linecap: round"/>
+   </g>
+   <g id="text_18">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="372.56" y="41.42" transform="rotate(-0 372.56 41.42)">1324</text>
+   </g>
+   <g id="text_19">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="382.80" y="69.33" transform="rotate(-0 382.80 69.33)">1624</text>
+   </g>
+   <g id="text_20">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="372.56" y="97.23" transform="rotate(-0 372.56 97.23)">1324</text>
+   </g>
+   <g id="text_21">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="379.39" y="125.14" transform="rotate(-0 379.39 125.14)">1524</text>
+   </g>
+   <g id="text_22">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="382.12" y="153.05" transform="rotate(-0 382.12 153.05)">1604</text>
+   </g>
+   <g id="text_23">
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #1a1a1a" transform="translate(324.34 10.18)">one round</text>
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #1a1a1a" transform="translate(324.34 20.39)">length (ns)</text>
+   </g>
+  </g>
+  <g id="axes_4">
+   <g id="patch_20">
+    <path d="M 415.85 164.92
+L 499.03 164.92
+L 499.03 25.39
+L 415.85 25.39
+L 415.85 164.92
+z
+" style="fill: none"/>
+   </g>
+   <g id="matplotlib.axis_7"/>
+   <g id="matplotlib.axis_8">
+    <g id="ytick_16">
+     <g id="line2d_19"/>
+    </g>
+    <g id="ytick_17">
+     <g id="line2d_20"/>
+    </g>
+    <g id="ytick_18">
+     <g id="line2d_21"/>
+    </g>
+    <g id="ytick_19">
+     <g id="line2d_22"/>
+    </g>
+    <g id="ytick_20">
+     <g id="line2d_23"/>
+    </g>
+   </g>
+   <g id="patch_21">
+    <path d="M 415.85 46.32
+L 460.86 46.32
+L 460.86 32.36
+L 415.85 32.36
+z
+" clip-path="url(#p4292d0a7b9)" style="fill: #4f5b66"/>
+   </g>
+   <g id="patch_22">
+    <path d="M 415.85 74.22
+L 471.31 74.22
+L 471.31 60.27
+L 415.85 60.27
+z
+" clip-path="url(#p4292d0a7b9)" style="fill: #4f5b66"/>
+   </g>
+   <g id="patch_23">
+    <path d="M 415.85 102.13
+L 460.86 102.13
+L 460.86 88.18
+L 415.85 88.18
+z
+" clip-path="url(#p4292d0a7b9)" style="fill: #4f5b66"/>
+   </g>
+   <g id="patch_24">
+    <path d="M 415.85 130.04
+L 467.72 130.04
+L 467.72 116.09
+L 415.85 116.09
+z
+" clip-path="url(#p4292d0a7b9)" style="fill: #4f5b66"/>
+   </g>
+   <g id="patch_25">
+    <path d="M 415.85 157.95
+L 470.76 157.95
+L 470.76 143.99
+L 415.85 143.99
+z
+" clip-path="url(#p4292d0a7b9)" style="fill: #4f5b66"/>
+   </g>
+   <g id="line2d_24">
+    <path d="M 415.85 164.92
+L 415.85 25.39
+" clip-path="url(#p4292d0a7b9)" style="fill: none; stroke: #b8bdc2; stroke-width: 0.8; stroke-linecap: round"/>
+   </g>
+   <g id="text_24">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="463.86" y="41.42" transform="rotate(-0 463.86 41.42)">1.23</text>
+   </g>
+   <g id="text_25">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="474.31" y="69.33" transform="rotate(-0 474.31 69.33)">1.51</text>
+   </g>
+   <g id="text_26">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="463.86" y="97.23" transform="rotate(-0 463.86 97.23)">1.23</text>
+   </g>
+   <g id="text_27">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="470.72" y="125.14" transform="rotate(-0 470.72 125.14)">1.42</text>
+   </g>
+   <g id="text_28">
+    <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="473.76" y="153.05" transform="rotate(-0 473.76 153.05)">1.50</text>
+   </g>
+   <g id="text_29">
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #1a1a1a" transform="translate(415.85 10.18)">data qubit</text>
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; fill: #1a1a1a" transform="translate(415.85 20.39)">idle error per round (%)</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="pbc86cebe0c">
+   <rect x="141.34" y="25.39" width="83.18" height="139.53"/>
+  </clipPath>
+  <clipPath id="pf21da9b4d2">
+   <rect x="232.84" y="25.39" width="83.18" height="139.53"/>
+  </clipPath>
+  <clipPath id="p4a765722bd">
+   <rect x="324.34" y="25.39" width="83.18" height="139.53"/>
+  </clipPath>
+  <clipPath id="p4292d0a7b9">
+   <rect x="415.85" y="25.39" width="83.18" height="139.53"/>
+  </clipPath>
+ </defs>
+</svg>
