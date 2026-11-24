@@ -218,6 +218,23 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   qudits has a program it can emit. A backend with a drive line per qudit
   refuses both, which counts as before. Every backend's report has two
   more lines per format it reads.
+- **Loading a scheduled function.** `pulse.load(module, entry=..., qudits=...)`
+  turns a scheduled function of a Pulse-dialect module that another compiler
+  wrote (assembly or bytecode) into a `ScheduledKernel`, as `kernel.lower(...)`
+  returns. The schedule is kept as written, verified on its qudits and
+  control system and checked against what the controllers can play (a
+  control system with line delays or program limits is refused for now);
+  `qudits` gives the qudit of each argument and the lines
+  get that quantum system's frequencies. A loaded function may hold loops,
+  branches and calls of classical functions: these are read from the module's
+  `classical.callable` declarations, travel on the control system's links
+  (found by the name the module gives them, or by `links=`), take the
+  control system's dispatch keys as for `compile`, and are checked against
+  their latencies, and `classical=` gives declared
+  functions for them, whose types must agree and whose latency and
+  implementation replace the module's. A call of another function of the
+  module that states its start (`pulse.start_cycles`, provisional) is written
+  in place.
 
 ### Changed
 
@@ -407,6 +424,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   module-level values as before. The quick example of the README and of
   Getting Started now reads the qubit out and runs by calling the kernel,
   which returns the outcome of one simulated shot.
+- **`viz.save_schedule` takes a path-like path and names its keywords.**
+  `path` may be a `pathlib.Path` as well as a string, and the function takes
+  `figsize` and `title`, the two keywords of `plot_schedule`, where it passed
+  `**kwargs` on to it. Calls that worked still work; a type checker now
+  accepts a `Path` and rejects another keyword, such as `dpi=300`, which
+  type-checked and then raised `TypeError` inside `plot_schedule`.
 
 ### Fixed
 
