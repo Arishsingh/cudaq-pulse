@@ -345,6 +345,57 @@ def test_a_wide_sync_traces_in_linear_time():
 
 
 @pytest.mark.scaling
+def test_an_if_costs_what_its_arms_change_not_the_lines_held_in_lists():
+    # A readout and a measurement-conditioned if per qudit, with every line
+    # held in a list: each if puts back the list slots its arms wrote, not
+    # every list the kernel holds.
+    wide = ladder_target(1600).qudits
+
+    def program(n: int):
+        @pulse.kernel
+        def kernel(qudits):
+            lines = [get_drive_line(q) for q in qudits]
+            reads = [get_readout_line(q) for q in qudits]
+            for i in range(len(lines)):
+                sync(reads[i], lines[i])
+                m = readout(reads[i], square(40, 0.05))
+                if m:
+                    drive(lines[i], square(8, 0.1))
+
+        return lambda: pulse.compile(kernel).lower(wide[0:n])
+
+    # Eight times the ifs and lines: about 8x the time when linear, 64x when not.
+    _assert_linear("trace", {n: program(n) for n in (200, 1600)}, 16)
+
+
+@pulse.kernel
+def _reset_one(lines, reads, i):
+    m = readout(reads[i], square(40, 0.05))
+    if m:
+        drive(lines[i], square(8, 0.1))
+
+
+@pytest.mark.scaling
+def test_an_if_in_a_called_kernel_costs_what_its_arms_change():
+    # As above, with each if in a kernel the round calls: the trace's first
+    # if is then inside a call, and the ifs after it still put back only
+    # what their arms wrote.
+    wide = ladder_target(1600).qudits
+
+    def program(n: int):
+        @pulse.kernel
+        def kernel(qudits):
+            lines = [get_drive_line(q) for q in qudits]
+            reads = [get_readout_line(q) for q in qudits]
+            for i in range(len(lines)):
+                _reset_one(lines, reads, i)
+
+        return lambda: pulse.compile(kernel).lower(wide[0:n])
+
+    _assert_linear("trace", {n: program(n) for n in (200, 1600)}, 16)
+
+
+@pytest.mark.scaling
 def test_the_events_of_a_long_line_are_listed_in_linear_time():
     def program(n: int):
         @pulse.kernel
