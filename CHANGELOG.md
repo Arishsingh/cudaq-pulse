@@ -419,8 +419,7 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   memory grew with the iterations. It now counts such a loop from one
   round, as compiling for the controller does: a loop of 2.7e9 rounds is
   checked with the work of one of a thousand. Where the rounds cannot be
-  counted from one (their pulses interleave with others on the line, or
-  their lines repeat by periods of their own on a shared line), `check`
+  counted so (see the entry on loops that share a line, below), `check`
   and `compile` play them round by round, as before.
 - **A check that sees it would play more than 1,048,576 rounds of loops
   one by one stops before it starts.** `compile` and `controller.check`
@@ -460,6 +459,26 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   once for each content it has had. An installed description, loaded by
   its name, is still kept by its file's modification time: nothing writes
   those while a program runs.
+- **Loops that share a line with something else are counted from their
+  periods.** On a line several qudits share, a loop kept as a loop was
+  counted from one round only when nothing else played on the line
+  meanwhile and its lines moved together. A loop beside another readout,
+  or one whose lines repeat by different periods (no `sync` of them in a
+  round), was played round by round, so the check took time and memory in
+  proportion to the rounds and refused past 1,048,576 of them. Such loops
+  are now counted from what repeats between the cycles where something on
+  the line starts or ends, in `check()` and when compiling: the count, its
+  first cycle and the message are those a walk of every round gives, for
+  any number of rounds. Still played round by round, up to the same
+  number: a loop that holds a loop and shares time with something, a
+  loop with a branch whose lines repeat by different periods, and a loop
+  in one arm of a branch whose other arm plays on the line too.
+- **A loop in one arm of a branch is not counted against the other arm.**
+  Compiling for a shared line counted the rounds of a loop kept as a loop
+  as playing together with a pulse in the other arm of the branch the loop
+  is in, and refused a program whose arms never play together ("plays 2
+  tones at once ... and does so 39 more times"). Such a loop is now
+  counted by walking its rounds, which tells the arms apart.
 - **A value that is not a real number fails at `bind()`, on every bind.**
   `module.bind([True, 1e6])`, or a str, a complex number or `None` for a
   value, was an `InvalidTypeError` at `bind()` only on the first bind of a
