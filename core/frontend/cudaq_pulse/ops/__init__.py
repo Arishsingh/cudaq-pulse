@@ -256,6 +256,14 @@ def shift_phase(tone: Tone, phase: Numeric) -> Tone:
     Following McKay et al., PRA 96, 022330 (2017), a pulse played after it
     turns about an axis rotated by ``-phase``.
 
+    Example::
+
+        @pulse.kernel
+        def k(qudit):
+            drive_line = get_drive_line(qudit)
+            shift_phase(drive_line.tone, math.pi / 2)
+            drive(drive_line, gaussian(40, 0.3, 10))
+
     Args:
         tone: Tone handle, such as ``line.tone``.
         phase: Phase increment in radians.
@@ -265,6 +273,14 @@ def shift_phase(tone: Tone, phase: Numeric) -> Tone:
 
 def set_phase(tone: Tone, phase: Numeric) -> Tone:
     """Set the frame phase of a tone, with the sign of ``shift_phase``.
+
+    Example::
+
+        @pulse.kernel
+        def k(qudit):
+            drive_line = get_drive_line(qudit)
+            set_phase(drive_line.tone, 0.0)
+            drive(drive_line, gaussian(40, 0.3, 10))
 
     Args:
         tone: Tone handle.
@@ -276,6 +292,14 @@ def set_phase(tone: Tone, phase: Numeric) -> Tone:
 def shift_frequency(tone: Tone, frequency: Numeric) -> Tone:
     """Add a relative frequency offset to a tone.
 
+    Example::
+
+        @pulse.kernel
+        def k(qudit):
+            drive_line = get_drive_line(qudit)
+            shift_frequency(drive_line.tone, 2e6)  # 2 MHz above
+            drive(drive_line, gaussian(40, 0.3, 10))
+
     Args:
         tone: Tone handle.
         frequency: Frequency offset in Hz.
@@ -285,6 +309,14 @@ def shift_frequency(tone: Tone, frequency: Numeric) -> Tone:
 
 def set_frequency(tone: Tone, frequency: Numeric) -> Tone:
     """Set the absolute frequency of a tone.
+
+    Example::
+
+        @pulse.kernel
+        def k(qudit):
+            drive_line = get_drive_line(qudit)
+            set_frequency(drive_line.tone, 5.0e9)  # 5 GHz
+            drive(drive_line, gaussian(40, 0.3, 10))
 
     Args:
         tone: Tone handle.
