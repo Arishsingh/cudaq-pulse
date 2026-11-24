@@ -37,6 +37,7 @@
 #include "cudaq-pulse/Analysis/Durations.h"
 #include "cudaq-pulse/Analysis/LineTrace.h"
 #include "cudaq-pulse/Analysis/Timing.h"
+#include "cudaq-pulse/Analysis/Untimed.h"
 
 #include <algorithm>
 #include <cmath>
@@ -524,13 +525,19 @@ struct PulseVerifyPass
           }
         }
     };
-    // One walk for each op's own checks: linearity, the values of waveforms
+    // One walk for each op's own checks: an op the schedule passes cannot
+    // time, linearity, the values of waveforms
     // and of the waits and measurements that use them (WaveformCheck), and
     // acquisitions. Timing and lowering identify a line by the op that
     // acquires it, so an acquisition in a loop body cannot stand for a new
     // line per iteration.
     WaveformCheck waveforms;
     module.walk([&](mlir::Operation *op) {
+      // The schedule passes would time an op they do not know as nothing.
+      if (pulse::untimed(op)) {
+        pulse::emitUntimed(op);
+        hadError = true;
+      }
       for (mlir::Value result : op->getResults())
         checkLinear(result, op);
       for (mlir::Region &region : op->getRegions())
@@ -693,11 +700,6 @@ struct PulseVerifyPass
     module.walk([&](mlir::func::FuncOp funcOp) {
       if (funcOp.isExternal())
         return;
-      // The schedule passes would time an op they do not know as nothing.
-      if (mlir::Operation *untimed = pulse::untimedOp(funcOp)) {
-        pulse::emitUntimedOp(untimed);
-        hadError = true;
-      }
       TimingChecker checker;
       checker.checkFunction(funcOp);
       hadError |= checker.hadError;

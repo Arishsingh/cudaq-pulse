@@ -386,8 +386,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   as if the call took no time: the pulse after it started while the called
   function's pulses still played, and `pulse-verify` accepted it. The
   schedule passes and `pulse-verify` now stop with an error that names the
-  op and says to write the ops it stands for in its place. No kernel
-  written in Python makes such a call, so no kernel is affected.
+  op and says to write the ops it stands for in its place. The schedule
+  passes also stop at an op that holds a region they do not go into
+  (they go into `scf.for`, `scf.if` and schedule blocks) and at a function
+  of several blocks, whose ops they left untimed. No kernel written in Python makes any of these, so no
+  kernel is affected.
 - **A loop kept as a loop, with measurement-conditioned branches in its
   body, no longer takes time that grows with the cube of its lines to
   schedule.** For such a loop on several controllers the scheduler paired

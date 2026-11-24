@@ -305,3 +305,15 @@ func.func @call_of_numbers(%n: i64) -> i64 {
   %m = call @doubled(%n) : (i64) -> i64
   return %m : i64
 }
+
+// -----
+
+// Control flow other than scf.for and scf.if that gives a line: the schedule
+// passes do not go into it.
+func.func @region_that_gives_a_line(%line: !pulse.drive_line) -> !pulse.drive_line {
+  // expected-error @+1 {{'scf.execute_region' takes or gives a qudit, a line, a tone, a measurement or a classical handle, and the schedule passes cannot tell what it plays or how long it takes; write the ops it stands for in its place before scheduling}}
+  %out = scf.execute_region -> !pulse.drive_line {
+    scf.yield %line : !pulse.drive_line
+  }
+  return %out : !pulse.drive_line
+}
