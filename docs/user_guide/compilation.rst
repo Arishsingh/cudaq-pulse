@@ -62,7 +62,8 @@ Annotations decide what a compilation depends on:
   is specialized on its value. A list or tuple of qudit handles is
   rejected: pass a Register (``qs.qudits[0:4]``) or use ``*qudits``. Annotate a
   qudit parameter to compile once for every placement. A time passed to a
-  ``float`` parameter is a ``TypeError``; see :ref:`durations`.
+  ``float`` parameter, or in a runtime ``list[float]``, is a ``TypeError``;
+  see :ref:`durations`.
 - A ``float`` the program needs while it compiles -- one that sets a
   waveform duration, goes through ``int()``, decides an ``if`` or bounds a
   loop -- is specialized on as well. ``kernel.static_parameters`` and
