@@ -6575,16 +6575,19 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
                const pulse::LineGrid &grid,
                const pulse::Controllers &controllers) {
   // Each round either writes an affine schedule, removes an iteration from
-  // a loop, or (a bounded number of times) regroups one, so this
-  // terminates.
+  // a loop, (a bounded number of times) regroups one, or schedules the same
+  // round once more without the alap last end, so this terminates.
   int64_t widePeels = 0, regroups = 0, headPeels = 0;
   llvm::DenseMap<mlir::Operation *, int64_t> regroupedBy;
+  // Schedule the next round without the alap last end (see below).
+  bool uncapped = false;
   while (true) {
     Scheduler<Gridded> scheduler(region, resources, classical, grid,
                                  controllers, &timelines);
     scheduler.mayRegroup = regroups < kRegroupRounds;
     scheduler.mayPeelHead = headPeels < kRegroupRounds;
     scheduler.regroupedBy = regroupedBy;
+    scheduler.uncapped = std::exchange(uncapped, false);
     auto regrouped = [&] {
       if (scheduler.headPeel) {
         ++headPeels;
@@ -6614,20 +6617,8 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
       // to it is scheduled again without it, as before it; only where that
       // cannot be written either does the forward schedule stand.
       if (scheduler.lastEnd != kNever && !scheduler.keepsLastEnd()) {
-        scheduler = Scheduler<Gridded>(region, resources, classical, grid,
-                                       controllers, &timelines);
-        scheduler.mayRegroup = regroups < kRegroupRounds;
-        scheduler.mayPeelHead = headPeels < kRegroupRounds;
-        scheduler.regroupedBy = regroupedBy;
-        scheduler.uncapped = true;
-        if (mlir::failed(scheduler.forward()))
-          return mlir::failure();
-        if (regrouped())
-          continue;
-        if (mlir::failed(scheduler.backward()))
-          return mlir::failure();
-        if (regrouped())
-          continue;
+        uncapped = true;
+        continue;
       }
       // Handing out resources in reverse program order can need time before
       // zero, take an answer before it is due, or leave a request kept at
