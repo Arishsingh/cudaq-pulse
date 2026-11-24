@@ -10,6 +10,10 @@ laptop, and ends by pointing to the example files that take it further.
 Each page's code is also one Python script you can download from the page.
 Start with the first; the rest can be read in any order once you have it.
 
+Most tutorials run on the built-in ``transmon_surface17`` quantum system.
+:doc:`../user_guide/transmon_surface17` shows its layout, frequencies and
+calibrated gates.
+
 .. toctree::
    :maxdepth: 1
    :caption: Basics
@@ -35,6 +39,7 @@ Start with the first; the rest can be read in any order once you have it.
 
    gpu_simulation
    kernel_to_controller
+   control_systems
 
 .. toctree::
    :maxdepth: 1
