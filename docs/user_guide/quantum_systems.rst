@@ -210,6 +210,8 @@ calibration, below).
 ``cudaq_pulse.quantum_systems.transmon.CZ_LAYERS`` gives the CZ time steps of a
 cycle, each a tuple of (auxiliary, data) qudit pairs.
 ``python -m cudaq_pulse.doctor`` lists them and reports the process quantum system.
+:doc:`transmon_surface17` shows the chip's layout, frequencies, coherence
+and calibrated gates in tables and figures.
 
 The paper's J / 2 pi ~ 7 MHz is the ``|11> <-> |20>`` coupling of the CZ at
 each pair's interaction point (N. Lacroix, PhD thesis, ETH Zurich (2025),
