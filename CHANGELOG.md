@@ -385,6 +385,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A time in a runtime `list[float]` argument is refused, as for a `float`
+  parameter.** `[100 * pulse.ns]` was taken as its nanoseconds and used as
+  that many clock cycles, so a scan of waits written with units played half
+  of each wait on a 2 GHz clock, with no error. It is now an
+  `InvalidTypeError` that names the element, and so is an element that is
+  not a number, which said only that the argument was a list.
 - **A kernel with many measurement-conditioned `if`s no longer takes memory
   and time that grow with the square of their number to trace.** Each `if`
   kept its own copy of the whole kernel's instructions, so a kernel of n
