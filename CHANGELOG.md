@@ -460,6 +460,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   once for each content it has had. An installed description, loaded by
   its name, is still kept by its file's modification time: nothing writes
   those while a program runs.
+- **Bounding what a round plays at once no longer takes time that grows
+  with the square of its pulses, where none of them is in a branch.** For
+  a loop kept as a loop, the check of `max_concurrent_drives` and
+  `max_concurrent_readouts` first bounds what one round plays at once. The
+  bound went through every pulse in flight at each pulse, as the count
+  after it did before it was changed. It now keeps them by their ends and
+  the sum of what they stand for as they come and go, and where none in
+  flight is in a branch that sum is the bound. Where one is, those in
+  flight are gone through as before. What it finds is the same.
 - **A value that is not a real number fails at `bind()`, on every bind.**
   `module.bind([True, 1e6])`, or a str, a complex number or `None` for a
   value, was an `InvalidTypeError` at `bind()` only on the first bind of a
