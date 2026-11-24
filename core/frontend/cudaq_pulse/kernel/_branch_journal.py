@@ -49,14 +49,19 @@ class _LoggedSlots(dict):  # type: ignore[type-arg]
         self.written[key] = entry[2]
         known = self.places.get(id(entry[0]))
         if known is not None:
-            at = known[1].get(key)
-            if at is None:
-                known[1][key] = entry[1]
-            elif at.__class__ is int:
-                if at != entry[1]:
-                    known[1][key] = {at, entry[1]}
+            # _place, inline: this runs at every write of a record.
+            at = known[1]
+            i = entry[1]
+            if i.__class__ is not int:
+                i = operator.index(i)
+            found = at.get(key)
+            if found is None:
+                at[key] = i
+            elif found.__class__ is int:
+                if found != i:
+                    at[key] = {found, i}
             else:
-                at.add(entry[1])
+                found.add(i)
         dict.__setitem__(self, key, entry)
 
     def __delitem__(self, key: int) -> None:
@@ -102,8 +107,12 @@ def _places(lines: _Lines, obj: list[Any]) -> tuple[dict[int, Any], list[int]]:
     return at, added
 
 
-def _place(at: dict[int, Any], key: int, i: int) -> None:
-    """Add place *i* of *key* to *at*: an int for one place, a set for more."""
+def _place(at: dict[int, Any], key: int, i: Any) -> None:
+    """Add place *i* of *key* to *at*: an int for one place, a set for more.
+    An index the kernel gave as another integer type (``numpy.int64``, an
+    ``IntEnum`` member) is kept as an int."""
+    if i.__class__ is not int:
+        i = operator.index(i)
     found = at.get(key)
     if found is None:
         at[key] = i
@@ -154,41 +163,30 @@ def _canonical_list(emitter: PulseIREmitter, obj: list[Any], full: bool) -> None
         found = at[key]
         value = written[key]
         if found.__class__ is int:
-            # One place: as below, without the sets; none left is an empty set.
+            # One place: as below, without the sets; none left, no entry.
             i = found
             if not -n <= i < n:
-                at[key] = set()
+                del at[key]
                 continue
             place = i % n if i < 0 else i
             if obj[place] is value:
                 if place != i:
-                    at[key] = set()
+                    # The place it holds, counted from the front.
+                    at[key] = place
                 dict.__setitem__(slots, key, (obj, place, value))
             else:
-                at[key] = set()
+                del at[key]
             continue
         if not found:
-            continue
-        if len(found) == 1:
-            (i,) = found
-            if not -n <= i < n:
-                found.clear()
-                continue
-            place = i % n if i < 0 else i
-            if obj[place] is value:
-                if place != i:
-                    found.clear()
-                dict.__setitem__(slots, key, (obj, place, value))
-            else:
-                found.clear()
             continue
         valid = {i % n if i < 0 else i for i in found if -n <= i < n}
         valid = {i for i in valid if obj[i] is value}
         if valid:
-            found.intersection_update(valid)
+            # The places it holds, counted from the front.
+            at[key] = valid if len(valid) > 1 else next(iter(valid))
             dict.__setitem__(slots, key, (obj, max(valid), value))
         else:
-            found.clear()
+            del at[key]
 
 
 def _log_by_list(

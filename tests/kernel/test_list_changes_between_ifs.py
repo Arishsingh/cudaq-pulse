@@ -13,10 +13,12 @@ against the same change made by building a new list.
 
 from __future__ import annotations
 
+import enum
 import operator
 import random
 
 import cudaq_pulse as pulse
+import numpy as np
 import pytest
 from cudaq_pulse.kernel.ir_builder import CompilationError
 
@@ -105,3 +107,27 @@ def test_a_list_changed_in_place_traces_as_a_new_one(way, place):
     traced = _traced(in_place, place)
     assert not traced.startswith("error"), traced
     assert traced == _traced(anew, place)
+
+
+class _One(enum.IntEnum):
+    ONE = 1
+
+
+@pytest.mark.parametrize("index", [np.int64(1), _One.ONE, True])
+def test_a_list_indexed_by_another_integer_type_traces_as_by_an_int(index):
+    def traced(i):
+        @pulse.kernel
+        def k(a, b, c):
+            lines = [get_drive_line(q) for q in (a, b, c)]
+            m = readout(get_readout_line(a), square(40, 0.05))
+            if m:
+                drive(lines[0], square(16, 0.1))
+            drive(lines[i], square(16, 0.2))
+            if m:
+                drive(lines[0], square(16, 0.3))
+            drive(lines[1], square(16, 0.4))
+
+        lowered = pulse.compile(k).lower(Q[0], Q[1], Q[2])
+        return lowered.mlir() + "\n".join(repr(e) for e in lowered.schedule)
+
+    assert traced(index) == traced(1)
