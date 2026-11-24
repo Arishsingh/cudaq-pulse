@@ -221,7 +221,9 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   control system's dispatch keys as for `compile`, and are checked against
   their latencies, and `classical=` gives declared
   functions for them, whose types must agree and whose latency and
-  implementation replace the module's. A call of another function of the
+  implementation replace the module's. CUDA-Q QEC's decoder messages in a
+  module (`enqueue_syndromes__3_2`, `get_corrections__3_1`) are read as a
+  kernel's calls of them are compiled. A call of another function of the
   module that states its start (`pulse.start_cycles`, provisional) is written
   in place.
 
