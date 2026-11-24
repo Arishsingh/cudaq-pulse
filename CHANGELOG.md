@@ -361,6 +361,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A call the schedule passes cannot time is refused.** Hand-written IR
+  with a `func.call` (or an op of another dialect) that takes or gives a
+  qudit, a line, a tone, a measurement or a classical handle was scheduled
+  as if the call took no time: the pulse after it started while the called
+  function's pulses still played, and `pulse-verify` accepted it. The
+  schedule passes and `pulse-verify` now stop with an error that names the
+  op and says to write the ops it stands for in its place. No kernel
+  written in Python makes such a call, so no kernel is affected.
 - **A controller description written again is the one loaded.**
   `pulse.controller(path)` kept a file's parsed description by the file's
   modification time alone, so a file written twice within one tick of the

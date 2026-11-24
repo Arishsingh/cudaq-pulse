@@ -693,6 +693,11 @@ struct PulseVerifyPass
     module.walk([&](mlir::func::FuncOp funcOp) {
       if (funcOp.isExternal())
         return;
+      // The schedule passes would time an op they do not know as nothing.
+      if (mlir::Operation *untimed = pulse::untimedOp(funcOp)) {
+        pulse::emitUntimedOp(untimed);
+        hadError = true;
+      }
       TimingChecker checker;
       checker.checkFunction(funcOp);
       hadError |= checker.hadError;

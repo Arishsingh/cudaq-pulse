@@ -107,3 +107,68 @@ func.func @drive_line_acquired_twice() {
   %b1, %tb1 = pulse.drive %b, %x, %tb : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
   return
 }
+
+// -----
+
+// A call that takes a line would be timed as taking no time, so the pulse
+// after it would start while the called function's pulse still plays. The
+// called function itself is scheduled.
+func.func private @plays(%line: !pulse.drive_line, %tone: !pulse.tone) -> (!pulse.drive_line, !pulse.tone) {
+  %c40 = arith.constant 40 : i64
+  %am = arith.constant 0.1 : f64
+  %z = arith.constant 0.0 : f64
+  %x = pulse.square %c40, %am, %z : i64, f64, f64 -> !pulse.waveform
+  %d1, %t1 = pulse.drive %line, %x, %tone : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+  return %d1, %t1 : !pulse.drive_line, !pulse.tone
+}
+
+func.func @call_that_takes_a_line(%line: !pulse.drive_line, %tone: !pulse.tone) -> (!pulse.drive_line, !pulse.tone) {
+  %c8 = arith.constant 8 : i64
+  %am = arith.constant 0.1 : f64
+  %z = arith.constant 0.0 : f64
+  %x = pulse.square %c8, %am, %z : i64, f64, f64 -> !pulse.waveform
+  %d1, %t1 = pulse.drive %line, %x, %tone : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+  // expected-error @+1 {{'func.call' takes or gives a qudit, a line, a tone, a measurement or a classical handle, and the schedule passes cannot tell what it plays or how long it takes; write the ops it stands for in its place before scheduling}}
+  %out:2 = call @plays(%d1, %t1) : (!pulse.drive_line, !pulse.tone) -> (!pulse.drive_line, !pulse.tone)
+  %d2, %t2 = pulse.drive %out#0, %x, %out#1 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+  return %d2, %t2 : !pulse.drive_line, !pulse.tone
+}
+
+// -----
+
+// So would one inside a loop that only gives a measurement.
+func.func private @reads() -> !pulse.measurement {
+  %none = ub.poison : !pulse.measurement
+  return %none : !pulse.measurement
+}
+
+func.func @call_that_gives_a_measurement() {
+  %lb = arith.constant 0 : index
+  %ub = arith.constant 4 : index
+  %step = arith.constant 1 : index
+  scf.for %i = %lb to %ub step %step {
+    // expected-error @+1 {{'func.call' takes or gives a qudit, a line, a tone, a measurement or a classical handle, and the schedule passes cannot tell what it plays or how long it takes; write the ops it stands for in its place before scheduling}}
+    %m = func.call @reads() : () -> !pulse.measurement
+  }
+  return
+}
+
+// -----
+
+// Nor can a call that takes a qudit be timed: the called function acquires
+// the qudit's line itself and plays on it.
+func.func private @plays_on(%q: !pulse.qudit) {
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %c40 = arith.constant 40 : i64
+  %am = arith.constant 0.1 : f64
+  %z = arith.constant 0.0 : f64
+  %x = pulse.square %c40, %am, %z : i64, f64, f64 -> !pulse.waveform
+  %d1, %t1 = pulse.drive %d0, %x, %t0 : !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+  return
+}
+
+func.func @call_that_takes_a_qudit(%q: !pulse.qudit) {
+  // expected-error @+1 {{'func.call' takes or gives a qudit, a line, a tone, a measurement or a classical handle, and the schedule passes cannot tell what it plays or how long it takes; write the ops it stands for in its place before scheduling}}
+  call @plays_on(%q) : (!pulse.qudit) -> ()
+  return
+}

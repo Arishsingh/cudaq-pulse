@@ -6230,6 +6230,8 @@ static mlir::LogicalResult schedule(mlir::func::FuncOp function,
   if (resources.enabled &&
       (resources.maxDrives <= 0 || resources.maxReadouts <= 0))
     return function.emitError("resource limits must be positive");
+  if (mlir::Operation *untimed = pulse::untimedOp(function))
+    return pulse::emitUntimedOp(untimed);
   if (resources.enabled) {
     auto blocks = outermostBlocks(function.getBody());
     if (!blocks.empty())

@@ -35,6 +35,54 @@ inline bool isLinearPulseType(mlir::Type type) {
          isClassicalType(type);
 }
 
+/// An op under `function` that the schedule passes cannot time, or null.
+/// They time the ops of the pulse and classical dialects and pass a line,
+/// tone, measurement or classical handle through any other op as if it took
+/// no time. That is right for control flow, arithmetic and casts (scf,
+/// arith, ub, builtin) and for a terminator. An op of any other kind that
+/// takes or gives such a value, or a qudit whose lines it could acquire (a
+/// `func.call` of a function that plays pulses, say), would hide what it does
+/// to the line. So would an op of a dialect that is not loaded.
+inline mlir::Operation *untimedOp(mlir::Operation *function) {
+  llvm::SmallVector<mlir::Dialect *, 8> known;
+  mlir::Operation *found = nullptr;
+  function->walk([&](mlir::Operation *op) {
+    mlir::Dialect *dialect = op->getDialect();
+    if (dialect) {
+      if (llvm::is_contained(known, dialect))
+        return mlir::WalkResult::advance();
+      llvm::StringRef name = dialect->getNamespace();
+      if (name == "pulse" || name == "classical" || name == "scf" ||
+          name == "arith" || name == "ub" || name == "builtin") {
+        known.push_back(dialect);
+        return mlir::WalkResult::advance();
+      }
+    }
+    if (op->hasTrait<mlir::OpTrait::IsTerminator>())
+      return mlir::WalkResult::advance();
+    auto held = [](mlir::Type type) {
+      return isLinearPulseType(type) ||
+             mlir::isa<MeasurementType, QuditType>(type);
+    };
+    if (!llvm::any_of(op->getOperandTypes(), held) &&
+        !llvm::any_of(op->getResultTypes(), held))
+      return mlir::WalkResult::advance();
+    found = op;
+    return mlir::WalkResult::interrupt();
+  });
+  return found;
+}
+
+/// The error for an op `untimedOp` found.
+inline mlir::InFlightDiagnostic emitUntimedOp(mlir::Operation *op) {
+  return op->emitError("'")
+         << op->getName().getStringRef()
+         << "' takes or gives a qudit, a line, a tone, a measurement or a "
+            "classical handle, and the schedule passes cannot tell what it "
+            "plays or how long it takes; write the ops it stands for in its "
+            "place before scheduling";
+}
+
 /// Whether `user` reads a line without consuming it, so the version it reads
 /// stays usable: pulse.get_current_time observes where a line's time stands.
 inline bool readsWithoutConsuming(mlir::Operation *user) {
