@@ -385,6 +385,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A kernel with many measurement-conditioned `if`s no longer takes memory
+  and time that grow with the square of their number to trace.** Each `if`
+  kept its own copy of the whole kernel's instructions, so a kernel of n
+  `if`s held n copies of itself: about 300 KB for each `if` of a kernel with
+  2,400 of them, and garbage collection walked the copies again and again.
+  A trace now keeps one copy per function and marks where each `if`'s
+  branches end in it while they are traced. An `if` costs about 12 KB,
+  whatever the length of the kernel, and the program compiled is the same.
 - **After a loop kept as a loop, the compact controller export
   (`export_to_controller(version=2)`) now carries the right phase on a tone
   that is retuned later.** At the end of a rolled loop, the export moved

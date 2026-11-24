@@ -884,6 +884,39 @@ def test_compiling_calls_takes_little_memory_per_call():
     assert per_call < 2048, per_call
 
 
+def _if_chain(n):
+    src = (
+        "def k(a, b):\n    da = get_drive_line(a)\n    db = get_drive_line(b)\n"
+        "    m = readout(get_readout_line(b), square(40, 0.05))\n"
+        + "    if m:\n        shift_phase(da.tone, 0.1)\n    else:\n        wait(db, 8)\n" * n
+        + "    drive(da, square(40, 0.1))\n"
+    )
+    scope = dict(vars(pulse))
+    exec(compile(src, f"<{n} ifs>", "exec"), scope)
+    return pulse.kernel(scope["k"], unroll_threshold=0)
+
+
+@pytest.mark.scaling
+def test_tracing_measured_ifs_takes_little_memory_per_if():
+    # Each if's arms stop where they join: that end was written into a new
+    # copy of the whole function's instructions, kept for every if, so a
+    # function of n ifs held n copies of n ifs' instructions.
+    import tracemalloc
+
+    peaks = {}
+    for n in (300, 2400):
+        kernel = _if_chain(n)
+        pulse.compile(kernel).lower(Q[0], Q[1])
+        tracemalloc.start()
+        pulse.compile(_if_chain(n)).lower(Q[0], Q[1])
+        peaks[n] = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+    # About 12 KB an if (the if's own IR); 300 KB an if at 2,400 ifs when
+    # each kept its copy.
+    per_if = (peaks[2400] - peaks[300]) / 2100
+    assert per_if < 65536, per_if
+
+
 def _measured_line(n):
     @pulse.kernel
     def k(q):

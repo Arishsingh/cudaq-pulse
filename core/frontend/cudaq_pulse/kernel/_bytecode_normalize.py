@@ -60,7 +60,6 @@ if TYPE_CHECKING:
     _OP_INFO: list[_OpInfo | None]
     _JOINS: dict[tuple[int, int], tuple[DecodedCode, int]]
     _POSTDOMS: dict[int, tuple[DecodedCode, list[int]]]
-    _VIEWS: dict[tuple[int, int], tuple[DecodedCode, DecodedCode]]
     _CACHE: dict[int, DecodedCode]
 
 # ── Canonical opcodes ────────────────────────────────────────────────
@@ -962,6 +961,11 @@ def join_point(decoded: DecodedCode, branch: int) -> int:
     hit = _JOINS.get(key)
     if hit is not None and hit[0] is decoded:
         return hit[1]
+    base = getattr(decoded, "base", None)
+    if base is not None:
+        # A Region's: an if inside an arm joins where it does in the
+        # function's own code, and the caches keep no trace's list.
+        return join_point(base, branch)
     # One post-dominator tree per decoded code object answers all its ifs:
     # asking each if alone costs the square of the function's length.
     tree = _POSTDOMS.get(id(decoded))
@@ -1125,26 +1129,90 @@ def _join_point_reference(decoded: DecodedCode, branch: int) -> int:
     return join
 
 
-def region_view(decoded: DecodedCode, join: int) -> DecodedCode:
-    """*decoded* with ``REGION_END`` at *join*, so tracing an arm stops there."""
-    if join >= len(decoded.instrs):
-        return decoded
-    key = (id(decoded), join)
-    hit = _VIEWS.get(key)
-    if hit is not None and hit[0] is decoded:
-        return hit[1]
-    instrs = list(decoded.instrs)
-    instrs[join] = (REGION_END, None)
-    view = DecodedCode(decoded.code, tuple(instrs), decoded.positions, decoded.notes)
-    _VIEWS[key] = (decoded, view)
+class Region(DecodedCode):
+    """A function's decoded code with ``REGION_END`` at the join of one of its
+    ifs and at those of the Regions it is made from (*outer*), *base*'s
+    instructions otherwise, written into a list of them that one trace owns
+    until ``end_region``. While an if inside it is traced, the list also
+    holds that if's end: ``ends()`` says which are its own."""
+
+    __slots__ = ("base", "entry", "join", "old", "outer")
+
+    if TYPE_CHECKING:
+        base: DecodedCode
+        entry: list[Any]
+        join: int
+        old: Instr
+        outer: Region | None
+
+    def ends(self) -> set[int]:
+        """The joins this Region's instructions end at."""
+        ends: set[int] = set()
+        region: Region | None = self
+        while region is not None:
+            ends.add(region.join)
+            region = region.outer
+        return ends
+
+
+def region(decoded: DecodedCode, join: int, owned: dict[int, list[Any]]) -> Region:
+    """*decoded*, the code an if is traced in, with ``REGION_END`` at *join*
+    (below the end of its instructions), so tracing the if's arms stops there.
+
+    The end is written into a list of the function's instructions that one
+    trace owns, *owned*: ``[instructions, list, regions open, next list]``
+    by ``id`` of the function's instructions (for the first list) and of
+    each list. An if inside an arm writes its end into the same list, and
+    ``end_region`` takes each out again, the inner first: an if costs the
+    same whatever the function's length. A function traced again while its
+    list holds an end (a helper called in one of its own arms) takes the
+    next of its lists that holds none, or a new one.
+    """
+    instrs = decoded.instrs
+    entry = owned.get(id(instrs))
+    if entry is None or (entry[2] and entry[1] is not instrs):
+        entry = _free_list(instrs, entry, owned)
+    own = entry[1]
+    base = getattr(decoded, "base", decoded)
+    view = Region(base.code, own, base.positions, base.notes)
+    view.base = base
+    view.entry = entry
+    view.join = join
+    view.outer = decoded if isinstance(decoded, Region) else None
+    view.old = own[join]
+    own[join] = (REGION_END, None)
+    entry[2] += 1
     return view
+
+
+def _free_list(instrs: Any, entry: list[Any] | None, owned: dict[int, list[Any]]) -> list[Any]:
+    """The entry of the first of the lists of a function's *instrs* that
+    holds no end (*entry* is the first list's), made after the others if
+    each holds one."""
+    last = None
+    while entry is not None and entry[2]:
+        last, entry = entry, entry[3]
+    if entry is None:
+        entry = [instrs, list(instrs), 0, None]
+        if last is None:
+            owned[id(instrs)] = entry
+        else:
+            last[3] = entry
+        owned[id(entry[1])] = entry
+    return entry
+
+
+def end_region(view: Any) -> None:
+    """Take out the ``REGION_END`` that ``region`` wrote into *view*, a Region."""
+    entry = view.entry
+    entry[1][view.join] = view.old
+    entry[2] -= 1
 
 
 # Each read and write is one dict operation and a hit is checked by identity,
 # so threads share these without a lock: a race only decodes twice.
 _JOINS = {}
 _POSTDOMS = {}
-_VIEWS = {}
 _CACHE = {}
 _CACHE_LIMIT = 4096
 

@@ -215,7 +215,8 @@ _CONDITIONAL = (bc.JUMP_IF_FALSE, bc.JUMP_IF_TRUE, bc.JUMP_IF_NONE, bc.JUMP_IF_N
 def _check_join_points(d, monkeypatch):
     """join_point of each conditional jump, asked in index order, then in
     reverse order with empty caches, equals _join_point_reference's; so do
-    those of each region view's."""
+    those of the ifs inside each region, and taking a region out leaves the
+    instructions as they were."""
     branches = [i for i, (op, _) in enumerate(d.instrs) if op in _CONDITIONAL]
     joins = {}
     for order in (branches, branches[::-1]):
@@ -224,11 +225,18 @@ def _check_join_points(d, monkeypatch):
         for b in order:
             joins[b] = bc.join_point(d, b)
             assert joins[b] == bc._join_point_reference(d, b)
+    owned: dict = {}
     for b, join in joins.items():
-        view = bc.region_view(d, join)
+        if join >= len(d.instrs):
+            continue
+        view = bc.region(d, join, owned)
+        assert view.instrs[join] == (bc.REGION_END, None)
         for c in branches:
             if b <= c < join:
-                assert bc.join_point(view, c) == bc._join_point_reference(view, c)
+                # An if inside a region joins where it does in the function.
+                assert bc.join_point(view, c) == joins[c] == bc._join_point_reference(view, c)
+        bc.end_region(view)
+        assert tuple(owned[id(d.instrs)][1]) == d.instrs
     return [joins[b] for b in branches]
 
 
