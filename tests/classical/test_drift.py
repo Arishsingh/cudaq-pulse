@@ -10,10 +10,12 @@ from __future__ import annotations
 import dataclasses
 import math
 import pickle
+import re
 
 import cudaq_pulse as pulse
 import numpy as np
 import pytest
+from cudaq_pulse._errors import InvalidValueError
 from cudaq_pulse.classical import calibration as cal
 from cudaq_pulse.quantum_systems import PhysicalQudit
 from cudaq_pulse.quantum_systems.drift import (
@@ -82,6 +84,21 @@ def ramsey(q, phase: float):
 
 
 # ── The processes ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("make", "name"),
+    [
+        (lambda t: OrnsteinUhlenbeck(sigma=1.0, correlation_time=t), "correlation_time"),
+        (lambda t: TelegraphT1(low_fraction=0.5, dwell_time=t), "dwell_time"),
+    ],
+    ids=["OrnsteinUhlenbeck", "TelegraphT1"],
+)
+def test_a_zero_drift_time_error_names_the_value(make, name):
+    zero = 0 * pulse.ns
+    message = re.escape(f"{name} must be positive, got {zero!r}") + "$"
+    with pytest.raises(InvalidValueError, match=message):
+        make(zero)
 
 
 def test_telegraph_t1_switches_at_its_rate_and_spends_half_its_time_low():

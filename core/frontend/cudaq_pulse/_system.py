@@ -881,10 +881,13 @@ class Controller:
                 f"Controller.cycles_per_timestep must be an int of at least 1, got {steps!r}"
             )
         if self.instruction_cycles < 1:
-            raise InvalidValueError("Controller.instruction_cycles must be at least 1")
+            raise InvalidValueError(
+                f"Controller.instruction_cycles must be at least 1, got {self.instruction_cycles!r}"
+            )
         for name in ("min_idle_cycles", "detector_recovery_cycles"):
-            if getattr(self, name) < 0:
-                raise InvalidValueError(f"Controller.{name} cannot be negative")
+            value = getattr(self, name)
+            if value < 0:
+                raise InvalidValueError(f"Controller.{name} cannot be negative, got {value!r}")
         object.__setattr__(
             self,
             "feedback_latency_cycles",
