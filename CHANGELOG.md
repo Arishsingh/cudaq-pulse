@@ -361,6 +361,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   once, so a long chain of `m and n` conditions, which gives a line
   thousands of uses, no longer spends most of its compile in `verify`.
   Programs and errors are as before.
+- **`rcp` and `alap_rcp` take a lane in logarithmic time.** Each pulse took
+  the earliest free lane (the latest, backward) by comparing every lane, and
+  each branch copied every lane for each arm. On one controller, or on
+  several whose starts are known exactly, a pulse now takes it from a heap
+  of the lanes, in time logarithmic in their number; a branch puts back and
+  merges only the lanes its arms changed; and on several controllers, a
+  branch on readouts notes when the outcomes of each controller that read
+  them are ready, not when they reach every controller of the system.
+  Programs and errors are as before.
 - **Examples show calibration values as kernel arguments.** A style change
   to the examples: where a kernel of the README, the user guide or
   `examples/` read its pulse durations, sigmas and amplitudes from a
@@ -384,6 +393,41 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   A trace now keeps one copy per function and marks where each `if`'s
   branches end in it while they are traced. An `if` costs about 12 KB,
   whatever the length of the kernel, and the program compiled is the same.
+- **A function declaration no longer crashes the schedule passes.** A module
+  with a function that has no body, `func.func private @f(i64) -> i64`,
+  crashed `pulse-schedule-asap`, `-alap` and `-rcp`. A declaration is now
+  left as it is. Seen with hand-written IR.
+- **A call the schedule passes cannot time is refused.** Hand-written IR
+  with a `func.call` (or an op of another dialect) that takes or gives a
+  qudit, a line, a tone, a measurement or a classical handle was scheduled
+  as if the call took no time: the pulse after it started while the called
+  function's pulses still played, and `pulse-verify` accepted it. The
+  schedule passes and `pulse-verify` now stop with an error that names the
+  op and says to write the ops it stands for in its place. The schedule
+  passes also stop at an op that holds a region they do not go into
+  (they go into `scf.for`, `scf.if` and schedule blocks) and at a function
+  of several blocks, whose ops they left untimed. No kernel written in Python makes any of these, so no
+  kernel is affected.
+- **A controller check no longer walks every round of a long loop.**
+  `controller.check(program, controller)` for a controller with a shared
+  line walked every iteration of a loop kept as a loop, so its time and
+  memory grew with the iterations. It now counts such a loop from one
+  round, as compiling for the controller does: a loop of 2.7e9 rounds is
+  checked with the work of one of a thousand. Where the rounds cannot be
+  counted from one (their pulses interleave with others on the line, or
+  their lines repeat by periods of their own on a shared line), `check`
+  and `compile` play them round by round, as before.
+- **A check that sees it would play more than 1,048,576 rounds of loops
+  one by one stops before it starts.** `compile` and `controller.check`
+  went on to walk every round of such loops, until memory ran out for long
+  ones. Where the check's summary of the loops shows how many rounds the
+  walk would play, they now raise an `UnsupportedError` that says so. A
+  program that walked more rounds than that and was checked, given the
+  memory, is refused: give the loops fewer iterations, or a `sync` of
+  their lines in each round so that the rounds can be counted from one. A
+  check that takes no summary of the loops (for example for a controller
+  that blocks on calls, lists the updates on its buses, or counts cycles
+  of its own) walks every round as before.
 - **A loop kept as a loop, with measurement-conditioned branches in its
   body, no longer takes time that grows with the cube of its lines to
   schedule.** For such a loop on several controllers the scheduler paired

@@ -80,6 +80,7 @@
 #include "cudaq-pulse/Analysis/LineGrid.h"
 #include "cudaq-pulse/Analysis/LineTrace.h"
 #include "cudaq-pulse/Analysis/Timing.h"
+#include "cudaq-pulse/Analysis/Untimed.h"
 
 #include <map>
 
@@ -1213,12 +1214,10 @@ public:
     ends.assign(count, 0);
     iterationEnds.assign(count, -1);
     ceilings.assign(count, kNever);
-    if (this->several())
-      armStarts.assign(static_cast<size_t>(this->controllers.count()), kNever);
   }
 
   mlir::LogicalResult forward() {
-    resetLanes(0);
+    resetLanes(0, /*backward=*/false);
     if (mlir::failed(forwardBlock(region->front())))
       return mlir::failure();
     return mlir::success();
@@ -1237,7 +1236,7 @@ public:
     samples.clear();
     extrapolations.clear();
     covers.clear();
-    resetLanes(makespan);
+    resetLanes(makespan, /*backward=*/true);
     return backwardBlock(region->front());
   }
 
@@ -1352,9 +1351,88 @@ private:
 
   // ── Shared state ──────────────────────────────────────────────────────
 
-  void resetLanes(int64_t value) {
+  /// The lanes of one kind of a timeline by when they are free, earliest
+  /// (forward; latest, backward) first, ties to the lower index: the lane
+  /// a scan of every lane would take, in O(log lanes) per op.
+  struct LaneHeap {
+    llvm::SmallVector<uint32_t, 4> heap, at;
+    bool backward = false;
+
+    void reset(size_t n, bool isBackward) {
+      backward = isBackward;
+      heap.resize(n);
+      at.resize(n);
+      for (size_t i = 0; i < n; ++i)
+        heap[i] = at[i] = static_cast<uint32_t>(i);
+    }
+
+    size_t best() const { return heap[0]; }
+
+    bool before(uint32_t a, uint32_t b, llvm::ArrayRef<int64_t> lanes) const {
+      int64_t x = lanes[a], y = lanes[b];
+      if (x != y)
+        return backward ? x > y : x < y;
+      return a < b;
+    }
+
+    void swap(size_t i, size_t j) {
+      std::swap(heap[i], heap[j]);
+      at[heap[i]] = static_cast<uint32_t>(i);
+      at[heap[j]] = static_cast<uint32_t>(j);
+    }
+
+    void siftUp(size_t i, llvm::ArrayRef<int64_t> lanes) {
+      while (i > 0) {
+        size_t parent = (i - 1) / 2;
+        if (!before(heap[i], heap[parent], lanes))
+          return;
+        swap(i, parent);
+        i = parent;
+      }
+    }
+
+    void siftDown(size_t i, llvm::ArrayRef<int64_t> lanes) {
+      for (size_t n = heap.size();;) {
+        size_t child = 2 * i + 1;
+        if (child >= n)
+          return;
+        if (child + 1 < n && before(heap[child + 1], heap[child], lanes))
+          ++child;
+        if (!before(heap[child], heap[i], lanes))
+          return;
+        swap(i, child);
+        i = child;
+      }
+    }
+
+    /// Lane `lane` changed its time.
+    void update(size_t lane, llvm::ArrayRef<int64_t> lanes) {
+      siftUp(at[lane], lanes);
+      siftDown(at[lane], lanes);
+    }
+
+    /// Every lane may have changed.
+    void rebuild(llvm::ArrayRef<int64_t> lanes) {
+      for (size_t i = heap.size() / 2; i-- > 0;)
+        siftDown(i, lanes);
+    }
+  };
+
+  /// A lane's time and owner before an arm of a branch first changed it,
+  /// so the other arm starts from the lanes before the branch, and where
+  /// the lane's note of an enclosing arm is (`earlier`; -1: none).
+  struct LaneUndo {
+    bool readout;
+    uint32_t timeline, lane;
+    int64_t time, owner, earlier;
+  };
+
+  void resetLanes(int64_t value, bool backward) {
     linkLanes.clear();
     laneReset = value;
+    laneUndo.clear();
+    armMarks.clear();
+    byHeap = false;
     if (!resources.enabled)
       return;
     // Timelines that wait independently each use lanes of their own: as
@@ -1379,6 +1457,187 @@ private:
       for (Lanes *owners : {&driveOwners, &readoutOwners})
         for (auto &list : *owners)
           std::fill(list.begin(), list.end(), kNoOwner);
+    }
+    // Where no two controllers' starts may differ, every lane gap is 0 and
+    // an op takes the earliest (latest, backward) lane, lowest first.
+    byHeap = !several() || !startsMayDiffer();
+    if (byHeap) {
+      driveHeaps.assign(count, {});
+      readoutHeaps.assign(count, {});
+      for (size_t t = 0; t < count; ++t) {
+        driveHeaps[t].reset(driveLanes[t].size(), backward);
+        readoutHeaps[t].reset(readoutLanes[t].size(), backward);
+      }
+    }
+    driveNoted.assign(count, {});
+    readoutNoted.assign(count, {});
+    for (size_t t = 0; t < count; ++t) {
+      driveNoted[t].assign(driveLanes[t].size(), -1);
+      readoutNoted[t].assign(readoutLanes[t].size(), -1);
+    }
+  }
+
+  /// Whether the starts of two controllers may differ (their start
+  /// uncertainties are not all 0), so that a lane's next op of another
+  /// controller may have to wait the spread (laneGap).
+  bool startsMayDiffer() const {
+    for (int64_t c = 0, n = controllers.count(); c < n; ++c)
+      if (controllers.uncertainty(c) != 0.0)
+        return true;
+    return false;
+  }
+
+  /// Give lane `lane` of a kind on timeline `t` the time `time` and owner
+  /// `owner`, noting what it was in an arm of a branch.
+  void setLane(bool readout, size_t t, size_t lane, int64_t time,
+               int64_t owner) {
+    auto &lanes = (readout ? readoutLanes : driveLanes)[t];
+    noteLane(readout, t, lane);
+    lanes[lane] = time;
+    if (several())
+      (readout ? readoutOwners : driveOwners)[t][lane] = owner;
+    if (byHeap)
+      (readout ? readoutHeaps : driveHeaps)[t].update(lane, lanes);
+  }
+
+  /// In an arm of a branch, note lane `lane` of a kind on timeline `t` as
+  /// it is, unless the arm noted it already: an arm notes each lane once,
+  /// so the notes of the arms being scheduled are at most as many as the
+  /// lanes times how deep the arms are.
+  void noteLane(bool readout, size_t t, size_t lane) {
+    if (armMarks.empty())
+      return;
+    int64_t &noted = (readout ? readoutNoted : driveNoted)[t][lane];
+    if (noted >= static_cast<int64_t>(armMarks.back()))
+      return;
+    laneUndo.push_back(
+        {readout, static_cast<uint32_t>(t), static_cast<uint32_t>(lane),
+         (readout ? readoutLanes : driveLanes)[t][lane],
+         several() ? (readout ? readoutOwners : driveOwners)[t][lane]
+                   : kNoOwner,
+         noted});
+    noted = static_cast<int64_t>(laneUndo.size()) - 1;
+  }
+
+  /// Before code that moves many lanes at once (a loop skipping
+  /// iterations): in an arm of a branch, note every lane as it was.
+  void noteEveryLane() {
+    if (armMarks.empty())
+      return;
+    for (bool readout : {false, true}) {
+      Lanes &all = readout ? readoutLanes : driveLanes;
+      for (size_t t = 0; t < all.size(); ++t)
+        for (size_t lane = 0; lane < all[t].size(); ++lane)
+          noteLane(readout, t, lane);
+    }
+  }
+
+  /// An arm of a branch begins: its notes start at the end of the list.
+  size_t beginArm() {
+    armMarks.push_back(laneUndo.size());
+    return laneUndo.size();
+  }
+
+  /// A branch ends (after the merge of its arms, or after its then arm
+  /// without an else): its notes become the enclosing arm's, a lane that
+  /// arm noted already keeping that note; outside every branch there are
+  /// none.
+  void endArm() {
+    size_t mark = armMarks.pop_back_val();
+    if (armMarks.empty()) {
+      for (const LaneUndo &u : laneUndo)
+        (u.readout ? readoutNoted : driveNoted)[u.timeline][u.lane] = -1;
+      laneUndo.clear();
+      return;
+    }
+    auto outer = static_cast<int64_t>(armMarks.back());
+    size_t kept = mark;
+    for (size_t i = mark; i < laneUndo.size(); ++i) {
+      LaneUndo u = laneUndo[i];
+      int64_t &noted =
+          (u.readout ? readoutNoted : driveNoted)[u.timeline][u.lane];
+      if (u.earlier >= outer) {
+        noted = u.earlier;
+        continue;
+      }
+      noted = static_cast<int64_t>(kept);
+      laneUndo[kept++] = u;
+    }
+    laneUndo.resize(kept);
+  }
+
+  /// After code that moved many lanes at once.
+  void reorderLanes() {
+    if (!byHeap)
+      return;
+    for (size_t t = 0; t < driveLanes.size(); ++t) {
+      driveHeaps[t].rebuild(driveLanes[t]);
+      readoutHeaps[t].rebuild(readoutLanes[t]);
+    }
+  }
+
+  /// A lane's time and owner as the then arm of a branch left it.
+  struct ArmLane {
+    int64_t then, thenOwner;
+  };
+  using ArmLanes =
+      llvm::SmallDenseMap<std::tuple<uint8_t, uint32_t, uint32_t>, ArmLane, 4>;
+
+  /// After the then arm of a branch: note the lanes it changed as it left
+  /// them, and put them back as they were before it (from `mark` on the
+  /// undo list).
+  void undoArm(size_t mark, ArmLanes &changed) {
+    while (laneUndo.size() > mark) {
+      LaneUndo u = laneUndo.pop_back_val();
+      auto &lanes = (u.readout ? readoutLanes : driveLanes)[u.timeline];
+      int64_t owner = several() ? (u.readout ? readoutOwners
+                                             : driveOwners)[u.timeline][u.lane]
+                                : kNoOwner;
+      auto [it, inserted] = changed.try_emplace(
+          std::make_tuple(uint8_t(u.readout), u.timeline, u.lane));
+      if (inserted)
+        it->second = {lanes[u.lane], owner};
+      lanes[u.lane] = u.time;
+      (u.readout ? readoutNoted : driveNoted)[u.timeline][u.lane] = u.earlier;
+      if (several())
+        (u.readout ? readoutOwners : driveOwners)[u.timeline][u.lane] = u.owner;
+      if (byHeap)
+        (u.readout ? readoutHeaps : driveHeaps)[u.timeline].update(u.lane,
+                                                                   lanes);
+    }
+  }
+
+  /// After the else arm: each lane either arm changed (the then arm's in
+  /// `changed`, the else arm's on the undo list from `mark`) as busy as the
+  /// busier arm left it (`later`; the less busy, backward), its owner
+  /// either arm's.
+  void mergeArms(size_t mark, ArmLanes &changed, bool later) {
+    for (size_t i = mark; i < laneUndo.size(); ++i) {
+      const LaneUndo &u = laneUndo[i];
+      auto [it, inserted] = changed.try_emplace(
+          std::make_tuple(uint8_t(u.readout), u.timeline, u.lane));
+      // Only the else arm changed it: the then arm left it as it was.
+      if (inserted)
+        it->second = {u.time, u.owner};
+    }
+    for (auto &[key, arm] : changed) {
+      auto [readout, t, lane] = key;
+      int64_t now = (readout ? readoutLanes : driveLanes)[t][lane];
+      int64_t merged =
+          later ? std::max(now, arm.then) : std::min(now, arm.then);
+      int64_t owner = kNoOwner;
+      bool ownerChanged = false;
+      if (several()) {
+        int64_t mine = (readout ? readoutOwners : driveOwners)[t][lane];
+        owner = mine;
+        if (mine != arm.thenOwner)
+          owner = mine == kNoOwner            ? arm.thenOwner
+                  : arm.thenOwner == kNoOwner ? mine
+                                              : kAnyOwner;
+        ownerChanged = owner != mine;
+      }
+      if (merged != now || ownerChanged)
+        setLane(readout, t, lane, merged, owner);
     }
   }
 
@@ -1472,8 +1731,80 @@ private:
   int64_t armFloorOf(int64_t controller) const {
     if (armFloors.empty())
       return 0;
-    return controller < 0 ? *llvm::max_element(armFloors)
-                          : armFloors[controller];
+    int64_t latest = 0;
+    for (const auto &readers : armFloors)
+      for (auto [reader, time] : readers)
+        latest = std::max(latest, time + controllers.extra(reader, controller));
+    return latest;
+  }
+
+  /// The earliest start of an op of each controller in an arm, as
+  /// (controller, start) pairs (`armStarts`).
+  using ArmStarts = llvm::SmallVector<std::pair<int64_t, int64_t>, 4>;
+
+  /// The op or sync of `owner` (-1: of no one controller) in the arm being
+  /// scheduled backward starts at `start`. A start of kNever says nothing,
+  /// as for a controller with no op in the arm.
+  void noteArmStart(int64_t owner, int64_t start) {
+    if (owner < 0) {
+      armStart = std::min(armStart, start);
+      return;
+    }
+    if (start == kNever)
+      return;
+    if (armIndexed) {
+      if (static_cast<size_t>(owner) >= armSlots.size())
+        armSlots.resize(owner + 1, {0, 0});
+      auto &[stamp, at] = armSlots[owner];
+      if (stamp == armStamp) {
+        armStarts[at].second = std::min(armStarts[at].second, start);
+        return;
+      }
+      stamp = armStamp;
+      at = static_cast<uint32_t>(armStarts.size());
+      armStarts.push_back({owner, start});
+      return;
+    }
+    for (auto &[c, earliest] : armStarts)
+      if (c == owner) {
+        earliest = std::min(earliest, start);
+        return;
+      }
+    armStarts.push_back({owner, start});
+    if (armStarts.size() > kArmIndexedAfter)
+      indexArmStarts();
+  }
+
+  /// Index `armStarts` by controller (it is long).
+  void indexArmStarts() {
+    ++armStamp;
+    armIndexed = true;
+    for (auto [i, entry] : llvm::enumerate(armStarts)) {
+      if (static_cast<size_t>(entry.first) >= armSlots.size())
+        armSlots.resize(entry.first + 1, {0, 0});
+      armSlots[entry.first] = {armStamp, static_cast<uint32_t>(i)};
+    }
+  }
+
+  /// The arm's starts by controller, taken out: none are left.
+  ArmStarts takeArmStarts() {
+    ArmStarts taken;
+    if (!armStarts.empty()) {
+      taken = std::move(armStarts);
+      armStarts.clear();
+    }
+    armIndexed = false;
+    return taken;
+  }
+
+  /// Make `starts` the arm's starts by controller (there are none).
+  void putArmStarts(ArmStarts &starts) {
+    if (starts.empty())
+      return;
+    armStarts = std::move(starts);
+    starts.clear();
+    if (armStarts.size() > kArmIndexedAfter)
+      indexArmStarts();
   }
 
   /// How long after a lane's op of `owner` an op of `controller` may start
@@ -1887,6 +2218,7 @@ private:
   void moveLanesBy(const LaneState &before, int64_t driveDistance,
                    int64_t readoutDistance) {
     notePicksSkipped();
+    noteEveryLane();
     for (size_t t = 0; t < driveLanes.size(); ++t) {
       if (driveUses[t] != before.driveUses[t])
         for (int64_t &lane : driveLanes[t])
@@ -1895,6 +2227,7 @@ private:
         for (int64_t &lane : readoutLanes[t])
           lane += readoutDistance;
     }
+    reorderLanes();
   }
 
   // ── Lanes past the iterations they are compared over ──────────────────
@@ -2062,6 +2395,14 @@ private:
       s.covers.push_back({loop, outer, k, sign > 0 ? k : -1,
                           sign > 0 ? count : k, 0, periods()});
       s.notePicksSkipped();
+      s.noteEveryLane();
+      moveSkipped(copies);
+      s.reorderLanes();
+    }
+
+    /// The lanes part of move().
+    void moveSkipped(int64_t copies) {
+      const Step &now = step(0);
       if (cycle > 0) {
         // The iteration of the last cycle that the last one skipped
         // repeats.
@@ -2099,6 +2440,7 @@ private:
       s.covers.push_back(
           {loop, outer, k, sign > 0 ? k : to, sign > 0 ? to : k, 0, periods()});
       s.notePicksSkipped();
+      s.noteEveryLane();
       const LaneState &was = step(1).lanes;
       const Step &now = step(0);
       auto moveKind = [&](llvm::SmallVectorImpl<int64_t> &lanes,
@@ -2114,6 +2456,7 @@ private:
                now.lanes.driveUses[0], moves.drives);
       moveKind(s.readoutLanes[0], readoutsApart, was.readoutUses[0],
                now.lanes.readoutUses[0], moves.readouts);
+      s.reorderLanes();
       // The samples and covers of the iteration last skipped.
       size_t depth = outer.size();
       for (mlir::Operation *op : ops) {
@@ -3005,7 +3348,9 @@ private:
   struct ConditionReady {
     bool any = false;
     int64_t ready = 0;
-    llvm::SmallVector<int64_t, 4> reached;
+    /// Each controller that read one of the measurements, and when the
+    /// latest of them is ready.
+    llvm::SmallVector<std::pair<int64_t, int64_t>, 2> readers;
   };
 
   const ConditionReady &conditionReadyOf(mlir::Value condition) {
@@ -3018,12 +3363,15 @@ private:
       if (!at.any) {
         at.any = true;
         at.ready = time;
-        at.reached.assign(static_cast<size_t>(controllers.count()), 0);
       }
       at.ready = std::max(at.ready, time);
-      for (auto [c, reached] : llvm::enumerate(at.reached))
-        reached = std::max(
-            reached, time + controllers.extra(reader, static_cast<int64_t>(c)));
+      auto known = at.readers.begin();
+      while (known != at.readers.end() && known->first != reader)
+        ++known;
+      if (known == at.readers.end())
+        at.readers.push_back({reader, time});
+      else
+        known->second = std::max(known->second, time);
     }
     return at;
   }
@@ -3474,12 +3822,15 @@ private:
         bool isDrive = mlir::isa<pulse::DriveOp>(op);
         auto &lanes = isDrive ? driveLanes[t] : readoutLanes[t];
         ++(isDrive ? driveUses : readoutUses)[t];
-        if (several()) {
+        size_t best = 0;
+        int64_t free = kNever;
+        if (byHeap) {
+          best = (isDrive ? driveHeaps : readoutHeaps)[t].best();
+          free = lanes[best];
+        } else {
           // Another controller's op ends a lane only as surely as the two
           // starts are known.
           auto &owners = isDrive ? driveOwners[t] : readoutOwners[t];
-          size_t best = 0;
-          int64_t free = kNever;
           for (size_t i = 0; i < lanes.size(); ++i) {
             int64_t at = lanes[i] + laneGap(owners[i], owner);
             if (at < free) {
@@ -3487,20 +3838,13 @@ private:
               best = i;
             }
           }
-          notePick(isDrive, free, free > start);
-          start = std::max(start, free);
-          if (step > 1)
-            start = pulse::LineGrid::roundUp(start, step);
-          lanes[best] = start + *duration + resources.switchPenalty;
-          owners[best] = owner;
-        } else {
-          auto lane = std::min_element(lanes.begin(), lanes.end());
-          notePick(isDrive, *lane, *lane > start);
-          start = std::max(start, *lane);
-          if (step > 1)
-            start = pulse::LineGrid::roundUp(start, step);
-          *lane = start + *duration + resources.switchPenalty;
         }
+        notePick(isDrive, free, free > start);
+        start = std::max(start, free);
+        if (step > 1)
+          start = pulse::LineGrid::roundUp(start, step);
+        setLane(!isDrive, t, best, start + *duration + resources.switchPenalty,
+                owner);
       }
       if (step > 1)
         start = pulse::LineGrid::roundUp(start, step);
@@ -3534,7 +3878,16 @@ private:
     if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op))
       return forwardIf(branch);
     // Any other op releases its timed results when its timed operands are;
-    // with calls, every result is released when all its operands are.
+    // with calls, every result is released when all its operands are. That
+    // is wrong for an op that could itself play (Untimed.h).
+    if (pulse::untimed(op))
+      return pulse::emitUntimed(op);
+    // Nor does the pass go into the regions of an op that comes here.
+    if (op->getNumRegions())
+      return op->emitError("'")
+             << op->getName().getStringRef()
+             << "' holds ops the schedule passes do not go into; write them "
+                "in its place before scheduling";
     if (classical) {
       int64_t time = operandsReady(op);
       for (mlir::Value result : op->getResults())
@@ -3845,21 +4198,6 @@ private:
     return mlir::success();
   }
 
-  /// After a branch, each lane is as busy as the busier arm left it.
-  static void mergeLanes(Lanes &lanes, const Lanes &other, bool later) {
-    for (auto [mine, theirs] : llvm::zip(lanes, other))
-      for (auto [a, b] : llvm::zip(mine, theirs))
-        a = later ? std::max(a, b) : std::min(a, b);
-  }
-
-  /// After a branch, a lane's last op may be either arm's.
-  static void mergeOwners(Lanes &owners, const Lanes &other) {
-    for (auto [mine, theirs] : llvm::zip(owners, other))
-      for (auto [a, b] : llvm::zip(mine, theirs))
-        if (a != b)
-          a = a == kNoOwner ? b : b == kNoOwner ? a : kAnyOwner;
-  }
-
   /// Whether what `branch` yields is there only once its condition is: when
   /// the condition reads a measurement, or comes from a classical call, an
   /// arm may set a tone or a parameter without a timed op, and the op that
@@ -3872,7 +4210,7 @@ private:
 
   mlir::LogicalResult forwardIf(mlir::scf::IfOp branch) {
     int64_t savedFloor = floor;
-    auto savedArmFloors = armFloors;
+    size_t savedArmFloors = armFloors.size();
     // On several controllers each outcome reaches each controller apart,
     // so the measurements an answer comes from bound the arm too, and each
     // controller's ops wait until the outcomes reach it.
@@ -3880,10 +4218,7 @@ private:
       const ConditionReady &at = conditionReadyOf(branch.getCondition());
       if (at.any) {
         floor = std::max(floor, at.ready);
-        if (armFloors.empty())
-          armFloors.assign(static_cast<size_t>(controllers.count()), 0);
-        for (auto [arm, reached] : llvm::zip(armFloors, at.reached))
-          arm = std::max(arm, reached);
+        armFloors.push_back(at.readers);
       }
     } else {
       for (mlir::Value measurement :
@@ -3893,33 +4228,24 @@ private:
     if (classical)
       floor = std::max(floor, ready(branch.getCondition()));
 
-    auto savedDrive = driveLanes, savedReadout = readoutLanes;
-    auto savedDriveOwners = driveOwners, savedReadoutOwners = readoutOwners;
     auto savedLinks = linkReady;
+    size_t mark = beginArm();
     if (mlir::failed(forwardBlock(*branch.thenBlock())))
       return mlir::failure();
     llvm::SmallVector<int64_t> results;
     for (mlir::Value value : branch.thenYield().getOperands())
       results.push_back(ready(value));
     if (!branch.getElseRegion().empty()) {
-      auto thenDrive = driveLanes, thenReadout = readoutLanes;
-      auto thenDriveOwners = std::move(driveOwners);
-      auto thenReadoutOwners = std::move(readoutOwners);
+      ArmLanes thenLanes;
+      undoArm(mark, thenLanes);
       auto thenLinks = std::move(linkReady);
-      driveLanes = savedDrive;
-      readoutLanes = savedReadout;
-      driveOwners = std::move(savedDriveOwners);
-      readoutOwners = std::move(savedReadoutOwners);
       linkReady = std::move(savedLinks);
       if (mlir::failed(forwardBlock(*branch.elseBlock())))
         return mlir::failure();
       for (auto [time, value] :
            llvm::zip(results, branch.elseYield().getOperands()))
         time = std::max(time, ready(value));
-      mergeLanes(driveLanes, thenDrive, /*later=*/true);
-      mergeLanes(readoutLanes, thenReadout, /*later=*/true);
-      mergeOwners(driveOwners, thenDriveOwners);
-      mergeOwners(readoutOwners, thenReadoutOwners);
+      mergeArms(mark, thenLanes, /*later=*/true);
       for (auto &[key, time] : thenLinks) {
         auto [it, inserted] = linkReady.try_emplace(key, time);
         if (!inserted)
@@ -3932,7 +4258,8 @@ private:
     for (auto [result, time] : llvm::zip(branch.getResults(), results))
       readyAt[result] = time;
     floor = savedFloor;
-    armFloors = std::move(savedArmFloors);
+    armFloors.resize(savedArmFloors);
+    endArm();
     return mlir::success();
   }
 
@@ -4186,10 +4513,13 @@ private:
       if (resources.enabled && !mlir::isa<pulse::WaitOp>(op)) {
         auto &lanes = isReadout ? readoutLanes[t] : driveLanes[t];
         ++(isReadout ? readoutUses : driveUses)[t];
-        if (several()) {
+        size_t best = 0;
+        int64_t free = -kNever;
+        if (byHeap) {
+          best = (isReadout ? readoutHeaps : driveHeaps)[t].best();
+          free = lanes[best];
+        } else {
           auto &owners = isReadout ? readoutOwners[t] : driveOwners[t];
-          size_t best = 0;
-          int64_t free = -kNever;
           for (size_t i = 0; i < lanes.size(); ++i) {
             int64_t at = lanes[i] - laneGap(owners[i], owner);
             if (at > free) {
@@ -4197,29 +4527,19 @@ private:
               best = i;
             }
           }
-          notePick(!isReadout, free, free < end);
-          end = std::min(end, free);
-          if (step > 1)
-            end = pulse::LineGrid::roundDown(end - duration, step) + duration;
-          lanes[best] = end - duration - resources.switchPenalty;
-          owners[best] = owner;
-        } else {
-          auto lane = std::max_element(lanes.begin(), lanes.end());
-          notePick(!isReadout, *lane, *lane < end);
-          end = std::min(end, *lane);
-          if (step > 1)
-            end = pulse::LineGrid::roundDown(end - duration, step) + duration;
-          *lane = end - duration - resources.switchPenalty;
         }
+        notePick(!isReadout, free, free < end);
+        end = std::min(end, free);
+        if (step > 1)
+          end = pulse::LineGrid::roundDown(end - duration, step) + duration;
+        setLane(isReadout, t, best, end - duration - resources.switchPenalty,
+                owner);
       }
       int64_t start = end - duration;
       if (step > 1)
         start = pulse::LineGrid::roundDown(start, step);
       record(op, start);
-      if (owner >= 0)
-        armStarts[owner] = std::min(armStarts[owner], start);
-      else
-        armStart = std::min(armStart, start);
+      noteArmStart(owner, start);
       bound(op->getOperand(0), start - holdOf(op));
       if (mlir::Value tone = toneOperand(op))
         bound(tone, start);
@@ -4248,13 +4568,8 @@ private:
       if (!several() || sync.getLines().empty())
         armStart = std::min(armStart, time);
       else
-        for (mlir::Value line : sync.getLines()) {
-          int64_t owner = controllerOfLine(line);
-          if (owner >= 0)
-            armStarts[owner] = std::min(armStarts[owner], time);
-          else
-            armStart = std::min(armStart, time);
-        }
+        for (mlir::Value line : sync.getLines())
+          noteArmStart(controllerOfLine(line), time);
       return mlir::success();
     }
     if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op))
@@ -4393,18 +4708,18 @@ private:
       bool tracked = groups || unshifted;
       // The earliest starts of this iteration, in the arm the loop is in.
       int64_t armBefore = std::exchange(armStart, kNever);
-      llvm::SmallVector<int64_t, 4> armStartsBefore = armStarts;
-      std::fill(armStarts.begin(), armStarts.end(), kNever);
+      ArmStarts armStartsBefore = takeArmStarts();
       mlir::LogicalResult simulated = backwardBlock(*loop.getBody());
       if (tracked)
         tracks.pop_back();
       if (mlir::failed(simulated))
         return mlir::failure();
       int64_t iterationArmStart = armStart;
-      llvm::SmallVector<int64_t, 4> iterationArmStarts = armStarts;
+      ArmStarts iterationArmStarts = takeArmStarts();
+      putArmStarts(armStartsBefore);
       armStart = std::min(armBefore, armStart);
-      for (auto [start, saved] : llvm::zip(armStarts, armStartsBefore))
-        start = std::min(start, saved);
+      for (auto [c, start] : iterationArmStarts)
+        noteArmStart(c, start);
       llvm::SmallVector<int64_t> next;
       for (mlir::Value arg : args)
         next.push_back(late(arg));
@@ -4557,9 +4872,12 @@ private:
         int64_t distance = (readsOutside ? k - 1 : k) * shift;
         // The first iteration skipped starts the arm earliest.
         lowerArmStart(armStart, iterationArmStart, distance);
-        for (auto [start, inIteration] :
-             llvm::zip(armStarts, iterationArmStarts))
+        for (auto [c, inIteration] : iterationArmStarts) {
+          int64_t start = kNever;
           lowerArmStart(start, inIteration, distance);
+          if (start != kNever)
+            noteArmStart(c, start);
+        }
         extrapolate(carried, previous, kinds, distance);
         moveSlots(links, true,
                   [&](llvm::ArrayRef<mlir::Operation *>) { return distance; });
@@ -4641,35 +4959,25 @@ private:
   mlir::LogicalResult backwardIf(mlir::scf::IfOp branch) {
     int64_t savedArmStart = armStart;
     armStart = kNever;
-    auto savedArmStarts = armStarts;
-    std::fill(armStarts.begin(), armStarts.end(), kNever);
-    auto savedDrive = driveLanes, savedReadout = readoutLanes;
-    auto savedDriveOwners = driveOwners, savedReadoutOwners = readoutOwners;
+    ArmStarts savedArmStarts = takeArmStarts();
     auto savedLinks = linkLate;
+    size_t mark = beginArm();
     for (auto [value, result] :
          llvm::zip(branch.thenYield().getOperands(), branch.getResults()))
       bound(value, late(result));
     if (mlir::failed(backwardBlock(*branch.thenBlock())))
       return mlir::failure();
     if (!branch.getElseRegion().empty()) {
-      auto thenDrive = driveLanes, thenReadout = readoutLanes;
-      auto thenDriveOwners = std::move(driveOwners);
-      auto thenReadoutOwners = std::move(readoutOwners);
+      ArmLanes thenLanes;
+      undoArm(mark, thenLanes);
       auto thenLinks = std::move(linkLate);
-      driveLanes = savedDrive;
-      readoutLanes = savedReadout;
-      driveOwners = std::move(savedDriveOwners);
-      readoutOwners = std::move(savedReadoutOwners);
       linkLate = std::move(savedLinks);
       for (auto [value, result] :
            llvm::zip(branch.elseYield().getOperands(), branch.getResults()))
         bound(value, late(result));
       if (mlir::failed(backwardBlock(*branch.elseBlock())))
         return mlir::failure();
-      mergeLanes(driveLanes, thenDrive, /*later=*/false);
-      mergeLanes(readoutLanes, thenReadout, /*later=*/false);
-      mergeOwners(driveOwners, thenDriveOwners);
-      mergeOwners(readoutOwners, thenReadoutOwners);
+      mergeArms(mark, thenLanes, /*later=*/false);
       for (auto &[key, time] : thenLinks) {
         auto [it, inserted] = linkLate.try_emplace(key, time);
         if (!inserted)
@@ -4679,7 +4987,7 @@ private:
     if (several()) {
       // Each outcome reaches every controller of an arm before its ops.
       int64_t earliest = armStart;
-      for (int64_t start : armStarts)
+      for (auto [c, start] : armStarts)
         earliest = std::min(earliest, start);
       if (earliest != kNever) {
         AnswerGroup &group = answerGroup(branch.getCondition());
@@ -4687,11 +4995,8 @@ private:
           int64_t latest = armStart == kNever
                                ? kNever
                                : armStart - controllers.extra(reader, -1);
-          for (auto [c, start] : llvm::enumerate(armStarts))
-            if (start != kNever)
-              latest = std::min(
-                  latest,
-                  start - controllers.extra(reader, static_cast<int64_t>(c)));
+          for (auto [c, start] : armStarts)
+            latest = std::min(latest, start - controllers.extra(reader, c));
           bounded = std::min(bounded, latest);
         }
         if (classical)
@@ -4721,8 +5026,12 @@ private:
       }
     }
     armStart = std::min(savedArmStart, armStart);
-    for (auto [start, saved] : llvm::zip(armStarts, savedArmStarts))
-      start = std::min(start, saved);
+    // The arm's starts join the ones before the branch.
+    ArmStarts armOnly = takeArmStarts();
+    putArmStarts(savedArmStarts);
+    for (auto [c, start] : armOnly)
+      noteArmStart(c, start);
+    endArm();
     return mlir::success();
   }
 
@@ -4743,6 +5052,16 @@ private:
   llvm::DenseMap<mlir::Value, ConditionReady> conditionReady;
   /// Under rcp, the drive and readout lanes of each timeline.
   Lanes driveLanes, readoutLanes;
+  /// Their order (byHeap: one controller, or controllers whose starts may
+  /// not differ).
+  llvm::SmallVector<LaneHeap, 1> driveHeaps, readoutHeaps;
+  bool byHeap = false;
+  /// In arms of branches, each lane as it was before the arm first changed
+  /// it, in order; where each arm's notes begin (armMarks); and where each
+  /// lane's latest note is (-1: none).
+  llvm::SmallVector<LaneUndo, 0> laneUndo;
+  llvm::SmallVector<size_t, 4> armMarks;
+  Lanes driveNoted, readoutNoted;
   llvm::SmallVector<int64_t, 2> iteration;
   /// No op starts before the condition of the branch it is in.
   int64_t floor = 0;
@@ -4798,12 +5117,24 @@ private:
   /// any policy, and the controllers each call holds.
   pulse::Controllers owners;
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<int64_t, 2>> heldCalls;
-  /// In a branch on readouts, per controller: when their outcomes reach it
-  /// (forward; empty outside one).
-  llvm::SmallVector<int64_t, 4> armFloors;
-  /// Per controller, the earliest start of an op of it in the arm being
+  /// In branches on readouts, each branch's readers and when the latest
+  /// outcome each read is ready; an op of a controller waits for them to
+  /// reach it (armFloorOf; forward; empty outside one).
+  llvm::SmallVector<llvm::SmallVector<std::pair<int64_t, int64_t>, 2>, 2>
+      armFloors;
+  /// By controller, the earliest start of an op of it in the arm being
   /// scheduled; `armStart` has those of no one controller (backward).
-  llvm::SmallVector<int64_t, 4> armStarts;
+  /// Most arms hold ops of few controllers, so this is a short list of
+  /// (controller, start); empty (one controller, or an arm of no one
+  /// controller's ops), it costs nothing to save and restore.
+  ArmStarts armStarts;
+  /// Once `armStarts` is long, where each controller's entry is in it: the
+  /// entries stamped `armStamp` are its, older ones belong to lists since
+  /// put aside.
+  llvm::SmallVector<std::pair<uint64_t, uint32_t>, 0> armSlots;
+  uint64_t armStamp = 0;
+  bool armIndexed = false;
+  static constexpr size_t kArmIndexedAfter = 8;
   /// The controller of each lane's last op.
   Lanes driveOwners, readoutOwners;
   /// Per timeline, how many ops have taken its drive and readout lanes.
@@ -6250,6 +6581,14 @@ scheduleRegion(mlir::Region &region, mlir::Operation *root, Resources resources,
 
 static mlir::LogicalResult schedule(mlir::func::FuncOp function,
                                     Resources resources, bool isAlap) {
+  // A declaration has no body to schedule.
+  if (function.isExternal())
+    return mlir::success();
+  // The passes time the ops of one block, in their order.
+  if (!function.getBody().hasOneBlock())
+    return function.emitError(
+        "the schedule passes time a function of one block; this one "
+        "branches between several");
   if (resources.enabled &&
       (resources.maxDrives <= 0 || resources.maxReadouts <= 0))
     return function.emitError("resource limits must be positive");
