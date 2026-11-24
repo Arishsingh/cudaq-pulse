@@ -563,17 +563,80 @@ def test_a_check_against_a_feedline_does_not_grow_with_the_rounds(no_walk_of_eve
     assert work_many == work_few
 
 
-def test_a_check_that_would_walk_too_many_rounds_says_so(no_walk_of_every_round):
+def test_rounds_beside_another_readout_are_counted_from_their_period(no_walk_of_every_round):
     # The readout beside the loop is on the feedline while the loop runs, so
-    # the loop's rounds cannot be counted from the first.
+    # the rounds are not counted from the first alone: they are from their
+    # period, between the cycles where the readout beside them starts and ends.
+    from tests._work import python_work
+
     system = _system([0, 1, 2], drive_lines=(0, 1, 2))
-    feedline = pulse.Controller(readout_lines=[ReadoutLine([0, 1, 2], max_concurrent_tones=1)])
-    lowered = _lowered(_rounds(5_000_000, beside=True), system, 0, 1, 2, unroll_threshold=10)
-    with pytest.raises(
-        pulse.UnsupportedError,
-        match=r"would play \d+ copies of rolled loops one by one, more than the 1048576",
-    ):
-        pulse.controller.check(lowered, feedline)
+
+    def checked(trips, tones):
+        feedline = pulse.Controller(
+            readout_lines=[ReadoutLine([0, 1, 2], max_concurrent_tones=tones)]
+        )
+        lowered = _lowered(_rounds(trips, beside=True), system, 0, 1, 2, unroll_threshold=10)
+        work = python_work(lambda: pulse.controller.check(lowered, feedline))
+        return list(pulse.controller.check(lowered, feedline)), work
+
+    few, work_few = checked(1_000, 1)
+    many, work_many = checked(2_700_000_000, 1)
+    assert "from cycle 0 (the readouts of qudits 0, 1), and does so 1039 more times" in few[0]
+    assert (
+        "from cycle 0 (the readouts of qudits 0, 1), and does so 2700000039 more times" in many[0]
+    )
+    assert work_many == work_few
+    # With room for the rounds' two tones, the line is past its limit only in
+    # the last 40 rounds, where the third readout plays.
+    few, work_few = checked(1_000, 2)
+    many, work_many = checked(2_700_000_000, 2)
+    assert "plays 3 tones at once from cycle 96000 " in few[0]
+    assert "plays 3 tones at once from cycle 269999996000 " in many[0]
+    assert "and does so 39 more times" in few[0] and "and does so 39 more times" in many[0]
+    assert work_many == work_few
+
+
+def _rounds_and_one(trips, before, length, together):
+    """Two readouts a round on one feedline, kept as a loop of *trips*
+    rounds, and one readout of a third qudit of the feedline, *length*
+    cycles long, *before* cycles after the start."""
+
+    @pulse.kernel
+    def rounds(a, b, c):
+        ra = get_readout_line(a)
+        rb = get_readout_line(b)
+        rc = get_readout_line(c)
+        wait(rc, before)
+        readout(rc, square(length, 0.05))
+        for _ in range(trips):
+            if together:
+                sync(ra, rb)
+            readout(ra, square(100, 0.05))
+            readout(rb, square(160, 0.05))
+
+    return rounds
+
+
+@pytest.mark.parametrize("together", [True, False])
+@pytest.mark.parametrize("tones", [1, 2])
+@pytest.mark.parametrize(
+    "before, length",
+    [(0, 20), (0, 500), (15_990, 30), (16_000, 160), (24_123, 777), (47_800, 100), (47_990, 500)],
+    ids=["first", "first-few", "across-two", "one-round", "middle", "last", "past-the-last"],
+)
+def test_a_readout_beside_some_rounds_is_counted_in_those_rounds(before, length, tones, together):
+    # A count from the loop's period must find the rounds a readout beside
+    # the loop plays in, wherever they are: the first, the last, some between.
+    from cudaq_pulse import _shared_lines
+
+    system = _system([0, 1, 2], drive_lines=(0, 1, 2))
+    kernel = _rounds_and_one(300, before, length, together)
+    lowered = _lowered(kernel, system, 0, 1, 2, unroll_threshold=10, schedule="asap")
+    feedline = pulse.Controller(readout_lines=[ReadoutLine([0, 1, 2], max_concurrent_tones=tones)])
+    found = _shared_lines.against(lowered, feedline)
+    assert found == _walked(lowered, feedline)
+    # One tone at most: every placing has a round's readout under the third.
+    assert found or tones == 2
 
 
 def _drifting(trips):
@@ -591,36 +654,211 @@ def _drifting(trips):
     return drifting
 
 
-def test_compiling_rounds_that_cannot_be_counted_from_one_stops_with_an_error():
-    # Lines of different periods on one feedline are played round by round:
-    # a few thousand rounds are, millions are refused before they are walked.
-    from cudaq_pulse import controller
-
-    system = _feedline(2, (0, 1))
-    assert len(_lowered(_drifting(2_000), system, 0, 1, unroll_threshold=10).schedule) == 4_000
-    walk = controller._walk
-
-    def summarizing(lowered, *args, summary=None, **options):
-        assert summary is not None, "the check walked every iteration"
-        return walk(lowered, *args, summary=summary, **options)
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(controller, "_walk", summarizing)
-        with pytest.raises(pulse.UnsupportedError) as refused:
-            _lowered(_drifting(5_000_000), system, 0, 1, unroll_threshold=10)
-    assert "would play 4999998 copies of rolled loops one by one" in str(refused.value)
-    assert "give the loops fewer iterations" in str(refused.value)
-
-
-def test_a_check_of_rounds_on_lines_of_their_own_periods_stops_with_an_error(
+def test_rounds_on_lines_of_their_own_periods_are_counted_from_the_periods(
     no_walk_of_every_round,
 ):
-    # Compiled for dedicated lines, then checked against a feedline.
+    # Compiled for dedicated lines, then checked against a feedline: the two
+    # lines repeat by 100 and by 160 cycles, so what they play together
+    # repeats every 800.
+    from tests._work import python_work
+
     dedicated = _system([0, 1], drive_lines=(0, 1))
-    lowered = _lowered(_drifting(5_000_000), dedicated, 0, 1, unroll_threshold=10)
     feedline = pulse.Controller(readout_lines=[ReadoutLine([0, 1], max_concurrent_tones=1)])
-    with pytest.raises(pulse.UnsupportedError, match=r"would play \d+ copies of rolled loops"):
+
+    def checked(trips):
+        lowered = _lowered(_drifting(trips), dedicated, 0, 1, unroll_threshold=10)
+        work = python_work(lambda: pulse.controller.check(lowered, feedline))
+        return list(pulse.controller.check(lowered, feedline)), work
+
+    few, work_few = checked(1_000)
+    many, work_many = checked(2_700_000_000)
+    assert "and does so 1499 more times" in few[0]
+    assert "and does so 4049999999 more times" in many[0]
+    assert work_many == work_few
+    roomy = pulse.Controller(readout_lines=[ReadoutLine([0, 1], max_concurrent_tones=2)])
+    lowered = _lowered(_drifting(2_700_000_000), dedicated, 0, 1, unroll_threshold=10)
+    assert list(pulse.controller.check(lowered, roomy)) == []
+
+
+def test_rounds_on_lines_of_their_own_periods_are_as_walking_them():
+    from cudaq_pulse import _shared_lines
+
+    dedicated = _system([0, 1], drive_lines=(0, 1))
+    lowered = _lowered(_drifting(300), dedicated, 0, 1, unroll_threshold=10)
+    for tones in (1, 2):
+        feedline = pulse.Controller(readout_lines=[ReadoutLine([0, 1], max_concurrent_tones=tones)])
+        assert _shared_lines.against(lowered, feedline) == _walked(lowered, feedline)
+
+
+def test_compiling_rounds_on_lines_of_their_own_periods_does_not_walk_them(
+    no_walk_of_every_round,
+):
+    # Compiling for the feedline makes the same count from the periods.
+    lowered = _lowered(_drifting(2_700_000_000), _feedline(2, (0, 1)), 0, 1, unroll_threshold=10)
+    assert len(lowered.schedule) == 5_400_000_000
+    with pytest.raises(pulse.PulseError, match="and does so 4049999999 more times"):
+        _lowered(_drifting(2_700_000_000), _feedline(1, (0, 1)), 0, 1, unroll_threshold=10)
+
+
+def test_rounds_in_one_arm_of_a_branch_do_not_play_with_the_other_arm():
+    # The arms of a branch never play together, whatever round of a loop in
+    # one of them: counted as a walk of every round does.
+    from cudaq_pulse import _shared_lines
+
+    @pulse.kernel
+    def either(a, b, c):
+        ra = get_readout_line(a)
+        rc = get_readout_line(c)
+        m = readout(get_readout_line(b), square(100, 0.05))
+        sync(ra, rc)
+        if m:
+            readout(rc, square(4000, 0.05))
+        else:
+            for _ in range(1000):
+                readout(ra, square(100, 0.05))
+
+    system = _system([0, 1, 2], drive_lines=(0, 1, 2))
+    lowered = _lowered(either, system, 0, 1, 2, unroll_threshold=10)
+    feedline = pulse.Controller(readout_lines=[ReadoutLine([0, 2], max_concurrent_tones=1)])
+    assert _shared_lines.against(lowered, feedline) == _walked(lowered, feedline) == []
+    # Compiling for the feedline counted the loop's rounds against the other
+    # arm's readout, and refused the program for 40 tones too many.
+    shared = _system([ReadoutLine([0, 2], max_concurrent_tones=1), 1], drive_lines=(0, 1, 2))
+    _lowered(either, shared, 0, 1, 2, unroll_threshold=10)
+
+
+def _rounds_in_an_arm(trips):
+    """*trips* rounds in one arm of a branch whose other arm is empty,
+    beside a readout of another qudit of the feedline."""
+
+    @pulse.kernel
+    def rounds(a, b, c):
+        ra = get_readout_line(a)
+        rc = get_readout_line(c)
+        m = readout(get_readout_line(b), square(100, 0.05))
+        sync(ra, rc)
+        readout(rc, square(4000, 0.05))
+        if m:
+            for _ in range(trips):
+                readout(ra, square(100, 0.05))
+
+    return rounds
+
+
+def test_rounds_in_an_arm_with_nothing_in_the_other_are_counted_from_their_period(
+    no_walk_of_every_round,
+):
+    # Nothing on the line is in the branch's other arm, so nothing is told
+    # apart by the branch: the rounds are counted, not walked.
+    system = _system([0, 1, 2], drive_lines=(0, 1, 2))
+    feedline = pulse.Controller(readout_lines=[ReadoutLine([0, 2], max_concurrent_tones=1)])
+
+    def checked(trips):
+        kernel = _rounds_in_an_arm(trips)
+        lowered = _lowered(kernel, system, 0, 1, 2, unroll_threshold=10, schedule="asap")
+        return list(pulse.controller.check(lowered, feedline))
+
+    found = checked(2_700_000_000)
+    assert len(found) == 1 and "plays 2 tones at once" in found[0]
+    # The readout beside the rounds covers the same rounds whatever their number.
+    assert found == checked(300)
+
+
+def test_rounds_in_an_arm_with_nothing_in_the_other_are_counted_as_walking_them_does():
+    from cudaq_pulse import _shared_lines
+
+    system = _system([0, 1, 2], drive_lines=(0, 1, 2))
+    feedline = pulse.Controller(readout_lines=[ReadoutLine([0, 2], max_concurrent_tones=1)])
+    kernel = _rounds_in_an_arm(300)
+    lowered = _lowered(kernel, system, 0, 1, 2, unroll_threshold=10, schedule="asap")
+    found = _shared_lines.against(lowered, feedline)
+    assert found and found == _walked(lowered, feedline)
+
+
+def _four_periods(trips):
+    """Four readouts a round on one feedline with no sync: what the four
+    lines play together repeats only after about a million rounds."""
+
+    @pulse.kernel
+    def rounds(a, b, c, d):
+        ra = get_readout_line(a)
+        rb = get_readout_line(b)
+        rc = get_readout_line(c)
+        rd = get_readout_line(d)
+        for _ in range(trips):
+            readout(ra, square(1000, 0.05))
+            readout(rb, square(1001, 0.05))
+            readout(rc, square(1003, 0.05))
+            readout(rd, square(1007, 0.05))
+
+    return rounds
+
+
+def test_periods_that_repeat_together_too_rarely_are_refused_before_any_round_is_played(
+    no_walk_of_every_round,
+):
+    system = _system([0, 1, 2, 3], drive_lines=(0, 1, 2, 3))
+    feedline = pulse.Controller(readout_lines=[ReadoutLine([0, 1, 2, 3], max_concurrent_tones=1)])
+    lowered = _lowered(_four_periods(2_700_000_000), system, 0, 1, 2, 3, unroll_threshold=10)
+    # What is swept before the refusal is small (measured: about two
+    # thousand events at most, a stretch two of the lines share), never the
+    # stretch of all four, which is copies by the thousand million.
+    from cudaq_pulse import _shared_lines
+
+    swept = []
+    sweep = _shared_lines._AtOnce.sweep
+
+    def counting(self, played, weigh=None):
+        swept.append(len(played))
+        return sweep(self, played, weigh)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(_shared_lines._AtOnce, "sweep", counting)
+        with pytest.raises(pulse.UnsupportedError, match=r"would play \d+ copies of rolled loops"):
+            pulse.controller.check(lowered, feedline)
+    assert swept and max(swept) < 10_000
+
+
+def _rounds_of_rounds(trips):
+    """*trips* rounds that each hold a loop of 300, beside a readout of a
+    third qudit of the feedline."""
+
+    @pulse.kernel
+    def rounds(a, b, c):
+        ra = get_readout_line(a)
+        rb = get_readout_line(b)
+        readout(get_readout_line(c), square(4000, 0.05))
+        for _ in range(trips):
+            for _ in range(300):
+                sync(ra, rb)
+                readout(ra, square(100, 0.05))
+                readout(rb, square(100, 0.05))
+
+    return rounds
+
+
+def test_a_check_that_would_walk_too_many_rounds_says_so(no_walk_of_every_round):
+    # Rounds that hold a loop, beside a readout on the feedline, are played
+    # one by one: a few thousand are, millions are refused before the walk.
+    system = _system([0, 1, 2], drive_lines=(0, 1, 2))
+    feedline = pulse.Controller(readout_lines=[ReadoutLine([0, 1, 2], max_concurrent_tones=1)])
+    lowered = _lowered(_rounds_of_rounds(5_000_000), system, 0, 1, 2, unroll_threshold=10)
+    with pytest.raises(
+        pulse.UnsupportedError,
+        match=r"would play \d+ copies of rolled loops one by one, more than the 1048576",
+    ):
         pulse.controller.check(lowered, feedline)
+
+
+def test_compiling_rounds_that_would_be_walked_one_by_one_stops_with_an_error(
+    no_walk_of_every_round,
+):
+    with pytest.raises(pulse.UnsupportedError) as refused:
+        _lowered(
+            _rounds_of_rounds(5_000_000), _feedline(3, (0, 1, 2)), 0, 1, 2, unroll_threshold=10
+        )
+    assert "copies of rolled loops one by one" in str(refused.value)
+    assert "give the loops fewer iterations" in str(refused.value)
 
 
 @pulse.kernel

@@ -13,6 +13,7 @@ shared line loads this."""
 
 from __future__ import annotations
 
+import bisect
 import math
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
@@ -415,6 +416,11 @@ def _most_together(
     return sorted(found)
 
 
+class _WalkedError(ValueError):
+    """Loops a count of copies cannot tell apart as a walk of every
+    iteration does: ``summarized`` gives ``None``, as past its budget."""
+
+
 class _TangledError(Exception):
     """Branches that do not nest: a branch under two arms."""
 
@@ -498,7 +504,11 @@ class _AtOnce:
         self.first: int | None = None
         self.playing: list[Mapping[str, Any]] = []
 
-    def sweep(self, played: Sequence[tuple[int, int, Mapping[str, Any], Any]]) -> None:
+    def sweep(
+        self,
+        played: Sequence[tuple[int, int, Mapping[str, Any], Any]],
+        weigh: Callable[[int], int] | None = None,
+    ) -> None:
         """Count *played* ((start, end, event, copy)), sorted by start; a tone
         ending at a cycle frees the line for one starting then. Events of one
         copy in different arms of a branch never play together (a walk tells
@@ -506,16 +516,21 @@ class _AtOnce:
         tone starts with the line full when the most tones playing then that
         can all play together with it in one execution fill it: those of each
         copy found in the tree of branches they lie in (``_Playing``), else
-        (branches that do not nest) ``_split``."""
+        (branches that do not nest) ``_split``. With *weigh*, a tone that
+        starts so at a cycle counts as often as *weigh* gives for the cycle
+        (not at all for 0: a tone played only for those after it)."""
         count, first, playing = self.count, self.first, self.playing
         try:
-            self._sweep(played, True)
+            self._sweep(played, True, weigh)
         except _TangledError:
             self.count, self.first, self.playing = count, first, playing
-            self._sweep(played, False)
+            self._sweep(played, False, weigh)
 
     def _sweep(
-        self, played: Sequence[tuple[int, int, Mapping[str, Any], Any]], nested: bool
+        self,
+        played: Sequence[tuple[int, int, Mapping[str, Any], Any]],
+        nested: bool,
+        weigh: Callable[[int], int] | None,
     ) -> None:
         tones = self.line.tones
         # Without branches every tone playing plays together.
@@ -558,8 +573,8 @@ class _AtOnce:
                 tree = trees.setdefault(copy, _Playing())
                 most = playing - tree.root.most + tree.beside(path(k))
             if most >= tones and nested and self.first is not None and start >= self.first:
-                self.count += 1
-            elif most >= tones:
+                self.count += 1 if weigh is None else weigh(start)
+            elif most >= tones and (weigh is None or weigh(start)):
                 # Which tones, for the message (and how many, without the tree).
                 mine = dict(path(k))
                 together = [
@@ -573,7 +588,7 @@ class _AtOnce:
                     if self.first is None or start < self.first:
                         self.first = start
                         self.playing = [played[a][2] for a in together] + [event]
-                    self.count += 1
+                    self.count += 1 if weigh is None else weigh(start)
             if trees is not None:
                 playing += tree.add(path(k), 1)
             active.append(k)
@@ -676,11 +691,10 @@ def violations(
 
 def against(lowered: ScheduledKernel, controller: Controller) -> list[str]:
     """``violations`` of *lowered* on a system of *controller* alone, for
-    ``controller.check(lowered, controller)``. Rolled loops of one period
-    are counted from the check walk's summary, as compiling counts them;
-    when they cannot be (``summarized``), or their lines move by periods
-    of their own, every iteration is walked, up to the copies a check
-    plays one by one (``_loops.refuse_past_budget``)."""
+    ``controller.check(lowered, controller)``. Rolled loops are counted
+    from the check walk's summary, as compiling counts them;
+    when they cannot be (``summarized``), every iteration is walked, up to
+    the copies a check plays one by one (``_loops.refuse_past_budget``)."""
     from . import _loops
     from ._system import _one_controller
     from .controller import _walk
@@ -691,14 +705,17 @@ def against(lowered: ScheduledKernel, controller: Controller) -> list[str]:
     lines, events, _, _, problems = _walk(lowered, values=False, summary=(repeats, periods))
     # What a walk of every iteration plays, while every loop is one still.
     every = _loops.walked_copies(events, repeats, periods) if repeats else 0
+    if repeats and not problems:
+        found = summarized(system, lowered, lines, events, repeats, None, periods)
+        if found is not None:
+            return found
     if repeats and periods:
-        # Shared lines are counted of loops of one period: a loop whose
-        # lines move by periods of their own is played round by round.
+        # Else with the loops whose lines move by periods of their own
+        # played round by round.
         _loops.refuse_past_budget(_loops.walked_copies(events, repeats, periods, unsynced=True))
         repeats = []
         lines, events, _, _, problems = _walk(lowered, values=False, summary=(repeats, None))
-    if repeats:
-        if not problems:
+        if repeats and not problems:
             found = summarized(system, lowered, lines, events, repeats, None)
             if found is not None:
                 return found
@@ -718,17 +735,21 @@ def summarized(
     events: Sequence[Mapping[str, Any]],
     repeats: Sequence[Sequence[int]],
     unresolved: list[str] | None,
+    periods: Sequence[Sequence[int]] = (),
 ) -> list[str] | None:
-    """``violations`` of the events of a summarizing walk with *repeats* (loops
-    of one period): a loop whose copies on a shared line follow each other,
-    with nothing else on the line meanwhile, is counted from its first copy;
-    any other is played copy by copy. ``None`` past the copies a check plays
-    one by one (``_loops._MAX_PLAYED``): walk the loops in full."""
+    """``violations`` of the events of a summarizing walk with *repeats* (and
+    *periods*, the (repeat, line, period) of loops whose lines move by
+    periods of their own): a loop whose copies on a shared line follow each
+    other, with nothing else on the line meanwhile, is counted from its
+    first copy; loops of events that share time with something, from their
+    periods (``_count_periodic``); any other is played copy by copy.
+    ``None`` past the copies a check plays one by one
+    (``_loops._MAX_PLAYED``): walk the loops in full."""
     from . import _loops
 
     shared = physical(system)
     assert shared is not None
-    tree, _ = _loops._tree(events, repeats)
+    tree, _ = _loops._tree(events, repeats, periods)
     budget = _loops._Budget()
     found: list[str] = []
     sharing, of = _sharing(shared, lines)
@@ -737,7 +758,9 @@ def summarized(
         nodes = split.get(k, [])
         at_once = _AtOnce(line)
         try:
-            _count_copies(at_once, events, nodes, 0, (), 1, budget)
+            parted: set[int] = set()
+            one = _one_period(nodes, events, parted)
+            _count_copies(at_once, events, one, 0, (), 1, budget, _walked_order(nodes), parted)
         except ValueError:
             return None
         message = at_once.message(lines)
@@ -746,6 +769,36 @@ def summarized(
         kept = [events[i] for i in _loops._events_of(nodes)]
         found.extend(_per_line(lowered, line, system.controllers[line.owner], kept, unresolved))
     return found
+
+
+def _walked_order(
+    nodes: list[Any],
+) -> Callable[[tuple[int, int, Mapping[str, Any], Any]], tuple[int, ...]]:
+    """The key that sorts played events ((start, end, event, copy)) by their
+    starts and, of those that start together, as a walk of every iteration
+    lists them: by the loops they are in, outermost first, each by where it
+    begins and then by its copy."""
+    begins: dict[int, int] = {}
+
+    def note(nodes: list[Any]) -> None:
+        for node in nodes:
+            if type(node) is not int:
+                begins[id(node.orig)] = node.begin
+                note(node.body)
+
+    note(nodes)
+
+    def order(item: tuple[int, int, Mapping[str, Any], Any]) -> tuple[int, ...]:
+        key = [item[0]]
+        for loop in item[3]:
+            if type(loop) is tuple:
+                key += (begins[loop[0]], loop[1])
+            else:
+                key += (begins[loop], 0)
+        key.append(item[2]["index"])
+        return tuple(key)
+
+    return order
 
 
 def _window(node: Any, events: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
@@ -757,6 +810,40 @@ def _window(node: Any, events: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
     return lo, hi + (node.copies - 1) * node.period
 
 
+def _one_period(
+    nodes: list[Any], events: Sequence[Mapping[str, Any]], parted: set[int]
+) -> list[Any]:
+    """*nodes* with every loop whose lines move by periods of their own as
+    one loop per period: copy j of each plays what copy j of the loop plays
+    on the lines of that period. *parted* gets the loops made several."""
+    from . import _loops
+
+    found: list[Any] = []
+    for node in nodes:
+        if type(node) is int:
+            found.append(node)
+            continue
+        body = _one_period(node.body, events, parted)
+        if node.lines is None:
+            found.append(node.keeping(body))
+            continue
+        by_period: dict[int, set[int]] = {}
+        for i in _loops._events_of(body):
+            line = events[i]["line"]
+            by_period.setdefault(node.lines.get(line, 0), set()).add(line)
+        if len(by_period) > 1:
+            parted.add(id(node.orig))
+        for period, lines in by_period.items():
+
+            def on(i: int, lines: set[int] = lines) -> bool:
+                return events[i]["line"] in lines
+
+            kept = node.keeping(_loops._keep(body, on))
+            kept.lines, kept.period = None, period
+            found.append(kept)
+    return found
+
+
 def _count_copies(
     at_once: _AtOnce,
     events: Sequence[Mapping[str, Any]],
@@ -765,29 +852,46 @@ def _count_copies(
     copy: tuple[Any, ...],
     times: int,
     budget: Any,
+    order: Callable[[tuple[int, int, Mapping[str, Any], Any]], tuple[int, ...]],
+    parted: set[int],
 ) -> None:
-    """Sweep *nodes* (``_loops._tree`` nodes, shifted by *shift* cycles, in
-    the *copy* of the loops around them), each violation counted *times*."""
+    """Sweep *nodes* (``_loops._tree`` nodes of one period each, shifted by
+    *shift* cycles, in the *copy* of the loops around them), each violation
+    counted *times*. A loop whose copies follow each other with the line
+    otherwise free is counted from its first copy. Loops that share time
+    with something are counted from their periods (``_count_periodic``)
+    when they hold events only; one that holds loops is played copy by
+    copy."""
     items: list[tuple[Any, int, tuple[Any, ...]]] = [(node, shift, copy) for node in nodes]
     while True:
-        windows = [_window(node, events) for node, _, _ in items]
-        expand = None
-        for k, (node, dt, _) in enumerate(items):
+        windows = []
+        for node, dt, _ in items:
+            lo, hi = _window(node, events)
+            windows.append((lo + dt, hi + dt))
+        shared = _sharing_time(windows)
+        crowded = set()
+        for k, (node, _, _) in enumerate(items):
             if type(node) is int:
                 continue
             body = [_window(child, events) for child in node.body]
-            lo, hi = windows[k]
             follows = max(s[1] for s in body) - min(s[0] for s in body) <= node.period
-            alone = all(
-                w[1] + items[j][1] <= lo + dt or w[0] + items[j][1] >= hi + dt
-                for j, w in enumerate(windows)
-                if j != k
-            )
-            if not (follows and alone):
-                expand = k
-                break
-        if expand is None:
+            if not (follows and k not in shared):
+                crowded.add(k)
+        if not crowded:
             break
+        if _across_a_branch(events, items, crowded):
+            # A loop in one arm of a branch whose other arm holds something
+            # else on the line: its copies are told from the other arm's
+            # events by the branch alone, which only a walk of every
+            # iteration keeps.
+            raise _WalkedError("a loop in a branch arm beside the branch's other arm")
+        if _periodic(events, [items[k][0] for k in crowded], parted):
+            break
+        expand = next((k for k in sorted(crowded) if not _trains_only(events, items[k][0])), None)
+        if expand is None:
+            # A branch in a loop whose lines move by different periods:
+            # walked with that loop played.
+            raise _WalkedError("a branch across lines of different periods")
         node, dt, path = items[expand]
         budget.spend(node.copies)
         items[expand : expand + 1] = [
@@ -796,19 +900,225 @@ def _count_copies(
             for child in node.body
         ]
     played = []
-    for node, dt, path in items:
+    loops = []
+    for k, (node, dt, path) in enumerate(items):
         if type(node) is int:
             event = events[node]
             played.append((event["start_cycles"] + dt, event["end_cycles"] + dt, event, path))
+        elif k in crowded:
+            loops.append((node, dt, path))
         else:
             # Its copies follow each other with the line otherwise free: each
             # plays what the first does, node.copies times.
             _count_copies(
-                at_once, events, node.body, dt, (*path, id(node.orig)), times * node.copies, budget
+                at_once,
+                events,
+                node.body,
+                dt,
+                (*path, id(node.orig)),
+                times * node.copies,
+                budget,
+                order,
+                parted,
             )
     before = at_once.count
-    at_once.sweep(sorted(played, key=_first))
+    if loops:
+        _count_periodic(at_once, events, played, loops, budget, order)
+    else:
+        at_once.sweep(sorted(played, key=order))
     at_once.count = before + (at_once.count - before) * times
+
+
+def _sharing_time(windows: Sequence[tuple[int, int]]) -> set[int]:
+    """Which of *windows* ((first start, last end)) share time with another:
+    it starts before the window ends and ends after the window starts."""
+    by_start = sorted(range(len(windows)), key=lambda k: windows[k][0])
+    starts = [windows[k][0] for k in by_start]
+    # Of the windows up to each in that order, the two that end last.
+    latest: list[tuple[int, int, int]] = []
+    first, at, second = -1 << 62, -1, -1 << 62
+    for k in by_start:
+        end = windows[k][1]
+        if end > first:
+            first, at, second = end, k, first
+        elif end > second:
+            second = end
+        latest.append((first, at, second))
+    shared = set()
+    for k, (lo, hi) in enumerate(windows):
+        before = bisect.bisect_left(starts, hi)
+        if not before:
+            continue
+        first, at, second = latest[before - 1]
+        if (second if at == k else first) > lo:
+            shared.add(k)
+    return shared
+
+
+def _across_a_branch(
+    events: Sequence[Mapping[str, Any]],
+    items: Sequence[tuple[Any, int, tuple[Any, ...]]],
+    crowded: set[int],
+) -> bool:
+    """Whether a loop of *crowded* holds an event in one arm of a branch
+    that an event of another of *items* is in another arm of. A walk of
+    every iteration tells the arms of that branch apart whatever copy of
+    the loop an event is in; a count of copies tells events apart by their
+    copies first. A branch inside a loop's body meets itself in no other
+    item while the loop is one item; once a loop around it is played copy
+    by copy, the copies list the same branch and this is true of them,
+    though their own copies would tell them apart: such loops are walked."""
+    from . import _loops
+
+    arms: dict[Any, dict[Any, set[int]]] = {}
+    for k, (node, _, _) in enumerate(items):
+        indices = (node,) if type(node) is int else _loops._events_of(node.body)
+        for i in indices:
+            for condition in events[i]["conditions"]:
+                arms.setdefault(condition["branch"], {}).setdefault(condition["arm"], set()).add(k)
+    for found in arms.values():
+        for arm, here in found.items():
+            for k in here & crowded:
+                if any(other - {k} for another, other in found.items() if another != arm):
+                    return True
+    return False
+
+
+def _trains_only(events: Sequence[Mapping[str, Any]], node: Any) -> bool:
+    """Whether the copies of *node* are trains of events: it holds no loop,
+    and no event of it lasts longer than its period, which is positive."""
+    return node.period > 0 and all(
+        type(i) is int and events[i]["end_cycles"] - events[i]["start_cycles"] <= node.period
+        for i in node.body
+    )
+
+
+def _periodic(events: Sequence[Mapping[str, Any]], loops: Sequence[Any], parted: set[int]) -> bool:
+    """Whether *loops* can be counted from their periods: each is trains of
+    events, and none is a part, with a branch, of a loop of *parted*, whose
+    lines move by different periods. Events of one copy in different arms of
+    a branch never play together, and copy j of one part meets copy j of
+    another only in the loop's early copies, so what such parts play
+    together does not repeat."""
+    return all(
+        _trains_only(events, node)
+        and not (id(node.orig) in parted and any(events[i]["conditions"] for i in node.body))
+        for node in loops
+    )
+
+
+def _recurring(since: int, whole: int, rest: int) -> Callable[[int], int]:
+    """How often a start at a cycle counts: not before *since*, then *whole*
+    times, and once more within *rest* cycles of *since*."""
+
+    def weigh(at: int) -> int:
+        return 0 if at < since else whole + (at < since + rest)
+
+    return weigh
+
+
+def _count_periodic(
+    at_once: _AtOnce,
+    events: Sequence[Mapping[str, Any]],
+    singles: list[tuple[int, int, Mapping[str, Any], Any]],
+    loops: Sequence[tuple[Any, int, tuple[Any, ...]]],
+    budget: Any,
+    order: Callable[[tuple[int, int, Mapping[str, Any], Any]], tuple[int, ...]],
+) -> None:
+    """Sweep *singles* ((start, end, event, copy)) with every copy of
+    *loops* (``_periodic``), without playing every copy.
+
+    Each event of a loop is a train: copy j of it plays j periods after the
+    first, and no train's copies overlap. Cut time at every cycle where a
+    single starts or ends, one cycle after it starts, and where a train
+    begins or ends. Between two cuts no single starts or ends (but in the one cycle
+    of its start, swept whole) and every train there plays as it does one
+    period earlier, so all that plays there repeats with the least common
+    multiple
+    of their periods. Whether a tone starts with the line full depends only
+    on what plays at its cycle, so a tone that starts so has one that does
+    one multiple earlier, down to the first multiple after the cut: sweeping
+    that one, with what still plays from before the cut, and counting each
+    start as often as its cycle recurs before the next cut, counts every
+    start between the cuts, in whichever iterations they fall. A stretch
+    no longer than the multiple is swept whole."""
+    # A train: first start, first end, period, copies, event, copy of the
+    # loops around it, loop, and the cycle it is there up to.
+    trains = []
+    cuts: set[int] = set()
+    for start, end, _, _ in singles:
+        # A single's start is a stretch of its own: it happens once, and a
+        # train's tone that starts at its cycle may come before it.
+        cuts.update((start, start + 1, end))
+    for node, dt, path in loops:
+        period, copies = int(node.period), int(node.copies)
+        for i in node.body:
+            event = events[i]
+            start, end = event["start_cycles"] + dt, event["end_cycles"] + dt
+            last = (copies - 1) * period
+            # The last copy's start is within the train, of whatever length.
+            hi = max(end + last, start + last + 1)
+            cuts.update((start, hi))
+            trains.append((start, end, period, copies, event, path, id(node.orig), hi))
+    singles = sorted(singles, key=order)
+    starts = [start for start, _, _, _ in singles]
+    # The singles that started before the stretch at hand and still play.
+    playing: list[tuple[int, int, Mapping[str, Any], Any]] = []
+    passed = 0
+    edges = sorted(cuts)
+    edges.append(edges[-1] + 1)
+    begun: dict[int, list[Any]] = {}
+    ended: set[int] = set()
+    for train in trains:
+        begun.setdefault(train[0], []).append(train)
+        ended.add(train[7])
+    begins = sorted(begun)
+    there: list[Any] = []
+    at = 0
+    while at < len(edges) - 1:
+        a = edges[at]
+        if a in ended:
+            there = [t for t in there if t[7] > a]
+        there.extend(begun.get(a, ()))
+        upto, whole, rest = edges[at + 1], 1, 0
+        at += 1
+        if there:
+            common = math.lcm(*{t[2] for t in there})
+            if upto - a > common:
+                whole, rest = divmod(upto - a, common)
+                upto = a + common
+        else:
+            # No train up to the next that begins: the singles there at once.
+            k = bisect.bisect_right(begins, a)
+            upto = begins[k] if k < len(begins) else edges[-1]
+            at = bisect.bisect_left(edges, upto)
+            k = bisect.bisect_left(starts, a)
+            if k == len(starts) or starts[k] >= upto:
+                # Nothing starts here.
+                continue
+        k = bisect.bisect_left(starts, a)
+        playing = [single for single in playing + singles[passed:k] if single[1] >= a]
+        passed = k
+        played = playing + singles[k : bisect.bisect_left(starts, upto)]
+        # The copies to play, spent before any is made: by loop, in the
+        # copy of the loops around it and for each of its periods.
+        ranges = []
+        spent: dict[Any, int] = {}
+        for train in there:
+            start, end, period, copies, _, path, loop, _ = train
+            first = max(0, -(-(a - end) // period))
+            final = min(copies - 1, -(-(upto - start) // period) - 1)
+            if final >= first:
+                ranges.append((train, first, final))
+                key = (loop, path, period)
+                spent[key] = max(spent.get(key, 0), final - first + 1)
+        budget.spend(sum(spent.values()))
+        for (start, end, period, _, event, path, loop, _), first, final in ranges:
+            played.extend(
+                (start + j * period, end + j * period, event, (*path, (loop, j)))
+                for j in range(first, final + 1)
+            )
+        at_once.sweep(sorted(played, key=order), _recurring(a, whole, rest))
 
 
 def _insert(entry: dict[str, Any], after: str, added: Sequence[tuple[str, Any]]) -> None:
