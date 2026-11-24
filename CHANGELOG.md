@@ -385,6 +385,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A NumPy number times a unit is a time.** `np.float64(4) * pulse.ns`,
+  which every value of an `np.linspace` sweep gives, was a bare
+  `np.float64(4.0)`: NumPy took the time as the float it subclasses, so a
+  swept `sigma` or DRAG `beta` was read as that many clock cycles, half the
+  width meant on a 2 GHz clock, with no error. NumPy numbers now follow the
+  same rules as Python's on either side of a time, and a NumPy array times
+  a unit is a `TypeError` rather than an array that lost its unit.
 - **A kernel with many measurement-conditioned `if`s no longer takes memory
   and time that grow with the square of their number to trace.** Each `if`
   kept its own copy of the whole kernel's instructions, so a kernel of n

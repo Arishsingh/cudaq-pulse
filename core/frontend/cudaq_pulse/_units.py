@@ -100,6 +100,9 @@ class Time(float):
     __slots__ = ("_n", "_d")
     _n: int
     _d: int
+    # NumPy numbers and arrays leave the arithmetic and comparisons to the
+    # methods below, instead of taking a time as the float it subclasses.
+    __array_ufunc__ = None
 
     def __new__(cls, nanoseconds: Fraction | int | float) -> Time:
         numerator, denominator = _exact(nanoseconds)
