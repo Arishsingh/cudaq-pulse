@@ -192,6 +192,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   prints the installed controller backends next to the quantum systems
   (`none` when there are none), so the advice in `--system` to run the
   doctor for them is true.
+- **Control systems compared, and a page for the built-in chip.** A new
+  tutorial, One QPU, Several Control Systems, puts five control systems
+  under `transmon_surface17`, each defined on the page: one controller with
+  fast or slow feedback, a controller per readout feedline, separate drive
+  and readout modules (refused without a shared reference clock, with the
+  compiler's message), and a limit of six drives at once. It compares the
+  length of an active reset and of one surface-code round, the reset's
+  ground-state population, and the error a data qubit picks up while it
+  waits for a round; `examples/30_control_systems_compared.py` is the same
+  comparison as one file. A new user guide page, The transmon_surface17
+  Quantum System, shows the chip's layout and couplings, its frequency
+  plan, its readout feedlines, its coherence, its calibrated gates and what
+  the simulator models of each, and one error correction cycle. Its
+  numbers, tables and figures are written from the system by a script, and
+  a test fails when the page and the system differ.
 
 ### Changed
 
@@ -381,6 +396,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   check that takes no summary of the loops (for example for a controller
   that blocks on calls, lists the updates on its buses, or counts cycles
   of its own) walks every round as before.
+- **Checking `max_concurrent_drives` and `max_concurrent_readouts` no
+  longer takes time that grows with the square of the pulses at once.** The
+  count of a control system's drives and readouts at once went through
+  every pulse in flight at each pulse, so a program in which all qudits
+  play together (a round of an error-correcting code) paid for each pulse
+  against every other, in `compile` and again in `check`. Eight times the
+  drives at once took about 60 times as long to count; they now take about
+  11 times. What is counted, and each message, is the same.
 - **A controller description written again is the one loaded.**
   `pulse.controller(path)` kept a file's parsed description by the file's
   modification time alone, so a file written twice within one tick of the
