@@ -131,3 +131,41 @@ def test_a_list_indexed_by_another_integer_type_traces_as_by_an_int(index):
         return lowered.mlir() + "\n".join(repr(e) for e in lowered.schedule)
 
     assert traced(index) == traced(1)
+
+
+_CALLED = """\
+def flip(lines, reads, i):
+    m = readout(reads[i], square(40, 0.05))
+    if m:
+        drive(lines[i], square(16, 0.1))
+    else:
+        wait(lines[i], 16)
+
+
+def k(qudits):
+    lines = [get_drive_line(q) for q in qudits[:4]]
+    reads = [get_readout_line(q) for q in qudits[:4]]
+    p = get_drive_line(qudits[4])
+    flip(lines, reads, 0)
+    flip(lines, reads, 1)
+{change}    flip(lines, reads, 0)
+    flip(lines, reads, 1)
+    drive(lines[0], square(8, 0.4))
+    drive(lines[1], square(8, 0.45))
+"""
+
+
+@pytest.mark.parametrize("way", ["reverse", "swap", "item", "rotate"])
+def test_a_list_changed_between_ifs_in_called_kernels_traces_as_a_new_one(way):
+    # The trace's first if is in a called kernel: the ifs after it put back
+    # only what their arms wrote once every caller notes what changes.
+    def traced(change):
+        body = "".join(f"    {line}\n" for line in change.split("\n"))
+        scope = dict(vars(pulse))
+        exec(compile(_CALLED.format(change=body), "<kernel>", "exec"), scope)
+        scope["flip"] = pulse.kernel(scope["flip"])
+        lowered = pulse.compile(pulse.kernel(scope["k"])).lower(Q[0:5])
+        return lowered.mlir() + "\n".join(repr(e) for e in lowered.schedule)
+
+    in_place, anew = _WAYS[way]
+    assert traced(in_place) == traced(anew)
