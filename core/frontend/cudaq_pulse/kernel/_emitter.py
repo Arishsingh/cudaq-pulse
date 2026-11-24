@@ -2599,7 +2599,8 @@ class PulseIREmitter:
                         if copy is None:
                             # Only the slots the then arm wrote, put back.
                             if undo is None:
-                                undo = lines.log_by_list(then_log)
+                                # As the then arm's end grouped it, if it did.
+                                undo = lazy.by_list or lines.log_by_list(then_log)
                             slots = self._slots
                             for i, old in undo.get(id(obj), ()):
                                 slots.pop(id(obj[i]), None)

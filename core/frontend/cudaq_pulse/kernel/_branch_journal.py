@@ -51,7 +51,10 @@ class _LoggedSlots(dict):  # type: ignore[type-arg]
         if known is not None:
             at = known[1].get(key)
             if at is None:
-                known[1][key] = {entry[1]}
+                known[1][key] = entry[1]
+            elif at.__class__ is int:
+                if at != entry[1]:
+                    known[1][key] = {at, entry[1]}
             else:
                 at.add(entry[1])
         dict.__setitem__(self, key, entry)
@@ -71,11 +74,13 @@ class _LoggedSlots(dict):  # type: ignore[type-arg]
             self[key] = entry
 
 
-def _places(lines: _Lines, obj: list[Any]) -> tuple[dict[int, set[int]], list[int]]:
+def _places(lines: _Lines, obj: list[Any]) -> tuple[dict[int, Any], list[int]]:
     """The places of each line or tone in *obj*, by id, as ``lines.places``
     keeps them (found once by reading the list, then from the records
-    written), and the ids of the lines and tones the tracer added at its end
-    since it was last looked at without writing their records (`+=`)."""
+    written; one place as an int, more as a set, so that a list of lines
+    adds no container per line for the collector to walk), and the ids of
+    the lines and tones the tracer added at its end since it was last looked
+    at without writing their records (`+=`)."""
     known = lines.places.get(id(obj))
     n = len(obj)
     if known is None or known[0] is not obj:
@@ -92,12 +97,21 @@ def _places(lines: _Lines, obj: list[Any]) -> tuple[dict[int, set[int]], list[in
     for i in range(start, n):
         v = obj[i]
         if v.__class__ is IRValue and v.vtype in LINEAR_TYPES:
-            if id(v) in at:
-                at[id(v)].add(i)
-            else:
-                at[id(v)] = {i}
+            _place(at, id(v), i)
             added.append(id(v))
     return at, added
+
+
+def _place(at: dict[int, Any], key: int, i: int) -> None:
+    """Add place *i* of *key* to *at*: an int for one place, a set for more."""
+    found = at.get(key)
+    if found is None:
+        at[key] = i
+    elif found.__class__ is int:
+        if found != i:
+            at[key] = {found, i}
+    else:
+        found.add(i)
 
 
 def _canonical_list(emitter: PulseIREmitter, obj: list[Any], full: bool) -> None:
@@ -109,14 +123,11 @@ def _canonical_list(emitter: PulseIREmitter, obj: list[Any], full: bool) -> None
     the last if recorded them, and the lists are the same."""
     slots = emitter._slots
     if full:
-        at: dict[int, set[int]] = {}
+        at: dict[int, Any] = {}
         for i, v in enumerate(obj):
             if v.__class__ is IRValue and v.vtype in LINEAR_TYPES:
                 dict.__setitem__(slots, id(v), (obj, i, v))
-                if id(v) in at:
-                    at[id(v)].add(i)
-                else:
-                    at[id(v)] = {i}
+                _place(at, id(v), i)
         emitter._lines.places[id(obj)] = [obj, at, len(obj)]
         return
     written = slots.written  # type: ignore[attr-defined]
@@ -132,12 +143,44 @@ def _canonical_list(emitter: PulseIREmitter, obj: list[Any], full: bool) -> None
         for key in added:
             # Added without a record: recorded as the if records every item.
             if key not in written:
-                written[key] = obj[max(at[key])]
+                place = at[key]
+                written[key] = obj[place if place.__class__ is int else max(place)]
         if not written:
             return
-    for key, value in written.items():
-        found = at.get(key)
+    if at.keys().isdisjoint(written):
+        return
+    # Only the written lines and tones the list holds, in the order written.
+    for key in [key for key in written if key in at]:
+        found = at[key]
+        value = written[key]
+        if found.__class__ is int:
+            # One place: as below, without the sets; none left is an empty set.
+            i = found
+            if not -n <= i < n:
+                at[key] = set()
+                continue
+            place = i % n if i < 0 else i
+            if obj[place] is value:
+                if place != i:
+                    at[key] = set()
+                dict.__setitem__(slots, key, (obj, place, value))
+            else:
+                at[key] = set()
+            continue
         if not found:
+            continue
+        if len(found) == 1:
+            (i,) = found
+            if not -n <= i < n:
+                found.clear()
+                continue
+            place = i % n if i < 0 else i
+            if obj[place] is value:
+                if place != i:
+                    found.clear()
+                dict.__setitem__(slots, key, (obj, place, value))
+            else:
+                found.clear()
             continue
         valid = {i % n if i < 0 else i for i in found if -n <= i < n}
         valid = {i for i in valid if obj[i] is value}
@@ -168,6 +211,7 @@ def _logged_slot_changes(
     made: dict[int, list[Any]],
     log: dict[tuple[int, int], tuple[list[Any], int, IRValue]],
     copies: list[tuple[Any, Any]],
+    arm: Logged | None = None,
 ) -> list[tuple[Any, int, IRValue]] | None:
     """``_slot_changes`` of an arm's *containers* and then its *copies*, in
     their order: a container without a copy, put back from the arm's slot
@@ -181,6 +225,9 @@ def _logged_slot_changes(
             if copy is None:
                 if by_list is None:
                     by_list = _log_by_list(log)
+                    if arm is not None:
+                        # Its arm's slots are put back from it too.
+                        arm.by_list = by_list
                 for i, old in by_list.get(id(obj), ()):
                     new = obj[i]
                     if new is old:
@@ -696,7 +743,7 @@ class Logged(list):  # type: ignore[type-arg]
     ``fresh``: whether the if records every slot of the lists it puts back
     (``SlotJournalLines.watch``)."""
 
-    __slots__ = ("fresh", "backed", "lengths", "log", "made", "around_log")
+    __slots__ = ("fresh", "backed", "lengths", "log", "made", "around_log", "by_list")
 
     if TYPE_CHECKING:
         fresh: bool
@@ -705,6 +752,7 @@ class Logged(list):  # type: ignore[type-arg]
         log: dict[tuple[int, int], tuple[list[Any], int, IRValue]]
         made: dict[int, list[Any]]
         around_log: dict[tuple[int, int], tuple[list[Any], int, IRValue]] | None
+        by_list: dict[int, list[tuple[int, IRValue]]] | None
 
     def __bool__(self) -> bool:
         return True
@@ -715,6 +763,7 @@ class Logged(list):  # type: ignore[type-arg]
         LIST_APPEND and `+=` may, without noting it, only at its end)."""
         log: dict[tuple[int, int], tuple[list[Any], int, IRValue]] = {}
         self.log = log
+        self.by_list = None
         self.around_log = lines.slotlog
         lines.slotlog = log
         backed = self.backed
@@ -749,4 +798,4 @@ class Logged(list):  # type: ignore[type-arg]
                         copy[i] = old
                 made[key] = copy
         self.made = made
-        return _logged_slot_changes(containers, made, log, copies)
+        return _logged_slot_changes(containers, made, log, copies, self)
