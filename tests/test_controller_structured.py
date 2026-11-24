@@ -197,6 +197,48 @@ def test_unrolling_the_structured_export_gives_the_flat_one(name):
     assert len(json.dumps(structured)) < len(json.dumps(flat))
 
 
+@pulse.kernel
+def _retuned_after_rolled(a, b):
+    d = get_drive_line(a)
+    e = get_drive_line(b)
+    shift_frequency(d.tone, 3.0e6)
+    drive(e, square(40, 0.1))
+    for _ in range(3):
+        drive(e, square(16, 0.1))
+        shift_phase(d.tone, 0.37)
+    shift_frequency(d.tone, 3.0e6)
+    drive(d, square(8, 0.1))
+
+
+@pytest.mark.parametrize("schedule", ["asap", "alap", "rcp", "alap_rcp"])
+def test_a_frame_retuned_after_a_rolled_loop_keeps_the_last_iterations_time(schedule):
+    """A rolled loop leaves its frames as its last iteration does, at the time
+    of their last change in it. Moved on from the state before the loop, whose
+    last change is not one period earlier, a frame's time overshoots, and a
+    retune between the two times shifts the phase (by 0.45 rad under asap)."""
+    lowered = pulse.compile(_retuned_after_rolled, unroll_threshold=0, schedule=schedule).lower(
+        Q[0], Q[1]
+    )
+    flat = lowered.export_to_controller()
+    structured = lowered.export_to_controller(version=2)
+    assert any(event["kind"] == "loop" for event in structured["events"])
+
+    def split(event):
+        """The event without its phases, and its phases."""
+        tones = [{k: v for k, v in t.items() if k != "phase_rad"} for t in event.get("tones", [])]
+        rest = {k: v for k, v in event.items() if k != "phase_rad"} | {"tones": tones}
+        return rest, [event.get("phase_rad")] + [t["phase_rad"] for t in event.get("tones", [])]
+
+    unrolled = unroll(structured)
+    assert len(unrolled["events"]) == len(flat["events"])
+    for ours, theirs in zip(flat["events"], unrolled["events"], strict=True):
+        (rest, phases), (other, others) = split(ours), split(theirs)
+        assert rest == other
+        for phase, unrolled_phase in zip(phases, others, strict=True):
+            assert (phase is None) == (unrolled_phase is None)
+            assert phase is None or abs(phase - unrolled_phase) <= 1e-9, (ours, theirs)
+
+
 def _kinds(events):
     for event in events:
         yield event["kind"]
