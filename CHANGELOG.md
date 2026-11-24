@@ -388,6 +388,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   schedule passes and `pulse-verify` now stop with an error that names the
   op and says to write the ops it stands for in its place. No kernel
   written in Python makes such a call, so no kernel is affected.
+- **A loop kept as a loop, with measurement-conditioned branches in its
+  body, no longer takes time that grows with the cube of its lines to
+  schedule.** For such a loop on several controllers the scheduler paired
+  every line a branch's condition reads with every line the branch
+  decides, to find which groups of lines hold each other back. Where a
+  `sync` in the body joins all the lines, as a round of an error-correcting
+  code does, each of those is most of the lines: a round of 1,088 qudits
+  took about 60 times as long to schedule as one of 272. The groups are
+  paired, not the lines, which gives the same schedule; the round of
+  1,088 qudits now takes about 18 times as long as the one of 272, and is
+  scheduled over 30 times faster than it was.
 - **Checking `max_concurrent_drives` and `max_concurrent_readouts` no
   longer takes time that grows with the square of the pulses at once.** The
   count of a control system's drives and readouts at once went through

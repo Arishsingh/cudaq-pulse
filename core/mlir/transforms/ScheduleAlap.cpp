@@ -1024,26 +1024,49 @@ static std::shared_ptr<const LoopGroups> loopGroups(mlir::scf::ForOp loop) {
     if (isTimedOp(op))
       groups->ofOp[op] =
           index.lookup(find(static_cast<unsigned>(bits.find_first())));
-  for (auto &[condition, decided, answers, lazy] : decides)
-    for (unsigned c : condition.set_bits())
-      for (unsigned d : decided.set_bits()) {
-        std::pair<unsigned, unsigned> branch{index.lookup(find(c)),
-                                             index.lookup(find(d))};
-        if (branch.first == branch.second)
-          continue;
-        if (!llvm::is_contained(groups->branches, branch))
-          groups->branches.push_back(branch);
-        if (!answers && !llvm::is_contained(groups->strictBranches, branch))
-          groups->strictBranches.push_back(branch);
-        auto it = llvm::find_if(groups->lazyBranches, [&](const auto &entry) {
-          return entry.first == branch;
-        });
-        if (it == groups->lazyBranches.end())
-          it = groups->lazyBranches.insert(it, {branch, {}});
-        for (mlir::Operation *submit : lazy)
-          if (!llvm::is_contained(it->second, submit))
-            it->second.push_back(submit);
+  // A branch holds each group its condition reads to each group it decides.
+  // The lines of a condition, and of what is decided, lie in few groups
+  // (in one, where the body's syncs join every line), so the groups of each
+  // are gathered first, in the order of their first lines, and paired:
+  // the pairs, and their order, that pairing every line with every line
+  // gives. With one group there is no pair.
+  llvm::SmallVector<unsigned> seenBy(groups->count, 0);
+  unsigned stamp = 0;
+  auto groupsIn = [&](const llvm::SmallBitVector &bits) {
+    llvm::SmallVector<unsigned, 2> found;
+    ++stamp;
+    for (unsigned bit : bits.set_bits()) {
+      unsigned group = groups->ofArg[bit];
+      if (seenBy[group] != stamp) {
+        seenBy[group] = stamp;
+        found.push_back(group);
       }
+    }
+    return found;
+  };
+  if (groups->count > 1)
+    for (auto &[condition, decided, answers, lazy] : decides) {
+      llvm::SmallVector<unsigned, 2> deciding = groupsIn(condition);
+      llvm::SmallVector<unsigned, 2> held = groupsIn(decided);
+      for (unsigned c : deciding)
+        for (unsigned d : held) {
+          std::pair<unsigned, unsigned> branch{c, d};
+          if (branch.first == branch.second)
+            continue;
+          if (!llvm::is_contained(groups->branches, branch))
+            groups->branches.push_back(branch);
+          if (!answers && !llvm::is_contained(groups->strictBranches, branch))
+            groups->strictBranches.push_back(branch);
+          auto it = llvm::find_if(groups->lazyBranches, [&](const auto &entry) {
+            return entry.first == branch;
+          });
+          if (it == groups->lazyBranches.end())
+            it = groups->lazyBranches.insert(it, {branch, {}});
+          for (mlir::Operation *submit : lazy)
+            if (!llvm::is_contained(it->second, submit))
+              it->second.push_back(submit);
+        }
+    }
   groups->driveGroups.resize(groups->count);
   groups->readoutGroups.resize(groups->count);
   for (auto [op, group] : groups->ofOp) {
