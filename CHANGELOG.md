@@ -385,6 +385,23 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A value computed from a term it uses several times, or through
+  thousands of operations, compiles.** `tau = tau + tau` written a few dozen
+  times did not finish tracing: forty such lines are forty operations, but
+  written out they are 2^40 terms, and the tracer walked the value as
+  written out. A wait length or an amplitude summed in a loop of 200 rounds
+  failed with a `SyntaxError` from inside the compiler, one of 1,100 rounds
+  with a `RecursionError`. Every walk of a value now visits an operation
+  once and without recursion, and an error names a shared term once:
+  `the wait length t2 + t2 with t1 = tau * 2.0, t2 = t1 + t1`. The same
+  holds for conditions built with `&` and `|` from answers of classical
+  calls, however long the chain; and a condition that several parts of
+  another use, also through `^`, `==` and `!=`, is computed once in the
+  program, where it was computed once per use. A value that shares nothing
+  compiles to the same program and reads the same in errors. Not
+  covered yet: an amplitude, phase or frequency, or a value from an answer,
+  that doubles a term many times is still written out in the controller
+  export, which grows with its terms.
 - **A time in a runtime `list[float]` argument is refused, as for a `float`
   parameter.** `[100 * pulse.ns]` was taken as its nanoseconds and used as
   that many clock cycles, so a scan of waits written with units played half
