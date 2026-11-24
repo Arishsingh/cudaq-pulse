@@ -467,6 +467,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   once for each content it has had. An installed description, loaded by
   its name, is still kept by its file's modification time: nothing writes
   those while a program runs.
+- **Checking a program against a control system of many controllers no
+  longer takes time that grows with their number times the program.**
+  Compiling for several controllers checked each one on a copy of every
+  event of the program, with the other controllers' pulses hidden, and
+  built the program's loops again for each. The loops are now built once
+  and each controller is checked on the pulses it plays. The limits found,
+  their wording and their order are the same.
 - **Loops that share a line with something else are counted from their
   periods.** On a line several qudits share, a loop kept as a loop was
   counted from one round only when nothing else played on the line
