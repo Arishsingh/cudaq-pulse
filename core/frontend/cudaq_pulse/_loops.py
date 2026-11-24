@@ -774,6 +774,58 @@ def labeled(found: list[Any], label: str) -> list[Any]:
     return out
 
 
+def _timeouts(
+    lowered: ScheduledKernel, events: Sequence[Mapping[str, Any]], tree: list[Any]
+) -> list[Any]:
+    """The waits for an answer among *events* that have a timeout, for a
+    controller that cannot stop waiting."""
+    functions = {fn.name: fn for fn in lowered.classical}
+
+    def timeout(i: int) -> _Text | None:
+        event = events[i]
+        if event["kind"] != "answer":
+            return None
+        fn = functions.get(event["function"])
+        if event["wait"] != "timeout" and (fn is None or fn.latency_mode != "timeout"):
+            return None
+        return _Text(
+            f"the wait for {event['function']} at ",
+            (event["start_cycles"], i),
+            " has a timeout; the controller cannot stop waiting for an answer, so take it "
+            "with result() (no timeout)",
+        )
+
+    return _each_event(tree, timeout)
+
+
+class Shared:
+    """What ``parts`` of the controllers of one control system share, made
+    once for all of them: the tree of the system's events with the loops
+    each lies in; by controller, the pulses it plays (``owner`` gives the
+    controller of an event that is played, else ``None``); and the waits
+    with a timeout, the same for every controller that cannot stop
+    waiting."""
+
+    __slots__ = ("tree", "chains", "timed", "owner", "_timeouts")
+
+    def __init__(
+        self,
+        events: Sequence[Mapping[str, Any]],
+        repeats: Sequence[Sequence[int]],
+        periods: Sequence[Sequence[int]],
+        owner: Callable[[int], int | None],
+    ) -> None:
+        self.tree, self.chains = _tree(events, repeats, periods)
+        self.owner = owner
+        self.timed: dict[int, list[Any]] = _split(self.tree, owner)
+        self._timeouts: list[Any] | None = None
+
+    def timeouts(self, lowered: ScheduledKernel, events: Sequence[Mapping[str, Any]]) -> list[Any]:
+        if self._timeouts is None:
+            self._timeouts = _timeouts(lowered, events, self.tree)
+        return self._timeouts
+
+
 def parts(
     lowered: ScheduledKernel,
     events: Sequence[Mapping[str, Any]],
@@ -786,6 +838,8 @@ def parts(
     own: ControllerClock | None = None,
     off: Sequence[tuple[int, int, int]] = (),
     natives: Sequence[int] | None = None,
+    whole: Shared | None = None,
+    index: int | None = None,
 ) -> list[Any]:
     """``controller._violations`` of the events of a summarizing walk, as
     violations and the copies of a loop's (``finished`` lists them), with
@@ -795,16 +849,28 @@ def parts(
     counted them, with *off* its events off the grid, and *natives* by event
     the runtime qudit whose own frequency its tone plays, or -1.
     ``UnsyncedError`` when a check pairs events of lines of different
-    periods."""
-    tree, chains = _tree(events, repeats, periods)
+    periods. With *whole*, for controller *index* of a control system:
+    the pulses it plays among *events*, which are the whole system's."""
+    mine: Callable[[int], bool] | None = None
+    if whole is None:
+        tree, chains = _tree(events, repeats, periods)
+        timed = _keep(
+            tree, lambda i: events[i]["kind"] in _PLAYED and events[i]["end_cycles"] is not None
+        )
+    else:
+        assert index is not None
+        tree, chains = whole.tree, whole.chains
+        timed = whole.timed.get(index, [])
+        owner = whole.owner
+
+        def mine(i: int) -> bool:
+            return owner(i) == index
+
     budget = _Budget()
     found: list[Any] = []
     if off:
         assert own is not None
         found.extend(_off_grid(tree, events, lines, own, off))
-    timed = _keep(
-        tree, lambda i: events[i]["kind"] in _PLAYED and events[i]["end_cycles"] is not None
-    )
     most = limits.max_pulses
     if most is not None:
         total = _count(timed)
@@ -946,26 +1012,13 @@ def parts(
             )
     if limits.feedback_latency_cycles:
         found.extend(
-            _Feedback(events, chains, limits.feedback_latency_cycles, budget).walk(timed, {})
+            _Feedback(events, chains, limits.feedback_latency_cycles, budget, mine).walk(timed, {})
         )
     if not limits.supports_timeouts:
-        functions = {fn.name: fn for fn in lowered.classical}
-
-        def timeout(i: int) -> _Text | None:
-            event = events[i]
-            if event["kind"] != "answer":
-                return None
-            fn = functions.get(event["function"])
-            if event["wait"] != "timeout" and (fn is None or fn.latency_mode != "timeout"):
-                return None
-            return _Text(
-                f"the wait for {event['function']} at ",
-                (event["start_cycles"], i),
-                " has a timeout; the controller cannot stop waiting for an answer, so take it "
-                "with result() (no timeout)",
-            )
-
-        found.extend(_each_event(tree, timeout))
+        if whole is None:
+            found.extend(_timeouts(lowered, events, tree))
+        else:
+            found.extend(whole.timeouts(lowered, events))
     if sample_rate is not None:
         from .controller import _has_samples
 
@@ -1117,8 +1170,11 @@ class _Feedback:
         chains: Sequence[tuple[_Rep, ...]],
         latency: int,
         budget: _Budget,
+        mine: Callable[[int], bool] | None = None,
     ) -> None:
         self.events, self.chains, self.latency, self.budget = events, chains, latency, budget
+        # Of a control system's events, whether one is the controller's own.
+        self.mine = mine
         # The copy each run of copies of a loop is checked as, and the
         # period of the copies of each loop being walked (``walk``).
         self.at: dict[_Rep, int] = {}
@@ -1156,7 +1212,7 @@ class _Feedback:
         for condition in self.events[i]["conditions"]:
             for ref in condition["readouts"]:
                 readout = self.events[ref]
-                if readout["end_cycles"] is not None:
+                if readout["end_cycles"] is not None and (self.mine is None or self.mine(ref)):
                     yield ref, readout
 
     def timing(

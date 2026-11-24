@@ -2312,17 +2312,25 @@ class ControlSystem:
         else:
             if self._forwarding(events, owners, clocks, run_time):
                 return None
+
+            # One tree of the events for all the controllers, and the pulses
+            # each plays: a controller is checked on its own, not on a copy
+            # of every event with the others' hidden.
+            # (The walk's pulses are drives and readouts; a "play", which
+            # only an export in format /2 holds, is no controller's here.)
+            def owner(i: int) -> int | None:
+                e = events[i]
+                if e["kind"] not in _PLAYED or e["end_cycles"] is None:
+                    return None
+                found: int | None = owners[e["line"]]
+                return found
+
+            whole = _loops.Shared(events, repeats, periods, owner)
             for index, controller in enumerate(self.controllers):
-                mine = [
-                    e
-                    if e["kind"] not in _PLAYED or owners[e["line"]] == index
-                    else {**e, "end_cycles": None}
-                    for e in events
-                ]
                 try:
                     own = _loops.parts(
                         lowered,
-                        mine,
+                        events,
                         repeats,
                         controller,
                         lines,
@@ -2332,6 +2340,8 @@ class ControlSystem:
                         None,
                         (),
                         natives,
+                        whole,
+                        index,
                     )
                 except _loops.UnsyncedError:
                     return None
