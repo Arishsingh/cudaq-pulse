@@ -74,6 +74,10 @@ RELATED: dict[str, Entry] = {
         "start": "tutorials/own_quantum_system",
         "see": ["api/quantum_systems", "api/quantum_system_components"],
     },
+    "user_guide/transmon_surface17": {
+        "start": None,
+        "see": ["api/quantum_systems", "user_guide/controller_backends"],
+    },
     "user_guide/custom_passes": {
         "start": None,
         "see": ["architecture/pipeline", "architecture/mlir_passes"],

@@ -530,7 +530,8 @@ jobs:
         run: >-
           PATH="$PWD/build/dev/bin:$PATH" uv run --no-sync python -m pytest
           tests/test_tutorials.py tests/test_tutorial_scripts.py tests/test_tutorial_figures.py
-          tests/test_examples.py tests/test_conventions.py tests/test_release_tools.py
+          tests/test_examples.py tests/test_conventions.py tests/test_transmon_surface17_page.py
+          tests/test_release_tools.py
           tests/test_api_docs.py tests/test_error_codes.py tests/test_third_party_notices.py
           tests/test_ci_changes.py tests/test_perf_gate.py
           -q -m "not gpu" -p no:cacheprovider

@@ -426,6 +426,34 @@ def test_a_rolled_round_with_branches_is_not_scheduled_pair_by_pair_of_lines():
 
 
 @pytest.mark.scaling
+def test_the_pulses_at_once_are_counted_in_linear_time():
+    from cudaq_pulse._concurrency import violations
+    from cudaq_pulse.quantum_systems import PhysicalQudit
+
+    @pulse.kernel
+    def together(qudits):
+        for q in qudits:
+            drive(get_drive_line(q), square(40, 0.1))
+
+    def program(n: int):
+        # Every drive is in flight at once, and the limit lets them be.
+        control = ControlSystem(
+            controllers=[Controller(drive_lines=range(n), readout_lines=range(n))],
+            max_concurrent_drives=n,
+        )
+        qudits = {i: PhysicalQudit(i, 5.0e9 + 1.0e3 * i, 50.0, 30.0) for i in range(n)}
+        system = pulse.quantum_system(name=f"wide{n}", qudits=qudits, control_system=control)
+        lowered = pulse.compile(together, quantum_system=system, schedule="asap").lower(
+            system.qudits[0:n]
+        )
+        return lambda: violations(lowered)
+
+    # Eight times the drives: about 8x the time when linear, 64x when each
+    # drive is counted against every other in flight.
+    _assert_linear("at once", {n: program(n) for n in (500, 4000)}, 8 * TOLERANCE)
+
+
+@pytest.mark.scaling
 def test_the_values_of_a_long_list_are_bound_in_linear_time():
     @pulse.kernel
     def stream(q, amplitudes: list[float], count: int):

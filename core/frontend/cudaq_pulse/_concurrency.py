@@ -27,6 +27,7 @@ rather than walk every iteration.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from heapq import heappop, heappush
 from typing import TYPE_CHECKING, Any
 
 from ._errors import UnsupportedError
@@ -115,6 +116,10 @@ def _first(item: _Played) -> tuple[int, int]:
     return item[0], item[1]
 
 
+def _second(item: tuple[int, int]) -> int:
+    return item[1]
+
+
 class _AtOnce:
     """The pulses of one kind at once past *limit*: the first cycle they
     are more, how many then, and the most at once."""
@@ -175,13 +180,23 @@ class _AtOnce:
     def sweep(self, played: Sequence[_Played]) -> None:
         """Count *played*, sorted by start; a pulse ending at a cycle frees
         its place for one starting then."""
-        active: list[tuple[int, dict[tuple[Any, ...], Any], int]] = []
-        for start, end, event, path in played:
-            active = [a for a in active if a[0] > start]
-            active.append((end, self._arms(event["conditions"], path), 1))
+        # The pulses in flight, the one that ends first on top: (end, the
+        # pulse's place in *played*). Their arms are worked out only where
+        # more are in flight than the limit, in the order they started.
+        active: list[tuple[int, int]] = []
+        arms: dict[int, dict[tuple[Any, ...], Any]] = {}
+        for order, (start, end, _, _) in enumerate(played):
+            while active and active[0][0] <= start:
+                arms.pop(heappop(active)[1], None)
+            heappush(active, (end, order))
             if len(active) <= self.limit:
                 continue
-            count = _together([(a[1], a[2]) for a in active])
+            together = []
+            for _, k in sorted(active, key=_second):
+                if k not in arms:
+                    arms[k] = self._arms(played[k][2]["conditions"], played[k][3])
+                together.append((arms[k], 1))
+            count = _together(together)
             if count <= self.limit:
                 continue
             if self.first is None or start < self.first:
