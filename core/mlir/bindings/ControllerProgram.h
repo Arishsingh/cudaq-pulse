@@ -1743,17 +1743,17 @@ struct ControllerWalk : ControllerExpressions {
     int64_t more = trips - first - 2;
     if (segments && !segments->skip(more, marks[first + 1]))
       throw std::overflow_error("a rolled loop opens more than 2**63 segments");
+    // A frame moves as from the next-to-last iteration walked to the last:
+    // the state before the first may have last changed at any earlier time,
+    // not one period before, and a later change that retunes the frame reads
+    // its time.
     auto framesAfter = frames;
     for (auto &[root, frame] : framesAfter) {
       auto found = framesNext.find(root);
-      Frame next =
-          found == framesNext.end() ? initialFrame(root) : found->second;
-      auto was = framesFirst.find(root);
       Frame before =
-          was == framesFirst.end() ? initialFrame(root) : was->second;
-      frame = next;
-      frame.phase = extend(before.phase, next.phase, more + 1);
-      frame.timeNs = extend(before.timeNs, next.timeNs, more + 1);
+          found == framesNext.end() ? initialFrame(root) : found->second;
+      frame.phase = extend(before.phase, frame.phase, more);
+      frame.timeNs = extend(before.timeNs, frame.timeNs, more);
     }
     // A line's reach moves as from the next-to-last iteration walked to the
     // last: a line first played in the loop has no reach before it.

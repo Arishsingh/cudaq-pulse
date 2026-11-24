@@ -393,6 +393,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   A trace now keeps one copy per function and marks where each `if`'s
   branches end in it while they are traced. An `if` costs about 12 KB,
   whatever the length of the kernel, and the program compiled is the same.
+- **After a loop kept as a loop, the compact controller export
+  (`export_to_controller(version=2)`) now carries the right phase on a tone
+  that is retuned later.** At the end of a rolled loop, the export moved
+  each tone's frame on from its state before the loop, not from its last
+  two iterations. When the frame had last changed before the loop at some
+  other time than one period earlier, its time ended away from the loop's
+  last change, later or earlier, and a `shift_frequency` or `set_frequency`
+  after the loop took the phase across that gap at the new frequency. In one
+  program with a loop of `shift_phase` and the tone retuned by 3 MHz after
+  it, the frame ended 20 ns late, and every later pulse on the tone was off
+  by 2π × 3 MHz × 20 ns = 0.377 rad against `export_to_controller()`. The frame is now moved on from the loop's last
+  two iterations. The flat export (`version=1`) and `export_to_emulator()`
+  are unchanged.
 - **A function declaration no longer crashes the schedule passes.** A module
   with a function that has no body, `func.func private @f(i64) -> i64`,
   crashed `pulse-schedule-asap`, `-alap` and `-rcp`. A declaration is now
