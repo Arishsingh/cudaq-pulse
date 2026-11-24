@@ -180,6 +180,12 @@ Where the rest goes:
   which the pulse flips the other way;
 - it relaxes a little during the 300 ns readout.
 
+To start from a known state instead of the thermal mixture, pass
+``initial_state`` to ``pulse.simulate``:
+``pulse.simulate(rabi, qubit, 0.16, initial_state=[1, 0, 0])`` starts the
+qubit in level 0. The list holds one amplitude per level, so ``[1, 0, 0]``
+puts all of the population in level 0 and none in levels 1 and 2.
+
 Sweep the amplitude
 -------------------
 
