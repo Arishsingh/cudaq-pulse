@@ -376,6 +376,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A kernel with many measurement-conditioned `if`s no longer takes memory
+  and time that grow with the square of their number to trace.** Each `if`
+  kept its own copy of the whole kernel's instructions, so a kernel of n
+  `if`s held n copies of itself: about 300 KB for each `if` of a kernel with
+  2,400 of them, and garbage collection walked the copies again and again.
+  A trace now keeps one copy per function and marks where each `if`'s
+  branches end in it while they are traced. An `if` costs about 12 KB,
+  whatever the length of the kernel, and the program compiled is the same.
 - **A loop kept as a loop, with measurement-conditioned branches in its
   body, no longer takes time that grows with the cube of its lines to
   schedule.** For such a loop on several controllers the scheduler paired
