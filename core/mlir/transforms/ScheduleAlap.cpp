@@ -105,9 +105,10 @@ static bool isTimedOp(mlir::Operation *op) {
                    classical::SubmitOp, classical::WaitOp>(op);
 }
 
-/// The shape a scheduled `pulse.schedule_block` presents to its parent, in
-/// the block's local time. An offset of -1 marks an operand nothing in the
-/// block waits for, or a result that passes operand `source` through.
+/// The shape a scheduled `pulse.schedule_block`, or a function scheduled on
+/// its own, presents to its caller, in its local time. An offset of -1 marks an
+/// operand nothing in the block waits for, or a result that passes operand
+/// `source` through.
 struct BlockShape {
   int64_t length = 0;
   llvm::SmallVector<int64_t> in, out, source;
@@ -5852,12 +5853,12 @@ outermostBlocks(mlir::Region &region) {
   return blocks;
 }
 
-/// When a value from outside a block is first needed in it: the earliest
-/// local start of a timed op that depends on it, or of a branch arm
-/// conditioned on it.
+/// When a value from outside a block (or a function's argument) is first
+/// needed in it: the earliest local start of a timed op that depends on it,
+/// or of a branch arm conditioned on it. `owner` is the block or function.
 class FirstUse {
 public:
-  explicit FirstUse(pulse::ScheduleBlockOp block) : block(block) {}
+  explicit FirstUse(mlir::Operation *owner) : owner(owner) {}
 
   int64_t of(mlir::Value value) {
     earliest = kNever;
@@ -5879,7 +5880,7 @@ private:
 
   void visit(mlir::OpOperand &use) {
     mlir::Operation *op = use.getOwner();
-    if (op->getParentOp() == block &&
+    if (op->getParentOp() == owner &&
         op->hasTrait<mlir::OpTrait::IsTerminator>())
       return;
     if (!visited.insert(&use).second)
@@ -5917,7 +5918,7 @@ private:
       visitUses(result);
   }
 
-  pulse::ScheduleBlockOp block;
+  mlir::Operation *owner;
   llvm::DenseSet<mlir::OpOperand *> visited;
   int64_t earliest = kNever;
 };
@@ -5979,8 +5980,8 @@ static Readiness readinessOf(const Resources &resources,
                    controllers.enabled() ? &controllers : nullptr};
 }
 
-/// When each value in a scheduled block becomes available, in local time,
-/// or which operand it passes through unchanged.
+/// When each value in a scheduled block (or function) `body` becomes
+/// available, in local time, or which operand it passes through unchanged.
 class Availability {
 public:
   struct State {
@@ -5988,16 +5989,15 @@ public:
     int source = -1;
   };
 
-  Availability(pulse::ScheduleBlockOp block,
-               llvm::MutableArrayRef<int64_t> firstUse, bool classical,
-               const Readiness &readiness)
-      : block(block), firstUse(firstUse), classical(classical),
+  Availability(mlir::Region &body, llvm::MutableArrayRef<int64_t> firstUse,
+               bool classical, const Readiness &readiness)
+      : body(body), firstUse(firstUse), classical(classical),
         readiness(readiness) {
-    for (auto [index, arg] : llvm::enumerate(block.getBody().getArguments()))
+    for (auto [index, arg] : llvm::enumerate(body.getArguments()))
       state[arg] = State{0, static_cast<int>(index)};
   }
 
-  void run() { visitBlock(block.getBody().front()); }
+  void run() { visitBlock(body.front()); }
 
   State of(mlir::Value value) const { return state.lookup(value); }
 
@@ -6211,7 +6211,7 @@ private:
         state[result] = through;
   }
 
-  pulse::ScheduleBlockOp block;
+  mlir::Region &body;
   llvm::MutableArrayRef<int64_t> firstUse;
   bool classical;
   const Readiness &readiness;
@@ -6220,38 +6220,47 @@ private:
   llvm::SmallVector<int64_t, 2> iteration;
 };
 
+/// The shape of `body`, the body of `owner` (a schedule block or a
+/// function), which has a local schedule; a readout's outcome is usable as
+/// `readiness` says.
+static BlockShape measureShape(mlir::Operation *owner, mlir::Region &body,
+                               bool classical, const Readiness &readiness) {
+  BlockShape shape;
+  FirstUse firstUse(owner);
+  for (mlir::Value arg : body.getArguments()) {
+    int64_t first = firstUse.of(arg);
+    shape.in.push_back(first == kNever ? -1 : first);
+  }
+  Availability availability(body, shape.in, classical, readiness);
+  availability.run();
+  shape.length = availability.length;
+  for (mlir::Value value : body.front().getTerminator()->getOperands()) {
+    Availability::State s = availability.of(value);
+    shape.out.push_back(s.source >= 0 ? -1 : s.time);
+    shape.source.push_back(s.source);
+    // A measurement handed out is usable later than the block ends; the
+    // block does not last longer for it.
+    if (!mlir::isa<pulse::MeasurementType>(value.getType()))
+      shape.length = std::max(shape.length, s.source >= 0 ? 0 : s.time);
+  }
+  return shape;
+}
+
 /// Record the shape of `block`, whose body has a local schedule; a
 /// readout's outcome is usable as `readiness` says.
 static void writeShape(pulse::ScheduleBlockOp block, bool classical,
                        const Readiness &readiness) {
-  FirstUse firstUse(block);
-  llvm::SmallVector<int64_t> in;
-  for (mlir::Value arg : block.getBody().getArguments()) {
-    int64_t first = firstUse.of(arg);
-    in.push_back(first == kNever ? -1 : first);
-  }
-  Availability availability(block, in, classical, readiness);
-  availability.run();
-  llvm::SmallVector<int64_t> out, source;
-  int64_t length = availability.length;
-  for (mlir::Value value :
-       block.getBody().front().getTerminator()->getOperands()) {
-    Availability::State s = availability.of(value);
-    out.push_back(s.source >= 0 ? -1 : s.time);
-    source.push_back(s.source);
-    // A measurement handed out is usable later than the block ends; the
-    // block does not last longer for it.
-    if (!mlir::isa<pulse::MeasurementType>(value.getType()))
-      length = std::max(length, s.source >= 0 ? 0 : s.time);
-  }
+  BlockShape shape = measureShape(block, block.getBody(), classical, readiness);
   mlir::MLIRContext *context = block.getContext();
-  block->setAttr(
-      "length_cycles",
-      mlir::IntegerAttr::get(mlir::IntegerType::get(context, 64), length));
-  block->setAttr("in_offset_cycles", mlir::DenseI64ArrayAttr::get(context, in));
+  block->setAttr("length_cycles",
+                 mlir::IntegerAttr::get(mlir::IntegerType::get(context, 64),
+                                        shape.length));
+  block->setAttr("in_offset_cycles",
+                 mlir::DenseI64ArrayAttr::get(context, shape.in));
   block->setAttr("out_offset_cycles",
-                 mlir::DenseI64ArrayAttr::get(context, out));
-  block->setAttr("out_source", mlir::DenseI64ArrayAttr::get(context, source));
+                 mlir::DenseI64ArrayAttr::get(context, shape.out));
+  block->setAttr("out_source",
+                 mlir::DenseI64ArrayAttr::get(context, shape.source));
 }
 
 /// Replace `block` by its body.
