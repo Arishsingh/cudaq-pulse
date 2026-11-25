@@ -838,7 +838,13 @@ The tone starts each shot at the frequency the line states,
 ``DriveLine([0, 1, 2], broadcast=True, frequency_hz=5.1e9)``. It may be
 left out when the line's qudits share one frequency, which is then the
 tone's; when they differ, a program that takes the line is a
-``CompilationError`` asking for it. Each qudit is driven off resonance by
+``CompilationError`` asking for it. On a quantum system whose qudits give
+an ``Offset`` from one reference, the tone is the ``Offset`` its qudits
+share, and a line that states ``frequency_hz``, or whose qudits differ, is
+a ``CompilationError``: the line cannot state an offset yet. On a system
+whose qudits give no frequency, a program that takes the line is a
+``CompilationError``: each tone there is an offset from its own qudit's
+carrier, and the line's one tone is no single qudit's. Each qudit is driven off resonance by
 the difference between the tone and its own frequency: the simulator
 drives every qudit of the line with the same envelope, the tone's
 frequency and phase, and that qudit's own amplitude scale.

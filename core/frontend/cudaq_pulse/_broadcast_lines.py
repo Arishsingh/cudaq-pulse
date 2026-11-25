@@ -148,6 +148,23 @@ def _tone_hz(found: _Line, target: Any) -> tuple[float | None, str | None]:
     either, ``None`` and the error (no error when *target* lacks one of
     its qudits, which is an error of its own)."""
     qudits, _, _, hz = found
+    frame = target.frequency_frame
+    if frame == "own_carrier":
+        # No tone of such a system is placed against another qudit's carrier
+        # (compiler._refuse_other_qudits_tones); this one is no single qudit's.
+        return None, (
+            f"quantum system {target.name!r}: its qudits give no frequency_hz, so each tone is "
+            "an offset from its own qudit's carrier and the system does not state how far "
+            f"apart two carriers are; {_named(qudits)} has one tone for all its qudits: give "
+            "the qudits their frequencies, or each an Offset from one reference"
+        )
+    if frame == "shared_reference" and hz is not None:
+        return None, (
+            f"quantum system {target.name!r}: {_named(qudits)} states its tone as "
+            f"frequency_hz={hz!r}, and the system's qudits give Offsets from a reference it "
+            "does not state, so the tone cannot be placed among them; leave frequency_hz out "
+            "where the line's qudits share one Offset"
+        )
     if hz is not None:
         return hz, None
     known = target.frequencies
@@ -157,6 +174,14 @@ def _tone_hz(found: _Line, target: Any) -> tuple[float | None, str | None]:
         return None, None
     if len(set(own)) == 1:
         return own[0], None
+    if frame == "shared_reference":
+        mhz = [f"{f / 1e6:g}" for f in own]
+        return None, (
+            f"quantum system {target.name!r}: {_named(qudits)} has one tone, and its qudits "
+            f"are at Offsets of {', '.join(mhz[:-1])} and {mhz[-1]} MHz from their reference; "
+            "a broadcast line cannot state its tone on a system of Offsets yet: its qudits "
+            "share one Offset, or the system gives their frequencies"
+        )
     ghz = [f"{f / 1e9:g}" for f in own]
     return None, (
         f"quantum system {target.name!r}: {_named(qudits)} has one tone, and its qudits are "

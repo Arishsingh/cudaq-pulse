@@ -15,7 +15,7 @@ import cudaq_pulse as pulse
 import numpy as np
 import pytest
 from cudaq_pulse.controller import DriveLine, ReadoutLine, unroll
-from cudaq_pulse.quantum_systems import PhysicalQudit
+from cudaq_pulse.quantum_systems import Offset, PhysicalQudit
 
 
 def _qudits(count, step_hz=0.0):
@@ -350,6 +350,51 @@ def test_a_stated_tone_is_the_line_s_whatever_its_qudits_are_at():
         program = lowered.export_to_controller(version=version)
         assert program["lines"][0]["native_frequency_hz"] == 5.1e9
     assert lowered.export_to_controller()["events"][0]["frequency_hz"] == 5.1e9
+
+
+def _framed(frequencies):
+    return pulse.quantum_system(
+        name="chip",
+        qudits={i: PhysicalQudit(i, f, 50.0, 30.0) for i, f in enumerate(frequencies)},
+        clock_ghz=1.0,
+    )
+
+
+def test_on_offsets_from_one_reference_the_tone_is_the_offset_its_qudits_share():
+    qs = _framed([Offset(1.5e8)] * 3)
+    assert qs.frequency_frame == "shared_reference"
+    lowered = _lowered(by_one, qs, _box(BEAM), 1)
+    assert "pulse.get_drive_line %0, %1, %2 {frequency_hz = 1.500000e+08 : f64}" in lowered.mlir()
+    assert lowered.export_to_controller()["lines"][0]["native_frequency_hz"] == 1.5e8
+    # A frequency is not an offset from that reference, and the line cannot
+    # state an offset yet.
+    stated = _box(DriveLine([0, 1, 2], broadcast=True, frequency_hz=5.0e9))
+    with pytest.raises(pulse.CompilationError, match="states its tone as frequency_hz=5"):
+        _lowered(by_one, qs, stated, 1)
+    apart = _framed([Offset(0.0), Offset(1.5e8), Offset(3.0e8)])
+    with pytest.raises(pulse.CompilationError, match="Offsets of 0, 150 and 300 MHz"):
+        _lowered(by_one, apart, _box(BEAM), 1)
+
+
+def test_qudits_that_give_no_frequency_have_no_broadcast_tone():
+    qs = _framed([None] * 3)
+    assert qs.frequency_frame == "own_carrier"
+    for box in (_box(BEAM), _box(DriveLine([0, 1, 2], broadcast=True, frequency_hz=5.0e9))):
+        with pytest.raises(pulse.CompilationError) as caught:
+            _lowered(by_one, qs, box, 1)
+        assert "does not state how far apart two carriers are" in str(caught.value)
+        assert "the broadcast drive line of qudits 0..2 has one tone for all its qudits" in str(
+            caught.value
+        )
+
+    # A line of its own on the same control system is as on any other.
+    @pulse.kernel
+    def own(d):
+        drive(get_drive_line(d), square(40, 0.2))
+
+    four = _framed([None] * 4)
+    lowered = _lowered(own, four, _box(BEAM, 3, readout_lines=(0, 1, 2, 3)), 3)
+    assert lowered.qudits == (3,)
 
 
 # ── The simulator ───────────────────────────────────────────────────────────
