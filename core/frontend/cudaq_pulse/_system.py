@@ -3136,6 +3136,15 @@ def _device_data(quantum_system: QuantumSystem) -> dict[str, Any]:
     data["layout"] = list(quantum_system.layout)
     if base.frames != "dressed":
         data["frames"] = base.frames
+    if base.readout_crosstalk:
+        data["readout_crosstalk"] = [
+            {
+                "resonator_of": x.resonator_of,
+                "qudit": x.qudit,
+                "chi_hz": list(x.chi_hz) if x.chi_hz.__class__ is tuple else x.chi_hz,
+            }
+            for x in base.readout_crosstalk
+        ]
     if spec is None or quantum_system.clock_ghz != base.clock_ghz:
         data["clock_ghz"] = quantum_system.clock_ghz
     calibration = quantum_system.calibration
