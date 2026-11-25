@@ -1272,9 +1272,22 @@ class ReadoutCrosstalk:
     chi_hz: float | tuple[float, ...]
 
     def __post_init__(self) -> None:
+        # Floats, so that equal shifts print and fingerprint alike; a value
+        # that is no number stays for the system's checks to name.
         chi = self.chi_hz
-        if chi.__class__ is not tuple and isinstance(chi, Sequence) and not isinstance(chi, str):
-            object.__setattr__(self, "chi_hz", tuple(chi))
+        if isinstance(chi, Sequence) and not isinstance(chi, (str, bytes)):
+            chi = tuple(_as_float(c) for c in chi)
+        else:
+            chi = _as_float(chi)
+        object.__setattr__(self, "chi_hz", chi)
+
+
+# *value* as a float if it is a real number other than a bool or an Offset
+# (which the checks refuse as a shift), else itself.
+def _as_float(value: Any) -> Any:
+    if value.__class__ not in (bool, Offset) and isinstance(value, numbers.Real):
+        return float(value)
+    return value
 
 
 # The operator a coupling stands for, by the simulation model of its system:
@@ -2154,6 +2167,11 @@ def _rebuilt_crossed(inputs: dict[str, Any], frames: str, crosstalk: Any) -> _De
 # crosstalk entries, and *frames*.
 def _crossed(values: dict[str, Any], changes: dict[str, Any], frames: str) -> _Description:
     crosstalk = changes.pop("readout_crosstalk")
+    if isinstance(crosstalk, (str, bytes)) or not isinstance(crosstalk, Sequence):
+        raise InvalidTypeError(
+            "readout_crosstalk must be a list of ReadoutCrosstalk entries, got "
+            f"{type(crosstalk).__name__}"
+        )
     values.update(changes)
     if not crosstalk:
         return _Description(**values).replace(frames=frames)
@@ -2278,12 +2296,13 @@ def _description_class(frame: str, bare: bool, crosstalk: bool) -> type[_Descrip
     found = _CLASSES.get((frame, bare, crosstalk))
     if found is None:
         base = _CLASSES[frame, bare, False]
-        found = type(
+        made = type(
             f"_Crosstalk{base.__name__.lstrip('_')}",
             (_CrosstalkDescription, base),
             {"__slots__": (), "__module__": __name__},
         )
-        _CLASSES[frame, bare, crosstalk] = found
+        # One class per key whichever thread makes it first.
+        found = _CLASSES.setdefault((frame, bare, crosstalk), made)
     return found
 
 

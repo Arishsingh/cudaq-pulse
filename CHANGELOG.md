@@ -13,6 +13,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Added
 
+- **Readout crosstalk.** `qs.replace(readout_crosstalk=[ReadoutCrosstalk(
+  resonator_of=14, qudit=4, chi_hz=-20e3)])` states that a readout of qudit
+  14 shifts qudit 4 by `chi_hz` per photon in qudit 14's resonator (level j
+  of qudit 4 by j times that); a tuple gives the shift by qudit 14's level.
+  `pulse.simulate` adds the shift while the readout plays and as its
+  resonator rings down, with the photons the resonator's equation gives for
+  each level of the qudit read out at the tone and amplitude played. The
+  entries are checked, are part of the fingerprint, pickle and go in the
+  system file. A system without any lowers and simulates as before.
 - **`pulse.call`, a placed call of a function scheduled on its own.** In MLIR,
   `pulse.call @f(args) <{start_cycles = s, duration_cycles = d}>` runs `@f`
   at one start time, every timed op of `@f` keeping its start relative to

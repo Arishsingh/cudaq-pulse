@@ -128,6 +128,20 @@ zeta = E11 - E10 - E01 + E00. The values are checked when the system is
 built, and one ``QuantumSystemDefinitionError`` lists every problem at its path
 (``couplings[1].qudits[0]``).
 
+A readout of one qudit can shift another through the photons in its
+resonator. ``qs.replace(readout_crosstalk=[...])`` declares it, as
+``ReadoutCrosstalk(resonator_of=14, qudit=4, chi_hz=-20e3)``: while qudit
+14's resonator holds n photons, level j of qudit 4 moves by j times
+``chi_hz`` times n. A tuple, ``chi_hz=(-20e3, -26e3)``, gives the shift by
+the level of the qudit read out, a higher level taking the last value.
+``pulse.simulate`` follows the photons as the readout plays them, from the
+qudit's ``DispersiveReadout`` (its ``dispersive_shift_hz`` and
+``linewidth_hz``) and ``READOUT`` calibration: they ring up while the
+readout plays at its tone and ring down after it, and depend on the level
+of the qudit read out wherever the tone is not midway between the
+frequencies its levels pull the resonator to. A system file holds the
+entries under ``readout_crosstalk``.
+
 ``qs.replace(...)`` makes a variant of a quantum system, as
 ``dataclasses.replace`` does: the same build keywords, each defaulting to
 the system's own value (``qudits`` to its ``physical_qudits``). Passing a

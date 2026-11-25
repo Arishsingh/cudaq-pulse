@@ -10,6 +10,7 @@ import pickle
 import cudaq_pulse as pulse
 import pytest
 from cudaq_pulse.quantum_systems import ReadoutCrosstalk
+from cudaq_pulse.quantum_systems.base import Offset
 
 Z2_ON_D5 = ReadoutCrosstalk(resonator_of=14, qudit=4, chi_hz=-20e3)
 
@@ -198,3 +199,22 @@ def test_crosstalk_without_frequencies():
     assert qs.readout_crosstalk[0].qudit == 0
     back = pickle.loads(pickle.dumps(qs))
     assert back.fingerprint == qs.fingerprint and back.frequency_frame == "own_carrier"
+
+
+def test_equal_shifts_spelled_as_ints_are_the_same_entry():
+    assert ReadoutCrosstalk(14, 4, -20000) == ReadoutCrosstalk(14, 4, -20e3)
+    a = _surface().replace(readout_crosstalk=[ReadoutCrosstalk(14, 4, (-20000, -26000))])
+    b = _surface().replace(readout_crosstalk=[ReadoutCrosstalk(14, 4, (-20e3, -26e3))])
+    assert a.fingerprint == b.fingerprint
+
+
+@pytest.mark.parametrize("given", [None, 0, "x"])
+def test_readout_crosstalk_that_is_no_list_is_refused(given):
+    with pytest.raises(pulse.InvalidTypeError, match="must be a list of ReadoutCrosstalk"):
+        _surface().replace(readout_crosstalk=given)
+
+
+@pytest.mark.parametrize("chi", [Offset(5.0), (-20e3, Offset(5.0)), b"ab", True])
+def test_a_shift_that_is_no_plain_number_is_refused(chi):
+    with pytest.raises(pulse.QuantumSystemDefinitionError, match="chi_hz"):
+        _surface().replace(readout_crosstalk=[ReadoutCrosstalk(14, 4, chi)])
