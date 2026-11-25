@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import numbers
+import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import FrozenInstanceError
 from itertools import chain
@@ -1270,6 +1271,525 @@ def _coupling_operator(model: Any) -> str | None:
     return None
 
 
+# The eigenvalues of the real symmetric *matrix* and its eigenvectors
+# (``vectors[i][k]``, component *i* of eigenvector *k*), by cyclic Jacobi
+# rotations: plain Python, as a coupled system's dressed frequencies are
+# made when it is first compiled for, which loads no numerical library.
+def _jacobi(matrix: list[list[float]]) -> tuple[list[float], list[list[float]]]:
+    n = len(matrix)
+    a = [row[:] for row in matrix]
+    v = [[float(i == j) for j in range(n)] for i in range(n)]
+    scale = max((abs(x) for row in a for x in row), default=0.0) or 1.0
+    for _ in range(100):
+        off = sum(a[i][j] * a[i][j] for i in range(n) for j in range(i + 1, n))
+        if off <= (1e-30 * scale) ** 2:
+            break
+        for p in range(n - 1):
+            for q in range(p + 1, n):
+                apq = a[p][q]
+                if apq == 0.0:
+                    continue
+                theta = (a[q][q] - a[p][p]) / (2.0 * apq)
+                t = math.copysign(1.0, theta) / (abs(theta) + math.sqrt(theta * theta + 1.0))
+                c = 1.0 / math.sqrt(t * t + 1.0)
+                s = t * c
+                for k in range(n):
+                    akp, akq = a[k][p], a[k][q]
+                    a[k][p], a[k][q] = c * akp - s * akq, s * akp + c * akq
+                for k in range(n):
+                    apk, aqk = a[p][k], a[q][k]
+                    a[p][k], a[q][k] = c * apk - s * aqk, s * apk + c * aqk
+                for k in range(n):
+                    vkp, vkq = v[k][p], v[k][q]
+                    v[k][p], v[k][q] = c * vkp - s * vkq, s * vkp + c * vkq
+    return [a[i][i] for i in range(n)], v
+
+
+# A coupled group this large is solved with numpy: plain Python grows as
+# the cube of its size (about 1 s for 100 qudits).
+_PLAIN_JACOBI_LIMIT = 32
+
+
+# Each qudit's 0-1 frequency in Hz, by index, among the qudits of
+# *frequencies* (their bare 0-1 frequencies) with the exchange couplings
+# *pairs* ((qudits, strength_hz)) between them, and the weight on each
+# qudit of the eigenstate each one takes: an eigenvalue of the
+# single-excitation matrix ``diag(f) + J``, solved for each group of
+# qudits the couplings join. Each qudit takes the eigenstate that holds
+# most of it, the states going to qudits in order of weight, so that two
+# qudits near resonance, mixed, each still take one.
+def _single_excitation_weights(
+    frequencies: Mapping[int, float], pairs: list[Any]
+) -> tuple[dict[int, float], dict[int, dict[int, float]]]:
+    out = {q: float(f) for q, f in frequencies.items()}
+    weights = {q: {q: 1.0} for q in out}
+    joined: dict[int, set[int]] = {q: {q} for q in out}
+    for (a, b), _ in pairs:
+        group = joined[a] | joined[b]
+        for q in group:
+            joined[q] = group
+    groups = {id(g): sorted(g) for g in joined.values() if len(g) > 1}
+    for qudits in groups.values():
+        n = len(qudits)
+        row = {qudit: i for i, qudit in enumerate(qudits)}
+        # About the group's mean, so that kHz shifts keep their digits
+        # against GHz frequencies.
+        mean = sum(out[q] for q in qudits) / n
+        matrix = [[0.0] * n for _ in qudits]
+        for q in qudits:
+            matrix[row[q]][row[q]] = out[q] - mean
+        for (a, b), strength in pairs:
+            if a in row:
+                matrix[row[a]][row[b]] += strength
+                matrix[row[b]][row[a]] += strength
+        if n > _PLAIN_JACOBI_LIMIT:
+            import numpy as np
+
+            w, v = np.linalg.eigh(np.array(matrix))
+            values, vectors = w.tolist(), v.tolist()
+        else:
+            values, vectors = _jacobi(matrix)
+        ranked = sorted(
+            ((vectors[i][k] ** 2, i, k) for i in range(n) for k in range(n)), reverse=True
+        )
+        rows: set[int] = set()
+        states: set[int] = set()
+        for _, i, k in ranked:
+            if i in rows or k in states:
+                continue
+            rows.add(i)
+            states.add(k)
+            out[qudits[i]] = values[k] + mean
+            weights[qudits[i]] = {qudits[r]: vectors[r][k] ** 2 for r in range(n)}
+    return out, weights
+
+
+# Each qudit's 0-1 frequency in Hz with the couplings *pairs*
+# (_single_excitation_weights).
+def _single_excitation(frequencies: Mapping[int, float], pairs: list[Any]) -> dict[int, float]:
+    return _single_excitation_weights(frequencies, pairs)[0]
+
+
+# The exchange couplings of known strength of *description*, as
+# (qudits, strength_hz); none when its model gives no exchange.
+def _exchange_pairs(description: Any) -> list[Any]:
+    if _coupling_operator(description.model) != "exchange":
+        return []
+    return [(c.qudits, c.strength_hz) for c in description.couplings if c.strength_hz]
+
+
+# The description last asked for and its table.
+_LAST_DRESSED: list[tuple[Any, Any]] = [(None, None)]
+_DRESSED: weakref.WeakKeyDictionary[Any, dict[int, float] | None] = weakref.WeakKeyDictionary()
+
+
+def dressed_frequencies(description: Any) -> dict[int, float] | None:
+    """Each qudit's 0-1 frequency in Hz with the system's couplings
+    included, by qudit index, or None when no coupling moves one (no
+    exchange coupling of known strength) or the system keeps bare frames
+    (``frames="bare"``). Computed once per description.
+
+    The exchange conserves the number of excitations, so with every other
+    qudit in its ground level a qudit's dressed 0-1 frequency is an
+    eigenvalue of the single-excitation matrix ``diag(f) + J``, exactly,
+    whatever the qudits' levels and anharmonicities."""
+    # The registry gives a named system's description itself on every
+    # call: the last one asked for is answered without hashing it.
+    last = _LAST_DRESSED[0]
+    if last[0] is description:
+        remembered: dict[int, float] | None = last[1]
+        return remembered
+    try:
+        dressed = _DRESSED[description]
+    except KeyError:
+        pass
+    else:
+        _LAST_DRESSED[0] = (description, dressed)
+        return dressed
+    pairs = _exchange_pairs(description) if description.frames == "dressed" else []
+    dressed = (
+        _single_excitation({q: p._frame_hz for q, p in description.qudits.items()}, pairs)
+        if pairs
+        else None
+    )
+    _DRESSED[description] = dressed
+    _LAST_DRESSED[0] = (description, dressed)
+    return dressed
+
+
+_NOTHING_MOVED: Mapping[int, float] = MappingProxyType({})
+_LAYOUTS: weakref.WeakKeyDictionary[Any, dict[tuple[int, ...], Mapping[int, float]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def layout_frequencies(description: Any, qudits: Sequence[int]) -> Mapping[int, float]:
+    """For a simulation of the qudits *qudits* of *description* alone: the
+    0-1 frequency in Hz to give each of them, by index, so that with the
+    couplings between them it is at its dressed frequency on the whole
+    system. A qudit whose dropped neighbours dress it (the others in their
+    ground level) is moved by their share; the others are left out. Kept
+    per description and set of qudits."""
+    dressed = dressed_frequencies(description)
+    if dressed is None:
+        return _NOTHING_MOVED
+    kept = tuple(sorted(set(qudits)))
+    known = _LAYOUTS.setdefault(description, {})
+    found = known.get(kept)
+    if found is not None:
+        return found
+    pairs = _exchange_pairs(description)
+    inside = set(kept)
+    # Nothing coupled dropped: the kept couplings dress the kept qudits as
+    # the whole system does.
+    if all((a in inside) == (b in inside) for (a, b), _ in pairs):
+        known[kept] = MappingProxyType({})
+        return known[kept]
+    within_pairs = [(q, s) for q, s in pairs if inside.issuperset(q)]
+    bare = {q: description.qudits[q]._frame_hz for q in kept}
+    given = dict(bare)
+    # Newton on the spectrum: the kept qudits' eigenvalues, in order, are
+    # to be the whole system's dressed frequencies of them, in order (which
+    # qudit a state of two near-resonant qudits counts as can differ between
+    # the two). An eigenvalue moves with each bare frequency by the weight
+    # its state has there (Hellmann-Feynman). Exact to a millihertz, unless
+    # no frequencies can give that spectrum: two kept qudits near resonance
+    # split by at least twice their coupling, which their dropped
+    # neighbours can narrow. Then the closest it gets, by damped steps.
+    targets = sorted(dressed[q] for q in kept)
+
+    def missed(frequencies: dict[int, float]) -> tuple[float, list[Any], Any]:
+        within, weights = _single_excitation_weights(frequencies, within_pairs)
+        states = sorted((within[q], q) for q in kept)
+        miss = [t - value for t, (value, _) in zip(targets, states, strict=True)]
+        return max(abs(m) for m in miss), miss, [weights[q] for _, q in states]
+
+    worst, miss, rows = missed(given)
+    # Levenberg-Marquardt: (J^T J + mu I) step = J^T miss, mu raised until a
+    # step helps and lowered after one does, so that a nearly singular J
+    # (two kept qudits at resonance) still gives a finite step.
+    mu = 1e-9
+    for _ in range(200):
+        if worst < 1e-3 or mu > 1e12:
+            break
+        jacobian = [[row.get(r, 0.0) for r in kept] for row in rows]
+        n = len(kept)
+        normal = [
+            [
+                sum(jacobian[k][i] * jacobian[k][j] for k in range(n)) + (mu if i == j else 0.0)
+                for j in range(n)
+            ]
+            for i in range(n)
+        ]
+        gradient = [sum(jacobian[k][i] * miss[k] for k in range(n)) for i in range(n)]
+        step = _solve(normal, gradient)
+        trial = {r: given[r] + d for r, d in zip(kept, step, strict=True)}
+        trial_worst, trial_miss, trial_rows = missed(trial)
+        if trial_worst < worst:
+            given, worst, miss, rows = trial, trial_worst, trial_miss, trial_rows
+            mu /= 10
+        else:
+            mu *= 10
+    if worst > 1.0:
+        _warn_layout(description, kept, miss, rows, pairs)
+    known[kept] = MappingProxyType({q: f for q, f in given.items() if f != bare[q]})
+    return known[kept]
+
+
+# A dressed level above the first is worked out among the qudits within
+# this many couplings of its qudit, as the whole coupled group of a large
+# chip would not fit in memory: each coupling further moves it by about
+# (g / detuning)^2 of the last: under a millihertz on transmon_surface17,
+# but tens of kHz on a chain of qudits 80 MHz apart with 30 MHz couplings,
+# and up to about a MHz on such a chain of nine.
+_HOPS = 3
+
+
+# Dressed levels above the first: by description, (qudit, level) -> energy
+# in Hz from the ground state; and the anharmonicities simulate gives a kept
+# part (layout_anharmonicities), by description and set of qudits.
+_LEVELS: weakref.WeakKeyDictionary[Any, dict[tuple[int, int], float]] = weakref.WeakKeyDictionary()
+# Per description: (kept qudits, their simulated levels) -> anharmonicities.
+_ANHARMONICITIES: weakref.WeakKeyDictionary[
+    Any, dict[tuple[tuple[int, ...], tuple[int, ...]], Mapping[int, float]]
+] = weakref.WeakKeyDictionary()
+
+
+# The qudits the couplings *pairs* join to *qudit*, it among them.
+def _group_of(
+    description: Any, qudit: int, pairs: list[Any], hops: int | None = _HOPS
+) -> list[int]:
+    group, edge = {qudit}, set([qudit])
+    while edge and (hops is None or hops > 0):
+        reached = set()
+        for (a, b), _ in pairs:
+            if a in edge and b not in group:
+                reached.add(b)
+            elif b in edge and a not in group:
+                reached.add(a)
+        group |= reached
+        edge = reached
+        if hops is not None:
+            hops -= 1
+    return sorted(group)
+
+
+# The basis, eigenvalues and eigenvectors (columns) of the qudits of
+# *energies* (each its levels' bare energies in Hz) with the exchange
+# *pairs* in the sector of *excitations* excitations.
+def _sector(
+    energies: Mapping[int, list[float]], pairs: list[Any], excitations: int
+) -> tuple[list[tuple[int, ...]], Any, Any]:
+    import numpy as np
+
+    qudits = sorted(energies)
+    tops = [len(energies[q]) - 1 for q in qudits]
+
+    def fill(i: int, left: int) -> list[tuple[int, ...]]:
+        if i == len(qudits) - 1:
+            return [(left,)] if left <= tops[i] else []
+        return [(n, *rest) for n in range(min(left, tops[i]) + 1) for rest in fill(i + 1, left - n)]
+
+    basis = fill(0, excitations)
+    where = {state: k for k, state in enumerate(basis)}
+    col = {q: i for i, q in enumerate(qudits)}
+    h = np.zeros((len(basis), len(basis)))
+    for k, state in enumerate(basis):
+        h[k, k] = sum(energies[q][state[col[q]]] for q in qudits)
+        for (a, b), g in pairs:
+            for x, y in ((a, b), (b, a)):
+                na, nb = state[col[x]], state[col[y]]
+                if nb and na < tops[col[x]]:
+                    moved = list(state)
+                    moved[col[x]] += 1
+                    moved[col[y]] -= 1
+                    h[where[tuple(moved)], k] += g * ((na + 1) * nb) ** 0.5
+    values, vectors = np.linalg.eigh(h)
+    return basis, values, vectors
+
+
+# The dressed energy of *qudit* in its level *level*, the others in their
+# ground level (the eigenstate holding most of that bare state), with that
+# state's components on the basis.
+def _level(
+    energies: Mapping[int, list[float]], pairs: list[Any], qudit: int, level: int
+) -> tuple[float, Any, list[tuple[int, ...]]]:
+    basis, values, vectors = _sector(energies, pairs, level)
+    qudits = sorted(energies)
+    bare = tuple(level if q == qudit else 0 for q in qudits)
+    k = basis.index(bare)
+    state = int(abs(vectors[k, :]).argmax())
+    return float(values[state]), vectors[:, state], basis
+
+
+def dressed_level_energy(description: Any, qudit: int, level: int) -> float:
+    """The energy in Hz of *qudit*'s level *level* with the couplings of
+    *description* included, every other qudit in its ground level: the
+    eigenvalue of the *level*-excitation sector of the qudits its couplings
+    join to it whose state holds most of that bare state. Level 1 is its
+    dressed 0-1 frequency; a higher level is worked out among the qudits
+    within _HOPS couplings of it. Every tone of its line is the difference
+    of two of these. Kept per description."""
+    if level == 0:
+        return 0.0
+    dressed = dressed_frequencies(description)
+    if dressed is None:
+        model = description.model
+        return float(model.energies_hz(description.qudits[qudit], level + 1)[level])
+    if level == 1:
+        return dressed[qudit]
+    return _group_level(description, qudit, level)
+
+
+# *qudit*'s dressed level *level* (from 2) among the qudits within _HOPS
+# couplings of it; *qudit* itself has *level* + 1 levels whatever its model
+# keeps, as a simulation may keep more.
+def _group_level(description: Any, qudit: int, level: int) -> float:
+    known = _LEVELS.setdefault(description, {})
+    found = known.get((qudit, level))
+    if found is None:
+        pairs = _exchange_pairs(description)
+        group = _group_of(description, qudit, pairs)
+        model = description.model
+        energies = {
+            q: model.energies_hz(
+                description.qudits[q],
+                level + 1 if q == qudit else min(level, model.levels_of(q) - 1) + 1,
+            )
+            for q in group
+        }
+        within = [(q, s) for q, s in pairs if set(q) <= set(group)]
+        found = _level(energies, within, qudit, level)[0]
+        known[qudit, level] = found
+    return found
+
+
+class _DressedTones(Mapping[tuple[int, int], float]):
+    """The tones of a coupled qudit's drive line, by (lower, upper) level:
+    each the difference of its dressed levels, worked out when it is first
+    read."""
+
+    __slots__ = ("_description", "_qudit", "_bare", "_made")
+
+    def __init__(self, description: Any, qudit: int, bare: Mapping[tuple[int, int], float]):
+        self._description, self._qudit, self._bare = description, qudit, bare
+        self._made: dict[tuple[int, int], float] = {}
+
+    def __getitem__(self, transition: tuple[int, int]) -> float:
+        made = self._made.get(transition)
+        if made is None:
+            if transition not in self._bare:
+                from .._errors import NotFoundError
+
+                raise NotFoundError(
+                    f"the drive line has no tone {transition}; it has "
+                    + ", ".join(map(str, self._bare))
+                )
+            lower, upper = transition
+            made = dressed_level_energy(
+                self._description, self._qudit, upper
+            ) - dressed_level_energy(self._description, self._qudit, lower)
+            self._made[transition] = made
+        return made
+
+    def __contains__(self, transition: object) -> bool:
+        # Without working the tone out.
+        return transition in self._bare
+
+    def __iter__(self) -> Any:
+        return iter(self._bare)
+
+    def __len__(self) -> int:
+        return len(self._bare)
+
+
+def layout_anharmonicities(
+    description: Any, qudits: Sequence[int], levels: Sequence[int] | None = None
+) -> Mapping[int, float]:
+    """For a simulation of the qudits *qudits* of *description* alone, at
+    least three levels each: the anharmonicity in Hz to give each kept qudit
+    whose group reaches a qudit left out, so that its dressed level 2, with
+    the kept couplings and layout_frequencies, is the whole system's. Empty
+    when no kept qudit's group reaches one. Kept per description and set of
+    qudits."""
+    if dressed_frequencies(description) is None:
+        return _NOTHING_MOVED
+    kept = sorted(set(qudits))
+    # Each kept qudit's simulated levels (*levels*, in the order of *qudits*).
+    count = dict(zip(qudits, levels, strict=True)) if levels is not None else {}
+    shape = tuple(min(count.get(q, 3), 3) for q in kept)
+    known = _ANHARMONICITIES.setdefault(description, {})
+    found = known.get((tuple(kept), shape))
+    if found is not None:
+        return found
+    pairs = _exchange_pairs(description)
+    inside = set(kept)
+    # A kept qudit whose group reaches a dropped qudit: its level 2 has
+    # that qudit's share.
+    simulated = dict(zip(kept, shape, strict=True))
+    marked = [
+        q
+        for q in kept
+        if simulated[q] > 2 and not inside.issuperset(_group_of(description, q, pairs))
+    ]
+    if not marked:
+        known[tuple(kept), shape] = _NOTHING_MOVED
+        return _NOTHING_MOVED
+    within = [(q, s) for q, s in pairs if inside.issuperset(q)]
+    frequencies = {
+        q: layout_frequencies(description, kept).get(q, description.qudits[q]._frame_hz)
+        for q in kept
+    }
+    alphas = {q: float(description.qudits[q].anharmonicity_hz or 0.0) for q in kept}
+
+    def energies() -> dict[int, list[float]]:
+        return {
+            q: [0.0, frequencies[q], 2 * frequencies[q] + alphas[q]][: simulated[q]] for q in kept
+        }
+
+    # Level 2 where the 0-2 and 1-2 tones a program drives put it.
+    targets = {q: dressed_level_energy(description, q, 2) for q in marked}
+    for _ in range(30):
+        miss, rows = [], []
+        for q in marked:
+            value, vector, basis = _level(energies(), within, q, 2)
+            miss.append(targets[q] - value)
+            col = {r: i for i, r in enumerate(kept)}
+            rows.append(
+                [
+                    float(sum(vector[k] ** 2 for k, b in enumerate(basis) if b[col[r]] == 2))
+                    for r in marked
+                ]
+            )
+        if max(abs(m) for m in miss) < 1e-3:
+            break
+        for r, d in zip(marked, _solve(rows, miss), strict=True):
+            alphas[r] += d
+    found = MappingProxyType({q: alphas[q] for q in marked})
+    known[tuple(kept), shape] = found
+    return found
+
+
+# Warn that the qudits *kept* of *description*, simulated alone, are
+# as far as *miss* from their dressed frequencies (``layout_frequencies``):
+# naming the kept qudits of the states that miss, by the weight each
+# state has on them, and the left-out qudits coupled to those.
+def _warn_layout(
+    description: Any, kept: tuple[int, ...], miss: list[float], rows: list[Any], pairs: list[Any]
+) -> None:
+    import os
+    import warnings
+
+    from .._errors import _DressedLayoutWarning
+
+    missing = sorted(
+        {max(row, key=row.get) for row, m in zip(rows, miss, strict=True) if abs(m) > 1.0}
+    )
+    near = sorted(
+        {b if a in missing else a for (a, b), _ in pairs if (a in missing) != (b in missing)}
+        - set(kept)
+    )
+    if not near:
+        near = sorted({b if a in kept else a for (a, b), _ in pairs if (a in kept) != (b in kept)})
+
+    def listed(qudits: list[int]) -> str:
+        return ("qudit " if len(qudits) == 1 else "qudits ") + ", ".join(map(str, qudits))
+
+    one = len(missing) == 1
+    warnings.warn(
+        f"simulate: {listed(missing)} {'is' if one else 'are'} so near resonance that, "
+        f"simulated without {listed(near)}, no frequencies give {'it' if one else 'them'} "
+        f"the dressed {'frequency it has' if one else 'frequencies they have'} on the whole "
+        f"quantum system: {'it is' if one else 'they are'} simulated up to "
+        f"{max(abs(m) for m in miss) / 1e3:.3g} kHz from {'it' if one else 'them'}. Simulate "
+        f"{listed(near)} too to have {'it' if one else 'them'} exactly.",
+        _DressedLayoutWarning,
+        # At the program's call of simulate, not in the package.
+        skip_file_prefixes=(os.path.dirname(os.path.dirname(__file__)) + os.sep,),
+    )
+
+
+# The solution of the linear system *a* x = *b*, by Gaussian elimination
+# with partial pivoting.
+def _solve(a: list[list[float]], b: list[float]) -> list[float]:
+    n = len(b)
+    m = [row[:] + [b[i]] for i, row in enumerate(a)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(m[r][col]))
+        m[col], m[pivot] = m[pivot], m[col]
+        if m[col][col] == 0.0:
+            continue
+        for r in range(col + 1, n):
+            f = m[r][col] / m[col][col]
+            for c in range(col, n + 1):
+                m[r][c] -= f * m[col][c]
+    x = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        if m[r][r] != 0.0:
+            x[r] = (m[r][n] - sum(m[r][c] * x[c] for c in range(r + 1, n))) / m[r][r]
+    return x
+
+
 # The fields of a _Description, in the order its constructor takes them.
 _DESCRIPTION_FIELDS = (
     "name",
@@ -1280,6 +1800,9 @@ _DESCRIPTION_FIELDS = (
     "attribution",
     "clock_ghz",
 )
+# What the drive tones of a system with couplings are at: each qudit's
+# dressed 0-1 frequency, or its bare frequency_hz.
+_DRIVE_FRAMES = ("dressed", "bare")
 
 
 class _Description:
@@ -1314,6 +1837,12 @@ class _Description:
     model: SimulationModel | None
     attribution: str
     clock_ghz: float
+    # Where the drive tones of a system with couplings play (_DRIVE_FRAMES): not a
+    # field, so that the default costs a description nothing to build; a
+    # description with bare frames is a _BareDescription.
+    frames = "dressed"
+    # What it adds to a quantum system's fingerprint (_device._fingerprint).
+    _frames_content: tuple[str, ...] = ()
 
     def __init__(
         self,
@@ -1376,14 +1905,28 @@ class _Description:
             "attribution": self.attribution,
             "clock_ghz": self.clock_ghz,
         }
+        frames = changes.pop("frames", self.frames)
+        if frames not in _DRIVE_FRAMES:
+            raise InvalidValueError(
+                f'frames must be "dressed" or "bare", got {frames!r}: "dressed" drives each '
+                'qudit of a system with couplings at its dressed frequency, "bare" at its '
+                "frequency_hz"
+            )
         values.update(changes)
-        return _Description(**values)
+        described = _Description(**values)
+        # Without a coupling that dresses, the frames are the same: the
+        # default description.
+        if frames == "bare" and _exchange_pairs(described):
+            return _BareDescription(**values)
+        return described
 
     def __repr__(self) -> str:
         values = ", ".join(f"{f}={getattr(self, f)!r}" for f in _DESCRIPTION_FIELDS)
         return f"_Description({values})"
 
     def __eq__(self, other: object) -> bool:
+        if other is self:
+            return True
         if type(other) is not type(self):
             return NotImplemented
         return all(getattr(self, f) == getattr(other, f) for f in _DESCRIPTION_FIELDS)
@@ -1394,7 +1937,7 @@ class _Description:
     def __reduce__(self) -> tuple[Any, ...]:
         from .._pickling import _plain, rebuilt
 
-        return (rebuilt, (_Description, {f: _plain(getattr(self, f)) for f in _DESCRIPTION_FIELDS}))
+        return (rebuilt, (type(self), {f: _plain(getattr(self, f)) for f in _DESCRIPTION_FIELDS}))
 
     @property
     def qudit_count(self) -> int:
@@ -1504,6 +2047,28 @@ class _Description:
         return 1.0
 
 
+class _BareDescription(_Description):
+    """A description whose system plays each qudit's drive tone at its bare
+    ``frequency_hz``, couplings or not (``frames="bare"``)."""
+
+    __slots__ = ()
+    frames = "bare"
+    _frames_content = ("bare",)
+
+
+class _BareSharedReferenceDescription(_BareDescription):
+    """A description with bare frames whose qudits give their frequencies
+    as offsets from one reference they share. (A system whose qudits give
+    none has no couplings to dress, so bare frames are its default.)"""
+
+    __slots__ = ()
+    _frame = "shared_reference"
+
+    @property
+    def frequencies(self) -> dict[int, float]:
+        return {q.index: float(q.frequency_hz) for q in self.qudits.values()}
+
+
 # The error that *needs* the strengths of *target*'s couplings at
 # *indices*, which are not measured yet.
 def _unmeasured(
@@ -1583,7 +2148,13 @@ class _SharedReferenceDescription(_Description):
 
 
 # The classes a description has.
-_DESCRIPTIONS = (_Description, _OwnCarrierDescription, _SharedReferenceDescription)
+_DESCRIPTIONS = (
+    _Description,
+    _OwnCarrierDescription,
+    _SharedReferenceDescription,
+    _BareDescription,
+    _BareSharedReferenceDescription,
+)
 
 # What the checks read of every qudit at once.
 _QUDIT_VALUES = attrgetter(
@@ -1688,7 +2259,11 @@ def _unstated(description: _Description, problems: list[Problem]) -> list[Proble
         set_(
             description,
             "__class__",
-            _OwnCarrierDescription if own_carrier else _SharedReferenceDescription,
+            _OwnCarrierDescription
+            if own_carrier
+            else _BareSharedReferenceDescription
+            if description.frames == "bare"
+            else _SharedReferenceDescription,
         )
     return problems
 
