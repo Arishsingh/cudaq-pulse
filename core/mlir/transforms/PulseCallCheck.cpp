@@ -93,7 +93,7 @@ static void rootsOf(mlir::func::FuncOp callee, mlir::Value value,
 /// takes, in the order it takes them, so a call's k-th line (tone, link)
 /// result continues its k-th line (tone, link) operand. With a recorded
 /// length, every timed op of it is placed, and the length is where its last
-/// op ends.
+/// op ends, placed frame changes included.
 static mlir::LogicalResult checkCallee(mlir::func::FuncOp callee) {
   bool failed = false;
   auto threaded = [](mlir::Type type) {
@@ -183,6 +183,17 @@ static mlir::LogicalResult checkCallee(mlir::func::FuncOp callee) {
                mlir::isa<classical::SubmitOp, classical::WaitOp>(op)) {
       start = pulse::startCycles(op);
       duration = pulse::durationCycles(op);
+      periods = pulse::periodCycles(op);
+    } else if (mlir::isa<pulse::ShiftPhaseOp, pulse::SetPhaseOp,
+                         pulse::ShiftFrequencyOp, pulse::SetFrequencyOp>(op)) {
+      // A placed frame change is written out at its start too, so it ends
+      // the callee as well (it lasts no time unless it says otherwise). One
+      // not placed yet is placed after the call is written out
+      // (pulse-frame-changes), as in any program.
+      start = pulse::startCycles(op);
+      if (!start)
+        return;
+      duration = pulse::durationCycles(op).value_or(0);
       periods = pulse::periodCycles(op);
     } else {
       return;
