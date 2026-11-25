@@ -552,9 +552,8 @@ def _cp(v: Any, memo: dict[int, Any]) -> Any:
     return v
 
 
-def _fork(st: _State, memo: dict[int, Any] | None = None) -> _State:
-    if memo is None:
-        memo = {}
+def _fork(st: _State) -> _State:
+    memo: dict[int, Any] = {}
     return _State(
         [_cp(v, memo) for v in st.stack], {k: _cp(v, memo) for k, v in st.env.items()}, st.path
     )
@@ -1202,7 +1201,7 @@ class _Run:
                     st = None
                     continue
                 if note[0] != "try":
-                    st = _rare().raw(self, st, note[0], note[1], dec, i, throw)
+                    st = _rare().raw(self, st, note[0], note[1], dec, i)
                     if st is None:
                         continue
             else:
