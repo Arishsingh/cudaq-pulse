@@ -493,7 +493,7 @@ def off_grid(
             and duration is not None
             and (start % grid or duration % grid)
         ):
-            found.append(_off_grid(controller, lines[line], line, event["kind"], start, duration))
+            found.append(_off_grid(controller, lines[line], event["kind"], start, duration))
         if convert and run_time and line is not None and (a != b or grid > 1):
             found.extend(own_run_time(controller, lines[line], event, waveforms))
         if convert and a != b:
@@ -527,7 +527,7 @@ def own_run_time(
     cycles, in place, by the rule for its fixed times: a variable wait's
     length, clamped to its bounds as the run clamps it, and its bounds; and
     (with *waveforms*) its waveform's operands computed at run time. A
-    length becomes a ``pulse.own_cycles`` expression, which the controller
+    length becomes a ``controller_cycles`` expression, which the controller
     fails at run time when the length is off the line's timesteps. Returns
     the violations: a length that is off them for a value it can be known
     to take now, or an operand the export cannot tell is a time."""
@@ -757,14 +757,13 @@ def off_grid_messages(
     for index, start, duration in off:
         event = events[index]
         line = event["line"]
-        found.append(_off_grid(controller, lines[line], line, event["kind"], start, duration))
+        found.append(_off_grid(controller, lines[line], event["kind"], start, duration))
     return found
 
 
 def _off_grid(
     controller: ControllerClock,
     line: Mapping[str, Any],
-    index: int,
     kind: str,
     start: int,
     duration: int,

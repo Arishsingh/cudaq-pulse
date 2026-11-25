@@ -79,17 +79,10 @@ inline std::optional<double> constantNumber(mlir::Value value) {
   return std::nullopt;
 }
 
-/// The allocation, or `pulse.tone`, that a tone value descends from.
-inline mlir::Operation *toneRoot(mlir::Value tone) {
-  mlir::Value current = tone;
-  while (mlir::Value previous = linearPredecessor(current))
-    current = previous;
-  return current.getDefiningOp();
-}
-
-/// `toneRoot` for walks that visit every op of a program, remembering every
-/// value on the way: a tone threads through every drive and frame change on
-/// its line, so walking back from each one would make the walk quadratic.
+/// The allocation, or `pulse.tone`, that a tone value descends from, for
+/// walks that visit every op of a program. It remembers every value on the
+/// way: a tone threads through every drive and frame change on its line, so
+/// walking back from each one would make the walk quadratic.
 class ToneRoots {
 public:
   mlir::Operation *operator()(mlir::Value tone) {
