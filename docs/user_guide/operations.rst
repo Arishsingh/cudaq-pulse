@@ -188,9 +188,11 @@ an ``int`` number of clock cycles or a time such as ``20 * pulse.ns``;
    * - ``tanh_ramp(duration, amplitude, sigma)``
      - Hyperbolic tangent ramp:
        ``amplitude * (1 + tanh((t - duration / 2) / sigma)) / 2`` at time
-       ``t`` from the start of the pulse. It rises from about 0 to about
-       *amplitude* and stays there, reaching *amplitude* / 2 at the
-       midpoint ``t = duration / 2``.
+       ``t`` from the start of the pulse. It passes *amplitude* / 2 at the
+       midpoint ``t = duration / 2``, rising from
+       ``amplitude * (1 - tanh(duration / (2 * sigma))) / 2`` at the start
+       to ``amplitude * (1 + tanh(duration / (2 * sigma))) / 2`` at the end:
+       with ``duration = 4 * sigma``, about 2% and 98% of *amplitude*.
    * - ``gaussian_square(duration, amplitude, sigma, width)``
      - Flat-top pulse with Gaussian rise/fall edges: with
        ``edge = (duration - width) / 2`` the length of each edge, the

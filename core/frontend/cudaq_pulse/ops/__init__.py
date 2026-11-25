@@ -378,9 +378,11 @@ def tanh_ramp(duration: Numeric, amplitude: Numeric, sigma: Numeric) -> Waveform
     """Create a hyperbolic-tangent ramp waveform.
 
     The envelope is ``amplitude * (1 + tanh((t - duration / 2) / sigma)) / 2``
-    at time ``t`` from the start of the pulse. It rises from about 0 to
-    about *amplitude* and stays there, reaching *amplitude* / 2 at the
-    midpoint ``t = duration / 2``.
+    at time ``t`` from the start of the pulse. It passes *amplitude* / 2 at
+    the midpoint ``t = duration / 2``, rising from
+    ``amplitude * (1 - tanh(duration / (2 * sigma))) / 2`` at the start to
+    ``amplitude * (1 + tanh(duration / (2 * sigma))) / 2`` at the end: with
+    ``duration = 4 * sigma``, about 2% and 98% of *amplitude*.
 
     Args:
         duration: Pulse duration: an int number of clock cycles, or a time
