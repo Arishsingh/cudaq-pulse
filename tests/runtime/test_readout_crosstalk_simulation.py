@@ -174,3 +174,65 @@ def test_a_resonator_at_offset_zero_is_not_at_the_tone():
     # [qudit, chi, linewidth, f_r, given, photons, reference amplitude]
     values = [float(v) for v in resonators.split(", ")]
     assert values[3:5] == [0.0, 1.0]
+
+
+# A classical call's window. A simulation with calls lowers the program in
+# windows; a readout's ring-down must reach past a window's start as it
+# does without calls.
+_MACHINE = pulse.ControlSystem(
+    links={"controller": pulse.classical.Link(fixed_ns=4, feedback_ns=8)}
+)
+
+
+@pulse.classical(max_latency_ns=200, link="controller")
+def _same(bit: pulse.Bits, wait_cycles: float) -> float:
+    return wait_cycles
+
+
+@pulse.kernel
+def _around_calls(d, z, quarter: int, shape: int):
+    dl = get_drive_line(d)  # noqa: F821
+    zr = get_readout_line(z)  # noqa: F821
+    drive(dl, dl.get_calibration(pulse.gates.X90))  # noqa: F821
+    sync(dl, zr)  # noqa: F821
+    m = readout(zr, zr.get_calibration(pulse.gates.READOUT))  # noqa: F821
+    if shape == 1:
+        # A call right after the readout.
+        w = _same.submit([m], 600.0).result()
+        sync(dl, zr)  # noqa: F821
+        wait(dl, w, bounds=(20, 20000))  # noqa: F821
+    elif shape == 2:
+        # A wait the first call bounds, right after the readout, then a
+        # second call whose window starts after that wait.
+        w = _same.submit([m], 20.0).result()
+        wait(zr, w, bounds=(20, 2000))  # noqa: F821
+        w2 = _same.submit([m], 600.0).result()
+        sync(dl, zr)  # noqa: F821
+        wait(dl, w2, bounds=(20, 20000))  # noqa: F821
+    else:
+        sync(dl, zr)  # noqa: F821
+        wait(dl, 600)  # noqa: F821
+    for _ in range(quarter):
+        shift_phase(dl.tone, math.pi / 2)  # noqa: F821
+    drive(dl, dl.get_calibration(pulse.gates.X90))  # noqa: F821
+
+
+def _call_phase(qs, shape):
+    population = []
+    for quarter in (0, 1):
+        program = pulse.compile(_around_calls, quantum_system=qs, control_system=_MACHINE).lower(
+            qs.qudits[D5], qs.qudits[Z2], quarter, shape
+        )
+        result = pulse.simulate(program, quantum_system=qs, dt_ns=0.02, levels=2, seed=0)
+        population.append(result.level_population(1, qudit=D5))
+    return math.atan2(2 * population[1] - 1, 2 * population[0] - 1)
+
+
+@pytest.mark.parametrize("shape", [1, 2])
+def test_a_calls_window_keeps_the_readouts_ring_down(shape):
+    plain = _quiet()
+    crossed = plain.replace(readout_crosstalk=[ReadoutCrosstalk(Z2, D5, -20e3)])
+    without = math.remainder(_call_phase(crossed, 0) - _call_phase(plain, 0), 2 * math.pi)
+    across = math.remainder(_call_phase(crossed, shape) - _call_phase(plain, shape), 2 * math.pi)
+    assert abs(math.degrees(without)) > 3.0
+    assert math.degrees(across) == pytest.approx(math.degrees(without), abs=1e-3)
