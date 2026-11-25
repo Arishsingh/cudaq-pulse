@@ -493,7 +493,7 @@ def off_grid(
             and duration is not None
             and (start % grid or duration % grid)
         ):
-            found.append(_off_grid(controller, lines[line], line, event["kind"], start, duration))
+            found.append(_off_grid(controller, lines[line], event["kind"], start, duration))
         if convert and run_time and line is not None and (a != b or grid > 1):
             found.extend(own_run_time(controller, lines[line], event, waveforms))
         if convert and a != b:
@@ -705,14 +705,13 @@ def off_grid_messages(
     for index, start, duration in off:
         event = events[index]
         line = event["line"]
-        found.append(_off_grid(controller, lines[line], line, event["kind"], start, duration))
+        found.append(_off_grid(controller, lines[line], event["kind"], start, duration))
     return found
 
 
 def _off_grid(
     controller: ControllerClock,
     line: Mapping[str, Any],
-    index: int,
     kind: str,
     start: int,
     duration: int,
