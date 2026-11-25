@@ -8,7 +8,9 @@ Needs matplotlib (the ``[viz]`` extra). Writes ``waveform_spectra.svg`` and
 its ``-dark`` twin next to this file: four waveform constructors, each
 compiled in a one-pulse kernel for ``transmon_surface17`` and sampled with
 ``cudaq_pulse.controller.sample_waveform``, above the spectrum of those
-samples. The band each panel shades is computed from the same samples.
+samples. The reference page has no code of its own, so the four calls are
+the ones below; the amplitude, the length and the band each panel shades
+are read from the samples.
 """
 
 import sys
@@ -69,7 +71,9 @@ def waveform_spectra() -> None:
         # The band is measured on a fine grid; the curve is drawn on a coarser one.
         band = band_mhz(*spectrum(samples, qs.clock_ghz, 1 << 15))
         shapes.append((call, samples.real, *spectrum(samples, qs.clock_ghz, 1 << 11), band))
-    length_ns = len(shapes[0][1]) / qs.clock_ghz
+    (cycles,) = {len(samples) for _, samples, *_ in shapes}
+    (amplitude,) = {round(float(samples.max()), 6) for _, samples, *_ in shapes}
+    length_ns = cycles / qs.clock_ghz
 
     def figure(p):
         fig, grid = plt.subplots(
@@ -88,8 +92,8 @@ def waveform_spectra() -> None:
             top.set_title(call.split("(")[0], family="monospace", color=p.text, pad=5)
             top.set_xlim(0, length_ns)
             top.set_xticks([0, length_ns / 2, length_ns])
-            top.set_ylim(0, 0.34)
-            top.set_yticks([0, 0.3])
+            top.set_ylim(0, amplitude * 1.13)
+            top.set_yticks([0, amplitude])
             top.spines["bottom"].set_color(p.rule)
 
             keep = np.abs(mhz) <= SPAN_MHZ
@@ -108,11 +112,26 @@ def waveform_spectra() -> None:
         grid[1, -1].set_xlabel("frequency from the tone (MHz)", loc="right", labelpad=1)
         return fig
 
+    # What the band leaves out: how high each spectrum's skirt still peaks at the edge of
+    # the plot, and from where on it stays under the floor.
+    skirt_db, quiet_mhz = {}, {}
+    for call, _, mhz, power, _ in shapes:
+        db = 10 * np.log10(np.maximum(power / power.max(), 1e-12))
+        name = call.split("(")[0]
+        skirt_db[name] = float(
+            db[(np.abs(mhz) >= 0.8 * SPAN_MHZ) & (np.abs(mhz) <= SPAN_MHZ)].max()
+        )
+        above = np.abs(mhz)[(db > FLOOR_DB) & (np.abs(mhz) <= SPAN_MHZ)]
+        quiet_mhz[name] = float(above.max())
+    assert skirt_db["gaussian"] > FLOOR_DB + 10 and quiet_mhz["cosine"] < 0.8 * SPAN_MHZ
     bands = ", ".join(f"{call.split('(')[0]} ±{band:.0f} MHz" for call, *_, band in shapes)
     alt = (
-        f"Four waveforms, each {length_ns:g} ns long with amplitude 0.3, above the spectrum of "
-        f"their samples from {FLOOR_DB:g} to 0 dB within {SPAN_MHZ:g} MHz of the tone. A shaded "
-        f"band marks where {SHARE:.0%} of each spectrum's energy lies: {bands}."
+        f"Four waveforms, each {length_ns:g} ns long with amplitude {amplitude:g}, above the "
+        f"spectrum of their samples from {FLOOR_DB:g} to 0 dB within {SPAN_MHZ:g} MHz of the "
+        f"tone. A shaded band marks where {SHARE:.0%} of each spectrum's energy up to half the "
+        f"clock lies: {bands}. Outside its band the gaussian's spectrum still peaks at "
+        f"{skirt_db['gaussian']:.0f} dB between {0.8 * SPAN_MHZ:g} and {SPAN_MHZ:g} MHz, and the "
+        f"cosine's is below {FLOOR_DB:g} dB from {quiet_mhz['cosine']:.0f} MHz on."
     )
     save_themed(
         figure,

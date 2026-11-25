@@ -38,12 +38,15 @@ Waveform Constructors
 ---------------------
 
 .. themed-figure:: figures/waveform_spectra.svg
-   :alt: Four waveforms, each 20 ns long with amplitude 0.3, above the spectrum of their samples from -60 to 0 dB within 500 MHz of the tone. A shaded band marks where 99% of each spectrum's energy lies: square ±427 MHz, gaussian_square ±105 MHz, gaussian ±59 MHz, cosine ±70 MHz.
+   :alt: Four waveforms, each 20 ns long with amplitude 0.3, above the spectrum of their samples from -60 to 0 dB within 500 MHz of the tone. A shaded band marks where 99% of each spectrum's energy up to half the clock lies: square ±427 MHz, gaussian_square ±105 MHz, gaussian ±59 MHz, cosine ±70 MHz. Outside its band the gaussian's spectrum still peaks at -41 dB between 400 and 500 MHz, and the cosine's is below -60 dB from 332 MHz on.
    :width: 100%
 
    Four of the envelopes as ``sample_waveform`` samples them, each 40 clock
    cycles of a 2 GHz clock, and the spectrum of those samples relative to
-   its peak. The shaded band holds 99% of the spectrum's energy.
+   its peak. The shaded band holds 99% of the spectrum's energy up to half
+   the clock. It measures the main lobe, not what lies outside it: the
+   gaussian has the narrowest band, but, cut off at its ends, it keeps a
+   skirt that the cosine does not.
 
 .. autofunction:: cudaq_pulse.ops.gaussian
 

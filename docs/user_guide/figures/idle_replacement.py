@@ -39,7 +39,7 @@ def idle_window_fill(page) -> None:
     before = Timeline.of(page["compiled"].lower(data, ancilla))
     after = Timeline.of(page["program"])
     (window,) = page["program"].idle_windows
-    assert window.filled
+    assert window.filled and "echo" in window.result
     start, end = window.start / qs.clock_ghz, window.end / qs.clock_ghz
     name = qs.physical_qudits[window.qudit].label
     lane = next(ln.key for ln in before.lanes if ln.label == f"{name} drive")
@@ -65,12 +65,19 @@ def idle_window_fill(page) -> None:
     (fill,) = (pl for pl in after.pulses if in_window(pl))
     assert not any(in_window(pl) for pl in before.pulses)
     assert [at(pl) for pl in before.pulses] == [at(pl) for pl in after.pulses if pl is not fill]
+    # What the description says: the readout spans the window, and waits fill its ends.
+    (probe,) = (pl for pl in after.pulses if pl.kind == "readout")
+    assert (probe.start_ns, probe.end_ns) == (start, end)
+    assert sorted((w.start_ns, w.end_ns) for w in after.waits if w.lane == lane) == [
+        (start, fill.start_ns),
+        (fill.end_ns, end),
+    ]
 
     def figure(p):
         timelines = [before, after]
         fig = draw_stack(
             timelines,
-            ["compiled", "compiled.replace_idle(rule)"],
+            ["compiled", "after replace_idle"],
             p,
             labels=[words(t) for t in timelines],
             syncs="all",
@@ -98,7 +105,8 @@ def idle_window_fill(page) -> None:
         f"{name} has an X90 pulse, then an idle window from {start:g} to {end:g} ns while the "
         f"ancilla is read out, then a second X90 pulse. After replace_idle, the window holds a "
         f"wait, the echo pulse from {fill.start_ns:g} to {fill.end_ns:g} ns and a wait, and "
-        "every other pulse starts where it did."
+        "every other pulse starts where it did. The X and echo pulses have a small Q "
+        "quadrature, drawn dashed."
     )
     save_themed(
         figure,

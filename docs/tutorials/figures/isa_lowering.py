@@ -18,7 +18,7 @@ from _timeline import Timeline, draw, layout
 
 def ramsey_reset_schedule(page) -> None:
     scheduled = page["scheduled"]
-    # Each pulse of the export carries its absolute frame, so the figure labels
+    # Each pulse of the export carries its absolute frequency, so the figure labels
     # the detuned pulse with it and leaves out the frame updates between them.
     timeline = replace(Timeline.of(scheduled), marks=())
     first, second, flip = (pl for pl in timeline.pulses if pl.kind == "drive")
@@ -31,7 +31,8 @@ def ramsey_reset_schedule(page) -> None:
     program = scheduled.export_to_controller()
     (line,) = (ln for ln in program["lines"] if ("line", ln["line"]) == first.lane)
     ghz = {
-        round(event["start_cycles"] / clock, 3): event["frequency_hz"] / 1e9
+        (("line", event["line"]), round(event["start_cycles"] / clock, 3)): event["frequency_hz"]
+        / 1e9
         for event in program["events"]
         if event["kind"] == "drive"
     }
@@ -40,10 +41,10 @@ def ramsey_reset_schedule(page) -> None:
         return (pl.lane, round(pl.start_ns, 3))
 
     def frequency(pl) -> str:
-        return f"{ghz[round(pl.start_ns, 3)]:.3f} GHz"
+        return f"{ghz[at(pl)]:.3f} GHz"
 
     def detuning(pl) -> str:
-        return f"{ghz[round(pl.start_ns, 3)] * 1e3 - line['native_frequency_hz'] / 1e6:+g} MHz"
+        return f"{ghz[at(pl)] * 1e3 - line['native_frequency_hz'] / 1e6:+g} MHz"
 
     assert detuning(first) == detuning(flip) == "+0 MHz"
     words = {
@@ -52,27 +53,30 @@ def ramsey_reset_schedule(page) -> None:
         at(probe): "probe",
         at(flip): ("x180 if it read 1", "left"),
     }
-    feedback = f"feedback {forward.feedback_ns:g} ns"
 
     def figure(p):
         fig = draw(timeline, p, pulse_labels=words, syncs="none")
         (ax,) = fig.axes
-        # The latency's label goes left of its bar, clear of the time axis below it.
-        (label,) = (t for t in ax.texts if t.get_text() == feedback)
+        # The latency's label goes left of its bar, clear of the time axis below it,
+        # in the bar's color: the helper draws it in the page's color when it fits inside.
+        (label,) = (t for t in ax.texts if t.get_text().startswith("feedback "))
         base, h = layout(timeline)[1][forward.lane]
-        label.set_position((forward.source[1] - 6, base + h * 0.4))
+        x0, x1 = ax.get_xlim()
+        ns_per_pt = (x1 - x0) / (fig.get_figwidth() * 72 * ax.get_position().width)
+        label.set_position((forward.source[1] - 5 * ns_per_pt, base + h * 0.4))
         label.set_horizontalalignment("right")
         label.set_verticalalignment("center")
+        label.set_color(p.readout)
         return fig
 
     alt = (
-        "Timeline of the scheduled program on qudit 0's drive and readout lines. An x90 pulse "
-        f"at {frequency(first)} from {first.start_ns:g} to {first.end_ns:g} ns, a "
-        f"{wait.length_ns:g} ns wait, a second x90 pulse at {frequency(second)} from "
-        f"{second.start_ns:g} to {second.end_ns:g} ns, then the readout from "
-        f"{probe.start_ns:g} to {probe.end_ns:g} ns. The outcome is ready "
-        f"{forward.feedback_ns:g} ns after the readout ends, and the x180 pulse at "
-        f"{frequency(flip)}, which plays only if the readout read 1, runs from "
+        "Timeline of the scheduled program on qudit 0's drive and readout lines, with a lane "
+        f"for the outcome. An x90 pulse at {frequency(first)} from {first.start_ns:g} to "
+        f"{first.end_ns:g} ns, a {wait.length_ns:g} ns wait, a second x90 pulse detuned by "
+        f"{detuning(second)}, at {frequency(second)}, from {second.start_ns:g} to "
+        f"{second.end_ns:g} ns, then the readout from {probe.start_ns:g} to {probe.end_ns:g} "
+        f"ns. The outcome is ready {forward.feedback_ns:g} ns after the readout ends, and the "
+        f"x180 pulse at {frequency(flip)}, which plays only if the readout read 1, runs from "
         f"{flip.start_ns:g} to {flip.end_ns:g} ns."
     )
     save_themed(

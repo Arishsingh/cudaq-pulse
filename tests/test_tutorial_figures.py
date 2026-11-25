@@ -19,9 +19,11 @@ A ``themed-figure`` of a page, the fallback figure of a ``toy-flow`` and
 the still of a ``pulse-visual`` each have a ``-dark`` twin, both have a
 title and a description, and the page's ``:alt:`` is the description.
 
-The figures of the guide and reference pages listed in ``_PAGE_SCRIPTS``
-are held to the same: each script redraws its figures into the temporary
-folder, and they must match the ones committed beside the script.
+The scripts of guide and reference pages listed in ``_PAGE_SCRIPTS`` are
+rerun the same way, against the figures committed beside each script; none
+of their figures embeds an image; and the test of both themes and the alt
+text reads every page of the docs. That every figure is a ``themed-figure``
+and every SVG is used is checked for the tutorials only.
 """
 
 from __future__ import annotations
@@ -149,7 +151,9 @@ def test_no_figure_embeds_an_image():
         pytest.skip("needs the source tree")
     # matplotlib's PNG of an imshow or a colorbar comes out with other bytes
     # on Linux than on macOS, so its figure would match on one only.
-    embedded = [p.name for p in sorted(_FIGURES.glob("*.svg")) if "<image" in p.read_text()]
+    folders = [_FIGURES, *dict.fromkeys(script.parent for script in _PAGE_SCRIPTS)]
+    drawn = [p for folder in folders for p in sorted(folder.glob("*.svg"))]
+    embedded = [p.name for p in drawn if "<image" in p.read_text()]
     assert embedded == [], "draw these in vector (pcolormesh, solids.set_rasterized(False))"
 
 
@@ -157,6 +161,8 @@ def test_no_figure_embeds_an_image():
 @pytest.mark.skipif(importlib.util.find_spec("matplotlib") is None, reason="needs matplotlib")
 @pytest.mark.parametrize("script", _SCRIPTS, ids=lambda p: p.stem)
 def test_each_figure_is_what_its_script_draws(script, tmp_path):
+    if not script.exists():
+        pytest.skip("needs the source tree")
     env = {
         **os.environ,
         "PYTHONPATH": os.pathsep.join(p for p in sys.path if p),

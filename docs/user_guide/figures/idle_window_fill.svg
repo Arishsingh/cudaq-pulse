@@ -4,7 +4,7 @@
 -->
 <svg role="img" aria-labelledby="title desc" xmlns:xlink="http://www.w3.org/1999/xlink" width="479.68pt" height="304.73pt" viewBox="0 0 479.68 304.73" xmlns="http://www.w3.org/2000/svg" version="1.1">
  <title id="title">An idle window before and after its fill</title>
- <desc id="desc">Two timelines of the syndrome kernel on D1's drive line and X1's drive and readout lines. As compiled, D1 has an X90 pulse, then an idle window from 40 to 240 ns while the ancilla is read out, then a second X90 pulse. After replace_idle, the window holds a wait, the echo pulse from 120 to 160 ns and a wait, and every other pulse starts where it did.</desc>
+ <desc id="desc">Two timelines of the syndrome kernel on D1's drive line and X1's drive and readout lines. As compiled, D1 has an X90 pulse, then an idle window from 40 to 240 ns while the ancilla is read out, then a second X90 pulse. After replace_idle, the window holds a wait, the echo pulse from 120 to 160 ns and a wait, and every other pulse starts where it did. The X and echo pulses have a small Q quadrature, drawn dashed.</desc>
  <defs>
   <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
  </defs>
@@ -1192,7 +1192,7 @@ L 476.80 276.85
     <text style="font-size: 7.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #5c636a" x="413.14" y="165.61" transform="rotate(-0 413.14 165.61)">sync</text>
    </g>
    <g id="text_31">
-    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="56.18" y="156.21" transform="rotate(-0 56.18 156.21)">compiled.replace_idle(rule)</text>
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #1a1a1a" x="56.18" y="156.21" transform="rotate(-0 56.18 156.21)">after replace_idle</text>
    </g>
   </g>
  </g>

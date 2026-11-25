@@ -4,7 +4,7 @@
 -->
 <svg role="img" aria-labelledby="title desc" xmlns:xlink="http://www.w3.org/1999/xlink" width="502.38pt" height="137.32pt" viewBox="0 0 502.38 137.32" xmlns="http://www.w3.org/2000/svg" version="1.1">
  <title id="title">The schedule of the Ramsey sequence and its reset</title>
- <desc id="desc">Timeline of the scheduled program on qudit 0's drive and readout lines. An x90 pulse at 5.000 GHz from 0 to 40 ns, a 100 ns wait, a second x90 pulse at 5.002 GHz from 140 to 180 ns, then the readout from 180 to 380 ns. The outcome is ready 80 ns after the readout ends, and the x180 pulse at 5.000 GHz, which plays only if the readout read 1, runs from 460 to 500 ns.</desc>
+ <desc id="desc">Timeline of the scheduled program on qudit 0's drive and readout lines, with a lane for the outcome. An x90 pulse at 5.000 GHz from 0 to 40 ns, a 100 ns wait, a second x90 pulse detuned by +2 MHz, at 5.002 GHz, from 140 to 180 ns, then the readout from 180 to 380 ns. The outcome is ready 80 ns after the readout ends, and the x180 pulse at 5.000 GHz, which plays only if the readout read 1, runs from 460 to 500 ns.</desc>
  <defs>
   <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
  </defs>
