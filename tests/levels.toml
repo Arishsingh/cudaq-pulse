@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The level of each test that is not at level 1. `pytest --level N` runs the
+# tests of level N and lower.
+#
+# A key is a test file; or `file::test`, or `file::test[parameter id]`, where
+# `*` stands for any characters (a `*` itself cannot be asked for) and a test
+# in a class is `Class::test`. The value is the reason, in one line. For one
+# test the closest entry counts: its parameters, then the test, then its
+# file; and of two as close, the one written without `*`. A file not named
+# here is at level 1, and a [level1.tests] entry keeps a test at level 1 in a
+# file that is not.
+#
+# A `level0` .. `level3` marker on a test, or a `pytestmark` in its file,
+# counts before this table.
