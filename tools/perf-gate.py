@@ -113,7 +113,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +186,12 @@ AS_BASE = (
     "the change keeps its base's measured code; on its base's Python sources, measured on "
     "this build, the case ran the same Python work and the same calls outside the layout "
     "classes, so it is judged against its base: reported, not failed, and not a gain to keep"
+)
+AS_KEYED = (
+    "its base was measured in this job, and its count less the change of the address-keyed "
+    "functions it entered as often as its base (ADDRESS_KEYED: MLIR lookups whose cost per call "
+    "follows where a key lands in a hash table) is no more than its tolerance above the stored "
+    "baseline, so it is reported, not failed, and not a gain to keep"
 )
 AS_NATIVE_BASE = (
     "the change touches native code; on its base, built in this job, the case ran the same "
@@ -265,6 +271,35 @@ LAYOUT_CLASSES = (
     # libc enters the kernel through, on CI's runner also the interpreter's
     # own functions. Named so, as it cannot tell which.
     ("unmapped (interpreter or kernel)", r"^\?\?\?$", None),
+)
+
+# Functions of the pinned MLIR toolchain whose own instructions per call
+# follow where a key lands in a hash table: entered as often, they do the
+# same work. A row that fails as a regression against the stored baseline,
+# and whose base the job measured, is judged on its count less the change of
+# those it entered exactly as often as its base, against the stored baseline
+# (apply_address_keyed). Every entry is an anchored
+# pattern for one function of MLIR or LLVM, never of this repository or the
+# interpreter, with what it keys on and the CI runs that showed it entered
+# as often on both sides with its cost per call moved. An entry is added in
+# a pull request of its own that changes only this list and its test, and
+# the owner approves it.
+ADDRESS_KEYED = (
+    # Keys on: the storage's TypeID (a DenseMap of TypeID to its parametric
+    # uniquer), then the instance's hash in that uniquer's shard.
+    # Evidence: CI runs 45638819498 (main) and 45685405489 (a branch): first_compile 984
+    # entries each way, 544.6 -> 590.5 instructions per call; specialize_amplitude 740 each
+    # way, 190.7 -> 272.0.
+    r"^mlir::StorageUniquer::getParametricStorageTypeImpl\(",
+    # Keys on: the attribute's TypeID in the context's map of abstract attributes.
+    # Evidence: CI runs 45638819498 and 45685405489: first_compile 688 entries each way,
+    # 35.4 -> 124.9 instructions per call.
+    r"^mlir::detail::AttributeUniquer::initializeAttributeStorage\(",
+    # Keys on: the operation's TypeID and name in the context's maps of registered
+    # operations.
+    # Evidence: CI runs 45638819498 and 45685405489: first_compile 443 entries each way,
+    # 911.2 -> 831.0 instructions per call (lower).
+    r"^mlir::RegisteredOperationName::insert\(",
 )
 
 # Callgrind's cache model, fixed so the estimate does not depend on the
@@ -705,6 +740,9 @@ class Row:
     # For a layout-only row that fails against its base: what to bring to
     # the owner (shift_detail), from the dumps of the tree and the base.
     shift: str = ""
+    # For a row that failed as a regression and has a base in this job, with
+    # an address-keyed function that moved: its judgement on the rest.
+    keyed: Keyed | None = None
 
     @property
     def work(self) -> str:
@@ -914,11 +952,19 @@ def failure_reason(r: Row) -> str:
     }[r.verdict]
     if kind is None:
         return f"{r.name}: {reason}"
+    keyed = (
+        f"; with the address-keyed functions it entered as often as {_base(r)} taken out: "
+        f"{keyed_text(r.keyed, r.tolerance)}: fails"
+        if r.keyed is not None
+        else ""
+    )
     if r.on_base is True:
         return (
             f"{r.name}: layout only, {_pct(r.own)} from {_base(r)} {r.base_where} "
             f"(limit +{100 * r.tolerance:g}%): fails, the owner's to accept or not; same Python "
-            f"work; {_by_class(r.calls)}" + (f"; bring to the owner: {r.shift}" if r.shift else "")
+            f"work; {_by_class(r.calls)}"
+            + (f"; bring to the owner: {r.shift}" if r.shift else "")
+            + keyed
         )
     if kind == "gain":
         reason += ": update the baseline to keep the gain"
@@ -938,7 +984,7 @@ def failure_reason(r: Row) -> str:
         reason += f"; judged against the stored baseline: {why}"
     elif r.scope:
         reason += f"; judged against the stored baseline: no base built in this job ({r.scope})"
-    return f"{r.name}: {kind}, {reason}"
+    return f"{r.name}: {kind}, {reason}{keyed}"
 
 
 def layout_notes(rows: list[Row]) -> list[str]:
@@ -948,6 +994,17 @@ def layout_notes(rows: list[Row]) -> list[str]:
         f"(limit +{100 * r.tolerance:g}%): passes, not a gain to keep; {_by_class(r.calls)}"
         for r in rows
         if r.verdict == "layout" and r.own is not None
+    ]
+
+
+def keyed_notes(rows: list[Row]) -> list[str]:
+    """One line for each row that passed as address-keyed."""
+    return [
+        f"{r.name}: address-keyed, {_pct(r.delta)} against the stored baseline and "
+        f"{_pct(r.keyed.whole)} from {_base(r)} {r.base_where}; "
+        f"{keyed_text(r.keyed, r.tolerance)}: passes, not a gain to keep"
+        for r in rows
+        if r.verdict == "address-keyed" and r.keyed is not None
     ]
 
 
@@ -1244,6 +1301,119 @@ def shift_detail(tree: str, base: str, top: int = 3) -> str:
     return f"the shift by class: {classes or 'none'}; the largest changes: " + (
         "; ".join(largest) or "none"
     )
+
+
+def address_keyed(function: Function) -> bool:
+    """Whether *function* is one of ADDRESS_KEYED."""
+    return any(re.search(pattern, function[1]) for pattern in ADDRESS_KEYED)
+
+
+@dataclass(frozen=True)
+class Keyed:
+    """A row judged outside its address-keyed functions. *whole* and
+    *remainder* are its change from its base's dump, all of it and outside
+    the listed functions it entered as often as the base, each a fraction
+    of the base's count; *excluded* is those functions' change as a
+    fraction of the tree's count. *against_baseline* is the rest's change
+    from the stored baseline, which judges it (*passes*: at most the row's
+    tolerance). *taken_out* names each function taken out, with its calls
+    and its cost per call on both sides; *left_in* each listed function
+    entered a different number of times."""
+
+    whole: float
+    remainder: float
+    excluded: float
+    taken_out: tuple[str, ...]
+    left_in: tuple[str, ...]
+    against_baseline: float | None = None
+    passes: bool = False
+
+
+def address_keyed_judgement(tree: str, base: str) -> Keyed | None:
+    """The address-keyed functions of a case's dump *tree* against its
+    base's dump *base* (judge_address_keyed)."""
+    return judge_address_keyed(
+        dump_costs(tree), dump_costs(base), dump_calls(tree), dump_calls(base)
+    )
+
+
+def judge_address_keyed(
+    after: dict[Function, int],
+    before: dict[Function, int],
+    tree_calls: Calls,
+    base_calls: Calls,
+) -> Keyed | None:
+    """From each function's own instructions (*after* in the tree, *before*
+    on the base) and its calls: the ADDRESS_KEYED functions entered as
+    often on both sides, and at least once, are taken out. None when none
+    of them moved, where the rule has nothing to judge."""
+    total, tree_total = sum(before.values()), sum(after.values())
+    if not total or not tree_total:
+        return None
+    excluded = 0
+    taken_out, left_in = [], []
+    for function in sorted(set(after) | set(before)):
+        if not address_keyed(function):
+            continue
+        n, m = base_calls.get(function, 0), tree_calls.get(function, 0)
+        a, b = after.get(function, 0), before.get(function, 0)
+        name = f"{function[0]}:{_short(function[1])}"
+        if n == m and n:
+            excluded += a - b
+            if a != b:
+                taken_out.append(
+                    f"{name} ({n:,} calls, {b / n:,.1f} -> {a / n:,.1f} per call, {a - b:+,})"
+                )
+        elif a != b or n != m:
+            left_in.append(f"{name} (calls {n:,} -> {m:,}, {a - b:+,})")
+    if not taken_out:
+        return None
+    whole = tree_total - total
+    return Keyed(
+        whole / total,
+        (whole - excluded) / total,
+        excluded / tree_total,
+        tuple(taken_out),
+        tuple(left_in),
+    )
+
+
+def apply_address_keyed(rows: list[Row], trees: dict[str, str], bases: dict[str, str]) -> None:
+    """Judge each row that fails as a regression (``slower``) and has a dump
+    on both sides (*trees*, *bases*) outside its address-keyed functions:
+    its count less their change, against the stored baseline, passes as
+    ``address-keyed`` when at most its tolerance above it."""
+    for r in rows:
+        if r.verdict != "slower" or r.name not in trees or r.name not in bases:
+            continue
+        judge_row(r, address_keyed_judgement(trees[r.name], bases[r.name]))
+
+
+def judge_row(r: Row, keyed: Keyed | None) -> None:
+    """Judge a ``slower`` row *r* on *keyed*, its address-keyed functions
+    against its base: its count less their change, against the stored
+    baseline, passes as ``address-keyed`` when at most its tolerance above
+    it."""
+    if keyed is None or not r.measured or not r.baseline:
+        return
+    against = r.measured * (1 - keyed.excluded) / r.baseline - 1
+    r.keyed = replace(keyed, against_baseline=against, passes=against <= r.tolerance)
+    if r.keyed.passes:
+        r.verdict = "address-keyed"
+
+
+def keyed_text(k: Keyed, tolerance: float) -> str:
+    """What a row's address-keyed judgement says: the rest's change from the
+    stored baseline and its limit, its change from the base, and every
+    function taken out or left in."""
+    text = (
+        f"outside the address-keyed functions {_pct(k.against_baseline)} against the stored "
+        f"baseline (limit +{100 * tolerance:g}%), {_pct(k.remainder)} from the base; taken out, "
+        "each entered as often as on the base: " + "; ".join(k.taken_out)
+    )
+    if k.left_in:
+        text += "; left in, entered a different number of times: " + "; ".join(k.left_in)
+    return text
 
 
 def build_tree(source: Path, build: Path, python: str) -> None:
@@ -1655,6 +1825,32 @@ native base comparison:
   cases, the job or the pins is not compared this way, nor a base from
   before the extension's symbols were kept, nor a tree whose extension
   has none; its dumps are in the native-base directory of the dumps.
+
+address-keyed functions:
+  A few functions of the pinned MLIR toolchain look a key up in a hash
+  table, and the instructions each call takes follow where the key lands
+  (ADDRESS_KEYED: the uniquer's parametric storage lookup, an attribute
+  storage's initialization, an operation's registration, each keyed on a
+  TypeID). A change that moves the build's layout moves their cost per
+  call while they do the same work. A row that fails as a regression,
+  and that this job measured on its base (either way above), is also
+  judged on its count less the change of the listed functions it entered
+  exactly as often as the base (and at least once): when that rest is at
+  most its tolerance (0.4% unless the case declares its own) above the
+  stored baseline, it passes as "address-keyed", with a notice that gives
+  its whole change from the baseline and from the base, the rest's, and
+  each function taken out with its calls and its cost per call on both
+  sides; it is not a gain to keep and the baseline is not changed. The
+  base only shows which listed functions were entered as often: the rest
+  is held to the stored baseline, so changes merged one after another
+  cannot add up. A listed function entered a different number of times
+  is left in the rest and named. The base is compared only when the change
+  keeps the MLIR toolchain's lock and fetch script, pyproject.toml and
+  uv.lock, so the listed functions' code is the same on both sides and
+  only their probes differ. A name is added to the list in a pull request
+  of its own, with what it keys on and the CI runs that showed it
+  entered as often on both sides with its cost per call moved, and the
+  owner approves it; only MLIR or LLVM functions may be listed.
 """
 
 
@@ -1794,6 +1990,11 @@ def main() -> int:
         base_calls,
         (args.base_commit or "")[:8],
     )
+    # A regression with a base in this job: judged outside the
+    # address-keyed functions it entered as often as the base.
+    if (native is not None or base is not None) and any(r.verdict == "slower" for r in rows):
+        where = dumps / ("native-base" if native is not None else "base") / "run0"
+        apply_address_keyed(rows, case_texts(dumps / "run0"), case_texts(where))
     # A layout-only row that fails against its base: what carried its shift.
     failing = [r for r in rows if r.on_base is True and r.verdict in FAILING]
     if failing:
@@ -1803,6 +2004,7 @@ def main() -> int:
             if r.name in trees and r.name in bases:
                 r.shift = shift_detail(trees[r.name], bases[r.name])
     notes = layout_notes(rows)
+    keyed = keyed_notes(rows)
     # Counts that failed the checks are reported but never become a baseline.
     measured = as_baseline(
         environment,
@@ -1868,9 +2070,13 @@ def main() -> int:
         for line in notes:
             why = AS_NATIVE_BASE if native is not None else AS_BASE
             print(f"::notice title=Perf gate::{line}: {why}")
+        for line in keyed:
+            print(f"::notice title=Perf gate::{line}: {AS_KEYED}")
     if notes:
         why = AS_NATIVE_BASE if native is not None else AS_BASE
         print("\nLayout:\n" + "".join(f"  {line}\n" for line in notes) + f"  ({why})")
+    if keyed:
+        print("\nAddress-keyed:\n" + "".join(f"  {line}\n" for line in keyed) + f"  ({AS_KEYED})")
     if bootstrapped and not problems:
         print(
             "\nBOOTSTRAP MODE: the baseline has no instruction counts for "
@@ -1966,6 +2172,14 @@ def main() -> int:
                         else "(`python tools/perf-gate.py --help`, base comparison).\n\n"
                     )
                 )
+            if keyed:
+                f.write(
+                    "> [!NOTE]\n"
+                    f"> **Address-keyed ({len(keyed)}).** "
+                    + " ".join(f"{line}." for line in keyed)
+                    + f" In each, {AS_KEYED} "
+                    "(`python tools/perf-gate.py --help`, address-keyed functions).\n\n"
+                )
             own = ", ".join(f"{n} +{100 * t:g}%" for n, t in sorted(tolerances.items()))
             f.write(
                 f"Fails above +{100 * REGRESSION:.1f}% "
@@ -1975,7 +2189,11 @@ def main() -> int:
                 "its base's Python work, and no call outside the layout classes that differs "
                 "from its base's, is judged against its base built in this job: it passes as "
                 f"layout up to +{100 * REGRESSION:.1f}% above it, and any lower count passes "
-                "(verdict layout). "
+                "(verdict layout). A regression with a base in this job is also judged on its "
+                "count less the change of the address-keyed functions it entered as often as "
+                "the base: it "
+                "passes as address-keyed when that rest is within its tolerance above the "
+                "stored baseline. "
                 f"Spread: largest difference between {args.processes} identical runs. "
                 "Python work: the bytecodes, Python calls and C calls of a repetition, "
                 "counted natively, against the baseline's; it labels a failure, and "
@@ -2012,7 +2230,10 @@ def main() -> int:
     if bootstrapped:
         print("\nPerf gate passed in bootstrap mode: instruction counts were not gated.")
     else:
-        print("\nPerf gate passed" + (f" ({len(notes)} layout)." if notes else "."))
+        passed = [f"{len(notes)} layout"] * bool(notes) + [f"{len(keyed)} address-keyed"] * bool(
+            keyed
+        )
+        print("\nPerf gate passed" + (f" ({', '.join(passed)})." if passed else "."))
     return 0
 
 
