@@ -1200,9 +1200,16 @@ struct SegmentWalk {
         return false;
       segment += *moved;
     }
+    skips.push_back({static_cast<int64_t>(boundaries.size()), count() + 1,
+                     count() - from.opened, times});
     skipped += *more;
     return true;
   }
+
+  /// Of each loop skip() counted iterations of: how many boundaries were
+  /// visited before them, the first segment they open, how many each
+  /// opens, and how many they are.
+  std::vector<std::array<int64_t, 4>> skips;
 
   int64_t timelineOf(mlir::Operation *op) {
     if (AttrNames::has(op, names.timeline))
@@ -3894,10 +3901,13 @@ public:
   /// boundary) has its events once, no event has a tone id or frame
   /// changes, and `repeats` gets each such loop's ControllerEventWalk::Repeat;
   /// with a list `periods` too, its lines may repeat at periods of their
-  /// own, and `periods` gets them (ControllerEventWalk::linePeriods).
+  /// own, and `periods` gets them (ControllerEventWalk::linePeriods). A
+  /// list `segments` gets, of a module with classical calls, the segment
+  /// boundaries the walk visited (as segment_boundaries() gives them) and
+  /// then SegmentWalk::skips, the iterations it did not visit.
   nb::tuple controller_events(nb::handle parameters, nb::handle amplitudes,
                               nb::object slots, nb::object repeats,
-                              nb::object periods) {
+                              nb::object periods, nb::object segments) {
     ControllerObjects objects(parameters, amplitudes);
     std::unique_ptr<ControllerEventWalk> walk;
     std::vector<ControllerLine> lines;
@@ -3910,6 +3920,11 @@ public:
     }
     lineSlots(found, slots);
     appendRepeats(*walk, repeats, periods);
+    if (!segments.is_none() && walk->segmentWalk) {
+      auto out = nb::borrow<nb::list>(segments);
+      out.append(nb::cast(walk->segmentWalk->boundaries));
+      out.append(nb::cast(walk->segmentWalk->skips));
+    }
     return nb::make_tuple(objects.lines(lines), objects.events(*walk));
   }
 
@@ -8405,6 +8420,7 @@ NB_MODULE(_cudaq_pulse_native, m) {
            nb::arg("slots").none() = nb::none(),
            nb::arg("repeats").none() = nb::none(),
            nb::arg("periods").none() = nb::none(),
+           nb::arg("segments").none() = nb::none(),
            "The lines and events of the export for a controller, as "
            "controller.export() gives them; a list `slots` gets each line's "
            "runtime-qudit slot")

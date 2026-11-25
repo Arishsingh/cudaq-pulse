@@ -654,6 +654,7 @@ def _walk(
     waveforms: bool = True,
     slots: list[int] | None = None,
     summary: tuple[list[tuple[int, ...]], list[tuple[int, int, int]] | None] | None = None,
+    segments: list[Any] | None = None,
 ) -> tuple[
     list[Any],
     list[dict[str, Any]],
@@ -699,7 +700,7 @@ def _walk(
         with lowered._lock:
             if own is None:
                 lines, events = module.controller_events(
-                    _PARAMETERS, _AMPLITUDES, slots, repeats, periods
+                    _PARAMETERS, _AMPLITUDES, slots, repeats, periods, segments
                 )
             else:
                 ratio = own.ratio

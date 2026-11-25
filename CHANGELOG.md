@@ -601,6 +601,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   version for some list lengths would get such a name (a `reset_decoder`
   of the user's that takes a list) is a `CompilationError` at the call,
   and an `InvalidValueError` from `specialize()`.
+- **A long loop with a run-time wait each trip is checked against the
+  limits on what plays at once, whatever its trips.** The check counted
+  such a loop trip by trip when its pulses could slide onto another
+  line's, and stopped with an `UnsupportedError` past 1,048,576 copies. It
+  now counts the trips it walks and the rest of the loop's trips together,
+  as one block that slides as far as the last trip can, so a loop of three
+  million rounds with a drive on another line is refused, or passed, in
+  the time of a loop of three. Where a loop cannot be counted so (a pulse
+  on a line its waits do not hold back, a loop inside a loop, and a few
+  other shapes the guide lists) the program is counted trip by trip as
+  before.
 
 - **The limits on what plays at once hold for pulses after a wait of a
   run-time length or a blocking wait for an answer.** `wait(line, answer,

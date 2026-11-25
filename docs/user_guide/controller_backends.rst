@@ -652,9 +652,14 @@ could bind. Pulses in the two arms of one branch are kept apart where
 they follow the same wait, and counted together where they follow
 different ones. A program without such a wait, and pulses on lines that
 all wait together, are counted as scheduled. A long loop with such a wait
-whose pulses can slide against another line's is counted trip by trip, up
-to the 1,048,576 copies of loops a check plays; past that the check stops
-with an ``UnsupportedError``.
+whose pulses can slide against another line's is counted from the trips
+the check walks and the rest of its trips together, whatever their
+number. Where that cannot be done (for example a pulse in the loop on a
+line its waits do not hold back, a loop in a loop, a long loop of counted
+pulses without such a wait in the same program, or line delays that put a
+pulse before one of an earlier wait) the program is counted trip by trip,
+up to the 1,048,576 copies of loops a check plays; past that the check
+stops with an ``UnsupportedError``.
 
 What the program computes at run time is converted by the same rule. A
 variable wait's ``length`` is clamped to its bounds, as the run clamps it

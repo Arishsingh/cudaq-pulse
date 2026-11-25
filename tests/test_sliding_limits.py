@@ -231,16 +231,21 @@ def test_a_loop_with_a_wait_each_trip_slides_as_far_as_its_trips(trips):
     assert list(pulse.controller.check(_compiled(tied, limit=1))) == []
 
 
-def test_a_loop_past_the_copies_a_check_counts_is_not_passed():
+@pytest.mark.parametrize("trips", [100_000, 3_000_000])
+def test_a_long_loop_is_counted_from_the_trips_the_walk_lists(trips):
     other = ["wait(db, 9000)", "drive(db, square(40, 0.1))"]
-    with pytest.raises(UnsupportedError, match="would count 2999998 copies of rolled loops"):
-        _compiled(_rounds(3_000_000, other), limit=1)
+    with pytest.raises(ControllerLimitError) as refused:
+        _compiled(_rounds(trips, other), limit=1)
+    message = str(refused.value)
+    assert "2 drives can play at once from cycle 9000" in message
+    assert f"{trips - 4} more such waits" in message
+    assert list(pulse.controller.check(_compiled(_rounds(trips, other), limit=2))) == []
     # Without a limit nothing is counted, and a loop alone on its line, or
-    # one whose lines wait together, is counted from its summary as before.
-    _compiled(_rounds(3_000_000, other))
-    assert list(pulse.controller.check(_compiled(_rounds(3_000_000, []), limit=1))) == []
+    # one whose lines wait together, is counted as scheduled.
+    _compiled(_rounds(trips, other))
+    assert list(pulse.controller.check(_compiled(_rounds(trips, []), limit=1))) == []
     tied = [
-        "for _ in range(3000000):",
+        f"for _ in range({trips}):",
         "    drive(da, square(40, 0.1))",
         f"    {_WAIT}",
         "    sync(da, db)",
@@ -248,6 +253,65 @@ def test_a_loop_past_the_copies_a_check_counts_is_not_passed():
         "    sync(da, db)",
     ]
     assert list(pulse.controller.check(_compiled(tied, limit=1))) == []
+
+
+@pytest.mark.parametrize("trips", [50, 2000, 3_000_000])
+def test_tones_of_a_shared_line_in_a_long_loop_are_counted_too(trips):
+    body = [
+        f"for _ in range({trips}):",
+        "    readout(ra, square(200, 0.05))",
+        "    wait(ra, next_tau.submit(tau0).result(), bounds=(16, 4000))",
+        "wait(rb, 9000)",
+        "readout(rb, square(200, 0.05))",
+    ]
+    with pytest.raises(ControllerLimitError) as refused:
+        _compiled(body, shared=True)
+    message = str(refused.value)
+    assert "can play 2 tones at once from cycle 9000" in message
+    assert f"{trips - 4} more such waits" in message
+    alone = body[:3]
+    assert list(pulse.controller.check(_compiled(alone, shared=True))) == []
+
+
+def test_a_loop_whose_pulses_are_not_in_the_order_of_their_segments_is_not_counted_so():
+    # Trip 2's pulse after its wait (segment 3) starts before the pulse
+    # before the wait (segment 2) ends, as a line's delay can place it.
+    early = [(20, 26, {"segment": 2}), (24, 28, {"segment": 3})]
+    after = {0: None, 1: 0, 2: 1, 3: 2}
+    ranges = {0: 0, 1: 5, 2: 5, 3: 5}
+    loop = _slides.Loop(4, 1, 7, 10, early)
+    with pytest.raises(_slides.OrderError, match="before one of an earlier segment"):
+        _slides.rolled({2: early[:1], 3: early[1:]}, after, ranges, [loop])
+    # In order, a trip's last pulse and the next trip's first are counted together.
+    late = [(18, 22, {"segment": 2}), (26, 30, {"segment": 3})]
+    made = _slides.rolled(
+        {2: late[:1], 3: late[1:]}, after, ranges, [_slides.Loop(4, 1, 7, 10, late)]
+    )
+    assert max(count for _, count in made[3][max(made[3])]) == 2
+    # A pulse after the wait that plays into the first pulse two trips on,
+    # which is of a later segment.
+    far = [(20, 21, {"segment": 2}), (35, 44, {"segment": 3})]
+    with pytest.raises(_slides.OrderError, match="before one of an earlier segment"):
+        _slides.rolled({2: far[:1], 3: far[1:]}, after, ranges, [_slides.Loop(4, 1, 7, 10, far)])
+
+
+def _mixed(trips):
+    # The other line's drive is in the loop but no wait holds it back: its
+    # copies do not move with the trips' segments.
+    return [
+        f"for _ in range({trips}):",
+        "    drive(da, square(40, 0.1))",
+        f"    {_WAIT}",
+        "    drive(db, square(40, 0.1))",
+        "    wait(db, 200)",
+    ]
+
+
+def test_a_loop_whose_pulses_do_not_all_move_with_its_waits_is_counted_trip_by_trip():
+    with pytest.raises(ControllerLimitError, match="2 drives can play at once"):
+        _compiled(_mixed(2000), limit=1)
+    with pytest.raises(UnsupportedError, match="would count 2999998 copies of rolled loops"):
+        _compiled(_mixed(3_000_000), limit=1)
 
 
 # ── The count ────────────────────────────────────────────────────────────────
@@ -331,6 +395,106 @@ def test_a_slide_by_any_number_never_counts_fewer_than_a_long_one():
             assert all(_value(steps, at) >= best[at] for at in range(12))
         exact = _slides.most_at_once(pulses, after, ranges, blocks=False)
         assert [_value(exact, at) for at in range(12)] == best
+
+
+def _looped(rng):
+    """A program with a loop of waits, as segments and pulses: the loop's
+    timeline (one or two waits a trip, each trip's pulses a period after
+    the last's), and at random a wait before it, pulses on a line nothing
+    holds back, a second timeline, and a wait and pulses after it. Returns
+    (pulses, after, ranges), the segments the loop's waits open, the trips'
+    pulse segments, (start, trips, period), and whether the loop's
+    timeline is the only one with pulses and has none after a wait."""
+    step, trips, period = rng.choice([1, 1, 2]), rng.randint(4, 9), rng.randint(12, 20)
+    slide = [rng.choice([0, 1, 2, 5, None]) for _ in range(step)]
+    after, ranges, pulses = [None], [0], {}
+
+    def segment(before, most):
+        after.append(before)
+        ranges.append(most)
+        return len(after) - 1
+
+    def pulse(at, start, length, trip=None):
+        pulses.setdefault(at, []).append((start, start + length, {"segment": at, "trip": trip}))
+
+    current, start, alone = 0, 0, True
+    if rng.random() < 0.5:
+        current, start = segment(0, rng.choice([0, 2, 4])), 6
+    if rng.random() < 0.4:
+        alone = False
+        pulse(segment(0, rng.choice([1, 3, None])), rng.randint(0, 40), rng.randint(1, 6))
+    width = period // step
+    shape = [
+        (p * width + rng.randint(0, 2), rng.randint(1, max(1, width - 4))) for p in range(step)
+    ]
+    # At random, a pulse after each wait too: it is in the segment the wait
+    # opens, with the next pulse before a wait, and may play into it.
+    tails = [rng.randint(1, 4) if rng.random() < 0.5 else 0 for _ in range(step)]
+    opened, rows = [], []
+    for trip in range(trips):
+        row = []
+        for (offset, length), tail in zip(shape, tails, strict=True):
+            at = start + trip * period + offset
+            pulse(current, at, length, trip)
+            row.append(current)
+            current = segment(current, slide[len(row) - 1])
+            opened.append(current)
+            if tail:
+                pulse(current, at + length + 1, tail, trip)
+        rows.append(row)
+    end = start + trips * period
+    if rng.random() < 0.6:
+        pulse(current, end, 2)
+        pulse(segment(current, rng.choice([0, 3])), end + 2, 4)
+    if rng.random() < 0.7:
+        alone = False
+        for _ in range(rng.randint(1, 3)):
+            pulse(0, rng.randint(0, end + 10), rng.randint(1, 5))
+    for played in pulses.values():
+        played.sort(key=lambda item: item[:2])
+    # Alone, and with no pulse after a wait: then the loop's most at once
+    # is counted exactly.
+    return (pulses, after, ranges), opened, rows, (start, trips, period), alone and not any(tails)
+
+
+@pytest.mark.parametrize("seed", [3, 4, 5, 6])
+def test_a_loop_counted_from_three_trips_never_counts_fewer_than_trip_by_trip(seed):
+    rng = random.Random(seed)
+    exact_too = declined = 0
+    for _ in range(300):
+        (pulses, after, ranges), opened, rows, (start, trips, period), alone = _looped(rng)
+        step = len(rows[0])
+        every = _slides.most_at_once(pulses, after, ranges, blocks=False)
+
+        # Three trips are walked: the segments the later trips open are not
+        # listed, nor are the later trips' pulses.
+        skipped = set(opened[3 * step :])
+        walked = {
+            at: [item for item in played if (item[2]["trip"] or 0) < 3]
+            for at, played in pulses.items()
+        }
+        walked = {at: played for at, played in walked.items() if played}
+        listed = {at: after[at] for at in range(len(after)) if at not in skipped}
+        last = [item for played in pulses.values() for item in played if item[2]["trip"] == 2]
+        loop = _slides.Loop(opened[3 * step], step, trips - 3, period, last)
+        try:
+            made = _slides.rolled(walked, listed, {at: ranges[at] for at in listed}, [loop])
+        except _slides.OrderError:
+            # Its pulses are not in the order of their segments: such a loop
+            # is counted trip by trip.
+            declined += 1
+            continue
+        rolled = _slides.most_at_once(made[0], made[1], made[2], counted=made[3])
+        span = start + trips * period + 40
+        ours = [_value(rolled, at) for at in range(span)]
+        theirs = [_value(every, at) for at in range(span)]
+        assert all(a >= b for a, b in zip(ours, theirs, strict=True))
+        # One timeline of one pulse a wait: its most at once is as trip by trip.
+        if alone:
+            assert max(ours) == max(theirs)
+        exact_too += ours == theirs
+    assert exact_too > 20
+    assert declined < 60
 
 
 def test_the_segments_of_a_long_loop_are_counted_as_one_block():
