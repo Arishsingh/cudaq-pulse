@@ -521,6 +521,20 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A classical function of the user's cannot take the name of a decoder
+  message version.** cudaq-pulse names the versions of the CUDA-Q QEC
+  decoder messages by decoder and length (`enqueue_syndromes__0_1`,
+  `get_corrections__3_1`, `reset_decoder__7`), and a program's functions,
+  and the simulation's replay of a decoder's calls, are found by name. A
+  `@pulse.classical` function declared under such a name compiled; after
+  a kernel that used the real message, simulating a kernel that called it
+  failed with a bare `IndexError`, and with arguments of fitting kinds its
+  bits were enqueued into the decoder. Declaring such a function is now
+  an `InvalidValueError` that names the message, and a function whose
+  version for some list lengths would get such a name (a `reset_decoder`
+  of the user's that takes a list) is a `CompilationError` at the call,
+  and an `InvalidValueError` from `specialize()`.
+
 - **The limits on what plays at once hold for pulses after a wait of a
   run-time length or a blocking wait for an answer.** `wait(line, answer,
   bounds=(16, 4000))` is scheduled at 16 cycles, and what follows it on its
