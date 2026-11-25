@@ -534,6 +534,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   limit. So is a wait for the answer of a blocking classical function
   (`latency_mode="blocking"`) that an operation of such a controller
   follows: the error at the wait says to use `"bounded"` or `"timeout"`.
+  The waits of run-time length are held to the limit by
+  `pulse-classical-check`, which the compiler runs after the schedule for a
+  module with classical calls: a schedule pass run alone
+  (`cudaq-pulse-opt --pulse-schedule-asap`) holds the program to the limit
+  as scheduled only, and a hand-written module that marks a wait
+  `classical.variable` without declaring a classical function is not
+  checked for it.
 - **`viz.save_schedule` takes a path-like path and names its keywords.**
   `path` may be a `pathlib.Path` as well as a string, and the function takes
   `figsize` and `title`, the two keywords of `plot_schedule`, where it passed

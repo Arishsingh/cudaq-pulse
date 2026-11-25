@@ -228,7 +228,7 @@ def test_a_call_checks_twenty_thousand_waits_of_one_float(shape):
             checked.check([k + 0.5])
     # The kernel takes two lines, so op after op it may last twice the
     # longest program; its schedule may not, and decides.
-    assert waits.length[1:3] == (4_000_000, 2_000_000)
+    assert waits.length[1:3] == (4_000_000, 1)
     fits = (2_000_000 - cycles) // _MANY
     assert compiled.lower(Q[0], fits + 0.49) is not None
     # One half more rounds every wait up a cycle.
@@ -438,12 +438,14 @@ def test_without_a_limit_no_line_is_counted(monkeypatch):
     builder = PackedIRBuilder()
     assert "get_buffer" not in vars(builder)
     limit_cycles(builder, 1000)
-    assert "get_buffer" in vars(builder) and len(builder.get_buffer()) == 3
+    assert "get_buffer" in vars(builder) and len(builder.get_buffer()) == 2
     gone = weakref.ref(builder)
+    wrap = weakref.ref(vars(builder)["get_buffer"])
     gc.disable()
     try:
         del builder
-        assert gone() is None
+        # Nor do the wrap's functions hold each other.
+        assert gone() is None and wrap() is None
     finally:
         gc.enable()
 
@@ -862,7 +864,7 @@ def test_a_second_limit_keeps_the_module_under_the_lowest(monkeypatch, other, or
     machine = ControlSystem(controllers=[Controller(max_program_duration=500)])
     waits = pulse.compile(one_float, control_system=machine).lower(Q[0], 4.0).generic.waits
     lowest = min(other, 1000)
-    assert waits.length[1:3] == (lowest, lowest)
+    assert waits.length[1:3] == (lowest, 1)
     with pytest.raises(ValueError, match=r"Controller\.max_program_duration"):
         waits.check([float(lowest)])
 
