@@ -1624,3 +1624,161 @@ def test_a_function_is_named_short_in_the_shift_detail():
     )
     assert gate._short(name) == "bool llvm::DenseMapBase<...>::doFind<...>(...) const"
     assert len(gate._short("f" * 200)) == 90
+
+
+# Rule 537: address-keyed functions, replayed on #274's CI dumps against
+# main's (run0 of each): each listed function's own instructions and calls on
+# both sides, one of the program's own functions, and the rest of the row.
+_KEYED = json.loads((Path(__file__).parent / "perf_gate_address_keyed.json").read_text())
+_KEYED_ROWS = next(iter(_KEYED.values()))
+
+
+def _keyed_sides(case):
+    """A recorded row as the judgement reads it: each side's own
+    instructions and calls by function."""
+    after, before, tree_calls, base_calls = {}, {}, {}, {}
+    for obj, name, b, a, n, m in _KEYED_ROWS[case]["functions"]:
+        before[obj, name], after[obj, name] = b, a
+        base_calls[obj, name], tree_calls[obj, name] = n, m
+    rest_before, rest_after = _KEYED_ROWS[case]["rest"]
+    before["", "(the rest)"], after["", "(the rest)"] = rest_before, rest_after
+    return after, before, tree_calls, base_calls
+
+
+def test_every_address_keyed_entry_names_one_mlir_or_llvm_function_with_its_reasons():
+    import re
+
+    source = (_ROOT / "tools" / "perf-gate.py").read_text()
+    start = source.index("ADDRESS_KEYED = (")
+    block = source[start : source.index("\n)\n", start)]
+    entries = re.findall(r"((?:\n    #[^\n]*)+)\n    r\"([^\"]+)\",", block)
+    assert [pattern for _, pattern in entries] == list(gate.ADDRESS_KEYED)
+    for comments, pattern in entries:
+        # One function of MLIR or LLVM, never of this repository or the interpreter.
+        assert re.match(r"\^(mlir|llvm)::[\w:]+\\\($", pattern), pattern
+        assert "Keys on:" in comments and "Evidence: CI runs" in comments, pattern
+    for function in [("x.so", "pulse::DriveOp::build(x)"), ("python3.12", "PyObject_Malloc")]:
+        assert not gate.address_keyed(function)
+
+
+def _keyed_row(case, after, before, tree_calls, base_calls, baseline=None):
+    """The recorded row, failing against a stored baseline (the base's count
+    unless *baseline*), judged on its address-keyed functions."""
+    total = sum(before.values())
+    row = gate.Row(
+        case,
+        baseline or total,
+        sum(after.values()),
+        0.0,
+        None,
+        "same",
+        "slower",
+        base_name="8311de57",
+    )
+    gate.judge_row(row, gate.judge_address_keyed(after, before, tree_calls, base_calls))
+    return row
+
+
+@pytest.mark.parametrize("case", sorted(_KEYED_ROWS))
+def test_274s_rows_pass_outside_their_address_keyed_functions(case):
+    expected = _KEYED_ROWS[case]["expected"]
+    row = _keyed_row(case, *_keyed_sides(case))
+    # Each row failed by more than its tolerance as a whole.
+    assert row.delta > gate.REGRESSION
+    assert row.keyed.whole == pytest.approx(expected["whole"], abs=1e-6)
+    assert row.keyed.remainder == pytest.approx(expected["remainder"], abs=1e-6)
+    # Against a baseline equal to the base, the rest is the same change.
+    assert row.keyed.against_baseline == pytest.approx(expected["remainder"], abs=1e-6)
+    assert row.verdict == "address-keyed" and not row.keyed.left_in
+
+
+def test_real_work_outside_the_list_still_fails():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    own = next(f for f in after if f[1].startswith("pulse::"))
+    after[own] += int(0.003 * sum(before.values()))
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
+    assert row.verdict == "slower" and row.keyed.against_baseline > gate.REGRESSION
+
+
+def test_the_rest_is_held_to_the_stored_baseline_not_to_a_base_that_drifted():
+    # The base already sits 0.3% above the stored baseline; a change adds
+    # 0.35% of real work and moves a listed function by one instruction.
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    for f in after:
+        after[f] = before[f]
+    uniquer = next(f for f in after if "getParametricStorageTypeImpl" in f[1])
+    after[uniquer] += 1
+    own = next(f for f in after if f[1].startswith("pulse::"))
+    total = sum(before.values())
+    after[own] = before[own] + int(0.0035 * total)
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls, total / 1.003)
+    assert row.keyed.remainder < gate.REGRESSION
+    assert row.keyed.against_baseline > gate.REGRESSION
+    assert row.verdict == "slower"
+
+
+def test_a_listed_function_entered_more_often_stays_in_the_rest_and_fails():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    uniquer = next(f for f in after if "getParametricStorageTypeImpl" in f[1])
+    tree_calls[uniquer] += 1
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
+    assert row.verdict == "slower"
+    assert any(
+        "getParametricStorageTypeImpl" in s and "calls 984 -> 985" in s for s in row.keyed.left_in
+    )
+
+
+def test_a_listed_function_never_called_on_either_side_is_not_taken_out():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    total = sum(before.values())
+    ghost = ("x.so", "mlir::RegisteredOperationName::insert(ghost)")
+    before[ghost], after[ghost] = 0, int(0.05 * total)
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
+    assert row.verdict == "slower"
+    assert any(s.startswith("x.so:") and "calls 0 -> 0" in s for s in row.keyed.left_in)
+
+
+def test_a_row_whose_listed_functions_did_not_move_is_not_judged_this_way():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    for f in after:
+        if gate.address_keyed(f):
+            after[f] = before[f]
+    assert gate.judge_address_keyed(after, before, tree_calls, base_calls) is None
+
+
+def test_only_a_regression_is_judged_this_way():
+    for verdict in ("improved", "layout", "ok", "faster"):
+        row = gate.Row("first_compile", 1.0, 2.0, 0.0, None, "same", verdict)
+        gate.apply_address_keyed([row], {"first_compile": "x"}, {"first_compile": "x"})
+        assert row.verdict == verdict and row.keyed is None
+
+
+def test_an_address_keyed_pass_shows_the_whole_change_and_each_function_per_call():
+    row = _keyed_row("first_compile", *_keyed_sides("first_compile"))
+    (note,) = gate.keyed_notes([row])
+    assert note.startswith(
+        "first_compile: address-keyed, +0.85% against the stored baseline and +0.85% from its "
+        "base 8311de57"
+    )
+    assert "outside the address-keyed functions +0.26% against the stored baseline" in note
+    assert "984 calls, 544.6 -> 590.5 per call, +45,139" in note
+    assert "688 calls, 35.4 -> 124.9 per call, +61,580" in note
+    assert "443 calls, 911.2 -> 831.0 per call, -35,537" in note
+    assert "address-keyed" not in gate.FAILING
+
+
+def test_a_regression_still_above_the_limit_says_so_outside_the_list():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    own = next(f for f in after if f[1].startswith("pulse::"))
+    after[own] += int(0.003 * sum(before.values()))
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
+    reason = gate.failure_reason(row)
+    assert "regression" in reason
+    assert (
+        "with the address-keyed functions it entered as often as its base 8311de57 taken out: "
+        "outside the address-keyed functions +0.56% against the stored baseline" in reason
+    )
+    assert reason.endswith(": fails")
+    # A layout-only row that also fails outside the list says both.
+    row.on_base, row.own = True, 0.0085
+    assert "outside the address-keyed functions +0.56%" in gate.failure_reason(row)

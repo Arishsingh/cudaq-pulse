@@ -365,6 +365,26 @@ dumps, kept in the `perf-gate-callgrind-dumps` artifact). Trace it to its
 cause before asking. Never re-baseline by hand to pass it (the baseline
 comes only from a CI run's artifact).
 
+**Address-keyed functions.** A few MLIR functions look a key up in a hash
+table, and how many instructions a call takes follows where the key lands,
+so a change that moves the build's layout moves their cost per call while
+they do the same work (`ADDRESS_KEYED` in `tools/perf-gate.py`: MLIR's
+parametric storage lookup, an attribute storage's initialization and an
+operation's registration, each keyed on a `TypeID`). A row that fails as a
+regression, and whose base the job measured, is also judged on its count
+less the change of the listed functions it entered exactly as often as the
+base: it passes as `address-keyed` when that rest is at most its tolerance
+above the stored baseline (the base only shows which functions were entered
+as often, so changes merged one after another cannot add up). Its notice
+gives the whole change, the rest's, and each function taken out with its
+calls and its cost per call on both sides; a listed function called a
+different number of times stays in the rest, so more work inside it still
+fails. Only MLIR or LLVM functions
+can be listed. A new entry is its own pull request, changing only the list
+and its test, with what the function keys on and the CI runs that showed it
+entered as often on both sides with its cost per call moved, and the owner
+approves it.
+
 Wall-clock times are informational only: shared runners are too noisy to
 block on. The test job still reports `tests/test_perf_guard.py`'s
 baseline ratios as a warning, and fails on its `scaling` tests, which
