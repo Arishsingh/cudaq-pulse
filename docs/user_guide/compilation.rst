@@ -296,7 +296,10 @@ a window whose fill would move an operation of the kernel there is left
 unfilled, and its ``result`` says so. Under ``"asap"`` and ``"alap"``, fills
 that take the control system past one of its limits (``max_concurrent_drives``)
 make compiling fail with ``ControllerLimitError``, which names idle
-replacement and the way out (``qudits=``, a fill with fewer pulses).
+replacement and the way out (``qudits=``, a fill with fewer pulses). A
+program that ``"asap"`` or ``"alap"`` places past such a limit without its
+fills is placed as ``"rcp"`` or ``"alap_rcp"`` places it, and its windows are
+read from and filled under that policy.
 ``compiled.replace_idle(rule)`` returns a new compiled kernel and leaves
 ``compiled`` as it is; a kernel whose idle windows are not replaced runs
 none of this. A program with filled windows pickles as the program it is,
@@ -557,6 +560,51 @@ from its submission's own future (a future yielded from a branch or a loop
 is refused there). A CUDA-Q QEC
 function given in ``classical=`` gives the latency of the module's versions
 of its message.
+
+A round that only sends syndromes and takes the corrections once at the end
+looks like this in a module (operations shortened to what matters):
+
+.. code-block:: text
+
+   classical.callable @enqueue_syndromes__3_2 {args = ["i64", "i64", "i64", "i64", "bits:2"], dispatch_key = 2128133762 : i64, ...}
+   classical.callable @get_corrections__3_1 {args = ["i64", "i64", "u8"], dispatch_key = 2284673953 : i64, latency_max_ns = 1.0e+03 : f64, ...}
+   func.func @main(%a: !pulse.qudit, %c: !pulse.qudit) attributes {pulse.schedule_state = #pulse.schedule_state<timed>} {
+     ...
+     scf.for %i = %c0 to %c4 step %c1 ... {
+       %ra1, %ta1, %s0 = pulse.readout ... <{duration_cycles = 100 : i64, period_cycles = array<i64: 100>, start_cycles = 0 : i64}> ...
+       %rc1, %tc1, %s1 = pulse.readout ... <{duration_cycles = 100 : i64, period_cycles = array<i64: 100>, start_cycles = 0 : i64}> ...
+       %l1, %f = classical.submit %l, @enqueue_syndromes__3_2(%c3, %c7, %c0, %c2, %s0, %s1) <{duration_cycles = 100 : i64, period_cycles = array<i64: 100>, start_cycles = 100 : i64}> ...
+       ...
+     }
+     %l2, %g = classical.submit %l1, @get_corrections__3_1(%c3, %c1, %c1) <{duration_cycles = 100 : i64, start_cycles = 500 : i64}> ...
+     %fix = classical.wait %g, @get_corrections__3_1 <{duration_cycles = 0 : i64, start_cycles = 2800 : i64}> ...
+     scf.if %fix ... { pulse.drive ... <{duration_cycles = 16 : i64, start_cycles = 2800 : i64}> ... }
+     return
+   }
+
+.. code-block:: python
+
+   from cudaq_pulse.classical import Link
+
+   machine = pulse.ControlSystem(links={"host": Link(fixed_ns=50, feedback_ns=100)})
+   program = pulse.load(
+       text, entry="main", qudits=[system.qudits[0], system.qudits[2]], control_system=machine
+   )
+   [
+       (c["function"], c["submit_cycles"], c["taken_cycles"])
+       for c in program.export_to_controller()["calls"]
+   ]
+
+.. code-block:: text
+
+   [('enqueue_syndromes__3_2', 100, None), ('enqueue_syndromes__3_2', 200, None),
+    ('enqueue_syndromes__3_2', 300, None), ('enqueue_syndromes__3_2', 400, None),
+    ('get_corrections__3_1', 500, 2800)]
+
+The four rounds send their syndromes and wait for nothing, and the loop stays
+rolled. The corrections are asked for once, at 500, and used at 2800, when the
+decoder's latency and the link allow.
+
 ``classical=`` gives functions declared with
 ``pulse.classical`` for the module's, by name. Each must take and give what
 the module states, with its latency mode and submit policy, and its latency
