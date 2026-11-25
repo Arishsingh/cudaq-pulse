@@ -453,10 +453,12 @@ class QuantumSystem:
             for row, qudit, n in zip(energies, qudits, levels, strict=False):
                 row[:n] = model.energies_hz(qudit, n)
             # A transition's frequency: its upper level's energy less its
-            # lower's, for [q, i, j] and [q, j, i] alike.
-            rise = energies[:, None, :] - energies[:, :, None]
-            level = np.arange(rise.shape[-1])
-            transitions = rise * np.sign(level - level[:, None])
+            # lower's, for [q, i, j] and [q, j, i] alike; 0.0 between levels
+            # of one energy, in either order (adding 0.0 makes a -0.0 one).
+            level = np.arange(energies.shape[1])
+            transitions = (energies[:, None, :] - energies[:, :, None]) * np.sign(
+                level - level[:, None]
+            ) + 0.0
             self._arrays = (_read_only(f01), _read_only(transitions))
         return self._arrays
 

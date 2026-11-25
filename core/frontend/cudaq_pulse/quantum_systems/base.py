@@ -979,9 +979,15 @@ class Offset(float):
     is an ``InvalidTypeError`` (a ``TypeError``, as between a ``str`` and a
     number); ``float(offset)`` is the number. An object that is not a
     number decides the comparison itself, so ``pytest.approx(1.5e8)`` equals
-    ``Offset(1.5e8)`` either way round. A number on the left that compares
-    with floats by itself (a NumPy float, a ``Fraction``) is asked first and
-    compares by value: ``Offset`` does not decide that one.
+    ``Offset(1.5e8)`` either way round.
+
+    This holds with the ``Offset`` on the left, and on either side of an
+    ``int`` or a ``float``. With another kind of number on the left
+    (a ``Decimal``, a ``complex``, a ``Fraction``, a NumPy float) Python
+    asks that number first, and it compares by value:
+    ``Decimal(1) == Offset(1.0)`` is true where ``Offset(1.0) ==
+    Decimal(1)`` is false, and ``Decimal(1) < Offset(2.0)`` is an answer,
+    not an error.
     """
 
     __slots__ = ()

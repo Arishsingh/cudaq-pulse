@@ -537,10 +537,18 @@ def test_an_offset_compares_as_one_kind_of_number():
         assert offset != number and not (offset == number)
     with pytest.raises(pulse.InvalidTypeError):
         offset < decimal.Decimal(2)  # noqa: B015
-    # A NumPy float or a Fraction on the left is asked first and compares by
-    # value: the comparisons Offset does not decide.
+    # That is with the Offset on the left. A number of another kind on the
+    # left is asked first by Python and compares by value: the comparisons
+    # Offset does not decide.
     assert Offset.__eq__(offset, np.float64(value)) is False
     assert bool(np.float64(value) == offset) and fractions.Fraction(value) == offset
+    assert decimal.Decimal(value) == offset and complex(value) == offset
+    assert (decimal.Decimal(1) < offset) is True and bool(np.float64(1.0) < offset)
+    # An int or a float on the left is refused as on the right.
+    for compare in (lambda: 1 < offset, lambda: 1.0 >= offset):
+        with pytest.raises(pulse.InvalidTypeError):
+            compare()
+    assert 150_000_000 != offset and value != offset
 
 
 # ── Plain numbers leave the system ──────────────────────────────────────────
@@ -809,9 +817,23 @@ def test_a_shared_line_counts_the_tones_of_each_qudit(kernel, shared):
         program = lowered(frequencies, max_frequencies_per_line=3)
         assert pulse.controller.check(program) == []
         assert lowered(frequencies, shared=None, max_frequencies_per_line=1) is not None
-        # Its export, and a check for another controller, count the same way.
-        assert program.export_to_controller()["events"]
+        # What its export plays on the line is three tones, and the count an
+        # export takes of them is 3: over a limit of 2, within one of 3.
+        from cudaq_pulse import _shared_lines
+
+        out = program.export_to_controller()
+        played = [e for e in out["events"] if e["kind"] in ("drive", "readout")]
+        assert len({(e["qudit"], e["frequency_hz"]) for e in played}) == 3
+        numbers = {e["frequency_hz"] for e in played}
+        assert len(numbers) == (1 if frequencies[0] is None else 3)
+        for most, found in ((2, [said]), (3, [])):
+            system = _wired(frequencies, shared, max_frequencies_per_line=most).control_system
+            assert (
+                _shared_lines.violations(system, program, out["lines"], out["events"], None)
+                == found
+            )
         assert program.export_to_controller(version=2)["events"]
+        # A check for another controller counts the same way.
         plain = lowered(frequencies)
         for most, found in ((2, [said]), (3, [])):
             other = _wired(frequencies, shared, max_frequencies_per_line=most)
@@ -1262,6 +1284,13 @@ def test_transition_freq_is_the_upper_levels_energy_less_the_lowers():
         assert not array.flags.writeable
     own = _levels3(None)
     assert own.transition_freq[0, 1, 2] == -2.0e8 and own.transition_freq[0, 0, 1] == 0.0
+    # Between levels of one energy it is 0.0 in either order, never -0.0.
+    for qs in (own, _system(None, count=2), _referenced([0.0, 1.5e8])):
+        array = qs.transition_freq
+        zeros = array[array == 0.0]
+        assert zeros.size >= 3 * len(qs.layout) - 1 and not np.signbit(zeros).any()
+        assert array[0, 0, 1].tobytes() == array[0, 1, 0].tobytes() == np.float64(0.0).tobytes()
+        assert array.tobytes() == np.swapaxes(array, 1, 2).tobytes()
     shared = _referenced([-1.5e8, 0.0])
     assert shared.transition_freq[0, 0, 1] == -1.5e8 == shared.qudit_freq[0]
     assert shared.transition_freq[0, 1, 2] == -3.5e8
