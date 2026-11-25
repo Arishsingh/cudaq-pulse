@@ -228,6 +228,15 @@ carries the lines and tones its body advances; the scheduler times every
 iteration. A loop bound given by a ``float`` argument specializes the kernel
 on its value; ``while`` loops are rejected.
 
+.. themed-figure:: figures/rolled_loop.svg
+   :alt: Two timelines of echo_sequence on one drive line. As exported, the loop is one body, a 20 ns pulse and a 20 ns wait, with 5 trips and a period of 40 ns. The schedule it stands for repeats that body 5 times, from 0 to 200 ns, with a dotted line where each trip starts.
+   :width: 100%
+
+   ``echo_sequence`` with a gap as long as its pulse. Kept rolled, the loop
+   is exported as one body with its trips and its period; the lower row is
+   the schedule it stands for, which is also the unrolled kernel's, with a
+   dotted line where each trip starts.
+
 **The unroll threshold** is ``pulse.compile(k, unroll_threshold=n)``, else
 ``@pulse.kernel(unroll_threshold=n)``, else 8. It is a non-negative ``int``;
 0 never unrolls, so every such loop stays rolled. Both forms are the same program: without passes their

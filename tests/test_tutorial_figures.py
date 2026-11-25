@@ -45,6 +45,7 @@ _FIGURES = _DOCS / "figures"
 _PAGE_SCRIPTS = [
     _DOCS.parent / "user_guide" / "figures" / "idle_replacement.py",
     _DOCS.parent / "user_guide" / "figures" / "waveform_envelopes.py",
+    _DOCS.parent / "user_guide" / "figures" / "kernels.py",
     _DOCS.parent / "api" / "figures" / "waveform_spectra.py",
 ]
 _SCRIPTS = sorted(p for p in _FIGURES.glob("*.py") if not p.name.startswith("_")) + _PAGE_SCRIPTS
