@@ -187,14 +187,15 @@ def get(name: str) -> Backend:
     A registered backend takes precedence over an installed one of the
     same name. Raises ``BackendNotFoundError`` when no backend of that
     name is installed or registered, and ``IncompatibleBackendError``
-    when the backend fails to load, is not a ``Backend``, or reads none
-    of the formats this cudaq-pulse exports.
+    when an installed backend fails to load, or when the backend is not
+    a ``Backend`` or reads none of the formats this cudaq-pulse exports.
+    An error a registered factory raises is passed on as it is.
 
     Example::
 
+        backends.register("text", TextBackend)
         backend = backends.get("text")
-        backends.get("text") is backend
-        True
+        backends.get("text") is backend    # True
     """
     with _lock:
         factory = _registered.get(name)
