@@ -140,6 +140,76 @@ times as many. A failure prints a `@reproduce_failure` line; a nightly
 failure also gives its seed in the job summary, replayed with
 `HYPOTHESIS_PROFILE=nightly pytest <test> --hypothesis-seed=<seed>`.
 
+### Test levels
+
+Every test in `tests/` has one level, 0 to 3. The level says how much a
+failure matters and how soon the test has to run. CI still runs every level
+on every change for now; the levels are in place so that it can later run
+the lower ones on every change and all of them less often.
+
+The levels are for the pytest suite only. The lit suite in `test/`, the C++
+runtime host tests and the perf gate have no level and are not selected by
+`--level`: a job that runs `pytest --level 0` keeps running them beside it.
+Level 3 is not the `nightly` marker: that marker, with `--run-nightly`,
+skips two slow checks at any level, and stays as it is.
+
+| Level | Name | A test belongs here when |
+|---|---|---|
+| 0 | Contract | A failure means a user gets a wrong result (a wrong schedule, IR, export or simulated state), or a written promise is broken: the public names, a shipped example runs, every Python version traces a kernel to the same IR. |
+| 1 | Behaviour | It checks one feature, one option or one error: that the error is raised, with its class, its code, its kernel line and a fragment of its message. This is the level of a test that says nothing. |
+| 2 | Exhaustive | It sweeps a cross-product or a corpus (more than about 50 cases from one function), is a property test, checks a linear-time or bounded-memory claim on a large program, or takes 5 to 20 s per case. |
+| 3 | Fine detail | It checks the exact text of a message or a repr, an internal table or a pin, that the docs agree with the code, or the built site. Also any case of more than 20 s. |
+
+To choose the level of a new test, ask in this order:
+
+1. Would a failure mean a wrong result for a user, or a broken written
+   promise, and does each case take under a second, without a child process?
+   Level 0. Say so in the pull request: level 0 is kept small, and
+   `tests/test_levels.py` fails when it holds more than 600 cases.
+2. Does it check exact wording, a repr, an internal table, a pin or the
+   docs, or take more than 20 s? Level 3.
+3. Is it a sweep of more than about 50 generated cases, a property test, a
+   scaling or memory claim on a large program, or 5 to 20 s per case?
+   Level 2.
+4. Otherwise level 1, and there is nothing to write.
+
+A level is written in one of two places. A marker in the test file:
+`pytestmark = pytest.mark.level2` for the file,
+`@pytest.mark.level3` on a test or a class, or
+`pytest.param(..., marks=pytest.mark.level3)` on one parameter. Or a line in
+`tests/levels.toml`, which holds the first classification of the suite so
+that it could be made without editing every test file:
+
+```toml
+[level2.tests]
+"tests/test_frames.py::test_a_run_of_branches_places_its_frame_changes_in_linear_time" = "a linear-time claim on a large program"
+```
+
+A key there is a file, a `file::test` or a `file::test[parameter id]`, with
+`*` for any characters, and the value is the reason in one line. A `*`
+itself cannot be asked for. The closest one counts: a marker on the
+parameter, on the test, on its class (a subclass's own marker before its
+base's), then the file's `pytestmark`, then the table (parameter, test,
+file; of two as close, the entry written without `*`), then level 1.
+Use a marker for a new test. A file that gets markers loses its lines in the
+table: a test with both fails `tests/test_levels.py`, as does a line that
+names no test. Those checks are at level 0 themselves. Two different levels
+in one place (two markers on one test, two lines for one file) stop pytest
+with an error that names the test.
+
+```bash
+pytest tests --level 0 -m "not gpu"        # level 0 only
+pytest tests --level 1 -m "not gpu"        # levels 0 and 1
+pytest tests/test_frames.py --level 2      # one file, without its level 3 cases
+pytest tests --level-report -m "not gpu"   # cases per level and per file; runs nothing
+```
+
+`--level N` runs level N and every level below it, and holds together with
+`-m` and `-k`: `-m gpu --level 1` runs the GPU tests of levels 0 and 1.
+Without `--level` every level runs. Select with `--level`, not with
+`-m level2`: `-m` sees only markers, not the table, and matches a marker on
+a file even for a test in it that is marked otherwise.
+
 ## Writing passes
 
 Compiler passes are C++ MLIR passes in `core/mlir/transforms/`. To try one
