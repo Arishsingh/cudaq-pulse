@@ -193,6 +193,23 @@ inline bool readers(mlir::Value value, const pulse::Controllers &controllers,
   return true;
 }
 
+/// The controllers of the pulses that use a value, or of the branches on
+/// it, each once; not `known` if one of them is unknown, or the value
+/// leaves what can be followed (the controllers then say nothing).
+struct Takers {
+  llvm::SmallVector<int64_t, 2> controllers;
+  bool known = true;
+
+  void add(int64_t controller) {
+    if (!llvm::is_contained(controllers, controller))
+      controllers.push_back(controller);
+  }
+};
+
+/// The takers of the values followed so far in a function that does not
+/// change meanwhile.
+using TakersByValue = llvm::DenseMap<mlir::Value, Takers>;
+
 /// Adds to `found` the controllers of the pulses that use `value`, or of
 /// the branches on it, each once; false if one of them is unknown, or
 /// `value` leaves what can be followed.
@@ -202,47 +219,72 @@ inline bool readers(mlir::Value value, const pulse::Controllers &controllers,
 /// through every sync and branch after it. That can be as long as the
 /// program, so the walk keeps its own stack: per value its uses, and for
 /// the use at hand the results still to follow, in the order a recursion
-/// would visit them.
+/// would visit them. And the calls of a program share most of it, so each
+/// value's takers are kept in `takers` and followed once for all calls.
 inline bool takers(mlir::Value value, const pulse::Controllers &controllers,
                    pulse::AllocationTracer &trace,
                    llvm::SmallVectorImpl<int64_t> &found,
-                   llvm::DenseSet<mlir::Value> &seen) {
-  auto pulse = [&](mlir::Operation *op) {
-    int64_t taker = controllers.of(op->getOperand(0), trace);
-    if (!llvm::is_contained(found, taker))
-      found.push_back(taker);
-    return taker >= 0;
-  };
+                   TakersByValue &takers) {
   struct Frame {
+    mlir::Value value;
     mlir::Value::use_iterator use, end;
     llvm::SmallVector<mlir::Value, 2> results;
     unsigned next = 0;
+    Takers taken;
   };
   llvm::SmallVector<Frame, 8> frames;
-  auto follow = [&](mlir::Value next) {
-    if (seen.insert(next).second)
-      frames.push_back({next.use_begin(), next.use_end(), {}, 0});
+  // What `next` reaches goes to the value above it: at once if it was
+  // followed before, else when its own uses are done.
+  auto follow = [&](mlir::Value next, Takers &into) {
+    auto old = takers.find(next);
+    if (old == takers.end()) {
+      frames.push_back({next, next.use_begin(), next.use_end(), {}, 0, {}});
+      return true;
+    }
+    for (int64_t controller : old->second.controllers)
+      into.add(controller);
+    return old->second.known;
   };
-  follow(value);
+  // Every value on the stack reaches the use that cannot be followed.
+  auto unknown = [&] {
+    for (Frame &frame : frames)
+      takers[frame.value].known = false;
+    return false;
+  };
+  Takers all;
+  if (!follow(value, all))
+    return false;
   while (!frames.empty()) {
     Frame &frame = frames.back();
     if (frame.next < frame.results.size()) {
       // Not `frame` after this: following a value may move the frames.
       mlir::Value result = frame.results[frame.next++];
-      follow(result);
+      if (!follow(result, frame.taken))
+        return unknown();
       continue;
     }
     if (frame.use == frame.end) {
+      Takers taken = std::move(frame.taken);
+      mlir::Value done = frame.value;
       frames.pop_back();
+      Takers &above = frames.empty() ? all : frames.back().taken;
+      for (int64_t controller : taken.controllers)
+        above.add(controller);
+      takers[done] = std::move(taken);
       continue;
     }
     mlir::OpOperand &use = *frame.use++;
     frame.results.clear();
     frame.next = 0;
     mlir::Operation *user = use.getOwner();
+    auto pulse = [&](mlir::Operation *op) {
+      int64_t taker = controllers.of(op->getOperand(0), trace);
+      frame.taken.add(taker);
+      return taker >= 0;
+    };
     if (mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp>(user)) {
       if (!pulse(user))
-        return false;
+        return unknown();
     } else if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(user)) {
       bool known = true;
       branch->walk([&](mlir::Operation *inner) {
@@ -251,53 +293,58 @@ inline bool takers(mlir::Value value, const pulse::Controllers &controllers,
           known = pulse(inner);
       });
       if (!known)
-        return false;
+        return unknown();
       frame.results.append(branch.getResults().begin(),
                            branch.getResults().end());
     } else if (mlir::isa<mlir::scf::YieldOp>(user)) {
       auto branch = mlir::dyn_cast<mlir::scf::IfOp>(user->getParentOp());
       if (!branch)
-        return false;
+        return unknown();
       frame.results.push_back(branch->getResult(use.getOperandNumber()));
     } else if (user->getNumRegions() || user->getNumResults() == 0 ||
                mlir::isa<SubmitOp>(user)) {
-      return false;
+      return unknown();
     } else {
       frame.results.append(user->getResults().begin(),
                            user->getResults().end());
     }
   }
+  for (int64_t controller : all.controllers)
+    if (!llvm::is_contained(found, controller))
+      found.push_back(controller);
   return true;
 }
 
 /// The controllers that send the request of `submit` (`senders`) and take
-/// its answer (`users`); false if one of them is not known.
+/// its answer (`users`); false if one of them is not known. `takers`: one
+/// for all the calls of a function, while it does not change.
 inline bool callEnds(SubmitOp submit, const pulse::Controllers &controllers,
                      pulse::AllocationTracer &trace,
                      llvm::SmallVectorImpl<int64_t> &senders,
-                     llvm::SmallVectorImpl<int64_t> &users) {
+                     llvm::SmallVectorImpl<int64_t> &users,
+                     TakersByValue &takers) {
   llvm::DenseSet<mlir::Value> seen;
   for (mlir::Value operand : submit->getOperands())
     if (!readers(operand, controllers, trace, senders, seen))
       return false;
-  seen.clear();
   for (WaitOp wait : waitsOf(submit))
     for (mlir::Value value : wait.getValues())
-      if (!takers(value, controllers, trace, users, seen))
+      if (!classical::takers(value, controllers, trace, users, takers))
         return false;
   return true;
 }
 
 /// On several controllers, the start uncertainty between the controllers
 /// that send the request of `submit` and take its answer, in ns: none when
-/// one controller does both. Empty when they are not known.
+/// one controller does both. Empty when they are not known. `takers`: as
+/// for callEnds.
 inline std::optional<double>
 callUncertaintyNs(SubmitOp submit, const pulse::Controllers &controllers,
-                  pulse::AllocationTracer &trace) {
+                  pulse::AllocationTracer &trace, TakersByValue &takers) {
   if (!controllers.enabled())
     return std::nullopt;
   llvm::SmallVector<int64_t, 2> senders, users;
-  if (!callEnds(submit, controllers, trace, senders, users) ||
+  if (!callEnds(submit, controllers, trace, senders, users, takers) ||
       senders.empty() || users.empty())
     return std::nullopt;
   double most = 0.0;
@@ -342,7 +389,7 @@ inline constexpr const char *kInstanceAttr = "classical.instance";
 inline mlir::LogicalResult
 callInstances(mlir::func::FuncOp function, mlir::ModuleOp module,
               mlir::SymbolTable &symbols, const pulse::Controllers &controllers,
-              pulse::AllocationTracer &trace,
+              pulse::AllocationTracer &trace, TakersByValue &takers,
               llvm::DenseMap<mlir::Operation *, int64_t> &found) {
   auto links = module->getAttrOfType<mlir::DictionaryAttr>("classical.links");
   if (!controllers.enabled() || !links ||
@@ -364,7 +411,7 @@ callInstances(mlir::func::FuncOp function, mlir::ModuleOp module,
     if (!link.perController)
       return;
     llvm::SmallVector<int64_t, 2> ends, users;
-    bool known = callEnds(submit, controllers, trace, ends, users);
+    bool known = callEnds(submit, controllers, trace, ends, users, takers);
     ends.append(users.begin(), users.end());
     llvm::sort(ends);
     ends.erase(std::unique(ends.begin(), ends.end()), ends.end());
@@ -412,8 +459,10 @@ annotateClassicalCalls(mlir::func::FuncOp function) {
   pulse::Controllers controllers(module);
   pulse::AllocationTracer trace;
   llvm::DenseMap<mlir::Operation *, int64_t> instances;
+  // Setting attributes below changes no use, so one table serves all calls.
+  TakersByValue takers;
   if (mlir::failed(callInstances(function, module, symbols, controllers, trace,
-                                 instances)))
+                                 takers, instances)))
     return mlir::failure();
   bool any = false;
   // Every name interned and every link read once, not once per call: each
@@ -464,9 +513,10 @@ annotateClassicalCalls(mlir::func::FuncOp function) {
                   instance == instances.end() ? -1 : instance->second};
       mlir::NamedAttrList attrs(op->getDiscardableAttrDictionary());
       setInt(attrs, submitName, submitCycles(callable, link, clock));
-      setInt(attrs, budgetName,
-             budgetCycles(callable, link, clock, waitTimeoutNs(submit),
-                          callUncertaintyNs(submit, controllers, trace)));
+      setInt(
+          attrs, budgetName,
+          budgetCycles(callable, link, clock, waitTimeoutNs(submit),
+                       callUncertaintyNs(submit, controllers, trace, takers)));
       setInt(attrs, deviceName, callable.getDevice());
       setInt(attrs, inFlightName, link.slots);
       if (callable.getSubmit() == "eager")
