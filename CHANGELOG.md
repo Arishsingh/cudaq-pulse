@@ -51,6 +51,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `IdleReplacement(None, threshold=...)` only lists them. In this version a
   fill drives and waits on its own qudit's drive line. A kernel whose idle
   windows are not replaced compiles exactly as before.
+- **Exposure.** `ScheduledKernel.exposure` reports what a schedule does to
+  each qudit over time: per qudit and per outermost loop, the cycles of one
+  round in which the qudit is driven, read out and idle, the number of
+  rounds, and the decay and dephasing probability of one round's idle time
+  at the qudit's T1 and T2 star. Loops stay rolled, so it costs the same for
+  two rounds as for a million, and it reads a program from `pulse.load` as
+  it reads a compiled one. A row is marked where the schedule does not fix
+  its figures. Programs that do not read it are unchanged and load none of
+  it.
 - **Error codes.** Every `CompilationError` has a `code`, a
   `pulse.ErrorCode` (`unknown_name`, `wrong_argument`, `runtime_value`,
   `invalid_duration` and the others listed under Errors), so a program or

@@ -434,6 +434,53 @@ quantum system gives the coupling of two of them, ``qs.coupling(a, b)``.
    set a wait length is both. A loop that compiles each round can tell which
    path each round took, and reading it does no work.
 
+``.exposure``
+   What the schedule does to each qudit over time, for estimating what its
+   idle time costs. One row per qudit and per outermost loop the qudit has
+   a pulse in, with the loop's rounds, and one for the rest of the
+   program's length:
+
+   .. code-block:: python
+
+      @pulse.kernel
+      def syndrome(data, ancilla, rounds: int):
+          d = get_drive_line(data)
+          a = get_drive_line(ancilla)
+          r = get_readout_line(ancilla)
+          for _ in range(rounds):
+              drive(d, square(16, 0.1))
+              drive(a, square(16, 0.1))
+              sync(d, a, r)
+              readout(r, square(200, 0.05))
+              sync(d, a, r)
+
+      program = pulse.compile(syndrome).lower(data, ancilla, 1000)
+      print(program.exposure)
+
+   .. code-block:: text
+
+      qudit  loop  rounds  cycles  drive  readout  idle  idle %  exact     decay  dephasing
+          0     0    1000     216     16        0   200    92.6    yes  3.43e-03   5.69e-04
+          9     0    1000     216     16      200     0     0.0    yes  0.00e+00   0.00e+00
+
+   A round is 216 clock cycles, of which the data qudit is driven for 16
+   and idle for 200 while the ancilla is read out. A qudit is driven while
+   a pulse plays on its drive line or at its tone from another line; a
+   ``wait`` is idle time, and a drive during a readout counts in both.
+   Lines run on their own, so a loop the qudit has no pulse in takes none
+   of its time. ``decay`` and
+   ``dephasing`` are what the idle time of one round costs at the qudit's
+   T1 and T2 star (see ``QuditExposure``); what a pulse costs is not in
+   them. Loops stay rolled, so reading it costs the same for 1000 rounds
+   as for two. ``exact`` is ``no`` where the schedule does not fix the
+   figures: a stretch that waits for an answer as long as it takes or has a
+   wait of run-time length, a loop whose rounds overlap, whose operations
+   repeat with different periods or that runs while the qudit is busy
+   outside it, and a branch whose arms keep the qudit
+   busy for different lengths, where the less busy arm is counted. It works
+   on a program ``pulse.load`` read as on a compiled one, and is built when
+   read: a program that never reads it loads none of it.
+
 Loading a scheduled function
 ----------------------------
 
