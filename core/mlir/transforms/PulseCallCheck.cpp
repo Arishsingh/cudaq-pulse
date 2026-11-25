@@ -47,45 +47,56 @@ static bool isTimedOp(mlir::Operation *op) {
 /// `callee` where it continues one, a null value where it continues
 /// anything else. Both arms of a branch and a loop's initial and yielded
 /// value are followed.
-static void rootsOf(mlir::func::FuncOp callee, mlir::Value value,
+static void rootsOf(mlir::func::FuncOp callee, mlir::Value first,
                     llvm::SmallVectorImpl<mlir::Value> &roots,
                     llvm::DenseSet<mlir::Value> &seen) {
-  if (!value || !seen.insert(value).second)
-    return;
-  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-    if (argument.getOwner() == &callee.getBody().front()) {
-      roots.push_back(value);
-      return;
+  // A stack of its own, not the machine's: a callee another compiler wrote
+  // (pulse.load) may chain as many values as it has ops.
+  llvm::SmallVector<mlir::Value, 8> open{first};
+  // The first of two is followed first, as a recursive walk would.
+  auto both = [&](mlir::Value one, mlir::Value other) {
+    open.push_back(other);
+    open.push_back(one);
+  };
+  while (!open.empty()) {
+    mlir::Value value = open.pop_back_val();
+    if (!value || !seen.insert(value).second)
+      continue;
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      if (argument.getOwner() == &callee.getBody().front()) {
+        roots.push_back(value);
+        continue;
+      }
+      mlir::Operation *parent = argument.getOwner()->getParentOp();
+      if (auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent);
+          loop && argument.getArgNumber() > 0) {
+        unsigned index = argument.getArgNumber() - 1;
+        both(loop.getInitArgs()[index],
+             loop.getBody()->getTerminator()->getOperand(index));
+        continue;
+      }
+    } else {
+      auto result = mlir::cast<mlir::OpResult>(value);
+      mlir::Operation *op = result.getOwner();
+      unsigned index = result.getResultNumber();
+      if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+        both(loop.getInitArgs()[index],
+             loop.getBody()->getTerminator()->getOperand(index));
+        continue;
+      }
+      if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
+        both(branch.thenYield().getOperand(index),
+             branch.getElseRegion().empty()
+                 ? mlir::Value()
+                 : branch.elseYield().getOperand(index));
+        continue;
+      }
     }
-    mlir::Operation *parent = argument.getOwner()->getParentOp();
-    if (auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent);
-        loop && argument.getArgNumber() > 0) {
-      unsigned index = argument.getArgNumber() - 1;
-      rootsOf(callee, loop.getInitArgs()[index], roots, seen);
-      rootsOf(callee, loop.getBody()->getTerminator()->getOperand(index), roots,
-              seen);
-      return;
-    }
-  } else {
-    auto result = mlir::cast<mlir::OpResult>(value);
-    mlir::Operation *op = result.getOwner();
-    unsigned index = result.getResultNumber();
-    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
-      rootsOf(callee, loop.getInitArgs()[index], roots, seen);
-      rootsOf(callee, loop.getBody()->getTerminator()->getOperand(index), roots,
-              seen);
-      return;
-    }
-    if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
-      rootsOf(callee, branch.thenYield().getOperand(index), roots, seen);
-      if (!branch.getElseRegion().empty())
-        rootsOf(callee, branch.elseYield().getOperand(index), roots, seen);
-      return;
-    }
+    if (mlir::Value before = pulse::linearPredecessor(value))
+      open.push_back(before);
+    else
+      roots.push_back(mlir::Value());
   }
-  if (mlir::Value before = pulse::linearPredecessor(value))
-    return rootsOf(callee, before, roots, seen);
-  roots.push_back(mlir::Value());
 }
 
 /// The rules for a function a pulse.call runs: it takes its lines and links
@@ -221,7 +232,13 @@ bool callsVerified();
 /// Refuses each pulse.call of `function`: the schedule passes do not place
 /// one yet.
 mlir::LogicalResult refuseCalls(mlir::func::FuncOp function);
+/// checkCallee, for a caller that writes calls out itself (pulse.load).
+mlir::LogicalResult checkCalledFunction(mlir::func::FuncOp callee);
 } // namespace pulse
+
+mlir::LogicalResult pulse::checkCalledFunction(mlir::func::FuncOp callee) {
+  return checkCallee(callee);
+}
 
 bool pulse::moduleHasCalls(mlir::ModuleOp module) {
   if (!callsVerified())

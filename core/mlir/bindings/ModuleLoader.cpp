@@ -40,6 +40,8 @@
 #define GET_OP_CLASSES
 #include "cudaq-pulse/Dialect/Pulse/PulseAttrs.h"
 #include "cudaq-pulse/Dialect/Pulse/PulseOps.h.inc"
+#define GET_OP_CLASSES
+#include "cudaq-pulse/Dialect/Pulse/PulseCallOp.h.inc"
 
 #include "cudaq-pulse/Dialect/Classical/ClassicalDialect.h.inc"
 #define GET_TYPEDEF_CLASSES
@@ -48,6 +50,12 @@
 #include "cudaq-pulse/Dialect/Classical/ClassicalOps.h.inc"
 
 #include "cudaq-pulse/Analysis/Timing.h"
+#include "cudaq-pulse/Transforms/Passes.h"
+
+namespace pulse {
+/// The rules a function a pulse.call runs keeps (PulseCallCheck.cpp).
+mlir::LogicalResult checkCalledFunction(mlir::func::FuncOp callee);
+} // namespace pulse
 // clang-format on
 
 namespace cudaq_pulse::loader {
@@ -144,7 +152,8 @@ public:
   /// qudits are the entry's arguments), a function taken as a value, a time
   /// outside the range a schedule counts in. A called function also holds
   /// no region but a branch, and selects no value at run time.
-  static void refuseUnsupported(mlir::func::FuncOp function, bool called) {
+  static void refuseUnsupported(mlir::func::FuncOp function, bool called,
+                                bool written = false) {
     std::string name = function.getSymName().str();
     if (called && function->hasAttr("pulse.selected_values"))
       throw std::invalid_argument(
@@ -160,6 +169,11 @@ public:
             "load: " + name +
             " allocates a qudit; a loaded function plays on the qudits it "
             "takes");
+      if (kind == "func.call")
+        throw std::invalid_argument(
+            "load: " + name +
+            " calls a function with func.call; a loaded function runs a "
+            "function scheduled on its own with pulse.call");
       if (kind == "func.constant" || kind == "func.call_indirect")
         throw std::invalid_argument(
             "load: " + name +
@@ -178,70 +192,9 @@ public:
         throw std::invalid_argument(
             "load: " + name +
             " has an operation whose start or duration is outside 0 to 2^50 "
-            "cycles");
+            "cycles" +
+            (written ? " once its calls are written out" : ""));
     });
-  }
-  /// Writes every call in `main` in place: the callee's operations, each
-  /// starting the call's stated start later, and in the call's loops. A call
-  /// states its start (`pulse.start_cycles`), may state its length
-  /// (`pulse.length_cycles`, which the callee must fit in) and, inside loops,
-  /// its periods (`pulse.period_cycles`). The spelling of a timed call is
-  /// read in `statedCall` alone.
-  struct StatedCall {
-    int64_t start = 0;
-    std::optional<int64_t> length;
-    llvm::SmallVector<int64_t, 2> periods;
-  };
-  static StatedCall statedCall(mlir::func::CallOp call,
-                               const std::string &caller) {
-    StatedCall stated;
-    std::string callee = call.getCallee().str();
-    auto cycles = [&](llvm::StringRef name) -> std::optional<int64_t> {
-      mlir::Attribute attribute = call->getAttr(name);
-      if (!attribute)
-        return std::nullopt;
-      auto value = mlir::dyn_cast<mlir::IntegerAttr>(attribute);
-      if (!value || !value.getType().isSignlessInteger(64) ||
-          value.getInt() < 0 || value.getInt() > (int64_t(1) << 50))
-        throw std::invalid_argument("load: " + caller + " calls " + callee +
-                                    " with a " + name.str() +
-                                    " that is not a count of cycles (i64)");
-      return value.getInt();
-    };
-    std::optional<int64_t> start = cycles("pulse.start_cycles");
-    if (!start)
-      throw std::invalid_argument(
-          "load: " + caller + " calls " + callee +
-          " without stating when it starts; a call in a loaded function "
-          "states its start in cycles");
-    stated.start = *start;
-    stated.length = cycles("pulse.length_cycles");
-    if (mlir::Attribute periods = call->getAttr("pulse.period_cycles")) {
-      if (auto many = mlir::dyn_cast<mlir::DenseI64ArrayAttr>(periods))
-        stated.periods.assign(many.asArrayRef().begin(),
-                              many.asArrayRef().end());
-      else if (mlir::isa<mlir::IntegerAttr>(periods))
-        stated.periods.push_back(*cycles("pulse.period_cycles"));
-      else
-        throw std::invalid_argument(
-            "load: " + caller + " calls " + callee +
-            " with a pulse.period_cycles that is neither one count (i64) nor "
-            "a list of them (array<i64: outer, ..., inner>)");
-    }
-    // One period per loop the call is in, each a count of cycles: a call
-    // written in a function's place takes the periods of the call it was
-    // written for, so the loops are counted in the entry only.
-    for (int64_t period : stated.periods)
-      if (period < 0 || period > (int64_t(1) << 50))
-        throw std::invalid_argument("load: " + caller + " calls " + callee +
-                                    " with a pulse.period_cycles that is not a "
-                                    "count of cycles (i64)");
-    if (stated.periods.size() > static_cast<size_t>(kMostNesting))
-      throw std::invalid_argument("load: " + caller + " calls " + callee +
-                                  " with more periods than the " +
-                                  std::to_string(kMostNesting) +
-                                  " loops that can nest");
-    return stated;
   }
   /// The function `caller` calls by `name`, checked to be one a call can be
   /// written in place of: defined, scheduled, one block that ends in a
@@ -265,162 +218,136 @@ public:
     refuseUnsupported(callee, /*called=*/true);
     return callee;
   }
-  /// How long `name` takes from its start: the latest end of its operations
-  /// and of the functions it calls, each for its stated length or, without
-  /// one, its own extent. `open` holds the functions being measured: one
-  /// met again calls itself.
-  /// (extent, operations): `written` is how many operations a call of
-  /// `name` writes in place, its own and those of the functions it calls,
-  /// counted up to just past the most a load writes.
-  static std::pair<int64_t, int64_t>
-  extentOf(mlir::ModuleOp source, const std::string &caller,
-           const std::string &name,
-           llvm::StringMap<std::pair<int64_t, int64_t>> &known,
-           llvm::SmallVectorImpl<std::string> &open) {
+  /// A call states when it starts (the schedule passes place none), and one
+  /// period per loop around it, as every timed operation there has. A
+  /// function a call runs is `called`: it has no loop, and its calls take the
+  /// periods of the call it is written for.
+  static void refuseUnplaced(pulse::CallOp call, const std::string &caller,
+                             bool called) {
+    std::string callee = call.getCallee().str();
+    if (!call.getStartCycles())
+      throw std::invalid_argument(
+          "load: " + caller + " calls " + callee +
+          " without stating when it starts; a call in a loaded function "
+          "states its start in cycles");
+    // The range every timed operation of a loaded function is held to.
+    constexpr int64_t most = int64_t(1) << 50;
+    auto outside = [&](int64_t cycles) { return cycles < 0 || cycles > most; };
+    if (outside(static_cast<int64_t>(*call.getStartCycles())) ||
+        outside(static_cast<int64_t>(call.getDurationCycles().value_or(0))) ||
+        llvm::any_of(call.getPeriodCycles(), outside))
+      throw std::invalid_argument(
+          "load: " + caller + " calls " + callee +
+          " with a start, duration or period outside 0 to 2^50 cycles");
+    size_t periods = call.getPeriodCycles().size();
+    if (called && periods)
+      throw std::invalid_argument(
+          "load: " + caller + " calls " + callee +
+          " with a period_cycles; a called function has no loop, and its "
+          "calls take the periods of the call it is written for");
+    size_t loops = 0;
+    for (mlir::Operation *parent = call->getParentOp();
+         parent && !mlir::isa<mlir::func::FuncOp>(parent);
+         parent = parent->getParentOp())
+      loops += mlir::isa<mlir::scf::ForOp>(parent);
+    if (periods != loops)
+      throw std::invalid_argument(
+          "load: " + caller + " calls " + callee + " inside " +
+          std::to_string(loops) + " scf.for loop(s) and states " +
+          std::to_string(periods) +
+          " period(s); give period_cycles one period per scf.for around the "
+          "call, outermost first (array<i64: outer, ..., inner>), and none "
+          "outside a loop");
+  }
+  /// How many operations a call of `name` writes in its place, its own and
+  /// those of the functions it calls, counted up to just past the most a
+  /// load writes. `open` holds the functions being counted: one met again
+  /// calls itself.
+  static int64_t writtenBy(mlir::ModuleOp source, const std::string &caller,
+                           const std::string &name,
+                           llvm::StringMap<int64_t> &known,
+                           llvm::SmallVectorImpl<std::string> &open) {
     auto found = known.find(name);
     if (found != known.end())
       return found->second;
     if (llvm::is_contained(open, name))
       throw std::invalid_argument("load: " + name +
                                   " calls a function that calls itself");
-    if (open.size() >= kMostCallDepth)
+    if (open.size() > kMostCallDepth)
       throw std::invalid_argument("load: the calls of " + open.front() +
                                   " nest deeper than " +
                                   std::to_string(kMostCallDepth));
     mlir::func::FuncOp callee = calledFunction(source, caller, name);
     open.push_back(name);
-    int64_t end = 0, written = 0;
-    // The callee's own calls are measured after the walk, not from inside
+    int64_t written = 0;
+    // The callee's own calls are counted after the walk, not from inside
     // it: the stack then grows with the calls' nesting only.
-    llvm::SmallVector<mlir::func::CallOp> nestedCalls;
+    llvm::SmallVector<pulse::CallOp> nestedCalls;
     callee.walk([&](mlir::Operation *op) {
       if (op != callee.getOperation())
         written = std::min(written + 1, kMostWritten + 1);
-      if (auto nested = mlir::dyn_cast<mlir::func::CallOp>(op))
+      if (auto nested = mlir::dyn_cast<pulse::CallOp>(op))
         nestedCalls.push_back(nested);
-      else if (std::optional<int64_t> start = pulse::startCycles(op))
-        end = std::max(end, *start + pulse::durationCycles(op).value_or(0));
     });
-    for (mlir::func::CallOp nested : nestedCalls) {
-      StatedCall within = statedCall(nested, name);
-      if (!within.periods.empty())
-        throw std::invalid_argument(
-            "load: " + name + " calls " + nested.getCallee().str() +
-            " with a pulse.period_cycles; a called function has no loop, and "
-            "its calls take the periods of the call it is written for");
-      auto [inner, more] =
-          extentOf(source, name, nested.getCallee().str(), known, open);
-      written = std::min(written + more, kMostWritten + 1);
-      if (within.length && inner > *within.length)
-        throw std::invalid_argument(
-            "load: " + name + " gives " + nested.getCallee().str() + " " +
-            std::to_string(*within.length) + " cycles at " +
-            std::to_string(within.start) + ", and it takes " +
-            std::to_string(inner));
-      end = std::max(end, within.start + within.length.value_or(inner));
+    for (pulse::CallOp nested : nestedCalls) {
+      refuseUnplaced(nested, name, /*called=*/true);
+      written =
+          std::min(written + writtenBy(source, name, nested.getCallee().str(),
+                                       known, open),
+                   kMostWritten + 1);
     }
     open.pop_back();
-    return known[name] = {end, written};
+    return known[name] = written;
   }
-  static void writeCallsInPlace(mlir::ModuleOp source, mlir::func::FuncOp main,
-                                const std::string &entry) {
-    // Each round writes the calls now in `main`; a callee's own calls are
-    // written by the next. Every callee is measured first, which also
-    // refuses a function that calls itself, so the rounds end.
-    llvm::StringMap<std::pair<int64_t, int64_t>> extents;
-    // What the calls would write is counted before any is written: a
-    // function that calls another twice doubles at every level.
+  /// Writes every pulse.call of `main` out (pulse::expandCalls), with the
+  /// functions the calls run copied from `source` for it. What the calls
+  /// would write is counted before any is written: a function that calls
+  /// another twice doubles at every level.
+  /// Whether `main` held a call.
+  bool writeCalls(mlir::ModuleOp source, mlir::ModuleOp module,
+                  mlir::func::FuncOp main, const std::string &entry) {
+    llvm::SmallVector<pulse::CallOp> calls;
+    main.walk([&](pulse::CallOp call) { calls.push_back(call); });
+    if (calls.empty())
+      return false;
+    llvm::StringMap<int64_t> counts;
     int64_t written = 0;
-    main.walk([&](mlir::func::CallOp call) {
-      llvm::SmallVector<std::string> open;
-      if (call.getCallee() == entry)
-        throw std::invalid_argument("load: " + entry +
-                                    " calls a function that calls itself");
-      written +=
-          extentOf(source, entry, call.getCallee().str(), extents, open).second;
+    for (pulse::CallOp call : calls) {
+      refuseUnplaced(call, entry, /*called=*/false);
+      llvm::SmallVector<std::string> open{entry};
+      written += writtenBy(source, entry, call.getCallee().str(), counts, open);
       if (written > kMostWritten)
         throw std::invalid_argument(
             "load: the calls of " + entry + " write more than " +
             std::to_string(kMostWritten) + " operations in its place");
-    });
-    for (;;) {
-      llvm::SmallVector<mlir::func::CallOp> calls;
-      main.walk([&](mlir::func::CallOp call) { calls.push_back(call); });
-      if (calls.empty())
-        return;
-      for (mlir::func::CallOp call : calls) {
-        std::string name = call.getCallee().str();
-        if (name == entry)
-          throw std::invalid_argument("load: " + entry +
-                                      " calls a function that calls itself");
-        StatedCall stated = statedCall(call, entry);
-        // One period per loop around the call, as every timed operation
-        // there has.
-        size_t loops = 0;
-        for (mlir::Operation *parent = call->getParentOp();
-             parent && parent != main.getOperation();
-             parent = parent->getParentOp())
-          loops += mlir::isa<mlir::scf::ForOp>(parent);
-        if (stated.periods.size() != loops)
-          throw std::invalid_argument(
-              "load: " + entry + " calls " + name + " inside " +
-              std::to_string(loops) + " scf.for loop(s) and states " +
-              std::to_string(stated.periods.size()) +
-              " period(s); give pulse.period_cycles one period per scf.for "
-              "around the call, outermost first (array<i64: outer, ..., "
-              "inner>), and none outside a loop");
-        llvm::SmallVector<std::string> open;
-        int64_t extent = extentOf(source, entry, name, extents, open).first;
-        if (stated.length && extent > *stated.length)
-          throw std::invalid_argument(
-              "load: " + entry + " gives " + name + " " +
-              std::to_string(*stated.length) + " cycles at " +
-              std::to_string(stated.start) + ", and it takes " +
-              std::to_string(extent));
-        mlir::func::FuncOp callee = calledFunction(source, entry, name);
-        if (call.getNumOperands() != callee.getNumArguments() ||
-            call.getNumResults() != callee.getNumResults())
-          throw std::invalid_argument("load: " + entry + " calls " + name +
-                                      " with other arguments or results than "
-                                      "it takes and gives");
-        mlir::IRMapping mapping;
-        for (auto [formal, actual] :
-             llvm::zip(callee.getArguments(), call.getArgOperands()))
-          mapping.map(formal, actual);
-        mlir::OpBuilder builder(call);
-        for (mlir::Operation &op : callee.getBody().front()) {
-          if (auto ret = mlir::dyn_cast<mlir::func::ReturnOp>(op)) {
-            for (auto [result, value] :
-                 llvm::zip(call.getResults(), ret.getOperands()))
-              result.replaceAllUsesWith(mapping.lookupOrDefault(value));
-            break;
-          }
-          mlir::Operation *copy = builder.clone(op, mapping);
-          copy->walk([&](mlir::Operation *inner) {
-            if (auto nested = mlir::dyn_cast<mlir::func::CallOp>(inner)) {
-              // Written by the next round, from the same start and loops.
-              StatedCall within = statedCall(nested, name);
-              mlir::Builder attrs(inner->getContext());
-              inner->setAttr(
-                  "pulse.start_cycles",
-                  attrs.getI64IntegerAttr(within.start + stated.start));
-              if (stated.periods.empty())
-                inner->removeAttr("pulse.period_cycles");
-              else
-                inner->setAttr("pulse.period_cycles",
-                               attrs.getDenseI64ArrayAttr(stated.periods));
-              return;
-            }
-            std::optional<int64_t> start = pulse::startCycles(inner);
-            if (!start)
-              return;
-            pulse::setStartCycles(inner, *start + stated.start);
-            pulse::setPeriodCycles(inner, stated.periods);
-          });
-        }
-        call->erase();
-      }
     }
+    for (const auto &counted : counts) {
+      if (counted.getKey() == "main")
+        throw std::invalid_argument(
+            "load: " + entry +
+            " calls a function named main, the name the "
+            "loaded function takes");
+      module.push_back(
+          source.lookupSymbol<mlir::func::FuncOp>(counted.getKey())->clone());
+    }
+    DiagnosticCollector diagnostics(ctx_);
+    // Each called function keeps the rules for one (its results continue
+    // its arguments in order, its recorded length is where its last
+    // operation ends) before any call is written out by them.
+    bool kept = true;
+    for (auto function : module.getOps<mlir::func::FuncOp>())
+      if (function != main)
+        kept &= mlir::succeeded(pulse::checkCalledFunction(function));
+    if (!kept || mlir::failed(pulse::expandCalls(module, /*callSites=*/false)))
+      diagnostics.fail("load: the calls of " + entry +
+                       " cannot be written in its place");
+    // The loaded module is the entry alone: a called function that
+    // something still names (an attribute of another compiler) goes too.
+    for (auto function :
+         llvm::make_early_inc_range(module.getOps<mlir::func::FuncOp>()))
+      if (function != main)
+        function.erase();
+    return true;
   }
 
   /// The name the module gives each link it states (`classical.links`), by
@@ -624,7 +551,10 @@ public:
       }
     auto main = mlir::cast<mlir::func::FuncOp>(found->clone());
     module->push_back(main);
-    writeCallsInPlace(*source, main, entry);
+    // What the calls wrote starts a call's start later, each level adding
+    // its own: it is held to the range again.
+    if (writeCalls(*source, *module, main, entry))
+      refuseUnsupported(main, /*called=*/false, /*written=*/true);
     main.walk([&](mlir::Operation *op) {
       if (op->getName().getStringRef() != "classical.get_link")
         return;
