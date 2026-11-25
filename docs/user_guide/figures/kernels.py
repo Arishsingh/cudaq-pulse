@@ -4,10 +4,13 @@
 
 Usage: python docs/user_guide/figures/kernels.py
 
-Needs matplotlib (the ``[viz]`` extra). Writes ``rolled_loop.svg`` and its
-``-dark`` twin next to this file. It runs the page's own code blocks and
-draws the loop of ``echo_sequence`` as the structured export holds it, one
-body with its trips and period, above the schedule it stands for.
+Needs matplotlib (the ``[viz]`` extra). Writes ``rolled_loop.svg`` and
+``runtime_wait.svg``, each with its ``-dark`` twin, next to this file. Both
+run the page's own code blocks. The first draws the loop of
+``echo_sequence`` as the structured export holds it, one body with its
+trips and period, above the schedule it stands for. The second draws three
+calls of ``echo`` from the page's sweep, each with its waits as the call
+rounds them.
 """
 
 import contextlib
@@ -17,6 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import cudaq_pulse as pulse
+import numpy as np
 from matplotlib.patches import Rectangle
 
 HERE = Path(__file__).resolve().parent
@@ -25,15 +29,20 @@ from _style import _page_blocks, save_themed  # noqa: E402
 from _timeline import Timeline, draw_stack, layout  # noqa: E402
 
 PAGE = HERE.parent / "kernels.rst"
+# The first, eleventh and twenty-first delay of the page's sweep.
+SWEEP = "np.linspace(0, 10_000, 1000)"
+PICKED = (0, 10, 20)
 
 
 def page_namespace() -> dict:
-    """The names of the page's runnable blocks up to the kernel drawn here."""
+    """The names of the page's runnable blocks up to the two kernels drawn here."""
     namespace: dict = {"__name__": "guide", "pulse": pulse}
     wanted = (
         "qs = pulse.quantum_system(",
         "x_duration = ",
+        "readout_duration = ",
         "def echo_sequence(",
+        "def echo(qubit, tau",
     )
     for classes, code, _ in _page_blocks()(PAGE):
         if "fragment" not in classes and any(text in code for text in wanted):
@@ -119,9 +128,84 @@ def rolled_loop(page) -> None:
     )
 
 
+def runtime_wait(page) -> None:
+    assert SWEEP in PAGE.read_text()
+    qs, qudit = page["qs"], page["q"]
+    delays = eval(SWEEP, {"np": np})[list(PICKED)]
+    calls = [
+        page["compiled_echo"].lower(
+            qudit,
+            float(tau),
+            page["x_duration"],
+            page["x_sigma"],
+            page["x_beta"],
+            page["readout_duration"],
+        )
+        for tau in delays
+    ]
+    assert all(call.rescheduled for call in calls)
+    timelines = [Timeline.of(call) for call in calls]
+
+    def at(pl):
+        return (pl.lane, round(pl.start_ns, 3))
+
+    words = []
+    for timeline in timelines:
+        drives = [pl for pl in timeline.pulses if pl.kind == "drive"]
+        assert len(drives) == 3
+        words.append(
+            {at(pl): word for pl, word in zip(drives, ("x90", "x180", "x90"), strict=True)}
+        )
+    waits = [sorted(w.length_ns for w in timeline.waits) for timeline in timelines]
+    # Each wait is half the delay, rounded to a clock cycle; a wait of no length is not drawn.
+    for tau, lengths in zip(delays, waits, strict=True):
+        cycles = int(np.floor(tau / 2 * qs.clock_ghz + 0.5))
+        assert lengths == ([cycles / qs.clock_ghz] * 2 if cycles else []), (tau, lengths)
+
+    # The readout is far longer than the echo: show its start and let it run off the edge.
+    starts = [next(pl.start_ns for pl in t.pulses if pl.kind == "readout") for t in timelines]
+    shown = (0, max(starts) * 1.25)
+    readout_ns = {
+        pl.end_ns - pl.start_ns for t in timelines for pl in t.pulses if pl.kind == "readout"
+    }
+    (readout_ns,) = readout_ns
+    assert all(start + readout_ns > shown[1] for start in starts)
+
+    def figure(p):
+        return draw_stack(
+            timelines,
+            [f"tau = {tau:.4g} ns" for tau in delays],
+            p,
+            labels=words,
+            syncs="none",
+            xlim=shown,
+        )
+
+    told = "; ".join(
+        f"tau = {tau:.4g} ns: "
+        + (f"two waits of {lengths[0]:g} ns" if lengths else "no wait")
+        + f", readout from {start:g} ns"
+        for tau, lengths, start in zip(delays, waits, starts, strict=True)
+    )
+    save_themed(
+        figure,
+        "runtime_wait",
+        title="Three calls of one compiled echo",
+        desc=(
+            "Three timelines of the echo kernel on a drive and a readout line, one per call "
+            "of the compiled kernel: an x90 pulse, a wait, an x180 pulse, a wait, an x90 "
+            f"pulse, then the start of the {readout_ns:g} ns readout, which runs past the "
+            f"right edge at {shown[1]:g} ns. {told}. The x180 pulse's Q quadrature is drawn "
+            "dashed."
+        ),
+        directory=HERE,
+    )
+
+
 def main() -> None:
     page = page_namespace()
     rolled_loop(page)
+    runtime_wait(page)
 
 
 if __name__ == "__main__":

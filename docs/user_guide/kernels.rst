@@ -462,6 +462,14 @@ runtime parameters, so a sweep over a delay compiles once:
        # one compilation for the whole sweep
        compiled_echo.lower(q, tau, x_duration, x_sigma, x_beta, readout_duration)
 
+.. themed-figure:: figures/runtime_wait.svg
+   :alt: Three timelines of the echo kernel on a drive and a readout line, one per call of the compiled kernel: an x90 pulse, a wait, an x180 pulse, a wait, an x90 pulse, then the start of the 500 ns readout, which runs past the right edge at 325 ns. tau = 0 ns: no wait, readout from 60 ns; tau = 100.1 ns: two waits of 50 ns, readout from 160 ns; tau = 200.2 ns: two waits of 100 ns, readout from 260 ns. The x180 pulse's Q quadrature is drawn dashed.
+   :width: 100%
+
+   Three calls of ``compiled_echo`` from the sweep. Each wait is half of
+   ``tau``, rounded to a clock cycle (half a nanosecond here); the readout
+   runs past the right edge. Dashed blue is a pulse's Q quadrature.
+
 - Each call computes the length from its values, in clock cycles (here
   nanoseconds times ``qs.clock_ghz``), and rounds it to the nearest cycle,
   ties up (``floor(x + 0.5)``): 99.5 cycles is 100, 99.49 is 99.
