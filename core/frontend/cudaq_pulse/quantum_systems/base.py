@@ -981,6 +981,9 @@ class Offset(float):
     number decides the comparison itself, so ``pytest.approx(1.5e8)`` equals
     ``Offset(1.5e8)`` either way round.
 
+    An offset is an ``Offset`` itself: the package tells one by its exact
+    class, and takes an instance of a subclass for the ``float`` it is.
+
     This holds with the ``Offset`` on the left, and on either side of an
     ``int`` or a ``float``. With another kind of number on the left
     (a ``Decimal``, a ``complex``, a ``Fraction``, a NumPy float) Python

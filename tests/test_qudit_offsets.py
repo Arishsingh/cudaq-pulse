@@ -790,6 +790,25 @@ def test_an_offset_readout_frequency_needs_qudits_that_give_offsets():
     with pytest.raises(InvalidValueError, match="the readout of qudit 0 of quantum system 'moved'"):
         pulse.compile(read, quantum_system=qs).lower(qs.qudits[1])
 
+    # A program loaded for such a system is told the same, by the same error.
+    from tests.test_load import MODULE
+
+    good = plain([DispersiveReadout(frequency_hz=7.0e9)] * 2)
+    assert pulse.load(MODULE, entry="round", qudits=good.qudits[:2]) is not None
+    bad = plain([None, DispersiveReadout(frequency_hz=Offset(2.0e9))])
+    with pytest.raises(InvalidValueError) as caught:
+        pulse.load(MODULE, entry="round", qudits=bad.qudits[:2])
+    assert type(caught.value) is InvalidValueError
+    assert "the readout of qudit 1 of quantum system 'plain' gives its" in str(caught.value)
+    # NumPy's float is a frequency in Hz, and is looked at closely once only.
+    from cudaq_pulse import _device
+
+    numpy_hz = plain([DispersiveReadout(frequency_hz=np.float64(7.0e9))] * 2)
+    assert numpy_hz._frequency_tables(2)[2].tolist() == [7.0e9, 7.0e9]
+    assert np.float64 in _device._HZ_TYPES and Offset not in _device._HZ_TYPES
+    assert _device._ONLY_HZ([float, int, type(None), np.float64])
+    assert not _device._ONLY_HZ([Offset]) and not _device._ONLY_HZ([dict])
+
     # Frequencies in Hz of any number type are taken as before, and a shared
     # reference takes its own.
     def tones(qs):

@@ -788,9 +788,11 @@ class QuantumSystem:
         return f"<QuantumSystem {self.name} ({len(self.layout)} qudits)>"
 
 
-# Whether the types of readout frequencies are those of frequencies in Hz
-# (or of none given): any other takes _offset_readouts.
-_ONLY_HZ = frozenset({float, int, type(None)}).issuperset
+# The types of readout frequencies that are frequencies in Hz (or none
+# given), and whether some types are all among them: any other takes
+# _offset_readouts, which adds a float type it meets (numpy.float64).
+_HZ_TYPES = {float, int, type(None)}
+_ONLY_HZ = _HZ_TYPES.issuperset
 
 
 def _offset_readouts(system: QuantumSystem, carriers: Sequence[int], given: Sequence[Any]) -> None:
@@ -801,6 +803,11 @@ def _offset_readouts(system: QuantumSystem, carriers: Sequence[int], given: Sequ
     shared reference checked its readouts when it was built."""
     from .quantum_systems.base import Offset
 
+    kinds = set(map(type, given))
+    if Offset not in kinds and not any(issubclass(kind, Mapping) for kind in kinds):
+        # Numbers of other types: the float types among them are looked at once.
+        _HZ_TYPES.update(k for k in kinds if issubclass(k, float) and not issubclass(k, Offset))
+        return
     target = system._description
     if target._frame != "absolute":
         return
