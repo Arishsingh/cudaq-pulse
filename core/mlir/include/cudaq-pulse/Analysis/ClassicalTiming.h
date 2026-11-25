@@ -199,6 +199,8 @@ inline bool readers(mlir::Value value, const pulse::Controllers &controllers,
 struct Takers {
   llvm::SmallVector<int64_t, 2> controllers;
   bool known = true;
+  /// Being followed: its uses are not all done.
+  bool open = false;
 
   void add(int64_t controller) {
     if (!llvm::is_contained(controllers, controller))
@@ -238,9 +240,14 @@ inline bool takers(mlir::Value value, const pulse::Controllers &controllers,
   auto follow = [&](mlir::Value next, Takers &into) {
     auto old = takers.find(next);
     if (old == takers.end()) {
+      takers[next].open = true;
       frames.push_back({next, next.use_begin(), next.use_end(), {}, 0, {}});
       return true;
     }
+    // A value that uses itself, which a block nothing reaches may hold:
+    // not followed.
+    if (old->second.open)
+      return false;
     for (int64_t controller : old->second.controllers)
       into.add(controller);
     return old->second.known;
@@ -248,7 +255,7 @@ inline bool takers(mlir::Value value, const pulse::Controllers &controllers,
   // Every value on the stack reaches the use that cannot be followed.
   auto unknown = [&] {
     for (Frame &frame : frames)
-      takers[frame.value].known = false;
+      takers[frame.value] = {{}, false, false};
     return false;
   };
   Takers all;
