@@ -25,7 +25,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from .._errors import ExecutionError, InvalidTypeError, InvalidValueError
-from ..compiler import _dispatch_keys
+from ..compiler import _dispatch_keys, _MachineModel
 from . import (
     ClassicalFunction,
     ValueType,
@@ -374,12 +374,14 @@ def _emulation_export(lowered: Any, controller: int | None = None) -> dict[str, 
     events, calls, links and functions, and ``controller`` its index."""
     machine = lowered.options.machine
     if machine._system is not None and machine.controller is None:
-        return _export_part(lowered, controller)
+        return machine._emulation_part(lowered, controller)  # type: ignore[no-any-return]
     if controller is not None:
         from ..controller import _controller_index
 
         _controller_index(controller, 1)
-    return _export(lowered, True)
+    # The model's: that of a control system with a broadcast drive line
+    # writes the line's qudits on its drives (_broadcast_lines).
+    return machine._emulation(lowered)  # type: ignore[no-any-return]
 
 
 _Part = tuple[int, "_clocks.ControllerClock | None", frozenset[str], Sequence[bool]]
@@ -406,7 +408,7 @@ def _export_part(lowered: Any, controller: int | None) -> dict[str, Any]:
 
 
 def _export(
-    lowered: Any, with_events: bool, part: _Part | None = None, program: Any = None
+    lowered: Any, with_events: bool = True, part: _Part | None = None, program: Any = None
 ) -> dict[str, Any]:
     """``export``; without *with_events*, its ``events`` are left empty. With
     *part* (a controller's index and clock, the functions it calls or takes
@@ -532,3 +534,9 @@ def _in_own_clock(data: dict[str, Any], events: list[Any], clocks: Any, own: Any
         **_clocks.clock_keys(clocks, own),
         **data,
     }
+
+
+# The export of a program on one controller or none is the model's own, so
+# that no export asks whether its control system has a broadcast line.
+_MachineModel._emulation = staticmethod(_export)
+_MachineModel._emulation_part = staticmethod(_export_part)

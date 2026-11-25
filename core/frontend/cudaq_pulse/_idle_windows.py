@@ -208,14 +208,13 @@ class Sites:
         base: type[Any]
         if tracer is not None:
             base = tracer
-        elif builder.sample_rate_of is None:
+        elif builder.tracer is None:
             from .kernel._emitter import PulseIREmitter
 
             base = PulseIREmitter
         else:
-            from .kernel._mixed_rates import MixedRates
-
-            base = MixedRates
+            # Lines of different sample rates, or a broadcast drive line.
+            base = builder.tracer
         sited = _SITED.get(base)
         if sited is None:
             sited = _SITED[base] = type(

@@ -749,6 +749,7 @@ class PythonIRBuilder:
     sample_rate: tuple[int, int] | None = None
     # Each line's sample rate, when they differ; see PackedIRBuilder.
     sample_rate_of: Any = None
+    tracer: Any = None
 
     def __init__(self, name: str = "main"):
         self.name = name

@@ -4211,6 +4211,10 @@ class PulseIREmitter:
                 else:
                     last = _OPTIONAL_LAST.get(fname)
                     if last is None or len(call_args) != value_count + len(attr_names) + 1:
+                        if fname == "get_drive_line" and len(call_args) > 1:
+                            from ._emit_errors import no_broadcast_line
+
+                            raise no_broadcast_line(len(call_args))
                         raise CompilationError(
                             f"{fname}: expected {value_count + len(attr_names)} args, "
                             f"got {len(call_args)}",

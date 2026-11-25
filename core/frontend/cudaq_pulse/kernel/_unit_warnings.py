@@ -168,12 +168,10 @@ def unit_checked(builder: Any, quantum_system: QuantumSystem) -> type[PulseIREmi
     helpers' tracers, which are of its type, have them too. Frequencies are
     held against *quantum_system*'s carriers."""
     builder.unit_scale_hz = carrier_hz(quantum_system)
-    if builder.sample_rate_of is None:
+    if builder.tracer is None:
         emitter_type: type[PulseIREmitter] = PulseIREmitter
     else:
-        from ._mixed_rates import MixedRates
-
-        emitter_type = MixedRates
+        emitter_type = builder.tracer
     checked = _CHECKED.get(emitter_type)
     if checked is None:
         checked = type(

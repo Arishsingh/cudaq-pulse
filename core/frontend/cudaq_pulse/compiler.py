@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType, ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import cudaq_pulse.classical as classical
 
@@ -281,6 +281,17 @@ class _MachineModel:
         # given, else _RCP_DRIVES and _RCP_READOUTS. Not fields, as _bare.
         _drive_lanes: int = field(init=False)
         _readout_lanes: int = field(init=False)
+
+        # The emulator export of a program on one controller or none
+        # (classical.wire sets it when it loads).
+        _emulation: ClassVar[Any]
+        _emulation_part: ClassVar[Any]
+
+        def _clocked_builder(self, builder: Any, target: QuantumSystem) -> Any: ...
+
+        def _clocked_module(
+            self, module: Any, target: QuantumSystem, clocks: Any, max_duration_cycles: int | None
+        ) -> Mapping[tuple[str, int], float] | None: ...
 
     def __post_init__(self) -> None:
         drives, readouts = self.max_concurrent_drives, self.max_concurrent_readouts
@@ -1439,7 +1450,7 @@ def build(
     builder.machine = machine
     builder.locate_structural = frozenset(parameters)
     plain = machine._plain
-    clocks = None if plain else _clocked_builder(builder, machine, target)
+    clocks = None if plain else machine._clocked_builder(builder, target)
     # One try for the trace and the module: a try statement costs a bytecode.
     try:
         if options.unit_warnings:
@@ -1540,7 +1551,7 @@ def build(
     fine_delays = (
         None
         if plain and max_duration_cycles is None
-        else _clocked_module(module, machine, target, clocks, max_duration_cycles)
+        else machine._clocked_module(module, target, clocks, max_duration_cycles)
     )
     metrics.ffi_ms = (time.perf_counter() - t0) * 1000
 
@@ -1658,26 +1669,28 @@ def build(
 
 
 def _clocked_builder(
-    builder: Any, machine: _MachineModel, target: QuantumSystem
+    self: _MachineModel, builder: Any, target: QuantumSystem
 ) -> _clocks.ClockPlan | None:
-    """Set *builder* up for *machine*'s controllers; their clock plan."""
+    """Set *builder* up for the model's controllers; their clock plan.
+    ``_MachineModel._clocked_builder``: the model of a control system with a
+    broadcast line has its own (``_broadcast_lines``)."""
     from . import _clocks
 
-    system = machine._system
-    controller = machine.controller
+    system = self._system
+    controller = self.controller
     if system is not None and controller is None:
         clocks = system._clock_plan(target.clock_ghz)
-    elif controller is None and machine.reference_clock_ghz is None:
+    elif controller is None and self.reference_clock_ghz is None:
         clocks = None
     else:
-        clocks = _clocks.plan(controller, target.clock_ghz, machine.reference_clock_ghz)
+        clocks = _clocks.plan(controller, target.clock_ghz, self.reference_clock_ghz)
         if clocks is not None and controller is not None:
             # The controller counts its feedback latency in its own cycles;
             # the scheduler waits it in the program's (a new plan: plans
             # are cached).
             from fractions import Fraction
 
-            latency = Fraction(machine.readout_latency_cycles) / clocks.controllers[0].ratio
+            latency = Fraction(self.readout_latency_cycles) / clocks.controllers[0].ratio
             clocks = dataclasses.replace(clocks, readout_latency_cycles=math.ceil(latency))
     if clocks is not None:
         builder.line_grid = clocks.grid_of
@@ -1697,16 +1710,19 @@ def _clocked_builder(
         if len(set(rates)) == 1:
             builder.sample_rate = rates[0]
         else:
+            from .kernel._mixed_rates import MixedRates
+
             owners = system._line_owners
             builder.sample_rate_of = lambda role, qudit: (
                 None if (owner := owners.get((role, qudit))) is None else rates[owner]
             )
+            builder.tracer = MixedRates
     return clocks
 
 
 def _clocked_module(
+    self: _MachineModel,
     module: Any,
-    machine: _MachineModel,
     target: QuantumSystem,
     clocks: _clocks.ClockPlan | None,
     max_duration_cycles: int | None,
@@ -1720,15 +1736,15 @@ def _clocked_module(
 
     shifts: Mapping[tuple[str, int], int] = {}
     fine_delays = None
-    if machine._line_delays:
-        shifts, fine_delays = _line_delays(machine, target, clocks)
-    lines = _lines(machine, shifts, fine_delays, target.clock_ghz)
-    system = machine._system
-    if system is not None and machine.controller is None:
+    if self._line_delays:
+        shifts, fine_delays = _line_delays(self, target, clocks)
+    lines = _lines(self, shifts, fine_delays, target.clock_ghz)
+    system = self._system
+    if system is not None and self.controller is None:
         controllers = system._controllers_attribute(target.clock_ghz, max_duration_cycles)
     else:
-        controllers = _controller_attribute(machine.controller, clocks, max_duration_cycles)
-    if limits := _program_limits(machine, target.clock_ghz):
+        controllers = _controller_attribute(self.controller, clocks, max_duration_cycles)
+    if limits := _program_limits(self, target.clock_ghz):
         module.set_attributes(limits)
     if lines or controllers:
         text = "{pulse.control_system = #pulse.control_system<clock_period_fs = "
@@ -1739,6 +1755,13 @@ def _clocked_module(
             text += f", controllers = {controllers}"
         module.set_attributes(text + ">}")
     return fine_delays
+
+
+# Methods of the model, so that the model of a control system with a
+# broadcast line (``_broadcast_lines``) sets up the trace and the module for
+# one, and no other compilation asks whether it has one.
+_MachineModel._clocked_builder = _clocked_builder  # type: ignore[method-assign]
+_MachineModel._clocked_module = _clocked_module  # type: ignore[method-assign]
 
 
 def _program_limits(machine: _MachineModel, program_ghz: float) -> str:
