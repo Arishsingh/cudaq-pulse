@@ -95,22 +95,27 @@ as for a ``str`` and a number; ``float(offset)`` is the number.
 What needs a frequency such a system does not state is refused, each with
 an error that says so:
 
-- a readout's ``frequency_hz`` (``DispersiveReadout(frequency_hz=...)``):
-  leave it out, and the readout line plays at its qudit's own tone;
+- a readout's ``frequency_hz`` that is not an offset from the same
+  reference: on a ``"shared_reference"`` system it is given as
+  ``DispersiveReadout(frequency_hz=Offset(2.0e9))``, and a plain number is
+  refused; an ``"own_carrier"`` system takes none. Without one, a readout
+  line plays at its qudit's own tone: on an ``"own_carrier"`` system that
+  is 0 Hz from the qudit's carrier;
 - ``simulate(program, quantum_system=other)`` when ``other.frequency_frame``
   is not that of the system the program was compiled for;
 - a ``Calibration`` of a system with couplings, which computes each
   coupling's exchange at its qudits' absolute frequencies;
-- parameter drift;
-- on an ``"own_carrier"`` system, a control system that counts the tone
-  frequencies (``max_frequencies_per_line``) of a line several qudits share:
-  each qudit's own tone is 0 Hz from its own carrier, so the count cannot
-  tell them apart.
+- parameter drift.
 
-``qs.transition_freq`` gives magnitudes on every system. Where frequencies
-are offsets a transition's frequency keeps its sign (a 1-2 tone is its
-anharmonicity below the 0-1 tone): ``line.tones`` and
-``qs.model.transitions_hz(qudit, levels)`` give it.
+On an ``"own_carrier"`` system a line several qudits share counts each
+qudit's tones apart (``max_frequencies_per_line``): a tone there is a qudit
+and an offset from its carrier, so three qudits' own tones, each 0 Hz, are
+three frequencies.
+
+``qs.transition_freq[q, i, j]`` is the upper level's energy less the
+lower's, as ``line.tones`` and ``qs.model.transitions_hz(qudit, levels)``
+give it: where frequencies are offsets it keeps its sign (a 1-2 tone is
+its anharmonicity below the 0-1 tone).
 
 A coupling's ``strength_hz`` is g / 2 pi; ``None`` says it is not measured
 yet, and such a system compiles, schedules and exports while

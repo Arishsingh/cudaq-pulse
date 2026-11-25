@@ -1531,21 +1531,6 @@ class _Tones(Mapping[tuple[int, int], IRValue]):
 
     def _missing(self, transition: Any) -> str:
         if self._slot:
-            system = getattr(getattr(self._emitter.b, "line_tones", None), "__self__", None)
-            if getattr(system, "frequency_frame", "absolute") != "absolute":
-                # The system's frequencies are offsets, which keep their
-                # signs; qs.transition_freq gives magnitudes.
-                return (
-                    f"the qudit is a runtime parameter, so its transitions' frequencies depend "
-                    f"on the carrier each call binds; line.tones has only the default "
-                    f"{self._default!r}, line.tone. Pass the frequency of {transition!r} in as "
-                    "a float parameter, e.g. f12_hz: float, and set it with "
-                    "set_frequency(line.tone, f12_hz). The frequencies of this quantum system "
-                    "are offsets, so the value keeps its sign: call with "
-                    "qs.model.transitions_hz(qs.physical_qudits[q.index], "
-                    f"qs.model.levels_of(q.index))[{transition!r}], not with qs.transition_freq, "
-                    "which gives magnitudes"
-                )
             return (
                 f"the qudit is a runtime parameter, so its transitions' frequencies depend on "
                 f"the carrier each call binds; line.tones has only the default "

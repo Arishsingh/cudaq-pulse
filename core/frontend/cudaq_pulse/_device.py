@@ -342,10 +342,11 @@ class QuantumSystem:
     ``cudaq_pulse.controller``).
 
     ``qudit_freq[q]`` is the 0-1 transition frequency of qudit ``q`` (Hz) and
-    ``transition_freq[q, i, j]`` that of levels ``i`` and ``j``, over the
-    levels the system's model gives each qudit (NaN past a qudit's last
-    level); both are indexed by the user's qudit numbering and are read-only
-    arrays.
+    ``transition_freq[q, i, j]`` that of levels ``i`` and ``j`` (the upper
+    level's energy less the lower's, in either order of ``i`` and ``j``),
+    over the levels the system's model gives each qudit (NaN past a qudit's
+    last level); both are indexed by the user's qudit numbering and are
+    read-only arrays.
     ``control_system`` is the ``ControlSystem`` that plays it, if given;
     ``compile(kernel, quantum_system=dev)`` checks every program against it.
 
@@ -451,7 +452,11 @@ class QuantumSystem:
             energies = np.full((len(qudits), max(levels, default=model.levels)), np.nan)
             for row, qudit, n in zip(energies, qudits, levels, strict=False):
                 row[:n] = model.energies_hz(qudit, n)
-            transitions = np.abs(energies[:, None, :] - energies[:, :, None])
+            # A transition's frequency: its upper level's energy less its
+            # lower's, for [q, i, j] and [q, j, i] alike.
+            rise = energies[:, None, :] - energies[:, :, None]
+            level = np.arange(rise.shape[-1])
+            transitions = rise * np.sign(level - level[:, None])
             self._arrays = (_read_only(f01), _read_only(transitions))
         return self._arrays
 

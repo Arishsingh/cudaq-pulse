@@ -280,13 +280,16 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   frequencies does, less the reference. What needs a frequency such a
   system does not state is an error that says so: a readout's
   `frequency_hz`, `simulate(program, quantum_system=other)` on a system of
-  another `frequency_frame`, a `Calibration` of its couplings, parameter
-  drift, and, without frequencies, a shared line whose controller counts
-  tone frequencies. An `Offset` equals and is ordered against another
-  `Offset` only. A system whose qudits give their frequencies does no more
-  work than before.
+  another `frequency_frame`, a `Calibration` of its couplings and parameter
+  drift; a readout's `frequency_hz` is an `Offset` from the same reference
+  with offsets, and not taken without frequencies. Without frequencies a
+  line several qudits share counts each qudit's tones apart
+  (`max_frequencies_per_line`). An `Offset` equals and is ordered against
+  another `Offset` only. A system whose qudits give their frequencies does
+  no more work than before.
 - **A transition's frequency is the upper level's energy less the lower's.**
-  `SimulationModel.transitions_hz` no longer takes its absolute value. For
+  `SimulationModel.transitions_hz` and `qs.transition_freq` no longer take
+  its absolute value. For
   levels that ascend, which every shipped model's do, nothing changes; where
   frequencies are offsets, a qudit's 1-2 tone is its anharmonicity below
   its 0-1 tone, as it must be, and no longer above.

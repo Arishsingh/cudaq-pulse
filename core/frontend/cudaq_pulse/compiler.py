@@ -1437,7 +1437,7 @@ def build(
     builder.unroll_threshold = options.unroll_threshold
     builder.line_tones = target._line_tones
     if target._description._own_carrier:
-        _refuse_other_qudits_tones(builder, target, machine, fn, trace_args)
+        _refuse_other_qudits_tones(builder, target, fn, trace_args)
     builder.machine = machine
     builder.locate_structural = frozenset(parameters)
     plain = machine._plain
@@ -1744,19 +1744,14 @@ def _clocked_module(
 
 
 def _refuse_other_qudits_tones(
-    builder: Any, target: QuantumSystem, machine: _MachineModel, fn: Any, trace_args: Sequence[Any]
+    builder: Any, target: QuantumSystem, fn: Any, trace_args: Sequence[Any]
 ) -> None:
     """For a quantum system whose qudits give no frequencies: make *builder*
     refuse a drive or readout at the tone of another qudit. Each tone is
     then an offset from its own qudit's carrier, and the system does not
     state how far apart two carriers are. A tone whose qudit the trace does
     not know is refused too. Only such a system's builder is wrapped; every
-    other compile emits as it did.
-
-    Refused here as well, where only such a system comes: a control system
-    that counts the tone frequencies of a line several qudits share
-    (``_shared_line_counts``)."""
-    _shared_line_counts(target, machine)
+    other compile emits as it did."""
     emit = builder.emit
     lines = ("pulse.get_drive_line", "pulse.get_readout_line")
     # The qudit (by the value it was made from) of each line and tone the
@@ -1851,35 +1846,6 @@ def _runtime_qudit(fn: Any, trace_args: Sequence[Any], slot: int) -> str:
                 if qudit.index == slot:
                     return f"the qudit {name}[{k}]"
     return "a runtime qudit"
-
-
-def _shared_line_counts(target: QuantumSystem, machine: _MachineModel) -> None:
-    """Refuse a quantum system whose qudits give no frequencies on a
-    control system that counts the tone frequencies of a line several
-    qudits share (``max_frequencies_per_line``): each qudit's own tone is
-    0 Hz from its own carrier, so the tones of several qudits read as one
-    frequency and the count would pass what it should not."""
-    system = machine._system
-    if system is None:
-        return
-    from ._shared_lines import physical
-
-    shared = physical(system)
-    if shared is None:
-        return
-    for line in dict.fromkeys(shared.values()):
-        most = system.controllers[line.owner].max_frequencies_per_line
-        if most is not None:
-            raise CompilationError(
-                f"{line.label} is shared by several qudits and its controller holds {most} tone "
-                f"frequencies per line (max_frequencies_per_line), counted by their numbers; the "
-                f"qudits of quantum system {target.name!r} give no frequency_hz, so each qudit's "
-                "own tone is 0 Hz from its own carrier and the tones of several qudits count "
-                "as one",
-                code="control_system",
-                fix="give the qudits their frequencies (or an Offset each from one shared "
-                "reference), or give each qudit a line of its own",
-            )
 
 
 def _program_limits(machine: _MachineModel, program_ghz: float) -> str:

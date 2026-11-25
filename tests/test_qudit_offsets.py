@@ -529,10 +529,18 @@ def test_an_offset_compares_as_one_kind_of_number():
     assert float(offset) == value and offset - value == 0.0 and abs(Offset(-2.0)) == 2.0
     assert (np.array([1.0, 2.0]) + Offset(1.0)).tolist() == [2.0, 3.0]
     assert np.float32(2.0) * Offset(1.5) == 3.0 and Offset(1.5) * np.float64(2.0) == 3.0
-    # A NumPy float on the left is asked first and compares by value: the one
-    # comparison Offset does not decide.
+    # A number of any other kind is not an offset either.
+    import decimal
+    import fractions
+
+    for number in (decimal.Decimal(value), complex(value), fractions.Fraction(value)):
+        assert offset != number and not (offset == number)
+    with pytest.raises(pulse.InvalidTypeError):
+        offset < decimal.Decimal(2)  # noqa: B015
+    # A NumPy float or a Fraction on the left is asked first and compares by
+    # value: the comparisons Offset does not decide.
     assert Offset.__eq__(offset, np.float64(value)) is False
-    assert bool(np.float64(value) == offset)
+    assert bool(np.float64(value) == offset) and fractions.Fraction(value) == offset
 
 
 # ── Plain numbers leave the system ──────────────────────────────────────────
@@ -571,7 +579,8 @@ def pi_pulse(q):
     drive(line, square(63 * pulse.ns, 1.0))  # noqa: F821
 
 
-_FRAME_OF = {None: "own_carrier", 5.0e9: "absolute"}
+def pi_pulse_on(qs):
+    return pulse.compile(pi_pulse, quantum_system=qs).lower(qs.qudits[0])
 
 
 @pytest.mark.parametrize(
@@ -598,9 +607,16 @@ def test_simulate_refuses_a_system_whose_frequencies_are_measured_from_something
     mine, other = repr(ours.frequency_frame), repr(theirs.frequency_frame)
     assert f"compiled for quantum system 'frame', whose frequency_frame is {mine} " in message
     assert f"quantum_system= is 'frame', whose frequency_frame is {other} " in message
-    # From the kernel too, and for a drifting system of the other frame.
+    # From the kernel too, and for a drifting system, whichever of the two drifts.
     with pytest.raises(InvalidValueError, match="frequency_frame"):
         pulse.simulate(pi_pulse, theirs.qudits[0], quantum_system=ours)
+    for absolute, offsets in ((ours, theirs), (theirs, ours)):
+        if absolute.frequency_frame == "absolute":
+            drifting = absolute.replace(parameter_drift=True, parameter_drift_seed=0)
+            with pytest.raises(InvalidValueError, match="frequency_frame"):
+                pulse.simulate(pi_pulse_on(offsets), quantum_system=drifting)
+            with pytest.raises(InvalidValueError, match="frequency_frame"):
+                pulse.simulate(pi_pulse_on(drifting), quantum_system=offsets)
 
 
 def test_simulate_takes_another_system_of_the_same_frame_as_before():
@@ -638,35 +654,92 @@ def test_a_coupled_system_cannot_be_reached_through_simulate():
 # ── A readout's frequency ───────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("frequency_hz", [None, Offset(1.5e8)])
-def test_a_readout_frequency_needs_qudits_with_frequencies(frequency_hz):
-    def system(readout):
-        qudits = {
-            i: PhysicalQudit(i, frequency_hz, 0.0, 0.0, drive=DRIVE, readout=readout)
-            for i in range(2)
-        }
-        return pulse.quantum_system(name="read", qudits=qudits, clock_ghz=1.0)
+@pulse.kernel
+def read(q):
+    readout(get_readout_line(q), square(200, 0.05))  # noqa: F821
 
-    with pytest.raises(QuantumSystemDefinitionError) as caught:
-        system(DispersiveReadout(frequency_hz=7.0e9))
-    assert [p.path for p in caught.value.problems] == [
-        "qudits[0].readout.frequency_hz",
-        "qudits[1].readout.frequency_hz",
-    ]
-    message = str(caught.value)
-    assert "7000000000.0 is a readout frequency, and the qudits give" in message
-    assert "leave the readout's frequency_hz out" in message
-    # Without one, the readout line plays at its qudit's own tone.
-    qs = system(DispersiveReadout())
 
-    @pulse.kernel
-    def read(q):
-        readout(get_readout_line(q), square(200, 0.05))  # noqa: F821
+def _read(frequency_hz, readout):
+    qudits = {
+        i: PhysicalQudit(i, frequency_hz, 0.0, 0.0, drive=DRIVE, readout=readout) for i in range(2)
+    }
+    return pulse.quantum_system(name="read", qudits=qudits, clock_ghz=1.0)
 
+
+def _readout_tones(qs):
     out = pulse.compile(read, quantum_system=qs).lower(qs.qudits[1]).export_to_controller()
-    expected = 0.0 if frequency_hz is None else float(frequency_hz)
-    assert [line["native_frequency_hz"] for line in out["lines"]] == [expected]
-    assert [e["frequency_hz"] for e in out["events"] if e["kind"] == "readout"] == [expected]
+    natives = [line["native_frequency_hz"] for line in out["lines"]]
+    played = [e["frequency_hz"] for e in out["events"] if e["kind"] == "readout"]
+    assert natives == played and len(natives) == 1
+    return natives[0]
+
+
+def test_a_readout_frequency_on_a_shared_reference_is_an_offset_from_it():
+    qs = _read(Offset(1.5e8), DispersiveReadout(frequency_hz=Offset(2.0e9)))
+    held = qs.physical_qudits[1].readout.frequency_hz
+    assert type(held) is Offset and held == Offset(2.0e9)
+    assert _readout_tones(qs) == 2.0e9
+    assert qs._frequency_tables(2)[2].tolist() == [2.0e9, 2.0e9]
+    # A negative one, and none: the line then plays at its qudit's own tone.
+    assert (
+        _readout_tones(_read(Offset(1.5e8), DispersiveReadout(frequency_hz=Offset(-3e8)))) == -3e8
+    )
+    assert _readout_tones(_read(Offset(1.5e8), DispersiveReadout())) == 1.5e8
+    # The file holds it as it holds a qudit's, and reads it back.
+    data = json.loads(json.dumps(qs.as_dict()))
+    assert [q["readout"]["frequency_hz"] for q in data["qudits"]] == [{"offset_hz": 2.0e9}] * 2
+    back = pulse.QuantumSystem.from_dict(data)
+    assert back.fingerprint == qs.fingerprint and back == qs
+    assert type(back.physical_qudits[0].readout.frequency_hz) is Offset
+    assert _readout_tones(back) == 2.0e9
+    assert pickle.loads(pickle.dumps(qs)) == qs
+    # A plain number is not an offset from the reference, and neither is a wrong one.
+    for wrong in (7.0e9, 0.0, Offset(math.nan), {"offset": 2.0e9}):
+        with pytest.raises(QuantumSystemDefinitionError) as caught:
+            _read(Offset(1.5e8), DispersiveReadout(frequency_hz=wrong))
+        assert [p.path for p in caught.value.problems] == [
+            "qudits[0].readout.frequency_hz",
+            "qudits[1].readout.frequency_hz",
+        ]
+        assert "the readout's frequency is not a finite Offset from it" in str(caught.value)
+        assert "give it as Offset(hz) from the reference the qudits share" in str(caught.value)
+
+
+def test_a_system_without_frequencies_takes_no_readout_frequency():
+    for given in (7.0e9, Offset(2.0e9)):
+        with pytest.raises(QuantumSystemDefinitionError) as caught:
+            _read(None, DispersiveReadout(frequency_hz=given))
+        assert [p.path for p in caught.value.problems] == [
+            "qudits[0].readout.frequency_hz",
+            "qudits[1].readout.frequency_hz",
+        ]
+        message = str(caught.value)
+        assert f"{given!r} is a readout frequency, and the qudits give no frequency_hz" in message
+        assert "leave the readout's frequency_hz out" in message and "Offset(hz)" not in message
+    # Its readout line plays at its qudit's own tone: 0 Hz from the qudit's carrier.
+    assert _readout_tones(_read(None, DispersiveReadout())) == 0.0
+
+
+def test_a_readout_with_an_offset_frequency_gives_the_iq_points_of_the_same_system():
+    reference = 5.0e9
+    points = []
+    for frequency_hz, resonator in (
+        (Offset(1.5e8), Offset(2.0e9)),
+        (reference + 1.5e8, reference + 2.0e9),
+    ):
+        readout = DispersiveReadout(
+            frequency_hz=resonator, dispersive_shift_hz=1.0e6, linewidth_hz=2.0e6
+        )
+        qudits = {0: PhysicalQudit(0, frequency_hz, 0.0, 0.0, drive=DRIVE, readout=readout)}
+        qs = pulse.quantum_system(
+            name="read", qudits=qudits, model=TransmonModel(levels={0: 2}), clock_ghz=1.0
+        )
+        model = __import__("cudaq_pulse.runtime._calls", fromlist=["IQModel"]).IQModel(
+            qs._description, [0], False
+        )
+        tone = qs._frequency_tables(1)[2][0]
+        points.append([model.center(0, level, tone + 1.0e6, 0.05, 200.0) for level in (0, 1)])
+    assert points[0] == pytest.approx(points[1]) and points[0][0] != pytest.approx(points[0][1])
 
 
 def test_a_readout_frequency_with_frequencies_is_what_it_was():
@@ -712,28 +785,59 @@ def _wired(frequencies, shared, **limits):
 @pytest.mark.parametrize(
     ("kernel", "shared"), [(three_readouts, "readout"), (three_drives, "drive")]
 )
-def test_a_shared_line_that_counts_frequencies_needs_them(kernel, shared):
+def test_a_shared_line_counts_the_tones_of_each_qudit(kernel, shared):
     def lowered(frequencies, shared=shared, **limits):
         qs = _wired(frequencies, shared, **limits)
         return pulse.compile(kernel, quantum_system=qs).lower(*qs.qudits[:3])
 
-    # With frequencies or offsets the three tones are three frequencies.
-    for frequencies in ([5.0e9, 5.1e9, 5.2e9], [Offset(0.0), Offset(1.0e8), Offset(2.0e8)]):
-        with pytest.raises(pulse.controller.ControllerLimitError, match="3 tone frequencies"):
-            lowered(frequencies, max_frequencies_per_line=2)
-        assert lowered(frequencies, max_frequencies_per_line=3) is not None
-    # Without, each is 0 Hz from its own carrier: the count is refused, not passed.
-    with pytest.raises(pulse.CompilationError) as caught:
-        lowered([None] * 3, max_frequencies_per_line=2)
-    message = str(caught.value)
-    assert (
-        f"the {shared} line of qudits 0..2 (controllers[0].{shared}_lines[0]) is shared" in message
+    said = (
+        f"the {shared} line of qudits 0..2 (controllers[0].{shared}_lines[0]): 3 tone "
+        "frequencies; the controller holds 2 per line"
     )
-    assert "holds 2 tone frequencies per line (max_frequencies_per_line)" in message
-    assert "give no frequency_hz" in message and "count as one" in message
-    # A shared line that is not counted, and lines of their own that are, compile.
-    assert lowered([None] * 3) is not None
-    assert lowered([None] * 3, shared=None, max_frequencies_per_line=1) is not None
+    # Three qudits' tones are three frequencies: by their numbers with
+    # frequencies or offsets, and without, where each is 0 Hz from its own
+    # carrier, by their qudits.
+    for frequencies in (
+        [5.0e9, 5.1e9, 5.2e9],
+        [Offset(0.0), Offset(1.0e8), Offset(2.0e8)],
+        [None] * 3,
+    ):
+        with pytest.raises(pulse.controller.ControllerLimitError) as caught:
+            lowered(frequencies, max_frequencies_per_line=2)
+        assert list(caught.value.violations) == [said]
+        # Within the count, and on lines of their own, the program compiles.
+        program = lowered(frequencies, max_frequencies_per_line=3)
+        assert pulse.controller.check(program) == []
+        assert lowered(frequencies, shared=None, max_frequencies_per_line=1) is not None
+        # Its export, and a check for another controller, count the same way.
+        assert program.export_to_controller()["events"]
+        assert program.export_to_controller(version=2)["events"]
+        plain = lowered(frequencies)
+        for most, found in ((2, [said]), (3, [])):
+            other = _wired(frequencies, shared, max_frequencies_per_line=most)
+            controller = other.control_system.controllers[0]
+            assert list(pulse.controller.check(plain, controller)) == found
+
+
+def test_one_qudits_tones_on_a_shared_line_count_by_their_offsets():
+    @pulse.kernel
+    def twice(a, b, c):
+        ra, rb = get_readout_line(a), get_readout_line(b)  # noqa: F821
+        readout(ra, square(200, 0.05))  # noqa: F821
+        readout(ra, square(200, 0.05))  # noqa: F821
+        set_frequency(ra.tone, 1.0e6)  # noqa: F821
+        readout(ra, square(200, 0.05))  # noqa: F821
+        sync(ra, rb)  # noqa: F821
+        readout(rb, square(200, 0.05))  # noqa: F821
+
+    # Qudit 0 at 0 Hz (twice, one frequency) and at 1 MHz, qudit 1 at 0 Hz: three.
+    for most, fits in ((2, False), (3, True)):
+        qs = _wired([None] * 3, "readout", max_frequencies_per_line=most)
+        if fits:
+            assert pulse.compile(twice, quantum_system=qs).lower(*qs.qudits[:3]) is not None
+        else:
+            with pytest.raises(pulse.controller.ControllerLimitError, match="3 tone frequencies"):
+                pulse.compile(twice, quantum_system=qs).lower(*qs.qudits[:3])
 
 
 # ── A Calibration ───────────────────────────────────────────────────────────
@@ -759,7 +863,7 @@ def test_a_calibration_of_couplings_needs_absolute_frequencies():
         )
     message = str(caught.value)
     assert "gives its frequency_hz as Offset(" in message
-    assert "a Calibration computes a coupling's exchange" in message
+    assert "a Calibration of a system with couplings reads the absolute frequencies" in message
     # An offset inside a circuit's tuning range is refused as well, not taken for a frequency.
     inside = {i: q.replace(frequency_hz=Offset(q.frequency_hz)) for i, q in absolute.items()}
     with pytest.raises(pulse.UnsupportedError, match="takes no Calibration of its couplings"):
@@ -904,13 +1008,10 @@ def test_a_tone_without_a_channel_is_placed_by_what_made_it_or_refused():
     # The refusal does not pass a drive whose line or tone the trace records
     # no channel for: it knows the qudit of what the builder made from a
     # line, and refuses what it cannot place.
-    import types
-
     from cudaq_pulse import compiler
 
     builder, qs = _Builder(), _levels3(None)
-    machine = types.SimpleNamespace(_system=None)
-    compiler._refuse_other_qudits_tones(builder, qs, machine, None, ())
+    compiler._refuse_other_qudits_tones(builder, qs, None, ())
     emit = builder.emit
     pair = ("drive_line", "tone")
     d, d_tone = emit("pulse.get_drive_line", (_Value(0, "qudit"),), pair)
@@ -1144,31 +1245,73 @@ def test_a_tone_that_is_one_qudits_or_anothers_by_a_measurement_is_refused():
     assert "what the arms of an if on a measurement bind differently" in message
 
 
-# ── What is left as it was until the owner decides ──────────────────────────
+# ── qs.transition_freq ───────────────────────────────────────────────────────
 
 
-def test_transition_freq_gives_magnitudes_and_the_hint_does_not_send_there():
-    # qs.transition_freq is the array it was: magnitudes. On a system of
-    # offsets the line's tones keep their signs, so the hint for a runtime
-    # qudit names the model's signed value instead.
+def test_transition_freq_is_the_upper_levels_energy_less_the_lowers():
+    # Signed where frequencies are offsets, as the line's tones are; for
+    # [q, i, j] and [q, j, i] alike; NaN past a qudit's last level.
+    for qs in (_levels3(None), _referenced([-1.5e8, 0.0]), _levels3(5.0e9)):
+        array = qs.transition_freq
+        for index, qudit in qs.physical_qudits.items():
+            tones = qs.model.transitions_hz(qudit, 3)
+            assert tones == qs._line_tones(index, False)[1]
+            for (lower, upper), frequency in tones.items():
+                assert array[index, lower, upper] == frequency == array[index, upper, lower]
+            assert [array[index, k, k] for k in range(3)] == [0.0, 0.0, 0.0]
+        assert not array.flags.writeable
     own = _levels3(None)
-    assert own.transition_freq[0, 1, 2] == 2.0e8
-    assert own.model.transitions_hz(own.physical_qudits[0], 3)[(1, 2)] == -2.0e8
+    assert own.transition_freq[0, 1, 2] == -2.0e8 and own.transition_freq[0, 0, 1] == 0.0
+    shared = _referenced([-1.5e8, 0.0])
+    assert shared.transition_freq[0, 0, 1] == -1.5e8 == shared.qudit_freq[0]
+    assert shared.transition_freq[0, 1, 2] == -3.5e8
+    mixed = pulse.quantum_system(
+        name="mixed",
+        qudits={i: PhysicalQudit(i, 5.0e9, 0.0, 0.0, anharmonicity_hz=-2.0e8) for i in range(2)},
+        model=TransmonModel(levels={0: 2, 1: 3}),
+    )
+    assert np.isnan(mixed.transition_freq[0, 1, 2]) and np.isnan(mixed.transition_freq[0, 2, 2])
+    assert mixed.transition_freq[1, 1, 2] == 4.8e9
 
+
+def test_every_shipped_systems_transition_freq_is_what_it_was():
+    # Where levels ascend the array is the magnitudes it was, bit for bit.
+    from cudaq_pulse.quantum_systems import transmon_lattice, transmon_surface17
+
+    for system in (transmon_surface17(), transmon_lattice(6), _levels3(5.0e9)):
+        array = system.transition_freq
+        energies = np.full(array.shape[:2], np.nan)
+        for row, index in zip(energies, system.layout, strict=True):
+            levels = system.model.levels_of(index)
+            row[:levels] = system.model.energies_hz(system.physical_qudits[index], levels)
+        was = np.abs(energies[:, None, :] - energies[:, :, None])
+        assert array.tobytes() == was.tobytes() and array.dtype == was.dtype
+        assert np.nanmin(array) == 0.0 and not np.signbit(array[~np.isnan(array)]).any()
+
+
+def test_the_hint_for_a_runtime_qudit_names_transition_freq_on_every_system():
     @pulse.kernel
     def of_any_qudit(q: pulse.Qudit):
         line = get_drive_line(q)  # noqa: F821
         drive(line, square(40, 0.5), tone=line.tones[(1, 2)])  # noqa: F821
 
-    for qs in (own, _referenced([-1.5e8, 0.0])):
+    @pulse.kernel
+    def as_the_hint_says(q: pulse.Qudit, f12_hz: float):
+        line = get_drive_line(q)  # noqa: F821
+        set_frequency(line.tone, f12_hz)  # noqa: F821
+        drive(line, square(40, 0.5))  # noqa: F821
+
+    for qs in (_levels3(None), _referenced([-1.5e8, 0.0]), _levels3(5.0e9)):
         with pytest.raises(NotFoundError) as caught:
             pulse.compile(of_any_qudit, quantum_system=qs).lower(qs.qudits[0])
-        message = str(caught.value)
-        assert "qs.model.transitions_hz(qs.physical_qudits[q.index]," in message
-        assert "not with qs.transition_freq, which gives magnitudes" in message
-    absolute = _levels3(5.0e9)
-    with pytest.raises(NotFoundError) as caught:
-        pulse.compile(of_any_qudit, quantum_system=absolute).lower(absolute.qudits[0])
-    message = str(caught.value)
-    assert "called with qs.transition_freq[q.logical, 1, 2]" in message
-    assert "transitions_hz" not in message
+        assert "called with qs.transition_freq[q.logical, 1, 2]" in str(caught.value)
+        # Following it gives the tone the line's own 1-2 tone has.
+        q = qs.qudits[0]
+        value = float(qs.transition_freq[q.logical, 1, 2])
+        assert value == qs._line_tones(q.index, False)[1][(1, 2)]
+        out = (
+            pulse.compile(as_the_hint_says, quantum_system=qs)
+            .lower(q, value)
+            .export_to_controller()
+        )
+        assert [e["frequency_hz"] for e in out["events"] if e["kind"] == "drive"] == [value]

@@ -166,7 +166,10 @@ class DispersiveReadout(Readout):
     readout. Every field may be left out.
 
     ``frequency_hz`` is the resonator's frequency, where the readout line
-    plays by default. The readout model in simulation and emulation
+    plays by default; on a system whose qudits give their frequencies as
+    offsets from a shared reference it is an ``Offset`` from the same
+    reference, and a system whose qudits give no frequencies takes none.
+    The readout model in simulation and emulation
     (``IQModel``) pulls the resonator by ``(2k - 1) dispersive_shift_hz``
     for level ``k``, with linewidth ``linewidth_hz`` (kappa / 2 pi), and
     needs both. ``error_1to0`` and ``error_0to1`` are the probabilities of
@@ -972,11 +975,13 @@ class Offset(float):
     It is a ``float`` that says what it is measured from: arithmetic on it
     gives a plain ``float``, and it equals only another ``Offset`` of the
     same value, so a qudit at ``Offset(5e9)`` is not the qudit at 5 GHz.
-    It is ordered against other ``Offset`` values only: ``<`` with a plain
-    number is an ``InvalidTypeError`` (a ``TypeError``, as between a ``str``
-    and a number); ``float(offset)`` is the number. An object that is not a
+    It is ordered against other ``Offset`` values only: ``<`` with a number
+    is an ``InvalidTypeError`` (a ``TypeError``, as between a ``str`` and a
+    number); ``float(offset)`` is the number. An object that is not a
     number decides the comparison itself, so ``pytest.approx(1.5e8)`` equals
-    ``Offset(1.5e8)`` either way round.
+    ``Offset(1.5e8)`` either way round. A number on the left that compares
+    with floats by itself (a NumPy float, a ``Fraction``) is asked first and
+    compares by value: ``Offset`` does not decide that one.
     """
 
     __slots__ = ()
@@ -985,12 +990,12 @@ class Offset(float):
         if other.__class__ is Offset:
             return float.__eq__(self, other)
         # A number is not an offset; anything else may know better.
-        return False if isinstance(other, numbers.Real) else NotImplemented
+        return False if isinstance(other, numbers.Number) else NotImplemented
 
     def __ne__(self, other: object) -> bool:
         if other.__class__ is Offset:
             return float.__ne__(self, other)
-        return True if isinstance(other, numbers.Real) else NotImplemented
+        return True if isinstance(other, numbers.Number) else NotImplemented
 
     def __lt__(self, other: Any) -> bool:
         return float.__lt__(self, other) if _orders(self, other, "<") else NotImplemented
@@ -1016,7 +1021,7 @@ def _orders(offset: Offset, other: Any, sign: str) -> bool:
     plain number is a ``TypeError``, and anything else decides itself."""
     if other.__class__ is Offset:
         return True
-    if isinstance(other, numbers.Real):
+    if isinstance(other, numbers.Number):
         raise InvalidTypeError(
             f"'{sign}' is not supported between {offset!r}, an offset from a shared reference, "
             f"and the number {other!r}; compare float(offset), or another Offset"
@@ -1052,9 +1057,10 @@ class _HeldQudit(PhysicalQudit):
         given = self.frequency_hz
         said = "no frequency_hz" if given is None else f"its frequency_hz as {given!r}"
         raise UnsupportedError(
-            f"qudit {self.index} gives {said}, and a Calibration computes a coupling's exchange "
-            "from its circuit model at the absolute frequencies of its qudits; a system whose "
-            "qudits give offsets or no frequencies takes no Calibration of its couplings"
+            f"qudit {self.index} gives {said}, and a Calibration of a system with couplings "
+            "reads the absolute frequencies of their qudits, where its circuit model gives a "
+            "coupling's exchange; a system whose qudits give offsets or no frequencies takes "
+            "no Calibration of its couplings"
         )
 
     @staticmethod
@@ -1066,7 +1072,13 @@ class _HeldQudit(PhysicalQudit):
             made = PhysicalQudit.replace(qudit)
             object.__setattr__(made, "__class__", _OwnCarrierQudit)
         else:
-            made = PhysicalQudit.replace(qudit, frequency_hz=Offset(offset))
+            changes: dict[str, Any] = {"frequency_hz": Offset(offset)}
+            readout = qudit.readout
+            given = getattr(readout, "frequency_hz", None)
+            if given is not None and given.__class__ is not Offset:
+                # As a system file holds it; checked before a qudit is held.
+                changes["readout"] = readout.replace(frequency_hz=Offset(_offset_hz(given)))  # type: ignore[union-attr, arg-type]
+            made = PhysicalQudit.replace(qudit, **changes)
             object.__setattr__(made, "__class__", _HeldQudit)
         return made
 
@@ -1673,32 +1685,40 @@ def _unstated(description: _Description, problems: list[Problem]) -> list[Proble
 
 
 def _readout_frequency_problems(description: _Description, own_carrier: bool) -> list[Problem]:
-    """A readout's ``frequency_hz`` on a system whose qudits give offsets or
-    no frequencies: an absolute number among offsets, which the system does
-    not say how to read."""
+    """A readout's ``frequency_hz`` that a system whose qudits give offsets
+    or no frequencies cannot read: with offsets, one that is not an
+    ``Offset`` from the same reference (or as a system file holds one);
+    without frequencies, any."""
     problems = []
     for index, qudit in description.qudits.items():
         frequency = getattr(getattr(qudit, "readout", None), "frequency_hz", None)
-        if frequency is not None:
-            if own_carrier:
-                why = (
-                    "the qudits give no frequency_hz, so the system does not state where the "
-                    "readout's frequency is measured from"
-                )
-            else:
-                why = (
-                    "the qudits give their frequencies as offsets from a shared reference, and "
-                    "the readout's frequency is not stated as one"
-                )
-            problems.append(
-                Problem(
-                    f"{frequency!r} is a readout frequency, and {why}",
-                    path=f"qudits[{index}].readout.frequency_hz",
-                    value=frequency,
-                    fix="leave the readout's frequency_hz out (its line then plays at the qudit's "
-                    "own tone), or give the qudits their frequencies",
-                )
+        if frequency is None or (not own_carrier and _offset_hz(frequency) is not None):
+            continue
+        if own_carrier:
+            why = (
+                "the qudits give no frequency_hz, so the system does not state where the "
+                "readout's frequency is measured from"
             )
+            fix = (
+                "leave the readout's frequency_hz out (its line then plays at the qudit's own tone)"
+            )
+        else:
+            why = (
+                "the qudits give their frequencies as offsets from a shared reference, and "
+                "the readout's frequency is not a finite Offset from it"
+            )
+            fix = (
+                "give it as Offset(hz) from the reference the qudits share, or leave it out "
+                "(its line then plays at the qudit's own tone)"
+            )
+        problems.append(
+            Problem(
+                f"{frequency!r} is a readout frequency, and {why}",
+                path=f"qudits[{index}].readout.frequency_hz",
+                value=frequency,
+                fix=f"{fix}, or give the qudits their frequencies",
+            )
+        )
     return problems
 
 

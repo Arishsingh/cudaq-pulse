@@ -3037,10 +3037,13 @@ def _quantum_data(target: _Description) -> dict[str, Any]:
 
 
 def _write_offsets(qudits: list[dict[str, Any]]) -> None:
-    """The frequency of each of a file's *qudits*, an ``Offset``, written as
-    the file holds one."""
+    """The frequency of each of a file's *qudits*, and of its readout if it
+    gives one, each an ``Offset``, written as the file holds one."""
     for qudit in qudits:
         qudit["frequency_hz"] = {"offset_hz": float(qudit["frequency_hz"])}
+        readout = qudit.get("readout")
+        if readout is not None and readout.get("frequency_hz") is not None:
+            readout["frequency_hz"] = {"offset_hz": float(readout["frequency_hz"])}
 
 
 def _device_data(quantum_system: QuantumSystem) -> dict[str, Any]:
