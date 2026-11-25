@@ -1287,9 +1287,10 @@ def test_calls_that_would_nest_regions_too_deep_are_refused_before_any_is_writte
     assert ("drive", 0, 400, 8) in events(program)
 
 
-def test_an_operations_own_period_is_held_to_the_range(system):
-    def looped(period):
-        return f"""module {{
+def _looped(period):
+    """An entry with one drive that starts at 4 in a loop of three trips,
+    *period* cycles apart. No call."""
+    return f"""module {{
   func.func @shot(%q: !pulse.qudit) {TIMED} {{
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1309,13 +1310,77 @@ def test_an_operations_own_period_is_held_to_the_range(system):
   }}
 }}"""
 
-    program = pulse.load(looped(20), entry="shot", qudits=system.qudits[:1])
+
+def test_an_operations_own_period_is_held_to_the_range(system):
+    program = pulse.load(_looped(20), entry="shot", qudits=system.qudits[:1])
     assert max(e.start_cycles for e in program.schedule) == 44
     for period in (2**60, -20):
         with pytest.raises(
             pulse.CompilationError, match=r"start, duration or period is outside 0 to 2\^50"
         ):
-            pulse.load(looped(period), entry="shot", qudits=system.qudits[:1])
+            pulse.load(_looped(period), entry="shot", qudits=system.qudits[:1])
+
+
+def test_the_last_trip_of_a_loop_starts_within_the_range(system):
+    # Three trips of a drive that starts at 4: a period of 2**49 is in the
+    # range, and the last trip starts at 2**50 + 4.
+    with pytest.raises(
+        pulse.CompilationError, match=r"shot has an operation in a loop whose last trip starts"
+    ):
+        pulse.load(_looped(2**49), entry="shot", qudits=system.qudits[:1])
+    program = pulse.load(_looped(2**48), entry="shot", qudits=system.qudits[:1])
+    assert max(e.start_cycles for e in program.schedule) == 2**49 + 4
+    # The same for the drives calls write, which take the calls' periods.
+    calls = LOOP.replace("period_cycles = array<i64: 20>", f"period_cycles = array<i64: {2**49}>")
+    assert calls != LOOP
+    with pytest.raises(
+        pulse.CompilationError,
+        match=r"last trip starts past 2\^50 cycles once its calls are written out",
+    ):
+        pulse.load(calls, entry="shot", qudits=system.qudits[:1])
+    # The trips are read from constant bounds: a loop without them is
+    # refused, wherever in it the timed operation is.
+    summed = _looped(20).replace(
+        "    %out:2 = scf.for %i = %c0 to %c3 ",
+        "    %c2 = arith.constant 2 : index\n    %sum = arith.addi %c1, %c2 : index\n"
+        "    %out:2 = scf.for %i = %c0 to %sum ",
+    )
+    assert summed != _looped(20)
+    with pytest.raises(
+        pulse.CompilationError, match="timed operation in a loop whose bounds are not constants"
+    ):
+        pulse.load(summed, entry="shot", qudits=system.qudits[:1])
+    # Bounds whose difference overflows a trip count, and a loop that
+    # counts unsigned, give no count to rely on either.
+    wide = (
+        _looped(20)
+        .replace("%c0 = arith.constant 0 : index", f"%c0 = arith.constant {-(2**63)} : index")
+        .replace("%c3 = arith.constant 3 : index", f"%c3 = arith.constant {2**63 - 1} : index")
+        .replace("%c1 = arith.constant 1 : index", f"%c1 = arith.constant {2**62} : index")
+    )
+    unsigned = _looped(20).replace("scf.for %i = %c0", "scf.for unsigned %i = %c0")
+    typed = re.sub(r"(%c[013] = arith\.constant \d) : index", r"\1 : i64", _looped(20)).replace(
+        f"-> ({T}) {{\n      %w", f"-> ({T}) : i64 {{\n      %w"
+    )
+    for text in (wide, unsigned, typed):
+        assert text != _looped(20)
+        with pytest.raises(
+            pulse.CompilationError, match="in a loop whose bounds are not constants"
+        ):
+            pulse.load(text, entry="shot", qudits=system.qudits[:1])
+    # And a loop that is not an scf.for has no trips to count.
+    whiled = _looped(20)
+    head = whiled[whiled.index("    %out:2 = scf.for") : whiled.index("      %w = pulse.square")]
+    whiled = whiled.replace(
+        head,
+        f"    %no = arith.constant false\n"
+        f"    %out:2 = scf.while (%l = %a, %lt = %at) : ({T}) -> ({T}) {{\n"
+        f"      scf.condition(%no) %l, %lt : {T}\n"
+        f"    }} do {{\n"
+        f"    ^bb0(%l: !pulse.drive_line, %lt: !pulse.tone):\n",
+    ).replace("period_cycles = array<i64: 20>, ", "")
+    with pytest.raises(pulse.CompilationError, match="neither a branch nor an scf.for loop"):
+        pulse.load(whiled, entry="shot", qudits=system.qudits[:1])
 
 
 def _attribute(value):

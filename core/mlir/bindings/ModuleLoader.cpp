@@ -197,6 +197,72 @@ public:
             " has an operation whose start, duration or period is outside 0 "
             "to 2^50 cycles" +
             (written ? " once its calls are written out" : ""));
+      // In loops an operation starts a period later each trip: its last
+      // start is held to the range too. That takes the trips of every loop
+      // around it, whatever is between a loop and the operation: an
+      // scf.for that counts signed, with bounds and a step that are
+      // constants of at most 2^50 either way, so that counting its trips
+      // cannot overflow here or in any pass; and no other kind of loop.
+      if (!start)
+        return;
+      auto unbounded = [&](const char *why) {
+        return std::invalid_argument(
+            "load: " + name + " has a timed operation in " + why +
+            (written ? " once its calls are written out" : ""));
+      };
+      llvm::SmallVector<int64_t, 2> trips;
+      for (mlir::Operation *parent = op->getParentOp();
+           parent && parent != function.getOperation();
+           parent = parent->getParentOp()) {
+        // Met before the loop or block that holds it (the walk is
+        // post-order): a called function is refused for that, as below.
+        if (called && !mlir::isa<mlir::scf::IfOp>(parent))
+          throw std::invalid_argument(
+              "load: " + name +
+              " has a loop or a schedule block; a called function is written "
+              "without them");
+        // What reads a loaded function takes an operation in a schedule
+        // block with every loop around the block, as one in a branch.
+        if (mlir::isa<mlir::scf::IfOp, pulse::ScheduleBlockOp>(parent))
+          continue;
+        auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent);
+        if (!loop)
+          throw unbounded("a region that is neither a branch nor an scf.for "
+                          "loop; a loaded function repeats with scf.for");
+        auto within = [&](mlir::Value bound) {
+          // An index: a wider constant would be cut to 64 bits.
+          std::optional<int64_t> value = bound.getType().isIndex()
+                                             ? pulse::constantIndex(bound)
+                                             : std::nullopt;
+          return value && *value >= -most && *value <= most;
+        };
+        // The bounds first: the count of bounds outside them can overflow.
+        std::optional<int64_t> count;
+        if (!loop.getUnsignedCmp() && within(loop.getLowerBound()) &&
+            within(loop.getUpperBound()) && within(loop.getStep()))
+          count = pulse::constantTripCount(loop);
+        if (!count)
+          throw unbounded(
+              "a loop whose bounds are not constants; a loaded loop counts "
+              "signed and gives its bounds and its step as index constants "
+              "of at most 2^50, the step above 0");
+        trips.push_back(*count);
+      }
+      // Outermost first, as the periods are.
+      std::reverse(trips.begin(), trips.end());
+      llvm::ArrayRef<int64_t> periods = pulse::periodCycles(op);
+      int64_t last = *start;
+      for (auto [count, period] : llvm::zip(trips, periods)) {
+        // Within the range, `last` and `period` cannot overflow the sum.
+        if (count > 1 && period > 0 && count - 1 > (most - last) / period)
+          throw std::invalid_argument(
+              "load: " + name +
+              " has an operation in a loop whose last trip starts past 2^50 "
+              "cycles" +
+              (written ? " once its calls are written out" : ""));
+        if (count > 1)
+          last += (count - 1) * period;
+      }
     });
   }
   /// The function `caller` calls by `name`, checked to be one a call can be
