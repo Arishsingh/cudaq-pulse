@@ -280,7 +280,7 @@ What to notice:
   second drive.
 
 .. themed-figure:: figures/ramsey_reset_schedule.svg
-   :alt: Timeline of the scheduled program on qudit 0's drive and readout lines, with a lane for the outcome. An x90 pulse at 5.000 GHz from 0 to 40 ns, a 100 ns wait, a second x90 pulse detuned by +2 MHz, at 5.002 GHz, from 140 to 180 ns, then the readout from 180 to 380 ns. The outcome is ready 80 ns after the readout ends, and the x180 pulse at 5.000 GHz, which plays only if the readout read 1, runs from 460 to 500 ns.
+   :alt: Timeline of the scheduled program on qudit 0's drive and readout lines, with a lane for the outcome. An x90 pulse from 0 to 40 ns, a 100 ns wait, a second x90 pulse detuned by +2 MHz from 140 to 180 ns, then the readout from 180 to 380 ns. The outcome is ready 80 ns after the readout ends, and the x180 pulse, which plays only if the readout read 1, runs from 460 to 500 ns.
    :width: 100%
 
    The same schedule, drawn from the program's export. This QPU's clock

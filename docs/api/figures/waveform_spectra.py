@@ -89,7 +89,7 @@ def waveform_spectra() -> None:
             held = np.append(samples, samples[-1])
             top.fill_between(edges, held, step="post", color=p.drive, alpha=p.fill_alpha, lw=0)
             top.stairs(samples, edges, color=p.drive, lw=1.4)
-            top.set_title(call.split("(")[0], family="monospace", color=p.text, pad=5)
+            top.set_title(call.split("(")[0], color=p.text, pad=5)
             top.set_xlim(0, length_ns)
             top.set_xticks([0, length_ns / 2, length_ns])
             top.set_ylim(0, amplitude * 1.13)
@@ -124,10 +124,13 @@ def waveform_spectra() -> None:
         above = np.abs(mhz)[(db > FLOOR_DB) & (np.abs(mhz) <= SPAN_MHZ)]
         quiet_mhz[name] = float(above.max())
     assert skirt_db["gaussian"] > FLOOR_DB + 10 and quiet_mhz["cosine"] < 0.8 * SPAN_MHZ
+    # What the page's caption says of the gaussian: the narrowest band of the four.
+    assert min(shapes, key=lambda shape: shape[-1])[0].startswith("gaussian(")
     bands = ", ".join(f"{call.split('(')[0]} ±{band:.0f} MHz" for call, *_, band in shapes)
     alt = (
-        f"Four waveforms, each {length_ns:g} ns long with amplitude {amplitude:g}, above the "
-        f"spectrum of their samples from {FLOOR_DB:g} to 0 dB within {SPAN_MHZ:g} MHz of the "
+        f"Four waveforms, {', '.join(CALLS[:-1])} and {CALLS[-1]}, each {length_ns:g} ns long "
+        f"with amplitude {amplitude:g}, above the spectrum of their samples from "
+        f"{FLOOR_DB:g} to 0 dB within {SPAN_MHZ:g} MHz of the "
         f"tone. A shaded band marks where {SHARE:.0%} of each spectrum's energy up to half the "
         f"clock lies: {bands}. Outside its band the gaussian's spectrum still peaks at "
         f"{skirt_db['gaussian']:.0f} dB between {0.8 * SPAN_MHZ:g} and {SPAN_MHZ:g} MHz, and the "

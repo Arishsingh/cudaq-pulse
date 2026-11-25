@@ -16,11 +16,13 @@ import io
 import sys
 from pathlib import Path
 
+import numpy as np
+from matplotlib.patches import Rectangle
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "tutorials" / "figures"))
 from _style import _page_blocks, save_themed  # noqa: E402
 from _timeline import Timeline, draw_stack, layout  # noqa: E402
-from matplotlib.patches import Rectangle  # noqa: E402
 
 PAGE = HERE.parent / "compilation.rst"
 
@@ -99,14 +101,24 @@ def idle_window_fill(page) -> None:
         )
         return fig
 
+    # The helper draws a pulse's Q where it is over 2% of the largest drive: say which.
+    peak = max(float(np.max(np.hypot(pl.i, pl.q))) for pl in after.pulses if pl.kind == "drive")
+    with_q = list(
+        dict.fromkeys(
+            words(after)[at(pl)]
+            for pl in after.pulses
+            if pl.kind == "drive" and float(np.max(np.abs(pl.q))) > 0.02 * peak
+        )
+    )
+    assert with_q == ["X", "echo"], with_q
     alt = (
         f"Two timelines of the syndrome kernel on {name}'s drive line and "
         f"{qs.physical_qudits[ancilla.index].label}'s drive and readout lines. As compiled, "
         f"{name} has an X90 pulse, then an idle window from {start:g} to {end:g} ns while the "
         f"ancilla is read out, then a second X90 pulse. After replace_idle, the window holds a "
         f"wait, the echo pulse from {fill.start_ns:g} to {fill.end_ns:g} ns and a wait, and "
-        "every other pulse starts where it did. The X and echo pulses have a small Q "
-        "quadrature, drawn dashed."
+        f"every other pulse starts where it did. The {' and '.join(with_q)} pulses have a "
+        "small Q quadrature, drawn dashed."
     )
     save_themed(
         figure,

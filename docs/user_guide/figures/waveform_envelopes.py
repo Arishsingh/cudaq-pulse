@@ -50,7 +50,8 @@ def main() -> None:
     (cycles,) = {len(samples) for _, samples in shapes}
     names = [call.split("(")[0] for call in CALLS]
     # The one shape with a Q large enough to label.
-    labelled = max(shapes, key=lambda shape: float(np.abs(shape[1].imag).max()))[0]
+    labelled, largest = max(shapes, key=lambda shape: float(np.abs(shape[1].imag).max()))
+    assert np.abs(largest.imag).max() > 0
 
     def figure(p):
         fig, grid = plt.subplots(
@@ -66,12 +67,12 @@ def main() -> None:
             ax.axhline(0, color=p.rule, linewidth=0.6)
             ax.plot(t, samples.real, "-", color=p.drive, linewidth=1.6)
             ax.plot(t, samples.imag, color=p.q, linewidth=1.4, ls=(0, (2.4, 1.6)))
-            ax.set_title(call, fontsize=8, family="monospace", color=p.text, pad=4)
+            ax.set_title(call, fontsize=8, color=p.text, pad=4)
             ax.spines["bottom"].set_color(p.rule)
             if call == labelled:
                 peak = int(np.argmax(samples.real))
                 ax.annotate(
-                    "I",
+                    "I (real)",
                     (t[peak], samples.real[peak]),
                     xytext=(0, -7),
                     textcoords="offset points",
@@ -82,12 +83,13 @@ def main() -> None:
                 )
                 low = int(np.argmin(samples.imag))
                 ax.annotate(
-                    "Q",
+                    "Q (imag)",
                     (t[low], samples.imag[low]),
-                    xytext=(5, 3),
+                    xytext=(0, 3),
                     textcoords="offset points",
                     color=p.q,
                     fontsize=8.5,
+                    ha="center",
                     va="bottom",
                 )
         grid[1, 2].set_xlabel(

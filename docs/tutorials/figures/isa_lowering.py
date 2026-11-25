@@ -40,9 +40,6 @@ def ramsey_reset_schedule(page) -> None:
     def at(pl):
         return (pl.lane, round(pl.start_ns, 3))
 
-    def frequency(pl) -> str:
-        return f"{ghz[at(pl)]:.3f} GHz"
-
     def detuning(pl) -> str:
         return f"{ghz[at(pl)] * 1e3 - line['native_frequency_hz'] / 1e6:+g} MHz"
 
@@ -71,13 +68,12 @@ def ramsey_reset_schedule(page) -> None:
 
     alt = (
         "Timeline of the scheduled program on qudit 0's drive and readout lines, with a lane "
-        f"for the outcome. An x90 pulse at {frequency(first)} from {first.start_ns:g} to "
-        f"{first.end_ns:g} ns, a {wait.length_ns:g} ns wait, a second x90 pulse detuned by "
-        f"{detuning(second)}, at {frequency(second)}, from {second.start_ns:g} to "
-        f"{second.end_ns:g} ns, then the readout from {probe.start_ns:g} to {probe.end_ns:g} "
-        f"ns. The outcome is ready {forward.feedback_ns:g} ns after the readout ends, and the "
-        f"x180 pulse at {frequency(flip)}, which plays only if the readout read 1, runs from "
-        f"{flip.start_ns:g} to {flip.end_ns:g} ns."
+        f"for the outcome. An x90 pulse from {first.start_ns:g} to {first.end_ns:g} ns, a "
+        f"{wait.length_ns:g} ns wait, a second x90 pulse detuned by {detuning(second)} from "
+        f"{second.start_ns:g} to {second.end_ns:g} ns, then the readout from "
+        f"{probe.start_ns:g} to {probe.end_ns:g} ns. The outcome is ready "
+        f"{forward.feedback_ns:g} ns after the readout ends, and the x180 pulse, which plays "
+        f"only if the readout read 1, runs from {flip.start_ns:g} to {flip.end_ns:g} ns."
     )
     save_themed(
         figure,

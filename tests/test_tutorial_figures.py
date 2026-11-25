@@ -172,7 +172,7 @@ def test_no_figure_embeds_an_image():
 @pytest.mark.skipif(importlib.util.find_spec("matplotlib") is None, reason="needs matplotlib")
 @pytest.mark.parametrize("script", _SCRIPTS, ids=lambda p: p.stem)
 def test_each_figure_is_what_its_script_draws(script, tmp_path):
-    if not script.exists():
+    if not _DOCS.exists():
         pytest.skip("needs the source tree")
     env = {
         **os.environ,

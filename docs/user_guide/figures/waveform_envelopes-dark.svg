@@ -369,10 +369,10 @@ L 296.55 95.43
 " style="fill: none; stroke: #5a6066; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
    </g>
    <g id="text_7">
-    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #76b900" x="235.24" y="30.16" transform="rotate(-0 235.24 30.16)">I</text>
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #76b900" x="235.24" y="30.16" transform="rotate(-0 235.24 30.16)">I (real)</text>
    </g>
    <g id="text_8">
-    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: start; fill: #8fb8e8" x="269.50" y="86.64" transform="rotate(-0 269.50 86.64)">Q</text>
+    <text style="font-size: 8.5px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #8fb8e8" x="264.50" y="86.64" transform="rotate(-0 264.50 86.64)">Q (imag)</text>
    </g>
    <g id="text_9">
     <text style="font-size: 8px; font-family:NVIDIA, Arial, Helvetica, sans-serif; text-anchor: middle; fill: #eeeeee" x="233.77" y="8.95" transform="rotate(-0 233.77 8.95)">drag(40, 0.3, 10, 0.5)</text>

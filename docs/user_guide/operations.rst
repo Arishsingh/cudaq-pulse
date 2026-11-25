@@ -213,6 +213,7 @@ frame (see :ref:`conventions-frames`).
 
 .. themed-figure:: figures/waveform_envelopes.svg
    :figclass: pwe-fallback
+   :width: 100%
    :alt: The I and Q envelopes of gaussian, drag, cosine, tanh_ramp,
          gaussian_square and square, each 40 clock cycles long.
 

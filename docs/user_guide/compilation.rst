@@ -227,9 +227,10 @@ it did, and the program is as long as it was (280 ns).
    :width: 100%
 
    The schedule of ``syndrome`` as compiled and with the idle window
-   filled. The axis is in nanoseconds, each two cycles of the system's
-   2 GHz clock: the shaded stretch, 40 to 240 ns, is the window of the
-   report above, cycles 80 to 480. Dashed blue is a pulse's Q quadrature.
+   filled. The axis is in nanoseconds, and one nanosecond is two cycles
+   of the system's 2 GHz clock: the shaded stretch, 40 to 240 ns, is the
+   window of the report above, cycles 80 to 480. Dashed blue is a pulse's
+   Q quadrature, where it is large enough to draw.
 
 **Windows.** A qudit idles while its drive line has no operation, its
 line's tone does not play from another line (a cross-resonance pulse at its
