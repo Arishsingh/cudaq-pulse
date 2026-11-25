@@ -613,6 +613,31 @@ with controllers, they are checked under every schedule, counted the same
 way: a program that plays more at once fails to compile with a
 ``ControllerLimitError`` naming the count and the first cycle.
 
+A wait whose length is computed at run time (``wait(line, value,
+bounds=(low, high))``) is scheduled at its lowest length, and what follows
+it on its lines starts later in a run, by up to ``high - low`` cycles;
+lines the wait does not hold back keep their times. A blocking wait for an
+answer is such a wait without an upper end. These limits, and a
+shared line's ``max_concurrent_tones``, count pulses as they can slide: two
+pulses the schedule places apart are refused when some run plays them at
+once, with the first cycle they can and the waits that let them
+(``2 drives can play at once from cycle 600: what follows the wait on d0
+that ends at cycle 117 (up to 3984 cycles later) starts later in a run
+than it is placed``). Each wait's length is counted as independent of the
+others', also where two are computed from one answer, and every trip of a
+loop with such a wait as able to slide as far as its last. A wait without
+an upper bound lets what follows it play at any later time. To keep such
+pulses apart, ``sync`` their lines after the wait, so that they wait
+together, or give the wait bounds that keep them apart; ``rcp`` and
+``alap_rcp`` hold a line back at the wait when the drive or readout limit
+could bind. Pulses in the two arms of one branch are kept apart where
+they follow the same wait, and counted together where they follow
+different ones. A program without such a wait, and pulses on lines that
+all wait together, are counted as scheduled. A long loop with such a wait
+whose pulses can slide against another line's is counted trip by trip, up
+to the 1,048,576 copies of loops a check plays; past that the check stops
+with an ``UnsupportedError``.
+
 What the program computes at run time is converted by the same rule. A
 variable wait's ``length`` is clamped to its bounds, as the run clamps it
 (an integer ``max`` and ``min``), and then wrapped in ``{"op":
@@ -1020,10 +1045,17 @@ branches on whether a call's answer came in time and on the answer itself
 same for a function declared with ``latency_mode="timeout"``, and one
 with values known only at run time, compiled for the controller (by
 default the backend's control system's) and exported in each format the
-backend reads. Two more are wired from that controller: ``shared_line``
+backend reads. Four more are wired from that controller: ``shared_line``
 reads out both qudits at once on one readout line reaching both
 (``ReadoutLine([0, 1],
-max_concurrent_tones=2)`` in place of its readout lines), and
+max_concurrent_tones=2)`` in place of its readout lines),
+``shared_drive_line_two_tones`` drives both qudits at once with the same
+envelope on one drive line reaching both (``DriveLine([0, 1],
+max_concurrent_tones=2)`` in place of its drive lines, its readout lines as
+they are) and reads both out; its two tones are at the qudits' two
+frequencies. ``shared_drive_line_one_tone`` is the same program on a system
+of the corpus's own whose two qudits share a frequency, so that a backend
+whose line plays one tone for all its qudits can emit it. And
 ``several_controllers`` runs on two controllers made from it, one driving
 qudit 0 and reading out both qudits on such a line, the other driving qudit
 1, with a shared reference clock; each controller's part is emitted on its
@@ -1051,7 +1083,7 @@ corpus is as written.
    # ...
    # PASS unsupported_event
    # PASS newer_format
-   # backend 'text': 10 passed, 8 refused
+   # backend 'text': 12 passed, 8 refused
    print(report.ok)  # True
 
 A backend that accepted the unknown event would instead report ``FAIL

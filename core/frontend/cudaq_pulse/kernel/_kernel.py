@@ -54,6 +54,9 @@ from ..compiler import (
     with_line_delays,
 )
 from ._guard import Guard, build_guard
+
+if typing.TYPE_CHECKING:
+    from .._idle import IdleReplacement
 from ._schedule_blocks import root_schedule, validate_kernel_schedule, validate_max_duration
 from ._unroll import resolve_unroll_threshold
 from .ir_builder import (
@@ -101,10 +104,10 @@ _FLOAT, _VECTOR, _QUDIT, _REGISTER = range(4)
 _KINDS = {float: _FLOAT, Qudit: _QUDIT, Register: _REGISTER}
 
 
+# The kind of runtime parameter *annotation* declares, if any: ``float``,
+# ``list[float]``, ``Qudit``, or ``Register`` (also ``list[Qudit]`` and
+# ``tuple[Qudit, ...]``). A string annotation is evaluated in *scope*.
 def _runtime_kind(annotation: Any, scope: dict[str, Any]) -> int | None:
-    """The kind of runtime parameter *annotation* declares, if any: ``float``,
-    ``list[float]``, ``Qudit``, or ``Register`` (also ``list[Qudit]`` and
-    ``tuple[Qudit, ...]``). A string annotation is evaluated in *scope*."""
     if isinstance(annotation, str):
         if annotation == "float":
             return _FLOAT
@@ -127,14 +130,13 @@ def _runtime_kind(annotation: Any, scope: dict[str, Any]) -> int | None:
     return None
 
 
+# A function with *fn*'s signature that returns its bound arguments,
+# those of *names* in order.
+#
+# Python itself binds the call, so defaults, keyword-only parameters and
+# every ``TypeError`` behave exactly as for *fn*. A ``*`` parameter, the
+# last of *names*, is bound to a ``Register`` of its qudits.
 def _make_binder(fn: types.FunctionType, names: tuple[str, ...]) -> Callable[..., tuple[Any, ...]]:
-    """A function with *fn*'s signature that returns its bound arguments,
-    those of *names* in order.
-
-    Python itself binds the call, so defaults, keyword-only parameters and
-    every ``TypeError`` behave exactly as for *fn*. A ``*`` parameter, the
-    last of *names*, is bound to a ``Register`` of its qudits.
-    """
     code = fn.__code__
     npos = code.co_posonlyargcount
     params = list(names[: code.co_argcount])
@@ -226,9 +228,9 @@ class _Sequence:
 _NO_RETURN = object()
 
 
+# What a call returns, from the value the trace returned: for a value
+# only the running program knows, the error calling the kernel raises.
 def _return_spec(value: Any, readouts: dict[int, int], name: str) -> Any:
-    """What a call returns, from the value the trace returned: for a value
-    only the running program knows, the error calling the kernel raises."""
     if isinstance(value, IRValue):
         if value.vtype == "measurement":
             ordinal = readouts.get(value.vid)
@@ -313,14 +315,13 @@ class _QuditTwiceError(Exception):
         self.qudit = qudit
 
 
+# The quantum system of the handles in *arg*, checked against *qs*, for
+# a call of the kernel *fn* (named in errors).
+#
+# *seen* collects the carriers passed so far: one qudit passed twice is
+# an error, as it would be one degree of freedom bound to two names, and
+# raises ``_QuditTwiceError``.
 def _systems(arg: Any, qs: QuantumSystem | None, fn: Any, seen: set[int]) -> QuantumSystem | None:
-    """The quantum system of the handles in *arg*, checked against *qs*, for
-    a call of the kernel *fn* (named in errors).
-
-    *seen* collects the carriers passed so far: one qudit passed twice is
-    an error, as it would be one degree of freedom bound to two names, and
-    raises ``_QuditTwiceError``.
-    """
     t = type(arg)
     if t is Qudit:
         if arg.index in seen:
@@ -336,8 +337,8 @@ def _systems(arg: Any, qs: QuantumSystem | None, fn: Any, seen: set[int]) -> Qua
     return qs
 
 
+# Why *name*() cannot take qudits of both *found* and *quantum_system*.
 def _two_systems(name: str, found: QuantumSystem, quantum_system: QuantumSystem) -> str:
-    """Why *name*() cannot take qudits of both *found* and *quantum_system*."""
     if found == quantum_system:
         return (
             f"{name}() got qudits of two separate quantum systems, both named "
@@ -396,8 +397,8 @@ def _two_systems(name: str, found: QuantumSystem, quantum_system: QuantumSystem)
     )
 
 
+# How many handles in *value* are of the qudit at *index*.
 def _count(value: Any, index: int) -> int:
-    """How many handles in *value* are of the qudit at *index*."""
     t = type(value)
     if t is Qudit:
         return int(value.index == index)
@@ -406,9 +407,9 @@ def _count(value: Any, index: int) -> int:
     return 0
 
 
+# The error for *qudit* passed twice among *arguments*, the (parameter,
+# value) pairs in the order ``_systems`` met them.
 def _passed_twice(name: str, qudit: Qudit, arguments: list[tuple[str, Any]]) -> InvalidTypeError:
-    """The error for *qudit* passed twice among *arguments*, the (parameter,
-    value) pairs in the order ``_systems`` met them."""
     holders = [
         parameter for parameter, value in arguments for _ in range(_count(value, qudit.index))
     ]
@@ -856,9 +857,9 @@ class Kernel[**P]:
         if len(traced) > _TRACED_KEPT:
             del traced[next(iter(traced))]
 
+    # What a specialization is traced for: everything but line delays,
+    # which only move its schedule.
     def _traced_key(self, values: tuple[Any, ...], target: Any, options: CompileOptions) -> Any:
-        """What a specialization is traced for: everything but line delays,
-        which only move its schedule."""
         machine = options.machine
         system = machine._system
         if machine._line_delays and system is not None:
@@ -866,11 +867,11 @@ class Kernel[**P]:
         static = self._split[0]
         return (target.fingerprint, options, static, *[_static_key(values[i]) for i in static])
 
+    # The specialization for *values* scheduled again with the line
+    # delays of *options*, from one traced with other delays, if any.
     def _retimed(
         self, values: tuple[Any, ...], target: Any, options: CompileOptions
     ) -> _Entry | None:
-        """The specialization for *values* scheduled again with the line
-        delays of *options*, from one traced with other delays, if any."""
         prior = self._traced.get(self._traced_key(values, target, options))
         if (
             prior is None
@@ -908,10 +909,10 @@ class Kernel[**P]:
         # values trace as cycles, so that a duration may take them.
         self._declared_float = tuple(i for i in sorted(kinds) if kinds[i] in (_FLOAT, _VECTOR))
 
+    # Make float parameters static: the program needs their values.
+    # Returns those of *indices* that were not static yet, so that threads
+    # tracing at once report each parameter once.
     def _promote(self, indices: set[int]) -> list[int]:
-        """Make float parameters static: the program needs their values.
-        Returns those of *indices* that were not static yet, so that threads
-        tracing at once report each parameter once."""
         with self._promote_lock:
             static, runtime = self._split
             promoted = [i for i in runtime if i in indices]
@@ -925,9 +926,9 @@ class Kernel[**P]:
 _PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# `` at line N`` for the kernel line where tracing raised *e*, with the
+# helper's line when the value was needed inside a helper.
 def _traced_line(e: BaseException) -> str:
-    """`` at line N`` for the kernel line where tracing raised *e*, with the
-    helper's line when the value was needed inside a helper."""
     source = getattr(e, "pulse_source", None)
     if source is None:
         return ""
@@ -940,9 +941,9 @@ def _traced_line(e: BaseException) -> str:
     return where
 
 
+# Warn that tracing made the float parameters *params* static. Each is
+# made static once per kernel, so this warns once per parameter.
 def _warn_static(kernel: str, params: list[str], operation: str, where: str = "") -> None:
-    """Warn that tracing made the float parameters *params* static. Each is
-    made static once per kernel, so this warns once per parameter."""
     from .._errors import _SpecializationWarning
 
     quoted = ", ".join(repr(p) for p in params)
@@ -1042,6 +1043,18 @@ class CompiledKernel[**P]:
     def cache_info(self) -> CacheInfo:
         d = self._dispatch
         return CacheInfo(len(d._entries), d.misses, d.evictions, None)
+
+    def replace_idle(self, rule: IdleReplacement) -> CompiledKernel[P]:
+        """This kernel, compiled as it is, with each idle window of its
+        programs replaced as *rule* (a ``pulse.IdleReplacement``) says: each
+        stretch of at least the rule's threshold in which a qudit idles gets
+        the rule's fill written in, and every operation of the kernel keeps
+        its start, which compiling checks. ``lower(...)`` of the result gives
+        programs whose ``idle_windows`` report each window and what was done
+        there; this one is unchanged."""
+        from .._idle import IdledKernel
+
+        return IdledKernel(self, rule)
 
     def __reduce__(self) -> tuple[Any, ...]:
         from .._pickling import rebuilt_compiled

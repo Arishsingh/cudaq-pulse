@@ -125,17 +125,40 @@ class Readout(_Component):
         qudit's 0-1 frequency)."""
         return None
 
+    # How long after a readout the next one must wait.
     def _depletion_ns(self) -> float:
-        """How long after a readout the next one must wait."""
         return 0.0
 
 
 class Drive(_Component):
-    """How a qudit is driven: the base of the drive modalities, such as
-    ``MicrowaveDrive``. Simulation picks a drive's model by its type, and
-    refuses a type it has no model for."""
+    """How a qudit is driven: a drive of no stated modality, and the base of
+    the drive modalities, such as ``MicrowaveDrive``.
+
+    ``amplitude_scale_rad_per_ns`` is the Rabi rate in rad/ns of a pulse of
+    amplitude 1, whatever carries the drive. The simulator turns a pulse's
+    amplitude into a Rabi rate by it; without it, by the scale that makes
+    the qudit's ``X`` calibration a pi rotation, if that gives an amplitude;
+    else 1.0. Simulation picks a drive's model by its type: it drives a
+    ``Drive`` and a ``MicrowaveDrive`` so, and refuses another subclass, which
+    it has no model for. A subclass with fields of its own states them all
+    in ``_fields``.
+    """
 
     __slots__ = ()
+    _fields = ("amplitude_scale_rad_per_ns",)
+
+    def __init__(self, *, amplitude_scale_rad_per_ns: float | None = None) -> None:
+        object.__setattr__(self, "_values", (amplitude_scale_rad_per_ns,))
+
+    if TYPE_CHECKING:
+
+        @property
+        def amplitude_scale_rad_per_ns(self) -> float | None:
+            """The Rabi rate in rad/ns of a pulse of amplitude 1."""
+            ...
+
+    else:
+        (amplitude_scale_rad_per_ns,) = map(_Field, range(1))
 
 
 class DispersiveReadout(Readout):
@@ -252,27 +275,12 @@ class DispersiveReadout(Readout):
 class MicrowaveDrive(Drive):
     """A microwave drive: the physics of the qudit's drive.
 
-    The simulator turns a pulse's amplitude into a Rabi rate in rad/ns by
-    ``amplitude_scale_rad_per_ns``; without it, by the scale that makes the
-    qudit's ``X`` calibration a pi rotation, if that gives an amplitude;
-    else 1.0. The tuned pulses are the qudit's calibrations (``get_calibration``).
+    Its one field is ``Drive``'s ``amplitude_scale_rad_per_ns``, the Rabi
+    rate in rad/ns of a pulse of amplitude 1. The tuned pulses are the
+    qudit's calibrations (``get_calibration``).
     """
 
     __slots__ = ()
-    _fields = ("amplitude_scale_rad_per_ns",)
-
-    def __init__(self, *, amplitude_scale_rad_per_ns: float | None = None) -> None:
-        object.__setattr__(self, "_values", (amplitude_scale_rad_per_ns,))
-
-    if TYPE_CHECKING:
-
-        @property
-        def amplitude_scale_rad_per_ns(self) -> float | None:
-            """The Rabi rate in rad/ns of a pulse of amplitude 1."""
-            ...
-
-    else:
-        (amplitude_scale_rad_per_ns,) = map(_Field, range(1))
 
 
 class DragPulse(_Component):
@@ -496,9 +504,9 @@ def _gate_label(name: str) -> str:
     return f"pulse.gates.{name.upper()}"
 
 
+# The value of *gate*, a ``pulse.gates.Gate``; the caller checks where
+# it belongs. A string that is no gate's is matched against *near*.
 def _gate_name(gate: Any, near: Sequence[str] = _GATES) -> str:
-    """The value of *gate*, a ``pulse.gates.Gate``; the caller checks where
-    it belongs. A string that is no gate's is matched against *near*."""
     if isinstance(gate, str):
         if gate in _GATES:
             return gate if gate.__class__ is str else str.__str__(gate)
@@ -562,10 +570,10 @@ class _Calibrations(dict[Any, Any]):
 _NO_CALIBRATIONS = _Calibrations({})
 
 
+# *given*, calibrations by gate (or by ``(gate, transition)``), as a
+# checked read-only mapping keyed by gate value, or ``(value,
+# transition)`` for a transition other than (0, 1).
 def _calibrations(given: Any, owner: str, allowed: Sequence[str]) -> Mapping[Any, Any]:
-    """*given*, calibrations by gate (or by ``(gate, transition)``), as a
-    checked read-only mapping keyed by gate value, or ``(value,
-    transition)`` for a transition other than (0, 1)."""
     if given.__class__ is _Calibrations:
         return given
     if not isinstance(given, Mapping):
@@ -617,8 +625,8 @@ def _metadata(given: Any, index: int) -> Mapping[str, Any]:
     return MappingProxyType(dict(given))
 
 
+# The area of *pulse*'s Gaussian envelope at amplitude 1.
 def _area_ns(pulse: DragPulse, owner: str) -> float:
-    """The area of *pulse*'s Gaussian envelope at amplitude 1."""
     duration, sigma = pulse._values[0], pulse._values[1]
     if not (_finite(duration) and duration > 0 and _finite(sigma) and sigma > 0):
         raise InvalidValueError(
@@ -644,10 +652,10 @@ def _published(calibrations: Mapping[Any, Any]) -> str:
     return "it publishes " + ", ".join(names)
 
 
+# *calibrations*, which are keyed by gate value, keyed by
+# ``pulse.gates.Gate`` (with the transition, for one other than (0, 1)):
+# read-only.
 def _by_gate(calibrations: Mapping[Any, Any]) -> Mapping[Any, Any]:
-    """*calibrations*, which are keyed by gate value, keyed by
-    ``pulse.gates.Gate`` (with the transition, for one other than (0, 1)):
-    read-only."""
     if not calibrations:
         return _EMPTY
     from ..gates import Gate
@@ -660,9 +668,9 @@ def _by_gate(calibrations: Mapping[Any, Any]) -> Mapping[Any, Any]:
     )
 
 
+# ``PhysicalQudit.get_calibration``: the calibration *gate* of *qudit*, derived as
+# ``pulse.gates`` describes where it is not published.
 def _qudit_calibration(qudit: PhysicalQudit, gate: Any, transition: Any) -> Any:
-    """``PhysicalQudit.get_calibration``: the calibration *gate* of *qudit*, derived as
-    ``pulse.gates`` describes where it is not published."""
     name = _gate_name(gate, _QUDIT_GATES)
     at = _transition(transition)
     if name == "cz":
@@ -693,10 +701,18 @@ def _qudit_calibration(qudit: PhysicalQudit, gate: Any, transition: Any) -> Any:
     )
 
 
+# The drives whose first field is their Rabi rate per unit amplitude.
+_SCALED_DRIVES = (MicrowaveDrive, Drive)
+# The kind a system file writes for each drive it holds.
+_DRIVE_KINDS: Mapping[str, type[Drive]] = MappingProxyType(
+    {"microwave": MicrowaveDrive, "drive": Drive}
+)
+
+
+# The Rabi rate in rad/ns of amplitude 1 on *qudit*'s drive, if it gives one, else 1.0.
 def _drive_scale(qudit: PhysicalQudit) -> float:
-    """The Rabi rate in rad/ns of amplitude 1 on *qudit*'s drive, if it gives one, else 1.0."""
     drive = qudit.drive
-    if drive.__class__ is MicrowaveDrive:
+    if drive.__class__ in _SCALED_DRIVES:
         explicit = drive._values[0]
         if explicit is not None:
             return float(explicit)
@@ -1056,9 +1072,9 @@ _COUPLING_OPERATORS: Mapping[type[SimulationModel], str] = MappingProxyType(
 )
 
 
+# The operator of the couplings of a system with the model *model*, or
+# None if the model gives them none.
 def _coupling_operator(model: Any) -> str | None:
-    """The operator of the couplings of a system with the model *model*, or
-    None if the model gives them none."""
     for cls in type(model).__mro__:
         operator = _COUPLING_OPERATORS.get(cls)
         if operator is not None:
@@ -1245,22 +1261,22 @@ class _Description:
     def drive_amplitude_scale(self, qudit_index: int) -> float:
         """Return the conversion from pulse amplitude to radians/ns.
 
-        A ``MicrowaveDrive`` may give ``amplitude_scale_rad_per_ns``
-        explicitly; else, if the qudit's ``X`` calibration gives an
-        amplitude, the scale that makes that pulse a pi rotation, from its
-        truncated-Gaussian area. A qudit with neither, or no drive, uses
-        1.0: pulse amplitudes are already angular rates in rad/ns. Another
-        drive modality is ``UnsupportedError``.
+        A ``Drive`` or a ``MicrowaveDrive`` may give
+        ``amplitude_scale_rad_per_ns`` explicitly; else, if the qudit's ``X``
+        calibration gives an amplitude, the scale that makes that pulse a pi
+        rotation, from its truncated-Gaussian area. A qudit with neither, or
+        no drive, uses 1.0: pulse amplitudes are already angular rates in
+        rad/ns. Another subclass of ``Drive`` is ``UnsupportedError``.
         """
         if qudit_index not in self.qudits:
             raise NotFoundError(f"qudit {qudit_index} is not in quantum system {self.name!r}")
         drive = self.qudits[qudit_index].drive
         if drive is None:
             return 1.0
-        if not isinstance(drive, MicrowaveDrive):
+        if not isinstance(drive, MicrowaveDrive) and drive.__class__ is not Drive:
             raise UnsupportedError(
                 f"no drive model for {type(drive).__name__} (qudit {qudit_index}); the "
-                "simulator models a MicrowaveDrive"
+                "simulator models a Drive and a MicrowaveDrive"
             )
         explicit = drive.amplitude_scale_rad_per_ns
         if explicit is not None:
@@ -1276,14 +1292,14 @@ class _Description:
         return 1.0
 
 
+# The error that *needs* the strengths of *target*'s couplings at
+# *indices*, which are not measured yet.
 def _unmeasured(
     target: _Description,
     indices: Sequence[int],
     needs: str,
     fix: str = "give the strength in Hz",
 ) -> InvalidValueError:
-    """The error that *needs* the strengths of *target*'s couplings at
-    *indices*, which are not measured yet."""
     named = [
         f"couplings[{i}] (qudits {' and '.join(map(str, target.couplings[i].qudits))})"
         for i in indices
@@ -1302,8 +1318,8 @@ def _unmeasured(
 _CHECKED: tuple[Sequence[Any], Sequence[Any], frozenset[int]] = ((), (), frozenset())
 
 
+# Every problem with *target*'s couplings and residual ZZ entries.
 def _entries_problems(target: _Description) -> list[Problem]:
-    """Every problem with *target*'s couplings and residual ZZ entries."""
     global _CHECKED
     known = target.qudits
     couplings, residual_zz = target.couplings, target.residual_zz
@@ -1337,10 +1353,10 @@ _QUDIT_VALUES = attrgetter(
 )
 
 
+# Every problem with the values of *qudits*, a system's qudits by index.
+# Checks every qudit at once first, so the common case, where all of them
+# are fine, stays cheap.
 def _qudits_problems(qudits: Mapping[int, Any]) -> list[Problem]:
-    """Every problem with the values of *qudits*, a system's qudits by index.
-    Checks every qudit at once first, so the common case, where all of them
-    are fine, stays cheap."""
     if not qudits:
         return []
     values = list(qudits.values())
@@ -1367,8 +1383,8 @@ def _qudits_problems(qudits: Mapping[int, Any]) -> list[Problem]:
     return problems
 
 
+# The problems with the values of *qudit*, the qudit at *where*.
 def _qudit_value_problems(qudit: PhysicalQudit, where: str) -> list[Problem]:
-    """The problems with the values of *qudit*, the qudit at *where*."""
     problems: list[Problem] = []
 
     def check(field: str, ok: bool, message: str, fix: str) -> None:
@@ -1421,10 +1437,10 @@ _RATE = attrgetter("rate_hz")
 _NONE = type(None)
 
 
+# Whether *values* are all finite floats (or None, if *optional*): their
+# sum is finite unless one is inf or NaN, or the floats overflow, which
+# then only takes the slower checks.
 def _finite_floats(values: Sequence[Any], optional: bool = False) -> bool:
-    """Whether *values* are all finite floats (or None, if *optional*): their
-    sum is finite unless one is inf or NaN, or the floats overflow, which
-    then only takes the slower checks."""
     types = set(map(type, values))
     if not (types <= {float, _NONE} if optional else types <= {float}):
         return False
@@ -1432,10 +1448,10 @@ def _finite_floats(values: Sequence[Any], optional: bool = False) -> bool:
     return total - total == 0.0
 
 
+# Whether *entries*, couplings or residual ZZ entries of a system with the
+# qudits *known*, have nothing to report; checked in C for every entry at
+# once, by class, so any other entry takes ``_entry_problems``.
 def _plain_entries(entries: Sequence[Any], cls: type, known: Mapping[int, Any]) -> bool:
-    """Whether *entries*, couplings or residual ZZ entries of a system with the
-    qudits *known*, have nothing to report; checked in C for every entry at
-    once, by class, so any other entry takes ``_entry_problems``."""
     if set(map(type, entries)) != {cls}:
         return False
     qudits = list(map(_QUDITS, entries))
@@ -1465,9 +1481,9 @@ def _plain_entries(entries: Sequence[Any], cls: type, known: Mapping[int, Any]) 
     )
 
 
+# Whether *couplings* are the *checked* ones with only their strengths
+# changed, to strengths with nothing to report.
 def _strengths_changed(couplings: Sequence[Any], checked: Sequence[Any]) -> bool:
-    """Whether *couplings* are the *checked* ones with only their strengths
-    changed, to strengths with nothing to report."""
     return (
         len(couplings) == len(checked)
         and set(map(type, couplings)) <= {Coupling}
@@ -1482,18 +1498,18 @@ def _pair_key(qudits: tuple[int, ...]) -> tuple[int, int]:
     return (a, b) if a < b else (b, a)
 
 
+# Whether *value* is a finite real number, not a bool.
 def _finite(value: Any) -> bool:
-    """Whether *value* is a finite real number, not a bool."""
     return value.__class__ is not bool and isinstance(value, numbers.Real) and math.isfinite(value)
 
 
+# Every problem with *entry*, entry *index* of the system's *kind*
+# (``"couplings"`` or ``"residual_zz"``), each at its path in the system,
+# and its pair of qudits if they are two distinct known qudits of a new
+# pair. *pairs* holds the earlier entries' pairs, by entry index.
 def _entry_problems(
     kind: str, index: int, entry: Any, known: Mapping[int, Any], pairs: Mapping[Any, int]
 ) -> tuple[list[Problem], tuple[int, int] | None]:
-    """Every problem with *entry*, entry *index* of the system's *kind*
-    (``"couplings"`` or ``"residual_zz"``), each at its path in the system,
-    and its pair of qudits if they are two distinct known qudits of a new
-    pair. *pairs* holds the earlier entries' pairs, by entry index."""
     where = f"{kind}[{index}]"
     cls = Coupling if kind == "couplings" else ResidualZZ
     if not isinstance(entry, cls):
@@ -1531,10 +1547,10 @@ def _entry_problems(
     return problems, pair
 
 
+# The problems with *qudits*, the qudits of the entry at *where*.
 def _qudit_problems(
     qudits: Any, where: str, known: Mapping[int, Any], pairs: Mapping[Any, int], noun: str
 ) -> list[Problem]:
-    """The problems with *qudits*, the qudits of the entry at *where*."""
     path = f"{where}.qudits"
     fix = "give the indices of its two qudits, as (0, 1)"
     if not isinstance(qudits, tuple):
@@ -1603,8 +1619,8 @@ def _qudit_problems(
     return []
 
 
+# A calibration's key as a problem's path names it.
 def _key_label(key: Any) -> str:
-    """A calibration's key as a problem's path names it."""
     if key.__class__ is tuple:
         return f"{key[0].upper()}, {key[1]}"
     return str.__str__(key).upper()

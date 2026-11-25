@@ -51,6 +51,23 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   starts a submission, and a seed that is not a whole number gets the usage
   line. `challenges/README.rst` says what a scorer reads and what it cannot
   check.
+- **Idle replacement.** `pulse.compile(k).replace_idle(pulse.IdleReplacement(fill,
+  threshold=100 * pulse.ns))` is the compiled kernel with the kernel
+  `fill(qudit, window)` written into each idle window of its schedules: a
+  stretch of at least the threshold in which a qudit's drive line has no
+  operation, none of its tones plays and its own readout does not run, such
+  as the time a data qudit spends idle while an ancilla is read out (a
+  kernel's own `wait()` is an operation, not a window). A fill shorter than its
+  window is centred with waits (`align=`), a longer one is an error; windows
+  in loops are filled in every round and the loop stays rolled. Every
+  operation of the kernel keeps its start and the program its length under
+  every schedule policy, which compiling checks; under `rcp` and `alap_rcp`
+  a window whose fill would move another operation for lack of a drive lane
+  is left unfilled. `ScheduledKernel.idle_windows` lists each window with
+  what was done there or why it was left alone, and
+  `IdleReplacement(None, threshold=...)` only lists them. In this version a
+  fill drives and waits on its own qudit's drive line. A kernel whose idle
+  windows are not replaced compiles exactly as before.
 - **Error codes.** Every `CompilationError` has a `code`, a
   `pulse.ErrorCode` (`unknown_name`, `wrong_argument`, `runtime_value`,
   `invalid_duration` and the others listed under Errors), so a program or
@@ -224,6 +241,45 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   the simulator models of each, and one error correction cycle. Its
   numbers, tables and figures are written from the system by a script, and
   a test fails when the page and the system differ.
+- **A shared drive line in the validation corpus.** `backends.validate` runs
+  two more programs: both qudits driven at once with the same envelope on
+  one drive line reaching both (`DriveLine([0, 1], max_concurrent_tones=2)`
+  in place of the controller's drive lines), then read out on the
+  controller's own readout lines. `shared_drive_line_two_tones` runs on the
+  corpus's system, whose qudits differ in frequency, so the line plays two
+  tones; `shared_drive_line_one_tone` runs on a system whose two qudits
+  share a frequency, so a backend whose line plays one tone for all its
+  qudits has a program it can emit. A backend with a drive line per qudit
+  refuses both, which counts as before. Every backend's report has two
+  more lines per format it reads.
+- **A drive of no stated modality.** `Drive(amplitude_scale_rad_per_ns=...)`
+  states the Rabi rate of a pulse of amplitude 1 for a qudit whose drive is
+  not a microwave one, or whose modality the system leaves unsaid: the
+  field moved from `MicrowaveDrive` to its base, `Drive`, which can now be
+  given as a qudit's `drive`. The simulator and the derived calibrations
+  read it as they read a `MicrowaveDrive`'s, which keeps working unchanged,
+  and a system file holds it as `{"kind": "drive", ...}`. A subclass of
+  `Drive` the simulator has no model for is refused, as before; one with
+  fields of its own now states them in `_fields`.
+- **Loading a scheduled function.** `pulse.load(module, entry=..., qudits=...)`
+  turns a scheduled function of a Pulse-dialect module that another compiler
+  wrote (assembly or bytecode) into a `ScheduledKernel`, as `kernel.lower(...)`
+  returns. The schedule is kept as written, verified on its qudits and
+  control system and checked against what the controllers can play (a
+  control system with line delays or program limits is refused for now);
+  `qudits` gives the qudit of each argument and the lines
+  get that quantum system's frequencies. A loaded function may hold loops,
+  branches and calls of classical functions: these are read from the module's
+  `classical.callable` declarations, travel on the control system's links
+  (found by the name the module gives them, or by `links=`), take the
+  control system's dispatch keys as for `compile`, and are checked against
+  their latencies, and `classical=` gives declared
+  functions for them, whose types must agree and whose latency and
+  implementation replace the module's. CUDA-Q QEC's decoder messages in a
+  module (`enqueue_syndromes__3_2`, `get_corrections__3_1`) are read as a
+  kernel's calls of them are compiled. A call of another function of the
+  module that states its start (`pulse.start_cycles`, provisional) is written
+  in place.
 
 ### Changed
 
@@ -413,9 +469,31 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   module-level values as before. The quick example of the README and of
   Getting Started now reads the qubit out and runs by calling the kernel,
   which returns the outcome of one simulated shot.
+- **`viz.save_schedule` takes a path-like path and names its keywords.**
+  `path` may be a `pathlib.Path` as well as a string, and the function takes
+  `figsize` and `title`, the two keywords of `plot_schedule`, where it passed
+  `**kwargs` on to it. Calls that worked still work; a type checker now
+  accepts a `Path` and rejects another keyword, such as `dpi=300`, which
+  type-checked and then raised `TypeError` inside `plot_schedule`.
 
 ### Fixed
 
+- **The limits on what plays at once hold for pulses after a wait of a
+  run-time length or a blocking wait for an answer.** `wait(line, answer,
+  bounds=(16, 4000))` is scheduled at 16 cycles, and what follows it on its
+  lines starts up to 3,984 cycles later in a run, while lines the wait does
+  not hold back keep their times. `max_concurrent_drives`,
+  `max_concurrent_readouts` and a shared line's `max_concurrent_tones`
+  compared the scheduled times only, so a drive after such a wait and a
+  drive on another line passed a limit of one though a run could play them
+  together. They now count pulses as they can slide, at compile and in
+  `controller.check()`: such a program is a `ControllerLimitError` that
+  names the first cycle the pulses can meet and the wait (`2 drives can
+  play at once from cycle 600: what follows the wait on d0 that ends at
+  cycle 117 (up to 3984 cycles later) ...`). Sync the lines after the wait,
+  or give it bounds that keep the pulses apart. A blocking wait counts as
+  such a wait without an upper end. A program without such a wait, and one
+  whose lines all wait together, is checked as before.
 - **A value computed from a term it uses several times, or through
   thousands of operations, compiles.** `tau = tau + tau` written a few dozen
   times did not finish tracing: forty such lines are forty operations, but
