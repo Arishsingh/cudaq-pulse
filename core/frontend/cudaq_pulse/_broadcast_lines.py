@@ -150,14 +150,18 @@ def _tone_hz(found: _Line, target: Any) -> tuple[float | None, str | None]:
     qudits, _, _, hz = found
     frame = target.frequency_frame
     if frame == "own_carrier":
-        # No tone of such a system is placed against another qudit's carrier
-        # (compiler._refuse_other_qudits_tones); this one is no single qudit's.
-        return None, (
-            f"quantum system {target.name!r}: its qudits give no frequency_hz, so each tone is "
-            "an offset from its own qudit's carrier and the system does not state how far "
-            f"apart two carriers are; {_named(qudits)} has one tone for all its qudits: give "
-            "the qudits their frequencies, or each an Offset from one reference"
-        )
+        # Each tone of such a system is an offset from its own qudit's
+        # carrier. The line's one tone is at the carrier of every qudit it
+        # reaches, and a change of its frequency is that offset from each.
+        if hz is not None:
+            return None, (
+                f"quantum system {target.name!r}: {_named(qudits)} states its tone as "
+                f"frequency_hz={hz!r}, and the system's qudits give no frequency_hz: the "
+                "line's tone is at the carrier of each qudit it reaches, and no frequency "
+                "places it; leave frequency_hz out, and detune the tone in the kernel "
+                "(shift_frequency(line.tone, ...)) by the offset every qudit is to see"
+            )
+        return 0.0, None
     if frame == "shared_reference" and hz is not None:
         return None, (
             f"quantum system {target.name!r}: {_named(qudits)} states its tone as "

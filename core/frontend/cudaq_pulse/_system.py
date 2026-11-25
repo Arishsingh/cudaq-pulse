@@ -278,7 +278,12 @@ class DriveLine(_Line):
     every one. Its tone starts at ``frequency_hz``
     (``DriveLine([0, 1, 2], broadcast=True, frequency_hz=5.1e9)``), which
     may be left out when its qudits share one frequency; each qudit is
-    driven off resonance by the difference from its own. Both keywords are
+    driven off resonance by the difference from its own. Where the qudits
+    give an ``Offset`` from one reference, the tone is the ``Offset`` they
+    share and ``frequency_hz`` is not taken; where they give no frequency,
+    the tone is at the carrier of each qudit the line reaches, a change of
+    its frequency in a kernel is that offset from each, and ``frequency_hz``
+    is not taken. Both keywords are
     for a list of qudits: with one qudit given as an int they are ignored,
     and ``DriveLine([0], broadcast=True)`` is an error."""
 

@@ -842,9 +842,17 @@ tone's; when they differ, a program that takes the line is a
 an ``Offset`` from one reference, the tone is the ``Offset`` its qudits
 share, and a line that states ``frequency_hz``, or whose qudits differ, is
 a ``CompilationError``: the line cannot state an offset yet. On a system
-whose qudits give no frequency, a program that takes the line is a
-``CompilationError``: each tone there is an offset from its own qudit's
-carrier, and the line's one tone is no single qudit's. Each qudit is driven off resonance by
+whose qudits give no frequency, each tone is an offset from its own
+qudit's carrier, and the line's one tone is at the carrier of every qudit
+it reaches: a drive on it is resonant with each of them, and a change of
+the tone's frequency (``shift_frequency(beam.tone, 1e6)``) is that offset
+from each reached qudit's own carrier. The line cannot state
+``frequency_hz`` there (a ``CompilationError`` for a program that takes
+it), its ``native_frequency_hz`` in the exports is 0.0 as for every line of
+such a system, and each event's ``frequency_hz`` is the offset every qudit
+in its ``qudits`` sees. A drive on the line at another qudit's tone, or on
+another line at the line's tone, is refused as between any two qudits of
+such a system. Each qudit is driven off resonance by
 the difference between the tone and its own frequency: the simulator
 drives every qudit of the line with the same envelope, the tone's
 frequency and phase, and that qudit's own amplitude scale.

@@ -376,25 +376,89 @@ def test_on_offsets_from_one_reference_the_tone_is_the_offset_its_qudits_share()
         _lowered(by_one, apart, _box(BEAM), 1)
 
 
-def test_qudits_that_give_no_frequency_have_no_broadcast_tone():
+def test_on_own_carriers_the_tone_is_at_the_carrier_of_every_qudit_it_reaches():
     qs = _framed([None] * 3)
     assert qs.frequency_frame == "own_carrier"
-    for box in (_box(BEAM), _box(DriveLine([0, 1, 2], broadcast=True, frequency_hz=5.0e9))):
-        with pytest.raises(pulse.CompilationError) as caught:
-            _lowered(by_one, qs, box, 1)
-        assert "does not state how far apart two carriers are" in str(caught.value)
-        assert "the broadcast drive line of qudits 0..2 has one tone for all its qudits" in str(
-            caught.value
-        )
 
-    # A line of its own on the same control system is as on any other.
     @pulse.kernel
-    def own(d):
-        drive(get_drive_line(d), square(40, 0.2))
+    def detuned(q):
+        beam = get_drive_line(q)
+        drive(beam, gaussian(40, 0.3, 10))
+        shift_frequency(beam.tone, 2.0e6)
+        drive(beam, gaussian(40, 0.3, 10))
 
-    four = _framed([None] * 4)
-    lowered = _lowered(own, four, _box(BEAM, 3, readout_lines=(0, 1, 2, 3)), 3)
-    assert lowered.qudits == (3,)
+    lowered = _lowered(detuned, qs, _box(BEAM), 1)
+    assert "pulse.get_drive_line %0, %1, %2 {frequency_hz = 0.000000e+00 : f64}" in lowered.mlir()
+    for version in (1, 2):
+        (line,) = lowered.export_to_controller(version=version)["lines"]
+        assert (line["qudits"], line["broadcast"]) == ([0, 1, 2], True)
+        assert line["native_frequency_hz"] == 0.0
+    first, second = lowered.export_to_controller()["events"]
+    # The offset every reached qudit sees from its own carrier.
+    assert (first["frequency_hz"], second["frequency_hz"]) == (0.0, 2.0e6)
+    assert first["qudits"] == second["qudits"] == [0, 1, 2]
+    assert [e["qudits"] for e in lowered.export_to_emulator()["events"]] == [[0, 1, 2]] * 2
+
+    # Each qudit's own line, driven and detuned alike, is the same evolution.
+    @pulse.kernel
+    def each(a, b, c):
+        lines = [get_drive_line(a), get_drive_line(b), get_drive_line(c)]
+        sync(lines[0], lines[1], lines[2])
+        for line in lines:
+            drive(line, gaussian(40, 0.3, 10))
+        for line in lines:
+            shift_frequency(line.tone, 2.0e6)
+        for line in lines:
+            drive(line, gaussian(40, 0.3, 10))
+
+    separate = pulse.compile(each, quantum_system=qs).lower(*qs.qudits[:3])
+    together = pulse.simulate(lowered, levels=2, dt_ns=0.5, seed=0)
+    apart = pulse.simulate(separate, levels=2, dt_ns=0.5, seed=0)
+    np.testing.assert_allclose(together.density_matrix, apart.density_matrix, rtol=0, atol=1e-9)
+    populations = np.real(np.diag(together.density_matrix))
+    assert populations[0b001] == pytest.approx(populations[0b100])
+    assert populations[0b001] > 1e-3
+
+
+def test_on_own_carriers_the_line_states_no_frequency():
+    qs = _framed([None] * 3)
+    box = _box(DriveLine([0, 1, 2], broadcast=True, frequency_hz=5.0e9))
+    with pytest.raises(pulse.CompilationError) as caught:
+        _lowered(by_one, qs, box, 1)
+    assert (
+        "the broadcast drive line of qudits 0..2 states its tone as frequency_hz=5000000000.0, "
+        "and the system's qudits give no frequency_hz"
+    ) in str(caught.value)
+
+
+def test_on_own_carriers_no_tone_crosses_between_the_line_and_another_qudit():
+    qs = _framed([None] * 4)
+    box = _box(BEAM, 3, readout_lines=(0, 1, 2, 3))
+
+    @pulse.kernel
+    def others_tone_on_the_line(a, d):
+        beam = get_drive_line(a)
+        own = get_drive_line(d)
+        drive(beam, square(40, 0.2), tone=own.tone)
+
+    @pulse.kernel
+    def the_lines_tone_on_another(a, d):
+        beam = get_drive_line(a)
+        own = get_drive_line(d)
+        drive(own, square(40, 0.2), tone=beam.tone)
+
+    @pulse.kernel
+    def each_its_own(a, b, d):
+        beam = get_drive_line(a)
+        own = get_drive_line(d)
+        drive(beam, square(40, 0.2), tone=get_drive_line(b).tone)
+        drive(own, square(40, 0.2))
+
+    for kernel in (others_tone_on_the_line, the_lines_tone_on_another):
+        with pytest.raises(pulse.CompilationError, match="how far apart two carriers are"):
+            _lowered(kernel, qs, box, 1, 3)
+    lowered = _lowered(each_its_own, qs, box, 0, 2, 3)
+    assert len(_acquisitions(lowered)) == 2
 
 
 # ── The simulator ───────────────────────────────────────────────────────────
