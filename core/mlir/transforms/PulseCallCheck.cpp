@@ -221,7 +221,13 @@ bool callsVerified();
 /// Refuses each pulse.call of `function`: the schedule passes do not place
 /// one yet.
 mlir::LogicalResult refuseCalls(mlir::func::FuncOp function);
+/// checkCallee, for a caller that writes calls out itself (pulse.load).
+mlir::LogicalResult checkCalledFunction(mlir::func::FuncOp callee);
 } // namespace pulse
+
+mlir::LogicalResult pulse::checkCalledFunction(mlir::func::FuncOp callee) {
+  return checkCallee(callee);
+}
 
 bool pulse::moduleHasCalls(mlir::ModuleOp module) {
   if (!callsVerified())

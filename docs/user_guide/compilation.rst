@@ -524,13 +524,14 @@ and implementation replace the module's:
    qudits = [system.qudits[0], system.qudits[2]]
    program = pulse.load(text, entry="main", qudits=qudits, classical=[decide])
 
-A call of another function of the module states when it starts, as
-``pulse.start_cycles`` on the ``func.call`` (with ``pulse.length_cycles``,
-which the callee must fit in, and ``pulse.period_cycles`` inside a loop), and
-is written in place: the callee's operations, each that much later. The
-callee takes and returns the lines and tones it plays on, is scheduled, and
-holds no loop. This spelling is provisional and will follow the dialect's
-timed call.
+A call of another function of the module is a placed ``pulse.call``: it
+states its start and its length (``start_cycles`` and ``duration_cycles``,
+with one ``period_cycles`` entry per loop around it), and is written in
+place, the callee's operations each that much later. The callee takes and
+returns the lines and tones it plays on, is scheduled, records its length
+(``pulse.length_cycles``) and holds no loop; a call that lasts longer than
+its callee holds the callee's lines until its end. A ``func.call`` is
+refused.
 
 Threads
 -------

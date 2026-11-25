@@ -159,9 +159,22 @@ def test_a_stated_clock_must_be_the_systems(system):
 
 T = "!pulse.drive_line, !pulse.tone"
 TIMED = "attributes {pulse.schedule_state = #pulse.schedule_state<timed>}"
+
+
+def _long(cycles):
+    """The attributes of a function a call runs: its length and its schedule."""
+    return f"attributes {{pulse.length_cycles = {cycles} : i64, " + TIMED[len("attributes {") :]
+
+
+def _at(start, cycles, periods=None):
+    """A call's timing."""
+    period = "" if periods is None else f"{periods}, "
+    return f"<{{duration_cycles = {cycles} : i64, {period}start_cycles = {start} : i64}}>"
+
+
 CALLS = f"""
 module {{
-  func.func private @x(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) {TIMED} {{
+  func.func private @x(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) {_long(8)} {{
     %n = arith.constant 8 : i64
     %amp = arith.constant 0.5 : f64
     %zero = arith.constant 0.0 : f64
@@ -171,20 +184,19 @@ module {{
     return %d1, %t1 : {T}
   }}
   func.func private @pair(%a: !pulse.drive_line, %at: !pulse.tone, %b: !pulse.drive_line, %bt:
-        !pulse.tone) -> ({T}, {T}) {TIMED} {{
-    %a1, %at1 = func.call @x(%a, %at) {{pulse.start_cycles = 0 : i64}} : ({T}) -> ({T})
-    %b1, %bt1 = func.call @x(%b, %bt) {{pulse.start_cycles = 8 : i64, pulse.length_cycles = 8 :
-          i64}} : ({T}) -> ({T})
+        !pulse.tone) -> ({T}, {T}) {_long(16)} {{
+    %a1, %at1 = pulse.call @x(%a, %at) {_at(0, 8)} : ({T}) -> ({T})
+    %b1, %bt1 = pulse.call @x(%b, %bt) {_at(8, 8)} : ({T}) -> ({T})
     return %a1, %at1, %b1, %bt1 : {T}, {T}
   }}
   func.func @shot(%qa: !pulse.qudit, %qb: !pulse.qudit) {TIMED} {{
     %a, %at = pulse.get_drive_line %qa : (!pulse.qudit) -> ({T})
     %b, %bt = pulse.get_drive_line %qb : (!pulse.qudit) -> ({T})
-    %a1, %at1, %b1, %bt1 = func.call @pair(%a, %at, %b, %bt) {{pulse.start_cycles = 0 : i64,
-          pulse.length_cycles = 16 : i64}} : ({T}, {T}) -> ({T}, {T})
-    %b2, %bt2 = func.call @x(%b1, %bt1) {{pulse.start_cycles = 40 : i64}} : ({T}) -> ({T})
-    %b3, %bt3, %a3, %at3 = func.call @pair(%b2, %bt2, %a1, %at1) {{pulse.start_cycles = 100 :
-          i64}} : ({T}, {T}) -> ({T}, {T})
+    %a1, %at1, %b1, %bt1 = pulse.call @pair(%a, %at, %b, %bt) {_at(0, 16)}
+        : ({T}, {T}) -> ({T}, {T})
+    %b2, %bt2 = pulse.call @x(%b1, %bt1) {_at(40, 8)} : ({T}) -> ({T})
+    %b3, %bt3, %a3, %at3 = pulse.call @pair(%b2, %bt2, %a1, %at1) {_at(100, 16)}
+        : ({T}, {T}) -> ({T}, {T})
     return
   }}
 }}
@@ -206,13 +218,9 @@ def test_calls_with_a_stated_start_are_written_in_place(system):
 @pytest.mark.parametrize(
     "old, new, message",
     [
-        (" {pulse.start_cycles = 40 : i64}", "", "without stating when it starts"),
-        (
-            "pulse.length_cycles = 16",
-            "pulse.length_cycles = 12",
-            "and it takes 16",
-        ),
-        ("pulse.start_cycles = 40 : i64", "pulse.start_cycles = 12 : i64", "overlaps or precedes"),
+        (" " + _at(40, 8), "", "without stating when it starts"),
+        (_at(0, 16), _at(0, 12), "is 16 cycles long"),
+        (_at(40, 8), _at(12, 8), "overlaps or precedes"),
         (
             "pulse.schedule_state = #pulse.schedule_state<timed>} {\n    %n",
             "made.by = 1 : i64} {\n    %n",
@@ -227,17 +235,72 @@ def test_calls_that_cannot_be_written_in_place(system, old, new, message):
         pulse.load(text, entry="shot", qudits=system.qudits[:2])
 
 
+def test_a_func_call_is_refused_with_the_call_to_write(system):
+    text = CALLS.replace(f"pulse.call @x(%b1, %bt1) {_at(40, 8)}", "func.call @x(%b1, %bt1)")
+    assert text != CALLS
+    with pytest.raises(
+        pulse.CompilationError, match="shot calls a function with func.call.*pulse.call"
+    ):
+        pulse.load(text, entry="shot", qudits=system.qudits[:2])
+
+
+def test_a_call_that_lasts_longer_than_its_function_holds_its_lines(system):
+    # @x is 8 cycles; given 20 from 40, its line is free again at 60.
+    longer = CALLS.replace(_at(40, 8), _at(40, 20))
+    program = pulse.load(longer, entry="shot", qudits=system.qudits[:2])
+    assert ("drive", 1, 40, 8) in events(program)
+    late = longer.replace(_at(100, 16), _at(50, 16))
+    with pytest.raises(pulse.CompilationError, match="overlaps or precedes"):
+        pulse.load(late, entry="shot", qudits=system.qudits[:2])
+
+
+@pytest.mark.parametrize(
+    "timing",
+    [
+        "<{duration_cycles = 8 : i64, start_cycles = 9223372036854775807 : i64}>",
+        "<{duration_cycles = 8 : i64, start_cycles = -5 : i64}>",
+        "<{duration_cycles = 9223372036854775807 : i64, start_cycles = 40 : i64}>",
+    ],
+)
+def test_a_calls_times_are_held_to_the_range_of_every_operation(system, timing):
+    text = CALLS.replace(_at(40, 8), timing)
+    assert text != CALLS
+    with pytest.raises(pulse.CompilationError, match=r"shot calls x with .* outside 0 to 2\^50"):
+        pulse.load(text, entry="shot", qudits=system.qudits[:2])
+
+
+def test_a_called_function_is_not_in_the_loaded_module(system):
+    # Another compiler's attribute that names the function does not keep it.
+    text = CALLS.replace(_long(8), _long(8)[:-1] + ", made.by = @x}")
+    assert text != CALLS
+    program = pulse.load(text, entry="shot", qudits=system.qudits[:2])
+    assert program.mlir().count("func.func") == 1
+    assert len(events(program)) == 5
+
+
+def test_a_called_functions_recorded_length_is_where_its_operations_end(system):
+    text = CALLS.replace(_long(8), _long(4))
+    assert text != CALLS
+    with pytest.raises(pulse.CompilationError, match="its operations end at 8"):
+        pulse.load(text, entry="shot", qudits=system.qudits[:2])
+
+
 def test_a_function_that_calls_itself_is_refused(system):
     text = f"""
 module {{
-  func.func @again(%q: !pulse.qudit) {TIMED} {{
-    func.call @again(%q) {{pulse.start_cycles = 0 : i64}} : (!pulse.qudit) -> ()
+  func.func private @again(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) {_long(0)} {{
+    %d1, %t1 = pulse.call @again(%d, %t) {_at(0, 0)} : ({T}) -> ({T})
+    return %d1, %t1 : {T}
+  }}
+  func.func @shot(%q: !pulse.qudit) {TIMED} {{
+    %d, %t = pulse.get_drive_line %q : (!pulse.qudit) -> ({T})
+    %d1, %t1 = pulse.call @again(%d, %t) {_at(0, 0)} : ({T}) -> ({T})
     return
   }}
 }}
 """
     with pytest.raises(pulse.CompilationError, match="calls itself"):
-        pulse.load(text, entry="again", qudits=system.qudits[:1])
+        pulse.load(text, entry="shot", qudits=system.qudits[:1])
 
 
 # ── Classical functions ──────────────────────────────────────────────────────
@@ -394,7 +457,7 @@ def test_the_links_are_the_control_systems(system):
 
 LOOP = f"""
 module {{
-  func.func private @x(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) {TIMED} {{
+  func.func private @x(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) {_long(8)} {{
     %n = arith.constant 8 : i64
     %amp = arith.constant 0.5 : f64
     %zero = arith.constant 0.0 : f64
@@ -409,10 +472,10 @@ module {{
     %c3 = arith.constant 3 : index
     %a, %at = pulse.get_drive_line %qa : (!pulse.qudit) -> ({T})
     %out:2 = scf.for %i = %c0 to %c3 step %c1 iter_args(%l = %a, %lt = %at) -> ({T}) {{
-      %l1, %lt1 = func.call @x(%l, %lt) {{pulse.start_cycles = 4 : i64, pulse.period_cycles = 20 :
-            i64}} : ({T}) -> ({T})
-      %l2, %lt2 = func.call @x(%l1, %lt1) {{pulse.start_cycles = 12 : i64, pulse.period_cycles =
-            20 : i64}} : ({T}) -> ({T})
+      %l1, %lt1 = pulse.call @x(%l, %lt) {_at(4, 8, "period_cycles = array<i64: 20>")}
+          : ({T}) -> ({T})
+      %l2, %lt2 = pulse.call @x(%l1, %lt1) {_at(12, 8, "period_cycles = array<i64: 20>")}
+          : ({T}) -> ({T})
       scf.yield %l2, %lt2 : {T}
     }}
     return
@@ -449,15 +512,6 @@ def test_a_failed_load_carries_a_documented_code(system):
     with pytest.raises(pulse.CompilationError) as overlap:
         pulse.load(text, entry="round", qudits=system.qudits[:2])
     assert overlap.value.code == "other"
-
-
-def test_a_nested_call_without_a_length_still_counts(system):
-    text = re.sub(r", pulse\.length_cycles = 8 :\s+i64", "", CALLS).replace(
-        "pulse.length_cycles = 16", "pulse.length_cycles = 12"
-    )
-    assert text.count("pulse.length_cycles") == 1
-    with pytest.raises(pulse.CompilationError, match="and it takes 16"):
-        pulse.load(text, entry="shot", qudits=system.qudits[:2])
 
 
 def test_a_function_with_a_qudit_of_its_own_is_refused(system):
@@ -1049,7 +1103,7 @@ def test_a_decoder_messages_key_under_another_name_is_refused(system):
 # ── A loaded module is untrusted input ───────────────────────────────────────
 
 LEAF = f"""
-  func.func private @leaf(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) {TIMED} {{
+  func.func private @leaf(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) {_long(8)} {{
     %n = arith.constant 8 : i64
     %amp = arith.constant 0.5 : f64
     %zero = arith.constant 0.0 : f64
@@ -1059,10 +1113,13 @@ LEAF = f"""
     return %d1, %t1 : {T}
   }}
 """
-SHOT = f"""
+
+
+def _shot(cycles):
+    return f"""
   func.func @shot(%q: !pulse.qudit) {TIMED} {{
     %d, %t = pulse.get_drive_line %q : (!pulse.qudit) -> ({T})
-    %d1, %t1 = func.call @f0(%d, %t) {{pulse.start_cycles = 0 : i64}} : ({T}) -> ({T})
+    %d1, %t1 = pulse.call @f0(%d, %t) {_at(0, cycles)} : ({T}) -> ({T})
     return
   }}
 """
@@ -1078,15 +1135,17 @@ def _chain(levels, calls):
         body, line, tone = [], "%d", "%t"
         for i in range(calls):
             body.append(
-                f"    %d{i}, %t{i} = func.call @{callee}({line}, {tone}) "
-                f"{{pulse.start_cycles = {i * length} : i64}} : ({T}) -> ({T})"
+                f"    %d{i}, %t{i} = pulse.call @{callee}({line}, {tone}) "
+                f"{_at(i * length, length)} : ({T}) -> ({T})"
             )
             line, tone = f"%d{i}", f"%t{i}"
         parts.append(
             f"  func.func private @f{level}(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) "
-            f"{TIMED} {{\n" + "\n".join(body) + f"\n    return {line}, {tone} : {T}\n  }}"
+            f"{_long(calls * length)} {{\n"
+            + "\n".join(body)
+            + f"\n    return {line}, {tone} : {T}\n  }}"
         )
-    parts += [SHOT, "}"]
+    parts += [_shot(8 * calls**levels), "}"]
     return "\n".join(parts)
 
 
@@ -1203,7 +1262,7 @@ def test_a_module_inside_a_function_is_refused(system):
 
 LOOPS = f"""
 module {{
-  func.func private @x(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) {TIMED} {{
+  func.func private @x(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) {_long(8)} {{
     %n = arith.constant 8 : i64
     %amp = arith.constant 0.5 : f64
     %zero = arith.constant 0.0 : f64
@@ -1220,8 +1279,8 @@ module {{
     %a, %at = pulse.get_drive_line %qa : (!pulse.qudit) -> ({T})
     %out:2 = scf.for %i = %c0 to %c2 step %c1 iter_args(%l = %a, %lt = %at) -> ({T}) {{
       %in:2 = scf.for %j = %c0 to %c3 step %c1 iter_args(%m = %l, %mt = %lt) -> ({T}) {{
-        %m1, %mt1 = func.call @x(%m, %mt) {{pulse.start_cycles = 4 : i64, PERIODS}}
-            : ({T}) -> ({T})
+        %m1, %mt1 = pulse.call @x(%m, %mt)
+            <{{duration_cycles = 8 : i64, PERIODS, start_cycles = 4 : i64}}> : ({T}) -> ({T})
         scf.yield %m1, %mt1 : {T}
       }}
       scf.yield %in#0, %in#1 : {T}
@@ -1234,7 +1293,7 @@ module {{
 
 def test_a_call_states_one_period_per_loop_around_it(system):
     qudits = system.qudits[:1]
-    two = LOOPS.replace("PERIODS", "pulse.period_cycles = array<i64: 100, 20>")
+    two = LOOPS.replace("PERIODS", "period_cycles = array<i64: 100, 20>")
     assert [start for _, _, start, _ in events(pulse.load(two, entry="shot", qudits=qudits))] == [
         4,
         24,
@@ -1243,27 +1302,18 @@ def test_a_call_states_one_period_per_loop_around_it(system):
         124,
         144,
     ]
+    one = LOOPS.replace("PERIODS", "period_cycles = array<i64: 20>")
     fix = "one period per scf.for around the call, outermost first"
-    one = LOOPS.replace("PERIODS", "pulse.period_cycles = 20 : i64")
     with pytest.raises(
         pulse.CompilationError, match=rf"inside 2 scf.for loop\(s\) and states 1 period.*{fix}"
     ):
         pulse.load(one, entry="shot", qudits=qudits)
-    listed = LOOPS.replace("PERIODS", "pulse.period_cycles = [100, 20]")
-    with pytest.raises(pulse.CompilationError, match=r"array<i64: outer, \.\.\., inner>"):
-        pulse.load(listed, entry="shot", qudits=qudits)
-    outside = CALLS.replace(
-        "{pulse.start_cycles = 40 : i64}",
-        "{pulse.start_cycles = 40 : i64, pulse.period_cycles = 9 : i64}",
-    )
+    outside = CALLS.replace(_at(40, 8), _at(40, 8, "period_cycles = array<i64: 9>"))
     assert outside != CALLS
     with pytest.raises(pulse.CompilationError, match=r"inside 0 scf.for loop\(s\) and states 1"):
         pulse.load(outside, entry="shot", qudits=system.qudits[:2])
     # A called function has no loop: its calls state no period of their own.
-    within = CALLS.replace(
-        "@x(%a, %at) {pulse.start_cycles = 0 : i64}",
-        "@x(%a, %at) {pulse.start_cycles = 0 : i64, pulse.period_cycles = 9 : i64}",
-    )
+    within = CALLS.replace(_at(0, 8), _at(0, 8, "period_cycles = array<i64: 9>"))
     assert within != CALLS
     with pytest.raises(pulse.CompilationError, match="a called function has no loop"):
         pulse.load(within, entry="shot", qudits=system.qudits[:2])
