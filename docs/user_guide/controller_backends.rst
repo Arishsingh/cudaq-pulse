@@ -616,8 +616,13 @@ Under ``rcp`` and ``alap_rcp``, ``max_concurrent_drives`` and
 follows another controller's on the same lane starts their start
 uncertainty after it, so the two never overlap. Given to a control system
 with controllers, they are checked under every schedule, counted the same
-way: a program that plays more at once fails to compile with a
-``ControllerLimitError`` naming the count and the first cycle.
+way. A program that ``asap`` places past them is placed as ``rcp`` places
+it, and one that ``alap`` places past them as ``alap_rcp`` does; its
+``options.schedule`` names the policy that placed it. A program that ``asap``
+or ``alap`` places within them keeps its schedule exactly. It fails to compile with a
+``ControllerLimitError`` naming the count and the first cycle when that
+placement does not keep to every limit either, or when the values a call
+binds place its pulses past one.
 
 A wait whose length is computed at run time (``wait(line, value,
 bounds=(low, high))``) is scheduled at its lowest length, and what follows
