@@ -381,7 +381,7 @@ def _hint(t: Any, fn: Any) -> Any:
         value = _subscript(t, g)
     if value is _NOT_A_NAME:
         try:
-            value = eval(t, g)  # noqa: S307 - the function's own annotation
+            value = eval(t, g)  # the function's own annotation
         except Exception as error:
             raise InvalidTypeError(
                 f"{fn.__qualname__}: can't read the type hint {t!r} ({error}); a hint is read"
@@ -867,7 +867,7 @@ class ClassicalFunction[**P, R]:
         return function
 
     @property
-    def __name__(self) -> str:  # noqa: PLW3201
+    def __name__(self) -> str:
         return self.name
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:

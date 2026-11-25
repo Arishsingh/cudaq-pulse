@@ -220,7 +220,7 @@ def _show(p: Any) -> str:
             return say(p)
         try:
             return _text(p)
-        except Exception:  # noqa: BLE001 - wording falls back, never fails the error
+        except Exception:  # wording falls back, never fails the error
             return "..."
     return str(p)
 

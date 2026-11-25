@@ -527,7 +527,7 @@ def own_run_time(
     cycles, in place, by the rule for its fixed times: a variable wait's
     length, clamped to its bounds as the run clamps it, and its bounds; and
     (with *waveforms*) its waveform's operands computed at run time. A
-    length becomes a ``pulse.own_cycles`` expression, which the controller
+    length becomes a ``controller_cycles`` expression, which the controller
     fails at run time when the length is off the line's timesteps. Returns
     the violations: a length that is off them for a value it can be known
     to take now, or an operand the export cannot tell is a time."""
