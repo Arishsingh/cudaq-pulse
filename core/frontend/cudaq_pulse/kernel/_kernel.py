@@ -112,7 +112,7 @@ def _runtime_kind(annotation: Any, scope: dict[str, Any]) -> int | None:
         if annotation == "float":
             return _FLOAT
         try:
-            annotation = eval(annotation, scope)  # noqa: S307
+            annotation = eval(annotation, scope)
         except Exception:
             return None
     try:
@@ -223,9 +223,6 @@ class _Sequence:
     def __init__(self, kind: type, items: tuple[Any, ...]):
         self.kind = kind
         self.items = items
-
-
-_NO_RETURN = object()
 
 
 # What a call returns, from the value the trace returned: for a value
