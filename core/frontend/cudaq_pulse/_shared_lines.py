@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import bisect
 import math
+import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
@@ -24,6 +25,10 @@ if TYPE_CHECKING:
     from ._errors import Problem
     from ._system import Controller, ControlSystem, _Line
     from .compiler import ScheduledKernel
+
+
+# This module, as ``ControlSystem._shares`` of a system without a broadcast line.
+_MODULE = sys.modules[__name__]
 
 
 def tone_count(name: str, qudits: Any, given: Any, most: int = 1) -> int:
@@ -44,16 +49,25 @@ def tone_count(name: str, qudits: Any, given: Any, most: int = 1) -> int:
     return int(given)
 
 
-def line(cls: type[_Line], qudits: Iterable[Any], delay_ns: Any, tones: Any) -> Any:
+def line(
+    cls: type[_Line],
+    qudits: Iterable[Any],
+    delay_ns: Any,
+    tones: Any,
+    broadcast: Any = False,
+    frequency_hz: Any = None,
+) -> Any:
     """A *cls* line reaching *qudits* (a sequence of carrier indices), with
     its delay and ``max_concurrent_tones`` checked: a dedicated line when
-    it reaches one."""
+    it reaches one. With *broadcast* or a *frequency_hz*, a broadcast line
+    (``_broadcast_lines``)."""
     from ._system import _delay_ns
 
     name = cls.__name__
     given = list(qudits)
     for qudit in given:
-        if isinstance(qudit, bool) or not isinstance(qudit, int):
+        # An int is neither a bool nor another type: looked at once.
+        if qudit.__class__ is not int and (isinstance(qudit, bool) or not isinstance(qudit, int)):
             raise InvalidTypeError(
                 f"{name} reaches qudits by carrier index, got {qudit!r} in {given!r}"
             )
@@ -62,11 +76,16 @@ def line(cls: type[_Line], qudits: Iterable[Any], delay_ns: Any, tones: Any) -> 
     if not given:
         raise InvalidValueError(f"{name} reaches no qudit; give it at least one")
     reached = tuple(map(int, given))
-    if len(set(reached)) != len(reached):
+    count = len(reached)
+    if len(set(reached)) != count:
         raise InvalidValueError(f"{name}({given}) lists a qudit twice")
-    if len(reached) == 1:
+    if broadcast is not False or frequency_hz is not None:
+        from ._broadcast_lines import line as broadcast_line
+
+        return broadcast_line(cls, reached, delay_ns, tones, broadcast, frequency_hz)
+    if count == 1:
         return cls(reached[0], delay_ns, max_concurrent_tones=tones)
-    tones = tone_count(name, reached, tones, len(reached))
+    tones = tone_count(name, reached, tones, count)
     if delay_ns.__class__ is not float or not 0.0 <= delay_ns < math.inf:
         delay_ns = _delay_ns(delay_ns, f"{name}({given}).delay_ns")
     # Item 1 is the tones, never 0: _lines_data and the delay filters see it.
@@ -123,20 +142,45 @@ def _role_lines(controller: Controller) -> Iterator[tuple[str, int, _Line]]:
 
 
 def tables(
-    controllers: Sequence[Controller],
-) -> tuple[dict[tuple[str, int], int], dict[tuple[str, int], float]]:
-    """``ControlSystem._line_owners`` and the delays of its delayed lines, by
-    (role, qudit), of *controllers*: every qudit of a shared line gets its
-    controller and its delay."""
+    controllers: Sequence[Controller], model: Any
+) -> tuple[dict[tuple[str, int], int], dict[tuple[str, int], float], Any, Any]:
+    """Of *controllers*, one of which has a line reaching several qudits:
+    ``ControlSystem._line_owners`` and the delays of its delayed lines, by
+    (role, qudit), every qudit of such a line getting its controller and
+    its delay; ``ControlSystem._shares``, the module that writes the exports
+    of their programs; and the class of the model that compiles for them.
+    Those are this module and *model*, or with a broadcast line
+    ``_broadcast_lines`` and its model."""
     owners: dict[tuple[str, int], int] = {}
     delays: dict[tuple[str, int], float] = {}
+    broadcast = False
+    each: Any
     for index, controller in enumerate(controllers):
-        for role, _, each in _role_lines(controller):
-            for qudit in each.qudits:
-                owners[(role, qudit)] = index
-                if each.delay_ns:
-                    delays[(role, qudit)] = each.delay_ns
-    return owners, delays
+        for role, lines in (
+            ("drive", controller.drive_lines),
+            ("readout", controller.readout_lines),
+        ):
+            for each in lines:
+                # (qudit, delay), (qudits, tones, delay), or four items on a
+                # broadcast line.
+                if len(each) == 2:
+                    qudit, delay = each
+                    owners[(role, qudit)] = index
+                    if delay:
+                        delays[(role, qudit)] = delay
+                    continue
+                if len(each) > 3:
+                    broadcast = True
+                delay = each[2]
+                for qudit in each[0]:
+                    owners[(role, qudit)] = index
+                    if delay:
+                        delays[(role, qudit)] = delay
+    if broadcast:
+        from . import _broadcast_lines
+
+        return owners, delays, _broadcast_lines, _broadcast_lines.machine_model(model)
+    return owners, delays, _MODULE, model
 
 
 def reach_problems(system: ControlSystem, prefix: str) -> list[Problem]:
@@ -201,12 +245,7 @@ def undelayed(controllers: Sequence[Controller]) -> list[Controller]:
     import dataclasses
 
     def plain(lines: Sequence[Any]) -> list[Any]:
-        return [
-            each[0]
-            if len(each) == 2
-            else type(each)(each[0], max_concurrent_tones=each.max_concurrent_tones)
-            for each in lines
-        ]
+        return [each[0] if len(each) == 2 else each._undelayed() for each in lines]
 
     return [
         dataclasses.replace(
@@ -249,7 +288,8 @@ def physical(system: ControlSystem) -> Mapping[tuple[str, int], Physical] | None
     for owner, controller in enumerate(system.controllers):
         for lines in (controller.drive_lines, controller.readout_lines):
             for position, each in enumerate(cast("Sequence[_Line]", lines)):
-                if len(each) > 2:
+                # A broadcast line (four items) has one tone: nothing is shared.
+                if len(each) == 3:
                     shared = Physical(each, owner, position)
                     for qudit in shared.qudits:
                         found[(shared.role, qudit)] = shared
@@ -676,7 +716,9 @@ def violations(
     *lines* and *events*, every iteration) exceed: their tones at once,
     and per physical line the limits its handles share."""
     shared = physical(system)
-    assert shared is not None
+    if shared is None:
+        # Its lines of several qudits are broadcast lines: one tone each.
+        return []
     found: list[str] = []
     sharing, of = _sharing(shared, lines)
     each: list[list[Mapping[str, Any]]] = [[] for _ in sharing]
@@ -826,7 +868,9 @@ def summarized(
     from . import _loops
 
     shared = physical(system)
-    assert shared is not None
+    if shared is None:
+        # Its lines of several qudits are broadcast lines: one tone each.
+        return []
     tree, _ = _loops._tree(events, repeats, periods)
     budget = _loops._Budget()
     found: list[str] = []
@@ -1245,6 +1289,15 @@ def flat(
         if slot is not None:
             _insert(event, "qudit", [("tone_slot", slot)])
     return handle_slot
+
+
+def framed(program: dict[str, Any], tone_slots: Mapping[int, int]) -> None:
+    """Give the ``frame_state`` and ``runtime_tones`` entries of format /1
+    *program* on a line keeping one tone slot (*tone_slots*, by line) the
+    slot, in place."""
+    for key in ("frame_state", "runtime_tones"):
+        if key in program:
+            program[key] = flat_frames(program[key], tone_slots)
 
 
 def flat_frames(found: Any, handle_slot: Mapping[int, int]) -> Any:

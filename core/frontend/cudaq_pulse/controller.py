@@ -911,9 +911,7 @@ def _export(
             program = _export_structured(lowered, sample_rate_ghz, emulation, role)
             if not system._shares:
                 return program
-            from ._shared_lines import structured
-
-            return structured(program, system)
+            return system._shares.structured(program, system)  # type: ignore[no-any-return]
         if controller is not None:
             _controller_index(controller, 1)
         return _export_structured(lowered, sample_rate_ghz, emulation, role)
@@ -943,9 +941,7 @@ def _export(
             if violations:
                 raise _limit_error(lowered, violations)
         if system._shares:
-            from ._shared_lines import flat
-
-            tone_slots = flat(system, lines, events)
+            tone_slots = system._shares.flat(system, lines, events)
     elif limits is not None:
         _check_at_export(lowered, limits, clocks, (lines, events, frames, off, problems))
     if clocks is None:
@@ -990,19 +986,8 @@ def _export(
     if frames:
         program = _with_frames(program, frames, _slot_names(events, role))
         if system is not None and system._shares:
-            _framed_slots(program, tone_slots)
+            system._shares.framed(program, tone_slots)
     return program
-
-
-def _framed_slots(program: dict[str, Any], tone_slots: Mapping[int, int]) -> None:
-    """Give the ``frame_state`` and ``runtime_tones`` entries of format /1
-    *program* on a line keeping one tone slot (*tone_slots*, by line) the
-    slot, in place."""
-    from ._shared_lines import flat_frames
-
-    for key in ("frame_state", "runtime_tones"):
-        if key in program:
-            program[key] = flat_frames(program[key], tone_slots)
 
 
 def _with_frames(
@@ -1551,6 +1536,8 @@ def _handles(
         for handle, line in zip(same, program["lines"], strict=True):
             if "native_frequencies_hz" in line:
                 handle["native_frequency_hz"] = line["native_frequencies_hz"][0]
+            elif "broadcast" in line:
+                raise _no_broadcast_unroll(line)
         return same, {(line["line"], line["qudit"]): line["line"] for line in same}, None
     played: set[tuple[int, int]] = set()
     stack = [program["events"]]
@@ -1580,11 +1567,21 @@ def _handles(
             if "native_frequencies_hz" in line:
                 at = line["qudits"].index(qudit)
                 entry["native_frequency_hz"] = line["native_frequencies_hz"][at]
+            elif "broadcast" in line:
+                raise _no_broadcast_unroll(line)
             handle_of[(line["line"], qudit)] = len(lines)
             mine.append(len(lines))
             lines.append(entry)
         handles.append(mine)
     return lines, handle_of, handles
+
+
+def _no_broadcast_unroll(line: Mapping[str, Any]) -> UnsupportedError:
+    return UnsupportedError(
+        f"line {line['line']} is a broadcast drive line, which format /1 writes with its "
+        "qudits on the line and on each of its events; unrolling one is not supported "
+        "yet: export the program in format /1, as export_to_controller(version=1)"
+    )
 
 
 def _on_handles(
@@ -1862,12 +1859,10 @@ class _Parts:
             self.lines, self.events, self.frames, self.owners, self.parts = [], [], {}, [], []
             return violations
         if system._shares:
-            from ._shared_lines import flat
-
             # From the whole program, in program cycles: a shared line is one
             # controller's, and its slots are those of every export of the
             # program.
-            self.tone_slots = flat(system, self.lines, events)
+            self.tone_slots = system._shares.flat(system, self.lines, events)
         role = lowered._role
         if role is not None:
             plan = role.export_plan
@@ -2057,7 +2052,7 @@ def _export_part(
         exported = _with_frames(exported, tones, shared.names(role))
         if system._shares:
             assert shared.tone_slots is not None
-            _framed_slots(exported, shared.tone_slots)
+            system._shares.framed(exported, shared.tone_slots)
     _exported(lowered, shared, index, count)
     return exported
 

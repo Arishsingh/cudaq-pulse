@@ -280,6 +280,25 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   kernel's calls of them are compiled. A call of another function of the
   module that states its start (`pulse.start_cycles`, provisional) is written
   in place.
+- **Broadcast drive lines.** A drive line whose one tone reaches several
+  qudits at once, as one antenna or beam over several, is declared on the line:
+  `DriveLine([0, 1, 2], broadcast=True)`. A kernel gets it with
+  `get_drive_line(q)` of any of its qudits or with `get_drive_line(a, b, c)`
+  of all of them, and a drive on it drives every one; the line has one
+  tone, so `shift_phase(line.tone, ...)` turns all of them. The tone is at
+  the frequency the line states (`frequency_hz=`), which may be left out
+  when its qudits share one; each qudit is driven off resonance by the
+  difference from its own. The IR names the line by all its qudits
+  (`pulse.get_drive_line %q0, %q1, %q2`), the simulator drives each of
+  them, and both export formats write the line once, with `"broadcast":
+  true` and its `qudits`, and one event per drive with those `qudits`. A
+  backend must drive every qudit an event lists. A runtime qudit that takes
+  a drive line cannot be bound to a qudit of a broadcast line (checked when
+  it is bound), and `controller.unroll` and `load` do not take such a
+  program or control system yet. `export_to_emulator` lists the line's
+  `qudits` on its drives.
+  Programs and control systems without a broadcast line are unchanged. See
+  "Broadcast lines" in the controller backends guide.
 - **Systems that do not state their frequencies.** A qudit may give its
   frequency as an offset from a reference the system's qudits share,
   `PhysicalQudit(1, Offset(1.5e8), t1, t2)` (`Offset` is a `float` that says

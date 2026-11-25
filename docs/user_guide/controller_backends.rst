@@ -422,6 +422,13 @@ Events on a shared line
     ``qudits`` (and ``tone_slot``) of their tone. On dedicated lines none of
     these keys are present, and a program that plays no shared line exports
     as it does on a system without them.
+Broadcast lines
+    A broadcast drive line (see `Broadcast lines`_) is listed once, with
+    ``"broadcast": true``, every qudit it reaches, and one
+    ``native_frequency_hz``, its tone's, in place of
+    ``native_frequencies_hz``. A play or frame update on it has, after its
+    ``line``, the line's ``qudits``, all of which it reaches, and no
+    ``tone_slot``; so do its ``runtime_tones`` and ``frame_state`` entries.
 Played events and frame updates
     ``tones``, a list of the tones the event plays (a frame update's
     frame), each with its ``frequency_hz``, its ``phase_rad`` in the loops'
@@ -788,6 +795,109 @@ is ``{"qudits": [0, 1, 2, 3], "max_concurrent_tones": 4, "delay_ns": 12.0}``,
 without the keys at their defaults. ``examples/transmon/transmon_surface17_multiplexed_readout.py``
 reads out the four X-check ancillas of ``transmon_surface17`` on one
 feedline.
+
+Broadcast lines
+---------------
+
+A drive line may reach several qudits with one tone: a beam or an antenna
+that drives every qudit under it at once. ``DriveLine([0, 1, 2],
+broadcast=True)`` declares one. Where a shared line has a tone per qudit
+and a drive on it reaches one qudit, a broadcast line has one tone, and a
+drive on it reaches all its qudits; ``max_concurrent_tones`` does not apply
+to it, and a line is one or the other. ``broadcast`` and ``frequency_hz``
+are for a line given a list of qudits: ``DriveLine([0], broadcast=True)`` is
+an error, and on one qudit given as an int, ``DriveLine(0,
+broadcast=True)``, they are ignored.
+
+A kernel gets the line from any one of its qudits, or from all of them,
+which says in the kernel what the drive reaches; either way it is the one
+line::
+
+    from cudaq_pulse.controller import DriveLine
+
+    box = pulse.Controller(drive_lines=[DriveLine([0, 1, 2], broadcast=True)])
+
+    @pulse.kernel
+    def together(a, b, c):
+        beam = get_drive_line(a, b, c)      # get_drive_line(b) is the same line
+        drive(beam, gaussian(400 * pulse.ns, 0.5, 100 * pulse.ns))    # reaches a, b and c
+        shift_phase(beam.tone, 0.3)         # the line's one tone
+
+Several qudits must be all the qudits of one broadcast line, each once, in
+any order; other qudits are a ``CompilationError``, as are several qudits
+where the control system has no broadcast line and the first qudit's line
+is not yet taken. A kernel that holds only
+one of the line's qudits still drives all of them, and the compiled
+program's ``qudits`` lists them all. Pulses on the line follow each other,
+as on a dedicated line, and the line has one frame: a phase or frequency
+change of ``beam.tone`` applies to every later drive on it, for every
+qudit, so there is no virtual Z of one of its qudits alone. The line has no
+``tones`` of other transitions and no calibrations.
+
+The tone starts each shot at the frequency the line states,
+``DriveLine([0, 1, 2], broadcast=True, frequency_hz=5.1e9)``. It may be
+left out when the line's qudits share one frequency, which is then the
+tone's; when they differ, a program that takes the line is a
+``CompilationError`` asking for it. On a quantum system whose qudits give
+an ``Offset`` from one reference, the tone is the ``Offset`` its qudits
+share, and a line that states ``frequency_hz``, or whose qudits differ, is
+a ``CompilationError``: the line cannot state an offset yet. On a system
+whose qudits give no frequency, each tone is an offset from its own
+qudit's carrier, and the line's one tone is at the carrier of every qudit
+it reaches: a drive on it is resonant with each of them, and a change of
+the tone's frequency (``shift_frequency(beam.tone, 1e6)``) is that offset
+from each reached qudit's own carrier. The line cannot state
+``frequency_hz`` there (a ``CompilationError`` for a program that takes
+it), its ``native_frequency_hz`` in the exports is 0.0 as for every line of
+such a system, and each event's ``frequency_hz`` is the offset every qudit
+in its ``qudits`` sees. A drive on the line at another qudit's tone, or on
+another line at the line's tone, is refused as between any two qudits of
+such a system. Each qudit is driven off resonance by
+the difference between the tone and its own frequency: the simulator
+drives every qudit of the line with the same envelope, the tone's
+frequency and phase, and that qudit's own amplitude scale.
+
+The scheduler, the frame bookkeeping and the limits of a ``Controller``
+treat the line as a dedicated one: one pulse counts once toward
+``max_pulses``, and ``max_amplitude``, the grid, the pulse lengths and
+``max_frequencies_per_line`` apply to its one tone. A kernel with runtime
+qudits compiles for a control system with a broadcast line, and each call
+is checked when it binds its qudits: a runtime qudit that takes a drive
+line cannot be bound to a qudit of a broadcast line, since its line was
+compiled as that qudit's alone (pass such a qudit when the kernel is
+lowered). ``ReadoutLine`` has no ``broadcast``.
+
+Both formats of the export write the line once, with ``"broadcast":
+true``, all its ``qudits`` and the one ``native_frequency_hz`` of its
+tone, and one event for each drive, with the line's ``qudits`` and no
+``tone_slot``. In format ``/1`` the line's ``qudit``, and that of its
+events, is the lowest of them:
+
+.. code-block:: json
+
+    {"line": 0, "role": "drive", "qudit": 0, "qudits": [0, 1, 2], "broadcast": true,
+     "native_frequency_hz": 5100000000.0}
+
+In format ``/2`` the line has ``native_frequency_hz`` in place of
+``native_frequencies_hz``, and each play and frame update on it has
+``qudits`` after its ``line``:
+
+.. code-block:: json
+
+    {"kind": "play", "line": 0, "qudits": [0, 1, 2], "start_cycles": 0,
+     "duration_cycles": 400, "waveform": 0,
+     "tones": [{"frequency_hz": 5100000000.0, "phase_rad": 0.0}]}
+
+``frame_state`` and ``runtime_tones`` entries on the line have its
+``qudits`` too, and so does each of its drives in ``export_to_emulator()``,
+after its ``qudit``. A backend must drive every qudit in ``qudits``: one that
+reads only the line's first qudit would drive one. ``unroll`` does not take
+a program with a broadcast line yet; export it in format ``/1``. ``load``
+does not take a control system with one yet. The part of one controller of
+several lists the line's lowest qudit alone in its top-level ``qudits``. A program
+that takes no broadcast line exports as it does without one, and a control
+system without one loads nothing for them. In a system file the line is
+``{"qudits": [0, 1, 2], "broadcast": true, "frequency_hz": 5100000000.0}``.
 
 Waveform memory
 ---------------
