@@ -286,9 +286,11 @@ def test_the_range_holds_for_nested_calls_periods_and_what_the_calls_write(syste
         .replace(_long(16), _long(half + 8))
         .replace(_at(0, 16), _at(0, half + 8))
         .replace(_at(100, 16), _at(2**50 - 8, half + 8))
+        # Nothing else is wrong with it: the call between the two is after the first.
+        .replace(_at(40, 8), _at(half + 16, 8))
     )
     with pytest.raises(
-        pulse.CompilationError, match=r"shot has an operation .* outside 0 to 2\^50"
+        pulse.CompilationError, match=r"outside 0 to 2\^50 cycles once its calls are written out"
     ):
         pulse.load(summed, entry="shot", qudits=system.qudits[:2])
 

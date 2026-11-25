@@ -152,7 +152,8 @@ public:
   /// qudits are the entry's arguments), a function taken as a value, a time
   /// outside the range a schedule counts in. A called function also holds
   /// no region but a branch, and selects no value at run time.
-  static void refuseUnsupported(mlir::func::FuncOp function, bool called) {
+  static void refuseUnsupported(mlir::func::FuncOp function, bool called,
+                                bool written = false) {
     std::string name = function.getSymName().str();
     if (called && function->hasAttr("pulse.selected_values"))
       throw std::invalid_argument(
@@ -191,7 +192,8 @@ public:
         throw std::invalid_argument(
             "load: " + name +
             " has an operation whose start or duration is outside 0 to 2^50 "
-            "cycles");
+            "cycles" +
+            (written ? " once its calls are written out" : ""));
     });
   }
   /// The function `caller` calls by `name`, checked to be one a call can be
@@ -552,7 +554,7 @@ public:
     // What the calls wrote starts a call's start later, each level adding
     // its own: it is held to the range again.
     if (writeCalls(*source, *module, main, entry))
-      refuseUnsupported(main, /*called=*/false);
+      refuseUnsupported(main, /*called=*/false, /*written=*/true);
     main.walk([&](mlir::Operation *op) {
       if (op->getName().getStringRef() != "classical.get_link")
         return;
