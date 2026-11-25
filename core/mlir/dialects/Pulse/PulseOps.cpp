@@ -85,6 +85,27 @@ LogicalResult WaitOp::verify() {
   return success();
 }
 
+LogicalResult GetDriveLineOp::verify() {
+  // A broadcast line names its qudits once each, lowest index first: the
+  // line is found by its first.
+  if (getOthers().empty())
+    return success();
+  int64_t last = -1;
+  for (Value qudit : getOperation()->getOperands()) {
+    auto alloc = qudit.getDefiningOp<QuditAllocOp>();
+    if (!alloc)
+      return emitOpError("a drive line of several qudits names qudits of the "
+                         "quantum system (pulse.qudit_alloc)");
+    int64_t index = alloc.getQuditAttr().getInt();
+    if (index <= last)
+      return emitOpError("a drive line of several qudits names each once, "
+                         "lowest index first; got qudit ")
+             << index << " after qudit " << last;
+    last = index;
+  }
+  return success();
+}
+
 LogicalResult SyncOp::verify() {
   // Sync semantics: align time of multiple lines. Two or more lines required.
   if (getLines().size() < 2)
