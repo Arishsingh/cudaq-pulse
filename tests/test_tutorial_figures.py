@@ -48,6 +48,7 @@ _PAGE_SCRIPTS = [
     _DOCS.parent / "user_guide" / "figures" / "kernels.py",
     _DOCS.parent / "user_guide" / "figures" / "classical_calls.py",
     _DOCS.parent / "user_guide" / "figures" / "frame_phase.py",
+    _DOCS.parent / "user_guide" / "figures" / "schedule_policies.py",
     _DOCS.parent / "architecture" / "figures" / "pipeline.py",
     _DOCS.parent / "api" / "figures" / "waveform_spectra.py",
 ]
