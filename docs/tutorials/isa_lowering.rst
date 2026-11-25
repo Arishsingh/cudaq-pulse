@@ -198,6 +198,15 @@ Both controllers count from the 250 MHz reference clock. A call to the
 decoder takes 4 ns to go out and 8 ns to come back, on top of its own
 latency. Every compile now checks a program against these two controllers.
 
+.. themed-figure:: figures/toy_qpu_wiring.svg
+   :alt: Diagram of the toy QPU. 3 qudits at 5, 5.3, 5.6 GHz and 2 toy.sequencer controllers: controller 0 drives qudits 0 and 1, and one feedline reads qudits 0 and 1; controller 1 drives qudit 2, and a readout line reads qudit 2. An outcome takes 40 cycles from one controller to the other. The decoder link of the control system, drawn to both controllers, takes 4 ns out and 8 ns back. The reference clock is 250 MHz and the program clock 1 GHz.
+   :width: 100%
+
+   The QPU as ``as_dict`` saves it. Each controller's drive lines are
+   solid and its readout lines dashed; the first controller reads its two
+   qudits on one feedline. The decoder's link belongs to the control
+   system.
+
 The program before lowering
 ---------------------------
 
