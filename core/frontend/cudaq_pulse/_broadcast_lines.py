@@ -279,6 +279,13 @@ def _clocked_builder(self: Any, builder: Any, target: Any) -> Any:
         entry = _Reached(found[0], _tone_hz(found, target)[1], builder)
         reached.update(dict.fromkeys(found[0], entry))
     builder.broadcast_lines = reached
+    # On a system whose qudits give no frequency, the ids of the lines'
+    # values: no tone crosses between such a line and a qudit (_own_tone).
+    builder.broadcast_carriers = (
+        frozenset(entry.values[0].vid for entry in reached.values())
+        if target.frequency_frame == "own_carrier"
+        else None
+    )
     builder.tracer = _tracer(builder.tracer)
     return clocks
 
@@ -288,6 +295,7 @@ def armed_like(found: Any, builder: Any) -> None:
     was before its trace, so that the same trace writes the same records
     (``PackedIRBuilder.finder``)."""
     found.broadcast_lines = builder.broadcast_lines
+    found.broadcast_carriers = builder.broadcast_carriers
     found.tracer = builder.tracer
     found._next_id += sum(
         len(entry.qudits) for entry in dict.fromkeys(builder.broadcast_lines.values())
@@ -342,8 +350,11 @@ class _Broadcast:
     __slots__ = ()
 
     def _emit_pulse_call(self, fname: str, call_args: list[Any]) -> tuple[Any, ...]:
+        builder: Any = self.b  # type: ignore[attr-defined]
         if fname == "get_drive_line":
-            call_args = _line_arguments(self.b, call_args)  # type: ignore[attr-defined]
+            call_args = _line_arguments(builder, call_args)
+        elif builder.broadcast_carriers and len(call_args) > 2 and fname in ("drive", "readout"):
+            _own_tone(builder, fname, call_args)
         return super()._emit_pulse_call(fname, call_args)  # type: ignore[misc,no-any-return]
 
     def _value_attribute(self, value: Any, name: str) -> Any:
@@ -358,6 +369,39 @@ class _Broadcast:
                     code="unknown_attribute",
                 )
         return super()._value_attribute(value, name)  # type: ignore[misc]
+
+
+def _own_tone(builder: Any, fname: str, call_args: list[Any]) -> None:
+    """On a quantum system whose qudits give no frequency: refuse *fname*
+    (a drive or readout with a tone given) on a broadcast line at a tone
+    that is not the line's, or on another line at a broadcast line's tone.
+    The line's tone is at the carrier of each qudit it reaches and is no
+    single qudit's, its lowest's included, which the system's own check of
+    two qudits' tones (``compiler._refuse_other_qudits_tones``) takes the
+    line for. Values whose line the trace does not record are that check's."""
+    owners = []
+    for value in (call_args[0], call_args[2]):
+        chan = getattr(value, "chan", None)
+        if chan is None:
+            return
+        owners.append(chan.held.key[0])
+    line, tone = owners
+    carriers = builder.broadcast_carriers
+    if line != tone and (line in carriers or tone in carriers):
+        entry = builder.broadcast_lines[builder._qref_to_qudit[line if line in carriers else tone]]
+        raise CompilationError(
+            f"{fname}(): tone= is "
+            + (
+                f"not the tone of {_named(entry.qudits)}, which the line is"
+                if line in carriers
+                else f"the tone of {_named(entry.qudits)}, and the line is another"
+            )
+            + "; the qudits of the quantum system give no frequency_hz, so the broadcast "
+            "line's tone is at the carrier of each qudit it reaches and the system does not "
+            "state how far that is from any other tone",
+            code="control_system",
+            fix="drive the line at its own tone, or give the qudits their frequencies",
+        )
 
 
 def _line_arguments(builder: Any, call_args: list[Any]) -> list[Any]:

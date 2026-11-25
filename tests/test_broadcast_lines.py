@@ -429,6 +429,11 @@ def test_on_own_carriers_the_line_states_no_frequency():
         "the broadcast drive line of qudits 0..2 states its tone as frequency_hz=5000000000.0, "
         "and the system's qudits give no frequency_hz"
     ) in str(caught.value)
+    # A program that leaves the line alone compiles.
+    four = _framed([None] * 4)
+    stated = DriveLine([0, 1, 2], broadcast=True, frequency_hz=5.0e9)
+    lowered = _lowered(by_one, four, _box(stated, 3, readout_lines=(0, 1, 2, 3)), 3)
+    assert lowered.qudits == (3,)
 
 
 def test_on_own_carriers_no_tone_crosses_between_the_line_and_another_qudit():
@@ -455,8 +460,25 @@ def test_on_own_carriers_no_tone_crosses_between_the_line_and_another_qudit():
         drive(own, square(40, 0.2))
 
     for kernel in (others_tone_on_the_line, the_lines_tone_on_another):
-        with pytest.raises(pulse.CompilationError, match="how far apart two carriers are"):
+        with pytest.raises(pulse.CompilationError, match="does not state how far"):
             _lowered(kernel, qs, box, 1, 3)
+
+    # The line's tone is no single qudit's: not its lowest qudit's either.
+    @pulse.kernel
+    def a_readout_tone_on_the_line(a):
+        beam = get_drive_line(a)
+        drive(beam, square(40, 0.2), tone=get_readout_line(a).tone)
+
+    @pulse.kernel
+    def the_lines_tone_on_a_readout(a):
+        beam = get_drive_line(a)
+        readout(get_readout_line(a), square(80, 0.05), tone=beam.tone)
+
+    for index in (0, 1):
+        with pytest.raises(pulse.CompilationError, match="is not the tone of the broadcast"):
+            _lowered(a_readout_tone_on_the_line, qs, box, index)
+        with pytest.raises(pulse.CompilationError, match="and the line is another"):
+            _lowered(the_lines_tone_on_a_readout, qs, box, index)
     lowered = _lowered(each_its_own, qs, box, 0, 2, 3)
     assert len(_acquisitions(lowered)) == 2
 
