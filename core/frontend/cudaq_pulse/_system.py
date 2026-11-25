@@ -3134,6 +3134,8 @@ def _device_data(quantum_system: QuantumSystem) -> dict[str, Any]:
 
             _offset_readouts_in_file(quantum_system, base)
     data["layout"] = list(quantum_system.layout)
+    if base.frames != "dressed":
+        data["frames"] = base.frames
     if spec is None or quantum_system.clock_ghz != base.clock_ghz:
         data["clock_ghz"] = quantum_system.clock_ghz
     calibration = quantum_system.calibration
