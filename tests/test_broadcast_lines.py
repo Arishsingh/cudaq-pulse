@@ -699,6 +699,25 @@ def test_a_line_reaching_a_qudit_the_quantum_system_lacks_is_refused():
         _lowered(by_one, _qudits(2), _box(BEAM), 0)
 
 
+def test_a_pickle_is_read_by_a_process_that_made_no_broadcast_line(tmp_path):
+    lowered = _lowered(by_one, _qudits(3), _box(BEAM), 0)
+    system = pulse.ControlSystem(controllers=[_box(BEAM)])
+    assert type(pickle.loads(pickle.dumps(system._machine))) is type(system._machine)
+    path = tmp_path / "program.pickle"
+    path.write_bytes(pickle.dumps((system, lowered)))
+    code = (
+        "import pickle, sys\n"
+        "import cudaq_pulse\n"
+        "system, lowered = pickle.loads(open(sys.argv[1], 'rb').read())\n"
+        "line = lowered.export_to_controller(version=2)['lines'][0]\n"
+        "assert (line['qudits'], line['broadcast']) == ([0, 1, 2], True), line\n"
+        "assert system.controllers[0].drive_lines[0].broadcast\n"
+        "module = sys.modules['cudaq_pulse._broadcast_lines']\n"
+        "assert '__getattr__' not in vars(module)\n"
+    )
+    subprocess.run([sys.executable, "-c", code, str(path)], check=True)
+
+
 def test_a_compiled_program_pickles():
     lowered = _lowered(by_one, _qudits(3), _box(BEAM), 0)
     back = pickle.loads(pickle.dumps(lowered))

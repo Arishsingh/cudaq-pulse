@@ -188,19 +188,25 @@ def machine_model(model: Any) -> Any:
                 "_clocked_module": _clocked_module,
                 "_emulation": staticmethod(_emulation),
                 "_emulation_part": staticmethod(_emulation_part),
+                "__reduce__": _model_reduce,
             },
         )
-        globals()["_BroadcastMachineModel"] = found
     return found
 
 
-def __getattr__(name: str) -> Any:
-    # A pickled model names its class here before any system made it.
-    if name == "_BroadcastMachineModel":
-        from .compiler import _MachineModel
+def _model_reduce(self: Any) -> tuple[Any, ...]:
+    """The model as ``_rebuilt_model`` and its constructor inputs: its class
+    is made when a control system first needs it, so a pickle does not name
+    it."""
+    from ._pickling import frozen_reduce
 
-        return machine_model(_MachineModel)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return (_rebuilt_model, (frozen_reduce(self)[1][1],))
+
+
+def _rebuilt_model(inputs: dict[str, Any]) -> Any:
+    from .compiler import _MachineModel
+
+    return machine_model(_MachineModel)(**inputs)
 
 
 class _Reached:
