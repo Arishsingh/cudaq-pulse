@@ -1200,9 +1200,16 @@ struct SegmentWalk {
         return false;
       segment += *moved;
     }
+    skips.push_back({static_cast<int64_t>(boundaries.size()), count() + 1,
+                     count() - from.opened, times});
     skipped += *more;
     return true;
   }
+
+  /// Of each loop skip() counted iterations of: how many boundaries were
+  /// visited before them, the first segment they open, how many each
+  /// opens, and how many they are.
+  std::vector<std::array<int64_t, 4>> skips;
 
   int64_t timelineOf(mlir::Operation *op) {
     if (AttrNames::has(op, names.timeline))
@@ -2765,7 +2772,8 @@ private:
                readouts = key("readouts"), result = key("result"),
                role = key("role"), runtime = key("runtime"),
                samples = key("samples"), shape = key("shape"),
-               start = key("start_cycles"), test = key("test"),
+               start = key("start_cycles"), term = key("term"),
+               table = key("terms"), test = key("test"),
                timeout = key("timeout_ns"), tone = key("tone"),
                type = key("type"), unknown = key("unknown"),
                value = key("value"), values = key("values"), wait = key("wait"),
@@ -2881,6 +2889,27 @@ private:
 
   nb::object expression(int32_t index) {
     using Expression = ControllerEventWalk::Expression;
+    return walk->written(
+        index, [&](int32_t at) { return leaf(at); },
+        [&](int n) {
+          nb::object out = dict();
+          put(out, keys.term, integer(n));
+          return out;
+        },
+        [&](const Expression &e, nb::handle of, nb::handle table) {
+          nb::object out = dict();
+          if (table.is_valid())
+            put(out, keys.table, table);
+          put(out, keys.op, keys.terms[e.term]);
+          put(out, keys.type, keys.types[e.type]);
+          put(out, keys.of, of);
+          return out;
+        });
+  }
+
+  /// What is no term of an expression.
+  nb::object leaf(int32_t index) {
+    using Expression = ControllerEventWalk::Expression;
     const Expression &e = walk->expressions[index];
     if (e.kind == Expression::Number)
       return textNumber(e.number);
@@ -2902,14 +2931,8 @@ private:
       put(out, keys.answer, integer(e.event));
       put(out, keys.result, integer(e.result));
       break;
-    default: {
-      put(out, keys.op, keys.terms[e.term]);
-      put(out, keys.type, keys.types[e.type]);
-      nb::list of = list(e.of.size());
-      for (size_t i = 0; i < e.of.size(); ++i)
-        set(of, i, expression(e.of[i]));
-      put(out, keys.of, of);
-    }
+    default:
+      break;
     }
     return out;
   }
@@ -3894,10 +3917,13 @@ public:
   /// boundary) has its events once, no event has a tone id or frame
   /// changes, and `repeats` gets each such loop's ControllerEventWalk::Repeat;
   /// with a list `periods` too, its lines may repeat at periods of their
-  /// own, and `periods` gets them (ControllerEventWalk::linePeriods).
+  /// own, and `periods` gets them (ControllerEventWalk::linePeriods). A
+  /// list `segments` gets, of a module with classical calls, the segment
+  /// boundaries the walk visited (as segment_boundaries() gives them) and
+  /// then SegmentWalk::skips, the iterations it did not visit.
   nb::tuple controller_events(nb::handle parameters, nb::handle amplitudes,
                               nb::object slots, nb::object repeats,
-                              nb::object periods) {
+                              nb::object periods, nb::object segments) {
     ControllerObjects objects(parameters, amplitudes);
     std::unique_ptr<ControllerEventWalk> walk;
     std::vector<ControllerLine> lines;
@@ -3910,6 +3936,11 @@ public:
     }
     lineSlots(found, slots);
     appendRepeats(*walk, repeats, periods);
+    if (!segments.is_none() && walk->segmentWalk) {
+      auto out = nb::borrow<nb::list>(segments);
+      out.append(nb::cast(walk->segmentWalk->boundaries));
+      out.append(nb::cast(walk->segmentWalk->skips));
+    }
     return nb::make_tuple(objects.lines(lines), objects.events(*walk));
   }
 
@@ -8405,6 +8436,7 @@ NB_MODULE(_cudaq_pulse_native, m) {
            nb::arg("slots").none() = nb::none(),
            nb::arg("repeats").none() = nb::none(),
            nb::arg("periods").none() = nb::none(),
+           nb::arg("segments").none() = nb::none(),
            "The lines and events of the export for a controller, as "
            "controller.export() gives them; a list `slots` gets each line's "
            "runtime-qudit slot")

@@ -68,6 +68,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `IdleReplacement(None, threshold=...)` only lists them. In this version a
   fill drives and waits on its own qudit's drive line. A kernel whose idle
   windows are not replaced compiles exactly as before.
+- **Exposure.** `ScheduledKernel.exposure` reports what a schedule does to
+  each qudit over time: per qudit and per outermost loop, the cycles of one
+  round in which the qudit is driven, read out and idle, the number of
+  rounds, and the decay and dephasing probability of one round's idle time
+  at the qudit's T1 and T2 star. Loops stay rolled, so it costs the same for
+  two rounds as for a million, and it reads a program from `pulse.load` as
+  it reads a compiled one. A row is marked where the schedule does not fix
+  its figures. Programs that do not read it are unchanged and load none of
+  it.
 - **Error codes.** Every `CompilationError` has a `code`, a
   `pulse.ErrorCode` (`unknown_name`, `wrong_argument`, `runtime_value`,
   `invalid_duration` and the others listed under Errors), so a program or
@@ -277,9 +286,30 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   functions for them, whose types must agree and whose latency and
   implementation replace the module's. CUDA-Q QEC's decoder messages in a
   module (`enqueue_syndromes__3_2`, `get_corrections__3_1`) are read as a
+  kernel's calls of them are compiled. A placed `pulse.call` of another
+  function of the module is written in place.
   kernel's calls of them are compiled. A call of another function of the
   module that states its start (`pulse.start_cycles`, provisional) is written
   in place.
+- **Broadcast drive lines.** A drive line whose one tone reaches several
+  qudits at once, as one antenna or beam over several, is declared on the line:
+  `DriveLine([0, 1, 2], broadcast=True)`. A kernel gets it with
+  `get_drive_line(q)` of any of its qudits or with `get_drive_line(a, b, c)`
+  of all of them, and a drive on it drives every one; the line has one
+  tone, so `shift_phase(line.tone, ...)` turns all of them. The tone is at
+  the frequency the line states (`frequency_hz=`), which may be left out
+  when its qudits share one; each qudit is driven off resonance by the
+  difference from its own. The IR names the line by all its qudits
+  (`pulse.get_drive_line %q0, %q1, %q2`), the simulator drives each of
+  them, and both export formats write the line once, with `"broadcast":
+  true` and its `qudits`, and one event per drive with those `qudits`. A
+  backend must drive every qudit an event lists. A runtime qudit that takes
+  a drive line cannot be bound to a qudit of a broadcast line (checked when
+  it is bound), and `controller.unroll` and `load` do not take such a
+  program or control system yet. `export_to_emulator` lists the line's
+  `qudits` on its drives.
+  Programs and control systems without a broadcast line are unchanged. See
+  "Broadcast lines" in the controller backends guide.
 - **Systems that do not state their frequencies.** A qudit may give its
   frequency as an offset from a reference the system's qudits share,
   `PhysicalQudit(1, Offset(1.5e8), t1, t2)` (`Offset` is a `float` that says
@@ -315,6 +345,25 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **A run-time expression of the controller export names a term that
+  several terms use, and no expression is too deep to export.** A value the
+  program computes at run time from a term it uses twice, forty times over,
+  was written with every use written out (2^40 copies), so its export and
+  its check did not finish; and a value more than 65 operations deep was
+  refused. An expression may now have `"terms": [...]` beside its `op`,
+  `type` and `of`, and `{"term": n}` where term `n` is used. A term is
+  named there when the expression uses it more than once, or when the
+  text would otherwise nest more than 65 terms deep, so an expression of
+  any size exports, in text that grows with its operations and never
+  nests deeper than it could before (65 terms, and up to three more for a
+  length converted to a controller's own cycles). `evaluate_expression` computes a named term once.
+  An expression that shares no term and is not that deep is written as
+  before, in format /1 and /2 alike, and both formats keep their names; a
+  reader that does not know `{"term": n}` fails on it, as on any leaf it
+  does not know. A backend that evaluates through `evaluate_expression`
+  needs no change; one that walks `of` itself must follow `{"term": n}`
+  into `terms`. The `id` of a format /2 waveform whose parameter is such
+  an expression changes with its text.
 - **Coupled qudits are driven at their dressed frequencies.** In a quantum
   system with couplings, each qudit's drive tone now plays at its 0-1
   frequency with the couplings included (`qs.qudits[i].dressed_frequency_hz`,
@@ -571,6 +620,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   version for some list lengths would get such a name (a `reset_decoder`
   of the user's that takes a list) is a `CompilationError` at the call,
   and an `InvalidValueError` from `specialize()`.
+- **A long loop with a run-time wait each trip is checked against the
+  limits on what plays at once, whatever its trips.** The check counted
+  such a loop trip by trip when its pulses could slide onto another
+  line's, and stopped with an `UnsupportedError` past 1,048,576 copies. It
+  now counts the trips it walks and the rest of the loop's trips together,
+  as one block that slides as far as the last trip can, so a loop of three
+  million rounds with a drive on another line is refused, or passed, in
+  the time of a loop of three. Where a loop cannot be counted so (a pulse
+  on a line its waits do not hold back, a loop inside a loop, and a few
+  other shapes the guide lists) the program is counted trip by trip as
+  before.
 
 - **The limits on what plays at once hold for pulses after a wait of a
   run-time length or a blocking wait for an answer.** `wait(line, answer,
@@ -601,10 +661,9 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   calls, however long the chain; and a condition that several parts of
   another use, also through `^`, `==` and `!=`, is computed once in the
   program, where it was computed once per use. A value that shares nothing
-  compiles to the same program and reads the same in errors. Not
-  covered yet: an amplitude, phase or frequency, or a value from an answer,
-  that doubles a term many times is still written out in the controller
-  export, which grows with its terms.
+  compiles to the same program and reads the same in errors. The
+  controller export and the check write such a value with each term once
+  too (see Changed).
 - **A time in a runtime `list[float]` argument is refused, as for a `float`
   parameter.** `[100 * pulse.ns]` was taken as its nanoseconds and used as
   that many clock cycles, so a scan of waits written with units played half
