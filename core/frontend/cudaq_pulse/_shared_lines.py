@@ -756,15 +756,68 @@ def _sliding(
 
     branched = any(tone[2]["conditions"] for tone in tones)
     found = _slides.over(lowered, tones, line.tones, lines, together if branched else None)
-    if found is None:
-        return []
+    return [] if found is None else [_can_play(line, found)]
+
+
+def _can_play(line: Physical, found: Any) -> str:
     beyond = f", and up to {found.most}" if found.most > found.at_first else ""
-    return [
+    return (
         f"{line.label} can play {found.at_first} tones at once from cycle {found.first}{beyond}: "
         f"{found.cause}; it plays at most {line.tones} (max_concurrent_tones): sync the lines "
         "after the wait, so that they wait together, give the wait bounds that keep them "
         "apart, or raise its max_concurrent_tones"
-    ]
+    )
+
+
+def _rolled_tones(
+    shared: Mapping[tuple[str, int], Physical], lowered: ScheduledKernel, sliding: set[int]
+) -> dict[int, list[str]] | None:
+    """By shared line of *sliding* (places in ``_sharing``), the tones it
+    can play at once past its ``max_concurrent_tones`` in some run, counted
+    from a walk in program cycles that lists three trips of each long loop
+    (``_slides.over_rolled``); ``None`` when its loops cannot be counted
+    so."""
+    from . import _slides
+    from ._concurrency import _together
+    from .controller import _walk
+
+    repeats: list[tuple[int, ...]] = []
+    periods: list[tuple[int, int, int]] = []
+    segments: list[Any] = []
+    lines, events, _, _, _ = _walk(
+        lowered, values=False, waveforms=False, summary=(repeats, periods), segments=segments
+    )
+    if periods or not segments:
+        return None
+    sharing, of = _sharing(shared, lines)
+    each: dict[int, list[Any]] = {k: [] for k in sliding}
+    for e in events:
+        k = _timed_on(e, of)
+        if k in each:
+            each[k].append((e["start_cycles"], e["end_cycles"], e))
+
+    def together(active: list[Any]) -> int:
+        return _together(
+            [({(c["branch"], ()): c["arm"] for c in tone[2]["conditions"]}, 1) for tone in active]
+        )
+
+    found: dict[int, list[str]] = {}
+    for k, tones in each.items():
+        tones.sort(key=_slides.by_start)
+        branched = any(tone[2]["conditions"] for tone in tones)
+        counted, over = _slides.over_rolled(
+            tones,
+            sharing[k].tones,
+            lines,
+            events,
+            repeats,
+            segments,
+            together if branched else None,
+        )
+        if not counted:
+            return None
+        found[k] = [] if over is None else [_can_play(sharing[k], over)]
+    return found
 
 
 def against(lowered: ScheduledKernel, controller: Controller) -> list[str]:
@@ -831,28 +884,37 @@ def summarized(
     budget = _loops._Budget()
     found: list[str] = []
     sharing, of = _sharing(shared, lines)
-    # Tones that can slide (see ``violations``) are counted from every copy.
+    # Tones that can slide (see ``violations``) are counted from the trips
+    # the walk lists and the rest as blocks, else from every copy.
+    slid: dict[int, list[str]] = {}
     if lowered.classical:
         tones: dict[int, list[Mapping[str, Any]]] = {}
         for e in events:
             k = _timed_on(e, of)
             if k is not None:
                 tones.setdefault(k, []).append(e)
-        if any(_slides_apart(played) for played in tones.values()):
-            return None
+        sliding = {k for k, played in tones.items() if _slides_apart(played)}
+        if sliding:
+            rolled = _rolled_tones(shared, lowered, sliding)
+            if rolled is None:
+                return None
+            slid = rolled
     split = _loops._split(tree, lambda i: _timed_on(events[i], of))
     for k, line in enumerate(sharing):
         nodes = split.get(k, [])
-        at_once = _AtOnce(line)
-        try:
-            parted: set[int] = set()
-            one = _one_period(nodes, events, parted)
-            _count_copies(at_once, events, one, 0, (), 1, budget, _walked_order(nodes), parted)
-        except ValueError:
-            return None
-        message = at_once.message(lines)
-        if message is not None:
-            found.append(message)
+        if k in slid:
+            found.extend(slid[k])
+        else:
+            at_once = _AtOnce(line)
+            try:
+                parted: set[int] = set()
+                one = _one_period(nodes, events, parted)
+                _count_copies(at_once, events, one, 0, (), 1, budget, _walked_order(nodes), parted)
+            except ValueError:
+                return None
+            message = at_once.message(lines)
+            if message is not None:
+                found.append(message)
         kept = [events[i] for i in _loops._events_of(nodes)]
         found.extend(_per_line(lowered, line, system.controllers[line.owner], kept, unresolved))
     return found
