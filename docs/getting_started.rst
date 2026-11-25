@@ -81,9 +81,10 @@ work, run ``python -m cudaq_pulse.doctor`` first. Without a CUDA extra it
 ends with ``Result: OK, compilation and CPU simulation work; GPU simulation
 is not set up.`` and names the extra and driver that enable GPU simulation.
 
-The four checks are alternatives: pick at most one of ``--allow-no-gpu``,
-``--expect-no-device``, ``--setup-editor`` or ``--system``. The other
-options modify one of them.
+The doctor takes at most one of ``--allow-no-gpu``, ``--expect-no-device``,
+``--setup-editor`` or ``--system``, and none is needed for the check above.
+``--json`` goes with ``--system``; ``--project`` and ``--yes`` go with
+``--setup-editor``.
 
 .. list-table:: Doctor options
    :header-rows: 1
