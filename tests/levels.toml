@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# The level of each test that is not at level 1. `pytest --level N` runs the
-# tests of level N and lower.
+# The level of each test that is not at level 1 (CONTRIBUTING.md, "Test
+# levels"). `pytest --level N` runs the tests of level N and lower;
+# `pytest --level-report` prints what this table and the markers add up to.
 #
 # A key is a test file; or `file::test`, or `file::test[parameter id]`, where
 # `*` stands for any characters (a `*` itself cannot be asked for) and a test
@@ -13,7 +14,9 @@
 # file that is not.
 #
 # A `level0` .. `level3` marker on a test, or a `pytestmark` in its file,
-# counts before this table.
+# counts before this table; when a file gets markers, its entries here go.
+# tests/test_levels.py fails on an entry that names no test, on a test that
+# has both a marker and an entry, and on a level 0 that grew past its cap.
 
 # Level 0, contract: a failure means a wrong result for a user (schedule, IR,
 # export, physics) or a broken written promise (public names, a shipped

@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Test levels (tests/_levels.py): in a small project of its own, how a
-test's level is found and what ``--level`` selects."""
+"""Test levels (tests/_levels.py): the level table names tests that exist,
+level 0 stays small, a test has its level from one place; and, in a small
+project of its own, how a level is found and what ``--level`` selects."""
 
 import os
 import subprocess
@@ -14,6 +15,11 @@ import pytest
 from tests import _levels
 
 _TESTS = Path(__file__).resolve().parent
+_TABLE = _TESTS / "levels.toml"
+#: The most cases level 0 may hold. Raising it is a decision, not a fix.
+#: The four guards below are at level 0 themselves, so that a run of level 0
+#: alone checks the table it selects by.
+_MAX_LEVEL0_CASES = 600
 
 
 def _pytest(cwd, *args):
@@ -32,6 +38,61 @@ def _pytest(cwd, *args):
         capture_output=True,
         text=True,
         timeout=900,
+    )
+
+
+@pytest.fixture(scope="module")
+def suite(request, tmp_path_factory):
+    """Every test of the suite with its level, and the files that skipped
+    themselves: from this session when it collected the whole suite, else
+    from a collection in a child process."""
+    plugin = request.config.pluginmanager.get_plugin(_levels.PLUGIN)
+    if plugin.whole_suite():
+        return plugin.collected, plugin.skipped_files
+    out = tmp_path_factory.mktemp("levels") / "levels.json"
+    # The levels are written before -m deselects, so the GPU tests are in
+    # them, and the child asks for no GPU.
+    run = _pytest(
+        _TESTS.parent, str(_TESTS), "--collect-only", "-q", "-m", "not gpu", f"--level-json={out}"
+    )
+    assert run.returncode == 0 and out.exists(), (run.stdout + run.stderr)[-3000:]
+    return _levels.load(out.read_text())
+
+
+@pytest.mark.level0
+def test_every_table_entry_is_a_test_file_with_a_reason():
+    for entry in _levels.load_table(_TABLE):
+        assert (_TESTS.parent / entry.path).is_file(), f"{entry.key}: no such file"
+        assert Path(entry.path).name.startswith("test_"), entry.key
+        assert len(entry.reason) <= 200, f"{entry.key}: the reason is one short line"
+
+
+@pytest.mark.level0
+def test_every_table_entry_names_a_collected_test(suite):
+    tests, skipped_files = suite
+    stale = _levels.stale_entries(_levels.load_table(_TABLE), tests, skipped_files)
+    assert not stale, f"tests/levels.toml names no collected test with: {stale}"
+
+
+@pytest.mark.level0
+def test_a_test_has_its_level_from_a_marker_or_from_the_table(suite):
+    tests, _ = suite
+    twice = _levels.levelled_twice(tests)
+    assert not twice, (
+        "these tests carry a level marker and are named in tests/levels.toml; "
+        f"remove the table entry: {twice[:10]}"
+    )
+
+
+@pytest.mark.level0
+def test_level_0_is_explicit_and_small(suite):
+    tests, _ = suite
+    assert _levels.DEFAULT_LEVEL == 1
+    level0 = [test for test in tests if test.level == 0]
+    assert all(test.source != "default" for test in level0)
+    assert 0 < len(level0) <= _MAX_LEVEL0_CASES, (
+        f"level 0 holds {len(level0)} cases, more than {_MAX_LEVEL0_CASES}: move tests "
+        "to level 1 rather than raise the cap"
     )
 
 
@@ -265,3 +326,50 @@ def test_a_table_that_cannot_be_read_is_a_usage_error(project, table, said):
     run = _pytest(project, "-q")
     assert run.returncode == 4, run.stdout + run.stderr
     assert said in run.stderr
+
+
+@pytest.mark.slow
+def test_the_guards_find_a_stale_entry_and_a_test_levelled_twice(project):
+    table = project / "levels.toml"
+    tests, skipped = _levels_of(project)
+    # The entry for parameters of test_of_the_examples names none, and is
+    # not stale: the test was collected without its parameters.
+    assert _levels.stale_entries(_levels.load_table(table), tests, skipped) == []
+    assert _levels.levelled_twice(tests) == []
+
+    table.write_text(
+        table.read_text()
+        + '"test_table.py::test_renamed" = "a test that was renamed"\n'
+        + '"test_marked.py::test_marked" = "also marked"\n'
+        + '"test_skipped.py::test_never_collected" = "its file skips itself"\n'
+    )
+    (project / "test_skipped.py").write_text(
+        "import pytest\npytest.skip('needs a tool', allow_module_level=True)\n"
+    )
+    tests, skipped = _levels_of(project)
+    assert skipped == {"test_skipped.py"}
+    assert _levels.stale_entries(_levels.load_table(table), tests, skipped) == [
+        "test_table.py::test_renamed"
+    ]
+    assert _levels.levelled_twice(tests) == ["test_marked.py::test_marked"]
+    # The marker still gives the level.
+    assert {t.test: t.level for t in tests}["test_marked.py::test_marked"] == 3
+
+
+@pytest.mark.slow
+def test_the_report_counts_the_selected_cases_and_runs_nothing(project):
+    run = _pytest(project, "--level-report", "-q")
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = [" ".join(line.split()) for line in run.stdout.splitlines()]
+    assert "test levels of the 18 selected cases" in lines
+    assert ["0 6 2", "1 4 4", "2 3 2", "3 5 3"] == lines[lines.index("level cases files") + 1 :][:4]
+    assert "test_table.py 3 1 2 1 table" in lines
+    assert "test_marked.py 3 1 1 3 marker" in lines
+    assert "test_unmarked.py . 1 . . default" in lines
+    assert "test_detail.py . 1 . 1 table" in lines
+    assert "passed" not in run.stdout
+
+    run = _pytest(project, "--level-report", "-q", "--level", "1", "-m", "not gpu")
+    lines = [" ".join(line.split()) for line in run.stdout.splitlines()]
+    assert "test levels of the 9 selected cases" in lines
+    assert "test_table.py 2 1 . . table" in lines

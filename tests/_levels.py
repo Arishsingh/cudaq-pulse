@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 import tomllib
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -143,8 +144,8 @@ def _marker_scopes(item: pytest.Item) -> Iterator[tuple[str, list[pytest.Mark]]]
 
 
 class LevelPlugin:
-    """The pytest plugin: resolves each collected test's level and deselects
-    above ``--level``."""
+    """The pytest plugin: resolves each collected test's level, deselects
+    above ``--level``, and prints ``--level-report``."""
 
     def __init__(self, config: pytest.Config, table: Path, root: Path):
         self.config = config
@@ -158,6 +159,7 @@ class LevelPlugin:
         self.collected: list[Resolved] = []
         #: Test files that skipped themselves when they were imported.
         self.skipped_files: set[str] = set()
+        self._level_of: dict[int, Resolved] = {}
         self._relative_paths: dict[Path, str] = {}
 
     def _relative(self, path: Path) -> str:
@@ -202,9 +204,9 @@ class LevelPlugin:
         if report.skipped and report.nodeid.endswith(".py"):
             self.skipped_files.add(self._relative(self.config.rootpath / report.nodeid))
 
-    # Before ``-m`` and ``-k`` deselect, so that --level-json holds every
-    # collected test, and before the GPU check of tests/conftest.py, so a
-    # GPU test above the level asks for no GPU.
+    # Before ``-m`` and ``-k`` deselect, so the guards see every collected
+    # test, and before the GPU check of tests/conftest.py, so a GPU test
+    # above the level asks for no GPU.
     @pytest.hookimpl(tryfirst=True)
     def pytest_collection_modifyitems(self, config: pytest.Config, items: list[pytest.Item]):
         resolved, errors = [], []
@@ -220,6 +222,7 @@ class LevelPlugin:
         self.collected = resolved
         if path := config.getoption("--level-json"):
             Path(path).write_text(dump(resolved, self.skipped_files))
+        self._level_of = {id(item): test for item, test in zip(items, resolved, strict=True)}
         limit = config.getoption("--level")
         if limit is None:
             return
@@ -229,6 +232,36 @@ class LevelPlugin:
         if dropped:
             config.hook.pytest_deselected(items=dropped)
             items[:] = kept
+
+    def pytest_collection_finish(self, session: pytest.Session) -> None:
+        # Nothing to report when the collection stopped on a usage error.
+        if self.config.getoption("--level-report") and self._level_of:
+            writer = self.config.get_terminal_writer()
+            # An item a later hook added is resolved here.
+            selected = [
+                self._level_of.get(id(item)) or self.resolve(item) for item in session.items
+            ]
+            for line in report_lines(selected):
+                writer.line(line)
+
+    @pytest.hookimpl(tryfirst=True)
+    def pytest_runtestloop(self, session: pytest.Session):
+        # The report is of what a run would select; it runs nothing.
+        if self.config.getoption("--level-report") and not session.testsfailed:
+            return True
+        return None
+
+    def whole_suite(self) -> bool:
+        """Whether this session collected every test file under ``tests``."""
+        option = self.config.getoption
+        if option("ignore") or option("ignore_glob") or option("lf", False):
+            return False
+        return all("::" not in arg and self._tests_are_under(Path(arg)) for arg in self.config.args)
+
+    def _tests_are_under(self, arg: Path) -> bool:
+        path = (self.config.invocation_params.dir / arg).resolve()
+        tests = self.root / "tests"
+        return path == tests or path in tests.parents
 
 
 def dump(tests: list[Resolved], skipped_files: set[str]) -> str:
@@ -244,6 +277,59 @@ def load(text: str) -> tuple[list[Resolved], set[str]]:
     return tests, set(data["skipped_files"])
 
 
+def stale_entries(
+    entries: list[Entry], tests: list[Resolved], skipped_files: set[str]
+) -> list[str]:
+    """The table entries that name none of *tests*.
+
+    Two kinds of entry cannot be told and are not listed: one of a file that
+    skipped itself, and one for parameters of a test that was collected
+    without any (pytest's ``NOTSET`` case), as a test over the examples is
+    where the examples are not installed.
+    """
+    named = {key for test in tests for key in test.entries}
+    unset = {
+        (t.path, t.name) for t in tests if t.param is not None and t.param.startswith("NOTSET")
+    }
+    return [
+        e.key
+        for e in entries
+        if e.key not in named
+        and e.path not in skipped_files
+        and not (e.rank >= 3 and any(path == e.path and e.names(name) for path, name in unset))
+    ]
+
+
+def levelled_twice(tests: list[Resolved]) -> list[str]:
+    """The tests that have a level marker and a table entry."""
+    return [t.test for t in tests if t.entries and t.source not in ("table", "default")]
+
+
+def report_lines(tests: list[Resolved]) -> list[str]:
+    """The level report: cases and files per level, then each file's cases
+    per level and where its levels come from."""
+    per_file: dict[str, Counter[int]] = {}
+    sources: dict[str, set[str]] = {}
+    for test in tests:
+        per_file.setdefault(test.path, Counter())[test.level] += 1
+        sources.setdefault(test.path, set()).add(
+            test.source if test.source in ("table", "default") else "marker"
+        )
+    lines = [f"test levels of the {len(tests)} selected cases", "", "level   cases   files"]
+    for level in LEVELS:
+        cases = sum(counts[level] for counts in per_file.values())
+        files = sum(1 for counts in per_file.values() if counts[level])
+        lines.append(f"{level:>5} {cases:>7} {files:>7}")
+    width = max((len(path) for path in per_file), default=4)
+    lines += ["", f"{'file':<{width}} " + " ".join(f"{f'L{n}':>6}" for n in LEVELS) + "  from"]
+    for path in sorted(per_file):
+        counts = per_file[path]
+        cells = " ".join(f"{counts[n] or '.':>6}" for n in LEVELS)
+        origin = ", ".join(s for s in ("marker", "table", "default") if s in sources[path])
+        lines.append(f"{path:<{width}} {cells}  {origin}")
+    return lines
+
+
 def add_options(parser: pytest.Parser) -> None:
     group = parser.getgroup("levels", "test levels")
     group.addoption(
@@ -254,6 +340,11 @@ def add_options(parser: pytest.Parser) -> None:
         metavar="N",
         help="run the tests of level N and lower (0 contract, 1 behaviour, 2 exhaustive, "
         "3 fine detail and long cases); without it every level runs",
+    )
+    group.addoption(
+        "--level-report",
+        action="store_true",
+        help="print the selected cases per level and per file, and run nothing",
     )
     group.addoption(
         "--level-json",
