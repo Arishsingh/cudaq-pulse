@@ -100,7 +100,9 @@ an error that says so:
   ``DispersiveReadout(frequency_hz=Offset(2.0e9))``, and a plain number is
   refused; an ``"own_carrier"`` system takes none. Without one, a readout
   line plays at its qudit's own tone: on an ``"own_carrier"`` system that
-  is 0 Hz from the qudit's carrier;
+  is 0 Hz from the qudit's carrier. An ``Offset`` readout frequency on a
+  system whose qudits give their frequencies in Hz is refused too, when
+  the system's first program compiles;
 - ``simulate(program, quantum_system=other)`` when ``other.frequency_frame``
   is not that of the system the program was compiled for;
 - a ``Calibration`` of a system with couplings, which computes each

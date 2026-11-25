@@ -521,6 +521,8 @@ class QuantumSystem:
             given = list(map(attrgetter("frequency_hz"), components))
         except AttributeError:
             given = [None if r is None else r.frequency_hz for r in components]
+        if not _ONLY_HZ(map(type, given)):
+            _offset_readouts(self, carriers, given)
         if len(given) == len(table) and None not in given:
             readouts = array("d", given)
         else:
@@ -784,6 +786,32 @@ class QuantumSystem:
 
     def __repr__(self) -> str:
         return f"<QuantumSystem {self.name} ({len(self.layout)} qudits)>"
+
+
+# Whether the types of readout frequencies are those of frequencies in Hz
+# (or of none given): any other takes _offset_readouts.
+_ONLY_HZ = frozenset({float, int, type(None)}).issuperset
+
+
+def _offset_readouts(system: QuantumSystem, carriers: Sequence[int], given: Sequence[Any]) -> None:
+    """Refuse a readout frequency of *system* that is an ``Offset`` (or as a
+    system file holds one) when its qudits give their frequencies in Hz:
+    it would be read as a frequency in Hz. *given* are the readout
+    frequencies of *carriers*. A system whose qudits give offsets from a
+    shared reference checked its readouts when it was built."""
+    from .quantum_systems.base import Offset
+
+    target = system._description
+    if target._frame != "absolute":
+        return
+    for carrier, frequency in zip(carriers, given, strict=True):
+        if frequency.__class__ is Offset or isinstance(frequency, Mapping):
+            raise InvalidValueError(
+                f"the readout of qudit {carrier} of quantum system {target.name!r} gives its "
+                f"frequency_hz as {frequency!r}, an offset from a shared reference, and the "
+                "system's qudits give their frequencies in Hz; an Offset readout frequency "
+                "needs qudits that give Offsets from the same reference"
+            )
 
 
 def _calibrated(

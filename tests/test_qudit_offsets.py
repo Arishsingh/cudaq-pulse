@@ -750,6 +750,57 @@ def test_a_readout_with_an_offset_frequency_gives_the_iq_points_of_the_same_syst
     assert points[0] == pytest.approx(points[1]) and points[0][0] != pytest.approx(points[0][1])
 
 
+def test_an_offset_readout_frequency_needs_qudits_that_give_offsets():
+    # On a system whose qudits give their frequencies in Hz it would be read
+    # as a frequency in Hz: refused where the system's frequency tables are
+    # first made, naming the qudit.
+    def plain(readouts):
+        qudits = {
+            i: PhysicalQudit(i, 5.0e9 + 1.0e8 * i, 0.0, 0.0, drive=DRIVE, readout=readout)
+            for i, readout in enumerate(readouts)
+        }
+        return pulse.quantum_system(name="plain", qudits=qudits, clock_ghz=1.0)
+
+    for wrong in (Offset(2.0e9), Offset(math.nan), {"offset_hz": 2.0e9}):
+        for readouts in (
+            [DispersiveReadout(frequency_hz=7.0e9), DispersiveReadout(frequency_hz=wrong)],
+            [None, DispersiveReadout(frequency_hz=wrong)],
+            [DispersiveReadout(), DispersiveReadout(frequency_hz=wrong)],
+        ):
+            qs = plain(readouts)
+            assert qs.frequency_frame == "absolute"
+            for use in (
+                lambda qs=qs: pulse.compile(read, quantum_system=qs).lower(qs.qudits[1]),
+                lambda qs=qs: pulse.compile(pi_pulse, quantum_system=qs).lower(qs.qudits[1]),
+                lambda qs=qs: qs._frequency_tables(2),
+            ):
+                with pytest.raises(InvalidValueError) as caught:
+                    use()
+                message = str(caught.value)
+                assert "the readout of qudit 1 of quantum system 'plain' gives its" in message
+                assert f"frequency_hz as {wrong!r}, an offset from a shared reference" in message
+                assert "needs qudits that give Offsets from the same reference" in message
+            # A program of the qudits before it does not make its table.
+            assert pulse.compile(pi_pulse, quantum_system=qs).lower(qs.qudits[0]) is not None
+    # A held qudit given a frequency keeps its readout's Offset, and is refused the same way.
+    shared = _read(Offset(1.5e8), DispersiveReadout(frequency_hz=Offset(2.0e9)))
+    moved = {i: q.replace(frequency_hz=5.0e9 + i) for i, q in shared.physical_qudits.items()}
+    assert type(moved[0]) is PhysicalQudit and type(moved[0].readout.frequency_hz) is Offset
+    qs = pulse.quantum_system(name="moved", qudits=moved, clock_ghz=1.0)
+    with pytest.raises(InvalidValueError, match="the readout of qudit 0 of quantum system 'moved'"):
+        pulse.compile(read, quantum_system=qs).lower(qs.qudits[1])
+
+    # Frequencies in Hz of any number type are taken as before, and a shared
+    # reference takes its own.
+    def tones(qs):
+        return qs._frequency_tables(2)[2].tolist()
+
+    for fine in (7.0e9, 7_000_000_000, np.float64(7.0e9)):
+        assert tones(plain([DispersiveReadout(frequency_hz=fine)] * 2)) == [7.0e9, 7.0e9]
+    assert tones(plain([None, DispersiveReadout(frequency_hz=7.0e9)])) == [5.0e9, 7.0e9]
+    assert tones(shared) == [2.0e9, 2.0e9]
+
+
 def test_a_readout_frequency_with_frequencies_is_what_it_was():
     qudit = PhysicalQudit(0, 5.0e9, 0.0, 0.0, readout=DispersiveReadout(frequency_hz=7.0e9))
     qs = pulse.quantum_system(name="read", qudits={0: qudit})
