@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from . import _clocks
     from ._classical_report import ClassicalCall as ClassicalCall
     from ._device import QuantumSystem
+    from ._exposure import Exposure as Exposure
+    from ._exposure import QuditExposure as QuditExposure
     from ._idle_windows import IdleWindow as IdleWindow
     from ._idle_windows import IdleWindows as IdleWindows
     from ._programs import _Role
@@ -86,6 +88,19 @@ class _Module(ModuleType):
         from ._idle_windows import IdleWindows
 
         return IdleWindows
+
+    # The types of ScheduledKernel.exposure, loaded with the first one read.
+    @property
+    def Exposure(self) -> type[Exposure]:  # noqa: N802
+        from ._exposure import Exposure
+
+        return Exposure
+
+    @property
+    def QuditExposure(self) -> type[QuditExposure]:  # noqa: N802
+        from ._exposure import QuditExposure
+
+        return QuditExposure
 
 
 sys.modules[__name__].__class__ = _Module
@@ -1145,6 +1160,19 @@ class ScheduledKernel:
         with what was done there (see ``IdleWindow``). ``None`` for a program
         whose idle windows were not replaced."""
         return getattr(self.metrics, "idle_windows", None)
+
+    @property
+    def exposure(self) -> Exposure:
+        """What the schedule does to each qudit over time, built when read:
+        per qudit and per outermost loop it has a pulse in, the cycles of
+        one round in which the qudit is driven, read out and idle, the number of rounds, and
+        what the idle time costs at the qudit's T1 and T2 star (see
+        ``QuditExposure``); ``print`` it for a table. Loops stay rolled, so
+        it costs the same for 2 rounds as for a million. ``UnsupportedError``
+        for a program whose schedule depends on its arguments' values."""
+        from ._exposure import report
+
+        return report(self)
 
     def export_to_emulator(self, *, controller: int | None = None) -> dict[str, Any]:
         """The program for a controller emulator: its schedule by segment, its

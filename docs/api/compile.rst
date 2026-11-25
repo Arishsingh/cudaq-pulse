@@ -26,6 +26,11 @@ Compilation API
 
 .. autoclass:: cudaq_pulse.compiler.IdleWindows
 
+.. autoclass:: cudaq_pulse.compiler.QuditExposure
+   :members:
+
+.. autoclass:: cudaq_pulse.compiler.Exposure
+
 .. autoclass:: cudaq_pulse.compiler.IRLevel
    :members:
    :undoc-members:
