@@ -21,9 +21,9 @@ title and a description, and the page's ``:alt:`` is the description.
 
 The scripts of guide and reference pages listed in ``_PAGE_SCRIPTS`` are
 rerun the same way, against the figures committed beside each script; none
-of their figures embeds an image; and the test of both themes and the alt
-text reads every page of the docs. That every figure is a ``themed-figure``
-and every SVG is used is checked for the tutorials only.
+of their figures embeds an image. The tests of both themes and the alt
+text, and that every figure is a ``themed-figure`` and every SVG in a
+``figures`` folder is used, read every page of the docs.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ _FIGURES = _DOCS / "figures"
 # The figure scripts of pages outside the tutorials, each next to its figures.
 _PAGE_SCRIPTS = [
     _DOCS.parent / "user_guide" / "figures" / "idle_replacement.py",
+    _DOCS.parent / "user_guide" / "figures" / "waveform_envelopes.py",
     _DOCS.parent / "api" / "figures" / "waveform_spectra.py",
 ]
 _SCRIPTS = sorted(p for p in _FIGURES.glob("*.py") if not p.name.startswith("_")) + _PAGE_SCRIPTS
@@ -93,12 +94,16 @@ def _themed_figures(page: Path):
         m = re.match(r"\s*\.\. (themed-figure|toy-flow|pulse-visual):: (\S+)", line)
         if not m:
             continue
-        options = {}
+        options, key = {}, None
         for option in lines[i + 1 :]:
-            if not option.strip().startswith(":"):
+            if option.strip().startswith(":"):
+                key, _, value = option.strip()[1:].partition(":")
+                options[key] = value.strip()
+            elif key and option.strip():
+                # An option's value may go on over indented lines.
+                options[key] += " " + option.strip()
+            else:
                 break
-            key, _, value = option.strip()[1:].partition(":")
-            options[key] = value.strip()
         if m[1] == "themed-figure":
             light = m[2]
         elif m[1] == "toy-flow":
@@ -132,18 +137,24 @@ def test_each_themed_figure_has_both_themes_and_its_page_says_what_it_shows():
                 )
 
 
-def test_every_tutorial_figure_follows_the_theme_and_every_svg_is_used():
+def test_every_figure_follows_the_theme_and_every_svg_is_used():
     if not _DOCS.exists():
         pytest.skip("needs the source tree")
+    docs = _DOCS.parent
     used = set()
-    for page in sorted(_DOCS.glob("*.rst")):
+    for page in sorted(docs.rglob("*.rst")):
         text = page.read_text()
-        assert not re.search(r"^\s*\.\. (figure|image)::", text, re.M), (
-            f"{page.name} has a figure that isn't a themed-figure"
-        )
+        # The site's own art in ``_static`` (the banner) is no figure of a page.
+        plain = [
+            m[2]
+            for m in re.finditer(r"^\s*\.\. (figure|image):: (\S+)", text, re.M)
+            if not m[2].startswith("_static/")
+        ]
+        assert plain == [], f"{page.name} has a figure that isn't a themed-figure"
         for light, _ in _themed_figures(page):
-            used |= {light.name, f"{light.stem}-dark{light.suffix}"}
-    assert sorted(p.name for p in _FIGURES.glob("*.svg") if p.name not in used) == []
+            used |= {light.resolve(), light.with_name(f"{light.stem}-dark{light.suffix}").resolve()}
+    drawn = sorted(p for p in docs.rglob("*.svg") if p.parent.name == "figures")
+    assert [str(p.relative_to(docs)) for p in drawn if p.resolve() not in used] == []
 
 
 def test_no_figure_embeds_an_image():
