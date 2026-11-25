@@ -3036,6 +3036,15 @@ def _quantum_data(target: _Description) -> dict[str, Any]:
     }
 
 
+# A qudit's readout as a file holds it, a readout's frequency, the types
+# of a frequency in Hz (or of none given; _device adds a float type it has
+# looked at, as numpy.float64), and whether some types are all among them.
+_READOUT = itemgetter("readout")
+_READOUT_HZ = itemgetter("frequency_hz")
+_HZ_TYPES = {float, int, type(None)}
+_ONLY_HZ = _HZ_TYPES.issuperset
+
+
 def _write_offsets(qudits: list[dict[str, Any]]) -> None:
     """The frequency of each of a file's *qudits*, and of its readout if it
     gives one, each an ``Offset``, written as the file holds one."""
@@ -3062,6 +3071,12 @@ def _device_data(quantum_system: QuantumSystem) -> dict[str, Any]:
         # shared reference are written as {"offset_hz": value}.
         if base._frame == "shared_reference":
             _write_offsets(data["qudits"])
+        elif not _ONLY_HZ(map(type, map(_READOUT_HZ, filter(None, map(_READOUT, data["qudits"]))))):
+            # A readout frequency that is no float: an Offset among qudits
+            # with frequencies in Hz is refused, as a compile refuses it.
+            from ._device import _offset_readouts_in_file
+
+            _offset_readouts_in_file(quantum_system, base)
     data["layout"] = list(quantum_system.layout)
     if spec is None or quantum_system.clock_ghz != base.clock_ghz:
         data["clock_ghz"] = quantum_system.clock_ghz

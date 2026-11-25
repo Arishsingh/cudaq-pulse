@@ -820,6 +820,79 @@ def test_an_offset_readout_frequency_needs_qudits_that_give_offsets():
     assert tones(shared) == [2.0e9, 2.0e9]
 
 
+def _hz_system(readout, name="hz", count=2):
+    qudits = {
+        i: PhysicalQudit(i, 5.0e9 + 1.0e8 * i, 0.0, 0.0, drive=DRIVE, readout=readout)
+        for i in range(count)
+    }
+    model = TransmonModel(levels={i: 2 for i in range(count)})
+    return pulse.quantum_system(name=name, qudits=qudits, model=model, clock_ghz=1.0)
+
+
+@pytest.mark.parametrize("wrong", [Offset(2.0e9), {"offset_hz": 2.0e9}])
+def test_simulate_refuses_another_system_with_an_offset_readout_frequency(wrong):
+    # No program was compiled for the other system, so its frequency tables
+    # were never made: simulating on it makes them, and refuses as a compile does.
+    ours = _hz_system(DispersiveReadout(frequency_hz=7.0e9))
+    program = pulse.compile(pi_pulse, quantum_system=ours).lower(ours.qudits[1])
+    other = _hz_system(DispersiveReadout(frequency_hz=wrong), "other")
+    assert other.frequency_frame == "absolute" and other._tables[0] < 0
+    for _ in range(2):
+        with pytest.raises(InvalidValueError) as caught:
+            pulse.simulate(program, quantum_system=other)
+        message = str(caught.value)
+        assert "the readout of qudit 0 of quantum system 'other' gives its" in message
+        assert f"frequency_hz as {wrong!r}, an offset from a shared reference" in message
+    with pytest.raises(InvalidValueError, match="the readout of qudit 0 of quantum system"):
+        pulse.simulate(pi_pulse, other.qudits[1], quantum_system=other)
+    # The same chip with readouts in Hz is simulated on as before, on first use and after.
+    fine = _hz_system(DispersiveReadout(frequency_hz=np.float64(7.1e9)), "fine")
+    assert fine._tables[0] < 0
+    first = pulse.simulate(program, quantum_system=fine).level_population(1)
+    assert fine._tables[0] == 2 and first > 0.99
+    assert pulse.simulate(program, quantum_system=fine).level_population(1) == first
+    assert pulse.simulate(program).level_population(1) == pytest.approx(first, abs=1e-9)
+    # A system that lacks the program's qudit, and a drifting one, are told what they were.
+    with pytest.raises(InvalidValueError, match=r"does not define qudits \[1\]"):
+        pulse.simulate(program, quantum_system=_hz_system(None, "short", count=1))
+    drifting = fine.replace(parameter_drift=True, parameter_drift_seed=0)
+    assert pulse.simulate(program, quantum_system=drifting).level_population(1) > 0.9
+
+
+@pytest.mark.parametrize("wrong", [Offset(2.0e9), {"offset_hz": 2.0e9}])
+def test_a_system_file_does_not_hold_an_offset_readout_as_a_frequency_in_hz(wrong):
+    # Written before any compile, the file would hold the Offset's number.
+    qs = _hz_system(DispersiveReadout(frequency_hz=wrong), "written")
+    assert qs._tables[0] < 0
+    for write in (qs.as_dict, lambda: qs.replace(clock_ghz=2.0).as_dict()):
+        with pytest.raises(InvalidValueError) as caught:
+            write()
+        message = str(caught.value)
+        assert "the readout of qudit 0 of quantum system 'written' gives its" in message
+        assert f"frequency_hz as {wrong!r}, an offset from a shared reference" in message
+        assert "needs qudits that give Offsets from the same reference" in message
+    # Only the qudit that has it is named.
+    mixed = dict(_hz_system(DispersiveReadout(frequency_hz=7.0e9)).physical_qudits)
+    mixed[1] = mixed[1].replace(readout=DispersiveReadout(frequency_hz=wrong))
+    with pytest.raises(InvalidValueError, match="the readout of qudit 1 of quantum system 'one'"):
+        pulse.quantum_system(name="one", qudits=mixed).as_dict()
+    # Readouts in Hz of any number type, none, and offsets among offsets are written as before.
+    for readout in (
+        None,
+        DispersiveReadout(),
+        DispersiveReadout(frequency_hz=7.0e9),
+        DispersiveReadout(frequency_hz=7_000_000_000),
+        DispersiveReadout(frequency_hz=np.float64(7.0e9)),
+    ):
+        data = _hz_system(readout).as_dict()
+        written = [q["readout"] and q["readout"]["frequency_hz"] for q in data["qudits"]]
+        assert written == [readout and readout.frequency_hz] * 2
+        assert pulse.QuantumSystem.from_dict(json.loads(json.dumps(data))) is not None
+    shared = _read(Offset(1.5e8), DispersiveReadout(frequency_hz=Offset(2.0e9))).as_dict()
+    assert shared["qudits"][0]["readout"]["frequency_hz"] == {"offset_hz": 2.0e9}
+    assert _system(None, count=2).as_dict()["qudits"][0]["readout"] is None
+
+
 def test_a_readout_frequency_with_frequencies_is_what_it_was():
     qudit = PhysicalQudit(0, 5.0e9, 0.0, 0.0, readout=DispersiveReadout(frequency_hz=7.0e9))
     qs = pulse.quantum_system(name="read", qudits={0: qudit})

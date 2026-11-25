@@ -805,8 +805,13 @@ def _offset_readouts(system: QuantumSystem, carriers: Sequence[int], given: Sequ
 
     kinds = set(map(type, given))
     if Offset not in kinds and not any(issubclass(kind, Mapping) for kind in kinds):
-        # Numbers of other types: the float types among them are looked at once.
-        _HZ_TYPES.update(k for k in kinds if issubclass(k, float) and not issubclass(k, Offset))
+        # Numbers of other types: the float types among them are looked at
+        # once, here and where a system file is written.
+        from . import _system
+
+        floats = [k for k in kinds if issubclass(k, float) and not issubclass(k, Offset)]
+        _HZ_TYPES.update(floats)
+        _system._HZ_TYPES.update(floats)
         return
     target = system._description
     if target._frame != "absolute":
@@ -819,6 +824,15 @@ def _offset_readouts(system: QuantumSystem, carriers: Sequence[int], given: Sequ
                 "system's qudits give their frequencies in Hz; an Offset readout frequency "
                 "needs qudits that give Offsets from the same reference"
             )
+
+
+def _offset_readouts_in_file(quantum_system: QuantumSystem, target: _Description) -> None:
+    """``_offset_readouts`` for the system file of *quantum_system*, whose
+    qudits are *target*'s: the file would hold an ``Offset`` as its number."""
+    carriers = sorted(target.qudits)
+    readouts = [target.qudits[carrier].readout for carrier in carriers]
+    given = [None if readout is None else readout.frequency_hz for readout in readouts]
+    _offset_readouts(quantum_system, carriers, given)
 
 
 def _calibrated(

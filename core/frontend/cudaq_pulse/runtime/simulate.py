@@ -668,6 +668,10 @@ def _check_quantum_system(lowered: ScheduledKernel, quantum_system: Any) -> Any:
         raise InvalidTypeError(
             f"quantum_system must be a QuantumSystem, got {type(quantum_system).__name__}"
         )
+    if quantum_system._tables[0] <= max(lowered.qudits):
+        # A system no program was compiled for: its frequency tables are
+        # made, which refuses a readout frequency it cannot read.
+        quantum_system._frequency_tables(max(lowered.qudits) + 1)
     description = quantum_system._description
     for qudit in lowered.qudits:
         if qudit not in description.qudits:
