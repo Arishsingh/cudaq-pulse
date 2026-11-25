@@ -29,7 +29,11 @@ PAGE = HERE.parent / "compilation.rst"
 
 def page_namespace() -> dict:
     """The names of the page's idle-replacement block, run as the page has it."""
-    (code,) = (code for _, code, _ in _page_blocks()(PAGE) if "def syndrome(" in code)
+    (code,) = (
+        code
+        for _, code, _ in _page_blocks()(PAGE)
+        if "def syndrome(" in code and "replace_idle(" in code
+    )
     namespace: dict = {"__name__": "guide"}
     with contextlib.redirect_stdout(io.StringIO()):
         exec(code, namespace)
