@@ -1653,8 +1653,64 @@ def build(
         role.every = qudits
         role.program_id = role.identify(buf, name, parameters, target, options)
     if not plain:
-        lowered = _check_controller(lowered)
+        try:
+            lowered = _check_controller(lowered)
+        except CompilationError as error:
+            # A try statement costs a bytecode where the check passes.
+            return _placed_by_limits(
+                error, fn, trace_args, parameters, target, options, slots, role, max_duration_cycles
+            )
     return lowered, builder
+
+
+#: The policy that places a program by its control system's limits, for
+#: each that does not (``_placed_by_limits``).
+_PLACED_BY_LIMITS = {"asap": "rcp", "alap": "alap_rcp"}
+
+
+def _placed_by_limits(
+    error: CompilationError,
+    fn: Any,
+    trace_args: Sequence[Any],
+    parameters: tuple[str, ...],
+    target: QuantumSystem,
+    options: CompileOptions,
+    slots: int,
+    role: _Role | None,
+    max_duration_cycles: int | None,
+) -> tuple[ScheduledKernel, Any]:
+    """A program asap or alap places past a limit of its control system,
+    which declares how many drives or readouts play at once, built again as
+    rcp or alap_rcp places it, when that keeps to every limit; else *error*,
+    the limits the program is over. Only a program the controller check
+    refuses comes here; one compiled with ``keeps_schedule`` options (idle
+    replacement's fills) keeps its schedule and its error."""
+    from .controller import ControllerLimitError
+
+    machine = options.machine
+    placed = _PLACED_BY_LIMITS.get(options.schedule)
+    if (
+        not isinstance(error, ControllerLimitError)
+        or placed is None
+        or getattr(options, "keeps_schedule", False)
+        or (machine.max_concurrent_drives is None and machine.max_concurrent_readouts is None)
+    ):
+        raise error
+    try:
+        return build(
+            fn,
+            trace_args,
+            parameters,
+            target,
+            dataclasses.replace(options, schedule=placed),
+            slots,
+            role,
+            max_duration_cycles,
+        )
+    except Exception:
+        # Placed by the limits, the program fails otherwise: the limit it is
+        # over is the error to give.
+        raise error from None
 
 
 def _clocked_builder(
@@ -1945,7 +2001,15 @@ def with_line_delays(lowered: _Kernel, options: CompileOptions) -> _Kernel | Non
     result.classical = lowered.classical
     result.runtime_selects = lowered.runtime_selects
     result._reused_trace = True
-    return _check_controller(result)
+    if options.schedule not in _PLACED_BY_LIMITS:
+        return _check_controller(result)
+    from .controller import ControllerLimitError
+
+    try:
+        return _check_controller(result)
+    except ControllerLimitError:
+        # Placed past a limit: a full compile places it by the limits.
+        return None
 
 
 class _ClassicalFunctions(tuple[Any, ...]):

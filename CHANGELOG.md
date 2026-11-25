@@ -264,6 +264,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **asap and alap place a program over a concurrency limit as rcp does.**
+  On a control system with controllers that declares
+  `max_concurrent_drives` or `max_concurrent_readouts`, a program that
+  `asap` places past one of them is placed as `rcp` places it, and one that
+  `alap` places past one as `alap_rcp` does, when that keeps to every limit;
+  `options.schedule` names the policy that placed it. A program `asap` or
+  `alap` places within its limits keeps its schedule exactly and costs
+  nothing more to compile. Such a program failed to compile before, with a
+  `ControllerLimitError`; it still does when the rcp placement does not keep
+  to every limit either, or when the values a call binds place its pulses
+  past a limit.
 - **Controllers in the printed MLIR carry what they were given.** In
   `pulse.control_system`, each `#pulse.controller` of a system of several
   controllers gives the controller's own facts, in its own cycles, where it
