@@ -441,7 +441,12 @@ def test_offsets_compute_as_the_same_system_with_frequencies(offsets):
         for qs in (shared, absolute)
     ]
     ours, theirs = (program.export_to_controller() for program in programs)
-    assert [line["native_frequency_hz"] for line in ours["lines"]] == list(offsets)
+    # The coupling dresses the offsets as it dresses the frequencies.
+    dressed = [float(q.dressed_frequency_hz) for q in shared.qudits[:2]]
+    assert [line["native_frequency_hz"] for line in ours["lines"]] == pytest.approx(dressed)
+    assert dressed == pytest.approx(
+        [q.dressed_frequency_hz - reference for q in absolute.qudits[:2]], abs=1e-3
+    )
     assert len(ours["events"]) == len(theirs["events"])
     for mine, other in zip(ours["events"], theirs["events"], strict=True):
         assert mine["start_cycles"] == other["start_cycles"]
@@ -452,10 +457,24 @@ def test_offsets_compute_as_the_same_system_with_frequencies(offsets):
             assert mine["phase_rad"] == pytest.approx(other["phase_rad"], abs=1e-9)
     # The line's own tone, the other qudit's, and its own 1-2 tone.
     drives = [e["frequency_hz"] for e in ours["events"] if e["kind"] == "drive"]
-    assert drives == pytest.approx([offsets[0], offsets[0], offsets[0] - 2.0e8])
+    _, tones = shared._line_tones(shared.qudits[0].index, False)
+    assert drives == pytest.approx([tones[0, 1], tones[0, 1], tones[1, 2]])
     populations = [np.real(np.diag(pulse.simulate(program).density_matrix)) for program in programs]
     assert np.allclose(populations[0], populations[1], atol=1e-6)
     assert populations[0].max() < 0.999
+
+
+@pytest.mark.parametrize("offsets", [(0.0, 1.5e8), (-1.5e8, 0.0), (2.0e7, 0.0)])
+def test_offsets_with_bare_frames_play_at_the_offsets(offsets):
+    coupling = [Coupling((0, 1), strength_hz=5.0e6)]
+    bare = _referenced(offsets, couplings=coupling).replace(frames="bare")
+    assert bare.frequency_frame == "shared_reference"
+    program = pulse.compile(coupled_and_cross, quantum_system=bare).lower(*bare.qudits[:2])
+    exported = program.export_to_controller()
+    assert [line["native_frequency_hz"] for line in exported["lines"]] == list(offsets)
+    # The line's own tone, the other qudit's, and its own 1-2 tone.
+    drives = [e["frequency_hz"] for e in exported["events"] if e["kind"] == "drive"]
+    assert drives == pytest.approx([offsets[0], offsets[0], offsets[0] - 2.0e8])
 
 
 def test_parameter_drift_needs_absolute_frequencies():
