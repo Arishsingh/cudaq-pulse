@@ -4,7 +4,8 @@
 // RUN: cudaq-pulse-opt %s --split-input-file --verify-diagnostics --pulse-verify
 
 // More of what pulse-verify refuses in a program with calls: mutual
-// recursion, a callee loop without constant bounds, and links.
+// recursion, a callee loop without constant bounds, links, and a frame
+// change placed past the length a callee records.
 
 !d = !pulse.drive_line
 !t = !pulse.tone
@@ -70,5 +71,30 @@ func.func @links_out_of_order() {
   %a = classical.get_link {device = 0 : i64} : !classical.link
   %b = classical.get_link {device = 1 : i64} : !classical.link
   %r:2 = pulse.call @swaps_links(%a, %b) <{duration_cycles = 0 : i64, start_cycles = 0 : i64}> : (!k, !k) -> (!k, !k)
+  return
+}
+
+// -----
+
+!d = !pulse.drive_line
+!t = !pulse.tone
+!w = !pulse.waveform
+
+// A frame change past the recorded length ends the callee later than it says.
+// expected-error @+1 {{records a length of 8 cycles, but its operations end at 1000}}
+func.func private @late_frame(%d: !d, %t: !t) -> (!d, !t) attributes {pulse.length_cycles = 8 : i64} {
+  %n = arith.constant 8 : i64
+  %a = arith.constant 0.1 : f64
+  %z = arith.constant 0.0 : f64
+  %p = arith.constant 0.5 : f64
+  %x = pulse.square %n, %a, %z : i64, f64, f64 -> !w
+  %d1, %t1 = pulse.drive %d, %x, %t <{duration_cycles = 8 : i64, start_cycles = 0 : i64}> : !d, !w, !t -> !d, !t
+  %t2 = pulse.shift_phase %t1, %p <{duration_cycles = 0 : i64, start_cycles = 1000 : i64}> : !pulse.tone, f64 -> !pulse.tone
+  return %d1, %t2 : !d, !t
+}
+
+func.func @calls_late_frame(%q: !pulse.qudit) {
+  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+  %a:2 = pulse.call @late_frame(%d0, %t0) <{duration_cycles = 8 : i64, start_cycles = 0 : i64}> : (!d, !t) -> (!d, !t)
   return
 }
