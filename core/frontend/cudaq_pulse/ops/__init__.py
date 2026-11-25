@@ -279,7 +279,7 @@ def set_phase(tone: Tone, phase: Numeric) -> Tone:
         @pulse.kernel
         def k(qudit):
             drive_line = get_drive_line(qudit)
-            set_phase(drive_line.tone, 0.0)
+            set_phase(drive_line.tone, math.pi / 2)
             drive(drive_line, gaussian(40, 0.3, 10))
 
     Args:
@@ -315,7 +315,7 @@ def set_frequency(tone: Tone, frequency: Numeric) -> Tone:
         @pulse.kernel
         def k(qudit):
             drive_line = get_drive_line(qudit)
-            set_frequency(drive_line.tone, 5.0e9)  # 5 GHz
+            set_frequency(drive_line.tone, 5.0e9)  # 5 GHz, whatever the tone was at
             drive(drive_line, gaussian(40, 0.3, 10))
 
     Args:
