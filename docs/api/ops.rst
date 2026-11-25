@@ -37,6 +37,14 @@ Phase and Frequency
 Waveform Constructors
 ---------------------
 
+.. themed-figure:: figures/waveform_spectra.svg
+   :alt: Four waveforms, each 20 ns long with amplitude 0.3, above the spectrum of their samples from -60 to 0 dB within 500 MHz of the tone. A shaded band marks where 99% of each spectrum's energy lies: square ±427 MHz, gaussian_square ±105 MHz, gaussian ±59 MHz, cosine ±70 MHz.
+   :width: 100%
+
+   Four of the envelopes as ``sample_waveform`` samples them, each 40 clock
+   cycles of a 2 GHz clock, and the spectrum of those samples relative to
+   its peak. The shaded band holds 99% of the spectrum's energy.
+
 .. autofunction:: cudaq_pulse.ops.gaussian
 
 .. autofunction:: cudaq_pulse.ops.square

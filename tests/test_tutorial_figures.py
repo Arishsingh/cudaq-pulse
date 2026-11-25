@@ -18,6 +18,10 @@ the committed file too, every number to within 1e-3.
 A ``themed-figure`` of a page, the fallback figure of a ``toy-flow`` and
 the still of a ``pulse-visual`` each have a ``-dark`` twin, both have a
 title and a description, and the page's ``:alt:`` is the description.
+
+The figures of the guide and reference pages listed in ``_PAGE_SCRIPTS``
+are held to the same: each script redraws its figures into the temporary
+folder, and they must match the ones committed beside the script.
 """
 
 from __future__ import annotations
@@ -35,7 +39,12 @@ import pytest
 
 _DOCS = Path(__file__).resolve().parents[1] / "docs" / "tutorials"
 _FIGURES = _DOCS / "figures"
-_SCRIPTS = sorted(p for p in _FIGURES.glob("*.py") if not p.name.startswith("_"))
+# The figure scripts of pages outside the tutorials, each next to its figures.
+_PAGE_SCRIPTS = [
+    _DOCS.parent / "user_guide" / "figures" / "idle_replacement.py",
+    _DOCS.parent / "api" / "figures" / "waveform_spectra.py",
+]
+_SCRIPTS = sorted(p for p in _FIGURES.glob("*.py") if not p.name.startswith("_")) + _PAGE_SCRIPTS
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:e-?\d+)?")
 _REFERENCE = re.compile(r"#[\w-]+")
 
@@ -108,7 +117,7 @@ def _desc(svg: Path) -> tuple[str | None, str | None]:
 def test_each_themed_figure_has_both_themes_and_its_page_says_what_it_shows():
     if not _DOCS.exists():
         pytest.skip("needs the source tree")
-    for page in sorted(_DOCS.glob("*.rst")):
+    for page in sorted(_DOCS.parent.rglob("*.rst")):
         for light, alt in _themed_figures(page):
             dark = light.with_name(f"{light.stem}-dark{light.suffix}")
             assert light.exists() and dark.exists(), f"{page.name}: {light.name} needs both files"
@@ -162,19 +171,18 @@ def test_each_figure_is_what_its_script_draws(script, tmp_path):
     assert result.returncode == 0, result.stderr[-3000:]
     drawn = sorted(tmp_path.glob("*.svg"))
     assert drawn, f"{script.name} drew nothing"
+    again = f"run python {script.relative_to(_DOCS.parents[1]).as_posix()}"
     for svg in drawn:
-        committed = _FIGURES / svg.name
+        committed = script.parent / svg.name
         assert committed.exists(), f"{script.name} draws {svg.name}, which is not committed"
         assert same_figure(svg.read_text(), committed.read_text()), (
-            f"{svg.name} is not what {script.name} draws now; "
-            f"run python docs/tutorials/figures/{script.name}"
+            f"{svg.name} is not what {script.name} draws now; {again}"
         )
     for data in sorted(tmp_path.glob("*.json")):
-        committed = _FIGURES / data.name
+        committed = script.parent / data.name
         assert committed.exists(), f"{script.name} writes {data.name}, which is not committed"
         assert same_data(json.loads(data.read_text()), json.loads(committed.read_text())), (
-            f"{data.name} is not what {script.name} writes now; "
-            f"run python docs/tutorials/figures/{script.name}"
+            f"{data.name} is not what {script.name} writes now; {again}"
         )
 
 

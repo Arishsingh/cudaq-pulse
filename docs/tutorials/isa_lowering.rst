@@ -279,6 +279,14 @@ What to notice:
 - No phase shift is left. The compiler folded the virtual Z into the
   second drive.
 
+.. themed-figure:: figures/ramsey_reset_schedule.svg
+   :alt: Timeline of the scheduled program on qudit 0's drive and readout lines. An x90 pulse at 5.000 GHz from 0 to 40 ns, a 100 ns wait, a second x90 pulse at 5.002 GHz from 140 to 180 ns, then the readout from 180 to 380 ns. The outcome is ready 80 ns after the readout ends, and the x180 pulse at 5.000 GHz, which plays only if the readout read 1, runs from 460 to 500 ns.
+   :width: 100%
+
+   The same schedule, drawn from the program's export. This QPU's clock
+   is 1 GHz, so a cycle is 1 ns. The dashed x180 pulse plays only when the
+   readout reads 1, and starts once the outcome is back.
+
 The export
 ~~~~~~~~~~
 
