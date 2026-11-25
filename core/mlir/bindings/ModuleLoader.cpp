@@ -301,12 +301,13 @@ public:
   /// functions the calls run copied from `source` for it. What the calls
   /// would write is counted before any is written: a function that calls
   /// another twice doubles at every level.
-  void writeCalls(mlir::ModuleOp source, mlir::ModuleOp module,
+  /// Whether `main` held a call.
+  bool writeCalls(mlir::ModuleOp source, mlir::ModuleOp module,
                   mlir::func::FuncOp main, const std::string &entry) {
     llvm::SmallVector<pulse::CallOp> calls;
     main.walk([&](pulse::CallOp call) { calls.push_back(call); });
     if (calls.empty())
-      return;
+      return false;
     llvm::StringMap<int64_t> counts;
     int64_t written = 0;
     for (pulse::CallOp call : calls) {
@@ -344,6 +345,7 @@ public:
          llvm::make_early_inc_range(module.getOps<mlir::func::FuncOp>()))
       if (function != main)
         function.erase();
+    return true;
   }
 
   /// The name the module gives each link it states (`classical.links`), by
@@ -547,7 +549,10 @@ public:
       }
     auto main = mlir::cast<mlir::func::FuncOp>(found->clone());
     module->push_back(main);
-    writeCalls(*source, *module, main, entry);
+    // What the calls wrote starts a call's start later, each level adding
+    // its own: it is held to the range again.
+    if (writeCalls(*source, *module, main, entry))
+      refuseUnsupported(main, /*called=*/false);
     main.walk([&](mlir::Operation *op) {
       if (op->getName().getStringRef() != "classical.get_link")
         return;

@@ -269,6 +269,30 @@ def test_a_calls_times_are_held_to_the_range_of_every_operation(system, timing):
         pulse.load(text, entry="shot", qudits=system.qudits[:2])
 
 
+def test_the_range_holds_for_nested_calls_periods_and_what_the_calls_write(system):
+    far = 2**60
+    nested = CALLS.replace(_at(8, 8), _at(far, 8))
+    assert nested != CALLS
+    with pytest.raises(pulse.CompilationError, match=r"pair calls x with .* outside 0 to 2\^50"):
+        pulse.load(nested, entry="shot", qudits=system.qudits[:2])
+    period = LOOP.replace("period_cycles = array<i64: 20>", f"period_cycles = array<i64: {far}>", 1)
+    assert period != LOOP
+    with pytest.raises(pulse.CompilationError, match=r"shot calls x with .* outside 0 to 2\^50"):
+        pulse.load(period, entry="shot", qudits=system.qudits[:1])
+    # Each start is in range; the drive the two calls write starts at their sum.
+    half = 2**49
+    summed = (
+        CALLS.replace(_at(8, 8), _at(half, 8))
+        .replace(_long(16), _long(half + 8))
+        .replace(_at(0, 16), _at(0, half + 8))
+        .replace(_at(100, 16), _at(2**50 - 8, half + 8))
+    )
+    with pytest.raises(
+        pulse.CompilationError, match=r"shot has an operation .* outside 0 to 2\^50"
+    ):
+        pulse.load(summed, entry="shot", qudits=system.qudits[:2])
+
+
 def test_a_called_function_is_not_in_the_loaded_module(system):
     # Another compiler's attribute that names the function does not keep it.
     text = CALLS.replace(_long(8), _long(8)[:-1] + ", made.by = @x}")
