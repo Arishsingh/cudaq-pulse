@@ -188,12 +188,81 @@ public:
       std::optional<int64_t> start = pulse::startCycles(op);
       std::optional<int64_t> duration = pulse::durationCycles(op);
       if ((start && (*start < 0 || *start > most)) ||
-          (duration && (*duration < 0 || *duration > most)))
+          (duration && (*duration < 0 || *duration > most)) ||
+          llvm::any_of(pulse::periodCycles(op), [](int64_t period) {
+            return period < 0 || period > most;
+          }))
         throw std::invalid_argument(
             "load: " + name +
-            " has an operation whose start or duration is outside 0 to 2^50 "
-            "cycles" +
+            " has an operation whose start, duration or period is outside 0 "
+            "to 2^50 cycles" +
             (written ? " once its calls are written out" : ""));
+      // In loops an operation starts a period later each trip: its last
+      // start is held to the range too. That takes the trips of every loop
+      // around it, whatever is between a loop and the operation: an
+      // scf.for that counts signed, with bounds and a step that are
+      // constants of at most 2^50 either way, so that counting its trips
+      // cannot overflow here or in any pass; and no other kind of loop.
+      if (!start)
+        return;
+      auto unbounded = [&](const char *why) {
+        return std::invalid_argument(
+            "load: " + name + " has a timed operation in " + why +
+            (written ? " once its calls are written out" : ""));
+      };
+      llvm::SmallVector<int64_t, 2> trips;
+      for (mlir::Operation *parent = op->getParentOp();
+           parent && parent != function.getOperation();
+           parent = parent->getParentOp()) {
+        // Met before the loop or block that holds it (the walk is
+        // post-order): a called function is refused for that, as below.
+        if (called && !mlir::isa<mlir::scf::IfOp>(parent))
+          throw std::invalid_argument(
+              "load: " + name +
+              " has a loop or a schedule block; a called function is written "
+              "without them");
+        // What reads a loaded function takes an operation in a schedule
+        // block with every loop around the block, as one in a branch.
+        if (mlir::isa<mlir::scf::IfOp, pulse::ScheduleBlockOp>(parent))
+          continue;
+        auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent);
+        if (!loop)
+          throw unbounded("a region that is neither a branch nor an scf.for "
+                          "loop; a loaded function repeats with scf.for");
+        auto within = [&](mlir::Value bound) {
+          // An index: a wider constant would be cut to 64 bits.
+          std::optional<int64_t> value = bound.getType().isIndex()
+                                             ? pulse::constantIndex(bound)
+                                             : std::nullopt;
+          return value && *value >= -most && *value <= most;
+        };
+        // The bounds first: the count of bounds outside them can overflow.
+        std::optional<int64_t> count;
+        if (!loop.getUnsignedCmp() && within(loop.getLowerBound()) &&
+            within(loop.getUpperBound()) && within(loop.getStep()))
+          count = pulse::constantTripCount(loop);
+        if (!count)
+          throw unbounded(
+              "a loop whose bounds are not constants; a loaded loop counts "
+              "signed and gives its bounds and its step as index constants "
+              "of at most 2^50, the step above 0");
+        trips.push_back(*count);
+      }
+      // Outermost first, as the periods are.
+      std::reverse(trips.begin(), trips.end());
+      llvm::ArrayRef<int64_t> periods = pulse::periodCycles(op);
+      int64_t last = *start;
+      for (auto [count, period] : llvm::zip(trips, periods)) {
+        // Within the range, `last` and `period` cannot overflow the sum.
+        if (count > 1 && period > 0 && count - 1 > (most - last) / period)
+          throw std::invalid_argument(
+              "load: " + name +
+              " has an operation in a loop whose last trip starts past 2^50 "
+              "cycles" +
+              (written ? " once its calls are written out" : ""));
+        if (count > 1)
+          last += (count - 1) * period;
+      }
     });
   }
   /// The function `caller` calls by `name`, checked to be one a call can be
@@ -259,42 +328,87 @@ public:
           "call, outermost first (array<i64: outer, ..., inner>), and none "
           "outside a loop");
   }
-  /// How many operations a call of `name` writes in its place, its own and
-  /// those of the functions it calls, counted up to just past the most a
-  /// load writes. `open` holds the functions being counted: one met again
-  /// calls itself.
-  static int64_t writtenBy(mlir::ModuleOp source, const std::string &caller,
+  /// What a call of a function puts in its place.
+  struct Written {
+    /// Its operations and those of the functions it calls, counted up to
+    /// just past the most a load writes.
+    int64_t operations = 0;
+    /// The calls below it: 1 for a function that calls none.
+    size_t calls = 1;
+    /// The branches around its innermost operation once its own calls are
+    /// written out.
+    int nesting = 0;
+  };
+  /// How many branches and loops of its function are around `op`.
+  static int regionsAround(mlir::Operation *op) {
+    int around = 0;
+    for (mlir::Operation *parent = op->getParentOp();
+         parent && !mlir::isa<mlir::func::FuncOp>(parent);
+         parent = parent->getParentOp())
+      ++around;
+    return around;
+  }
+  /// The calls of `first` nest deeper than a load follows.
+  [[noreturn]] static void refuseCallDepth(const std::string &first) {
+    throw std::invalid_argument("load: the calls of " + first +
+                                " nest deeper than " +
+                                std::to_string(kMostCallDepth));
+  }
+  /// Written out, the calls of `first` nest regions deeper than a loaded
+  /// module may: the bound parseForeign holds the module to, for the
+  /// function its calls make.
+  [[noreturn]] static void refuseNesting(const std::string &first) {
+    throw std::invalid_argument("load: written in its place, the calls of " +
+                                first + " nest regions deeper than " +
+                                std::to_string(kMostNesting) +
+                                "; write them with less nesting");
+  }
+  /// What a call of `name` writes in its place. `open` holds the functions
+  /// being counted: one met again calls itself. A function counted before
+  /// is not counted again, and is held to the same bounds from what was
+  /// kept of it: how deep its calls go below it, and how deep they nest.
+  static Written writtenBy(mlir::ModuleOp source, const std::string &caller,
                            const std::string &name,
-                           llvm::StringMap<int64_t> &known,
+                           llvm::StringMap<Written> &known,
                            llvm::SmallVectorImpl<std::string> &open) {
     auto found = known.find(name);
-    if (found != known.end())
+    if (found != known.end()) {
+      if (open.size() + found->second.calls > kMostCallDepth + 1)
+        refuseCallDepth(open.front());
       return found->second;
+    }
     if (llvm::is_contained(open, name))
       throw std::invalid_argument("load: " + name +
                                   " calls a function that calls itself");
     if (open.size() > kMostCallDepth)
-      throw std::invalid_argument("load: the calls of " + open.front() +
-                                  " nest deeper than " +
-                                  std::to_string(kMostCallDepth));
+      refuseCallDepth(open.front());
     mlir::func::FuncOp callee = calledFunction(source, caller, name);
     open.push_back(name);
-    int64_t written = 0;
+    Written written;
     // The callee's own calls are counted after the walk, not from inside
     // it: the stack then grows with the calls' nesting only.
     llvm::SmallVector<pulse::CallOp> nestedCalls;
     callee.walk([&](mlir::Operation *op) {
-      if (op != callee.getOperation())
-        written = std::min(written + 1, kMostWritten + 1);
+      if (op == callee.getOperation())
+        return;
+      written.operations = std::min(written.operations + 1, kMostWritten + 1);
       if (auto nested = mlir::dyn_cast<pulse::CallOp>(op))
         nestedCalls.push_back(nested);
+      else if (op->getNumRegions())
+        written.nesting = std::max(written.nesting, regionsAround(op) + 1);
     });
     for (pulse::CallOp nested : nestedCalls) {
       refuseUnplaced(nested, name, /*called=*/true);
-      written =
-          std::min(written + writtenBy(source, name, nested.getCallee().str(),
-                                       known, open),
-                   kMostWritten + 1);
+      Written below =
+          writtenBy(source, name, nested.getCallee().str(), known, open);
+      written.operations =
+          std::min(written.operations + below.operations, kMostWritten + 1);
+      written.calls = std::max(written.calls, below.calls + 1);
+      written.nesting =
+          std::max(written.nesting, regionsAround(nested) + below.nesting);
+      // The module's body and the function's are two of the regions.
+      if (written.nesting > kMostNesting - 2)
+        refuseNesting(open.front());
     }
     open.pop_back();
     return known[name] = written;
@@ -310,12 +424,16 @@ public:
     main.walk([&](pulse::CallOp call) { calls.push_back(call); });
     if (calls.empty())
       return false;
-    llvm::StringMap<int64_t> counts;
+    llvm::StringMap<Written> counts;
     int64_t written = 0;
     for (pulse::CallOp call : calls) {
       refuseUnplaced(call, entry, /*called=*/false);
       llvm::SmallVector<std::string> open{entry};
-      written += writtenBy(source, entry, call.getCallee().str(), counts, open);
+      Written below =
+          writtenBy(source, entry, call.getCallee().str(), counts, open);
+      if (regionsAround(call) + below.nesting > kMostNesting - 2)
+        refuseNesting(entry);
+      written += below.operations;
       if (written > kMostWritten)
         throw std::invalid_argument(
             "load: the calls of " + entry + " write more than " +
