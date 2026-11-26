@@ -29,6 +29,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import cudaq_pulse as pulse
 import pytest
@@ -875,6 +876,63 @@ def test_a_rolled_loop_is_checked_and_exported_rolled_in_constant_time():
     _assert_flat("export", exports)
     small, large = ROLLED_TRIPS
     assert size[large] < size[small] + 64, size
+
+
+@pytest.mark.scaling
+def test_the_segments_of_a_rolled_loop_that_opens_none_are_found_in_constant_time():
+    @pulse.classical(max_latency_ns=20, link=0)
+    def tune(x: float) -> float:
+        return x
+
+    @pulse.classical(max_latency_ns=20, latency_mode="blocking", link=0)
+    def hold(x: float) -> float:
+        return x
+
+    def program(n: int, call: Any):
+        @pulse.kernel
+        def kernel(q):
+            line = get_drive_line(q)
+            for _ in range(n):
+                drive(line, square(8, 0.1))
+                wait(line, 16)
+            drive(line, square(8, call.submit(0.1).result()))
+
+        return kernel
+
+    # A call after the loop, whose answer opens no segment or one: the loop
+    # opens none, and its iterations are not walked to find that.
+    for call, segments in ((tune, 1), (hold, 2)):
+        runs = {}
+        for n in ROLLED_TRIPS:
+            lowered = pulse.compile(program(n, call), schedule="asap", unroll_threshold=0).lower(
+                Q[0]
+            )
+            assert len(lowered.segments()) == segments
+            runs[n] = lowered.segments
+        _assert_flat(f"segments, {segments}", runs)
+
+    def inside(n: int):
+        @pulse.kernel
+        def kernel(q):
+            line = get_drive_line(q)
+            for _ in range(3):
+                for _ in range(n):
+                    drive(line, square(8, 0.1))
+                    wait(line, 16)
+                drive(line, square(8, hold.submit(0.1).result()))
+
+        return kernel
+
+    # A loop that opens none inside one that opens a segment in every
+    # iteration: the outer loop is walked, the inner one passed over each time.
+    runs = {}
+    for n in ROLLED_TRIPS:
+        lowered = pulse.compile(inside(n), schedule="asap", unroll_threshold=0).lower(Q[0])
+        # Both loops are kept (the outer one may have an iteration peeled).
+        assert lowered.mlir().count("scf.for") >= 2
+        assert len(lowered.segments()) == 4
+        runs[n] = lowered.segments
+    _assert_flat("segments, inside", runs)
 
 
 @pytest.mark.scaling

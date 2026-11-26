@@ -648,6 +648,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **Finding a program's segments no longer walks a loop that opens none.**
+  `segments()` went through every iteration of every loop kept as a loop
+  once the program declared a classical function, so a loop of n
+  iterations followed by one call took time in proportion to n to answer,
+  though it adds no segment. A loop that holds no variable wait and no
+  blocking answer is now passed over, at any trip count; one that holds
+  either is walked as before, each iteration opening its segments. The
+  segments are unchanged, as are the segment of every event and call,
+  which are found as before: an export that lists each event's segment
+  still visits every iteration.
+
 - **A value computed through very many operations no longer ends the
   process.** Several walks over what a value is computed from, or over what
   it reaches, called themselves once per operation: a run-time selected
