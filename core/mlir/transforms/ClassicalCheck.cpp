@@ -820,8 +820,10 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
   llvm::StringMap<std::optional<double>> uncertainty;
   if (controllers.enabled()) {
     pulse::AllocationTracer trace;
+    classical::TakersByValue takers;
     module.walk([&](classical::SubmitOp submit) {
-      auto found = classical::callUncertaintyNs(submit, controllers, trace);
+      auto found =
+          classical::callUncertaintyNs(submit, controllers, trace, takers);
       auto [it, inserted] = uncertainty.try_emplace(submit.getCallee(), found);
       if (!inserted && it->second)
         it->second = found

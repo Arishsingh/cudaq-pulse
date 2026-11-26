@@ -636,6 +636,15 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **Compiling many classical calls on several controllers takes time in
+  proportion to the program.** On a control system of several controllers,
+  a call's budget takes the controllers that play what uses its answer: the
+  line a branch on the answer drives, followed through every branch after
+  it. That was followed again for every call, so a program of n calls, each
+  with a branch on its answer, did n times n steps: eight times the calls
+  took 64 times the work. What each value reaches is now followed once for
+  all the calls of a function. No budget, instance or message changes.
+
 - **A classical function of the user's cannot take the name of a decoder
   message version.** cudaq-pulse names the versions of the CUDA-Q QEC
   decoder messages by decoder and length (`enqueue_syndromes__0_1`,
