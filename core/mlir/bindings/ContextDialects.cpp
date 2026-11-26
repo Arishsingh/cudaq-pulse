@@ -24,7 +24,6 @@
 #include <string>
 
 #include "cudaq-pulse/Dialect/Classical/ClassicalDialect.h.inc"
-#include "cudaq-pulse/Dialect/CuDensityMat/CuDensityMatDialect.h.inc"
 #include "cudaq-pulse/Dialect/Pulse/PulseDialect.h.inc"
 #include "cudaq-pulse/Dialect/QOp/QOpDialect.h.inc"
 
@@ -42,9 +41,8 @@ mlir::DialectRegistry sharedContextDialects() {
   registry.insert<mlir::ub::UBDialect>();
   // What simulation lowers a copy to in the module's own context.
   registry.insert<qop::QOpDialect>();
-  // Made only on the way to LLVM, whose own dialect, by far the largest to
-  // load, is the one left out.
-  registry.insert<cudm::CuDensityMatDialect>();
+  // Left out: the cuDensityMat and LLVM dialects, which only the lowering to
+  // LLVM makes. Loading the LLVM dialect is most of loading them all.
   return registry;
 }
 

@@ -71,7 +71,7 @@ def test_a_shared_context_refuses_a_pipeline_that_needs_another_dialect():
     module = _compile()._concrete().resolve_selects()
     text = module.print()
     with pytest.raises(
-        RuntimeError, match="run_passes: a pass makes operations of the 'llvm' dialect"
+        RuntimeError, match="run_passes: a pass makes operations of the 'cudm' dialect"
     ):
         module.run_passes(TO_LLVM)
     assert module.print() == text
@@ -85,18 +85,22 @@ def test_a_shared_context_refuses_a_pipeline_that_needs_another_dialect():
 
 
 @pytest.mark.parametrize(
-    "other",
+    "dialect, other",
     [
-        "  llvm.func @elsewhere(%a: i64) -> i64 {\n    llvm.return %a : i64\n  }\n",
-        "  func.func private @other(!llvm.ptr)\n",
+        ("llvm", "  llvm.func @elsewhere(%a: i64) -> i64 {\n    llvm.return %a : i64\n  }\n"),
+        ("llvm", "  func.func private @other(!llvm.ptr)\n"),
+        (
+            "cudm",
+            "  func.func @other() {\n    %h = cudm.init_handle : !cudm.handle\n    return\n  }\n",
+        ),
     ],
 )
-def test_a_loaded_module_that_names_the_llvm_dialect_is_refused(other):
+def test_a_loaded_module_that_names_a_dialect_of_the_llvm_lowering_is_refused(dialect, other):
     system = pulse.quantum_system("transmon_surface17")
     text = MODULE.rstrip().removesuffix("}") + other + "}\n"
     with pytest.raises(
         pulse.CompilationError,
-        match='Dialect `llvm\' not found|"llvm".* unregistered dialect',
+        match=f'Dialect `{dialect}\' not found|"{dialect}".* unregistered dialect',
     ):
         pulse.load(text, entry="round", qudits=system.qudits[:2])
     assert pulse.load(MODULE, entry="round", qudits=system.qudits[:2]).mlir()
