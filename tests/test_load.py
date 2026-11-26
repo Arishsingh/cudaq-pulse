@@ -1199,6 +1199,190 @@ def test_calls_nested_too_deep_are_refused(system):
     assert pulse.load(_chain(200, 1), entry="shot", qudits=system.qudits[:1]).schedule
 
 
+def _passes_on(name, callee):
+    return (
+        f"  func.func private @{name}(%d: !pulse.drive_line, %t: !pulse.tone) -> ({T}) "
+        f"{_long(8)} {{\n"
+        f"    %d1, %t1 = pulse.call @{callee}(%d, %t) {_at(0, 8)} : ({T}) -> ({T})\n"
+        f"    return %d1, %t1 : {T}\n  }}"
+    )
+
+
+def _two_chains(levels):
+    """@shot calls @g0, the first of *levels* functions that each call the
+    next, then @h0, the first of *levels* more, the last of which calls
+    @g0."""
+    parts = ["module {", LEAF]
+    for k in range(levels):
+        parts.append(_passes_on(f"g{k}", f"g{k + 1}" if k + 1 < levels else "leaf"))
+    for k in range(levels):
+        parts.append(_passes_on(f"h{k}", f"h{k + 1}" if k + 1 < levels else "g0"))
+    parts.append(f"""  func.func @shot(%q: !pulse.qudit) {TIMED} {{
+    %d, %t = pulse.get_drive_line %q : (!pulse.qudit) -> ({T})
+    %d1, %t1 = pulse.call @g0(%d, %t) {_at(0, 8)} : ({T}) -> ({T})
+    %d2, %t2 = pulse.call @h0(%d1, %t1) {_at(8, 8)} : ({T}) -> ({T})
+    return
+  }}
+}}""")
+    return "\n".join(parts)
+
+
+def test_calls_nested_too_deep_through_a_function_counted_before_are_refused(system):
+    # @g0's 150 levels are counted for the first call; the second reaches
+    # them below 150 more.
+    with pytest.raises(pulse.CompilationError, match="the calls of shot nest deeper than 256"):
+        pulse.load(_two_chains(150), entry="shot", qudits=system.qudits[:1])
+    program = pulse.load(_two_chains(100), entry="shot", qudits=system.qudits[:1])
+    assert [(start, duration) for _, _, start, duration in events(program)] == [(0, 8), (8, 8)]
+
+
+def _nested_calls(functions, ifs):
+    """@f0 .. each calls the next inside *ifs* nested branches on a
+    measurement; the last calls @leaf."""
+    parts = ["module {", LEAF]
+    for k in range(functions):
+        last = k + 1 == functions
+        callee, args = ("leaf", "%d, %t") if last else (f"f{k + 1}", "%d, %t, %m")
+        types = T if last else f"{T}, !pulse.measurement"
+        body = [
+            f"  func.func private @f{k}(%d: !pulse.drive_line, %t: !pulse.tone, "
+            f"%m: !pulse.measurement) -> ({T}) {_long(8)} {{",
+            "    %bit = pulse.is_set %m : !pulse.measurement -> i1",
+        ]
+        body += [f"    %r{i}:2 = scf.if %bit -> ({T}) {{" for i in range(ifs)]
+        body.append(f"    %c0, %c1 = pulse.call @{callee}({args}) {_at(0, 8)} : ({types}) -> ({T})")
+        body.append(f"    scf.yield %c0, %c1 : {T}")
+        for i in reversed(range(ifs)):
+            body.append(f"    }} else {{\n      scf.yield %d, %t : {T}\n    }}")
+            if i:
+                body.append(f"    scf.yield %r{i}#0, %r{i}#1 : {T}")
+        body.append(f"    return %r0#0, %r0#1 : {T}\n  }}")
+        parts.append("\n".join(body))
+    parts.append(f"""  func.func @shot(%q: !pulse.qudit, %a: !pulse.qudit) {TIMED} {{
+    %d, %t = pulse.get_drive_line %q : (!pulse.qudit) -> ({T})
+    %r, %rt = pulse.get_readout_line %a : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
+    %n = arith.constant 8 : i64
+    %amp = arith.constant 0.05 : f64
+    %zero = arith.constant 0.0 : f64
+    %w = pulse.square %n, %amp, %zero : i64, f64, f64 -> !pulse.waveform
+    %r1, %rt1, %m = pulse.readout %r, %w, %rt, iq
+        <{{duration_cycles = 8 : i64, start_cycles = 0 : i64}}>
+        : !pulse.readout_line, !pulse.waveform, !pulse.tone
+          -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+    %d1, %t1 = pulse.call @f0(%d, %t, %m) {_at(400, 8)} : ({T}, !pulse.measurement) -> ({T})
+    return
+  }}
+}}""")
+    return "\n".join(parts)
+
+
+def test_calls_that_would_nest_regions_too_deep_are_refused_before_any_is_written(system):
+    # Each function nests 100 branches, under the 254 a function may; written
+    # in place of one another, three of them nest 300.
+    with pytest.raises(
+        pulse.CompilationError, match="the calls of shot nest regions deeper than 256"
+    ):
+        pulse.load(_nested_calls(3, 100), entry="shot", qudits=system.qudits[:2])
+    program = pulse.load(_nested_calls(2, 100), entry="shot", qudits=system.qudits[:2])
+    assert ("drive", 0, 400, 8) in events(program)
+
+
+def _looped(period):
+    """An entry with one drive that starts at 4 in a loop of three trips,
+    *period* cycles apart. No call."""
+    return f"""module {{
+  func.func @shot(%q: !pulse.qudit) {TIMED} {{
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %n = arith.constant 8 : i64
+    %amp = arith.constant 0.5 : f64
+    %zero = arith.constant 0.0 : f64
+    %a, %at = pulse.get_drive_line %q : (!pulse.qudit) -> ({T})
+    %out:2 = scf.for %i = %c0 to %c3 step %c1 iter_args(%l = %a, %lt = %at) -> ({T}) {{
+      %w = pulse.square %n, %amp, %zero : i64, f64, f64 -> !pulse.waveform
+      %l1, %lt1 = pulse.drive %l, %w, %lt
+          {_at(4, 8, f"period_cycles = array<i64: {period}>")}
+          : !pulse.drive_line, !pulse.waveform, !pulse.tone -> {T}
+      scf.yield %l1, %lt1 : {T}
+    }}
+    return
+  }}
+}}"""
+
+
+def test_an_operations_own_period_is_held_to_the_range(system):
+    program = pulse.load(_looped(20), entry="shot", qudits=system.qudits[:1])
+    assert max(e.start_cycles for e in program.schedule) == 44
+    for period in (2**60, -20):
+        with pytest.raises(
+            pulse.CompilationError, match=r"start, duration or period is outside 0 to 2\^50"
+        ):
+            pulse.load(_looped(period), entry="shot", qudits=system.qudits[:1])
+
+
+def test_the_last_trip_of_a_loop_starts_within_the_range(system):
+    # Three trips of a drive that starts at 4: a period of 2**49 is in the
+    # range, and the last trip starts at 2**50 + 4.
+    with pytest.raises(
+        pulse.CompilationError, match=r"shot has an operation in a loop whose last trip starts"
+    ):
+        pulse.load(_looped(2**49), entry="shot", qudits=system.qudits[:1])
+    program = pulse.load(_looped(2**48), entry="shot", qudits=system.qudits[:1])
+    assert max(e.start_cycles for e in program.schedule) == 2**49 + 4
+    # The same for the drives calls write, which take the calls' periods.
+    calls = LOOP.replace("period_cycles = array<i64: 20>", f"period_cycles = array<i64: {2**49}>")
+    assert calls != LOOP
+    with pytest.raises(
+        pulse.CompilationError,
+        match=r"last trip starts past 2\^50 cycles once its calls are written out",
+    ):
+        pulse.load(calls, entry="shot", qudits=system.qudits[:1])
+    # The trips are read from constant bounds: a loop without them is
+    # refused, wherever in it the timed operation is.
+    summed = _looped(20).replace(
+        "    %out:2 = scf.for %i = %c0 to %c3 ",
+        "    %c2 = arith.constant 2 : index\n    %sum = arith.addi %c1, %c2 : index\n"
+        "    %out:2 = scf.for %i = %c0 to %sum ",
+    )
+    assert summed != _looped(20)
+    with pytest.raises(
+        pulse.CompilationError, match="timed operation in a loop whose bounds are not constants"
+    ):
+        pulse.load(summed, entry="shot", qudits=system.qudits[:1])
+    # Bounds whose difference overflows a trip count, and a loop that
+    # counts unsigned, give no count to rely on either.
+    wide = (
+        _looped(20)
+        .replace("%c0 = arith.constant 0 : index", f"%c0 = arith.constant {-(2**63)} : index")
+        .replace("%c3 = arith.constant 3 : index", f"%c3 = arith.constant {2**63 - 1} : index")
+        .replace("%c1 = arith.constant 1 : index", f"%c1 = arith.constant {2**62} : index")
+    )
+    unsigned = _looped(20).replace("scf.for %i = %c0", "scf.for unsigned %i = %c0")
+    typed = re.sub(r"(%c[013] = arith\.constant \d) : index", r"\1 : i64", _looped(20)).replace(
+        f"-> ({T}) {{\n      %w", f"-> ({T}) : i64 {{\n      %w"
+    )
+    for text in (wide, unsigned, typed):
+        assert text != _looped(20)
+        with pytest.raises(
+            pulse.CompilationError, match="in a loop whose bounds are not constants"
+        ):
+            pulse.load(text, entry="shot", qudits=system.qudits[:1])
+    # And a loop that is not an scf.for has no trips to count.
+    whiled = _looped(20)
+    head = whiled[whiled.index("    %out:2 = scf.for") : whiled.index("      %w = pulse.square")]
+    whiled = whiled.replace(
+        head,
+        f"    %no = arith.constant false\n"
+        f"    %out:2 = scf.while (%l = %a, %lt = %at) : ({T}) -> ({T}) {{\n"
+        f"      scf.condition(%no) %l, %lt : {T}\n"
+        f"    }} do {{\n"
+        f"    ^bb0(%l: !pulse.drive_line, %lt: !pulse.tone):\n",
+    ).replace("period_cycles = array<i64: 20>, ", "")
+    with pytest.raises(pulse.CompilationError, match="neither a branch nor an scf.for loop"):
+        pulse.load(whiled, entry="shot", qudits=system.qudits[:1])
+
+
 def _attribute(value):
     return MODULE.replace("module {", "module attributes {made.by = " + value + "} {", 1)
 
