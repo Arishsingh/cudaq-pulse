@@ -300,18 +300,24 @@ static void conditionMeasurements(mlir::Value value,
                                   llvm::SmallVectorImpl<mlir::Value> &found,
                                   llvm::DenseSet<mlir::Value> &seen,
                                   bool throughAnswers) {
-  if (mlir::isa<classical::LinkType>(value.getType()) ||
-      !seen.insert(value).second)
-    return;
-  if (mlir::isa<pulse::MeasurementType>(value.getType())) {
-    found.push_back(value);
-    return;
+  // The values still to follow, the next one last: an operation's operands
+  // in their order, each with all it is computed from before the next.
+  llvm::SmallVector<mlir::Value, 16> todo{value};
+  while (!todo.empty()) {
+    mlir::Value next = todo.pop_back_val();
+    if (mlir::isa<classical::LinkType>(next.getType()) ||
+        !seen.insert(next).second)
+      continue;
+    if (mlir::isa<pulse::MeasurementType>(next.getType())) {
+      found.push_back(next);
+      continue;
+    }
+    mlir::Operation *def = next.getDefiningOp();
+    if (!def || (!throughAnswers && mlir::isa<classical::WaitOp>(def)))
+      continue;
+    for (mlir::Value operand : llvm::reverse(def->getOperands()))
+      todo.push_back(operand);
   }
-  mlir::Operation *def = value.getDefiningOp();
-  if (!def || (!throughAnswers && mlir::isa<classical::WaitOp>(def)))
-    return;
-  for (mlir::Value operand : def->getOperands())
-    conditionMeasurements(operand, found, seen, throughAnswers);
 }
 
 static llvm::SmallVector<mlir::Value>
@@ -737,33 +743,43 @@ struct LoopGroups {
 static void conditionWaits(mlir::Value value,
                            llvm::SmallVectorImpl<mlir::Operation *> &found,
                            llvm::DenseSet<mlir::Value> &seen) {
-  if (!seen.insert(value).second)
-    return;
-  mlir::Operation *def = value.getDefiningOp();
-  if (!def)
-    return;
-  if (mlir::isa<classical::WaitOp>(def)) {
-    found.push_back(def);
-    return;
+  // As conditionMeasurements follows: the next value last.
+  llvm::SmallVector<mlir::Value, 16> todo{value};
+  while (!todo.empty()) {
+    mlir::Value next = todo.pop_back_val();
+    if (!seen.insert(next).second)
+      continue;
+    mlir::Operation *def = next.getDefiningOp();
+    if (!def)
+      continue;
+    if (mlir::isa<classical::WaitOp>(def)) {
+      found.push_back(def);
+      continue;
+    }
+    for (mlir::Value operand : llvm::reverse(def->getOperands()))
+      todo.push_back(operand);
   }
-  for (mlir::Value operand : def->getOperands())
-    conditionWaits(operand, found, seen);
 }
 
 /// Whether `value` is computed from a measurement other than through the
 /// answer of a call.
 static bool readsMeasurement(mlir::Value value,
                              llvm::DenseSet<mlir::Value> &seen) {
-  if (!seen.insert(value).second)
-    return false;
-  if (mlir::isa<pulse::MeasurementType>(value.getType()))
-    return true;
-  mlir::Operation *def = value.getDefiningOp();
-  if (!def || mlir::isa<classical::WaitOp>(def))
-    return false;
-  return llvm::any_of(def->getOperands(), [&](mlir::Value operand) {
-    return readsMeasurement(operand, seen);
-  });
+  // As conditionMeasurements follows, up to the first measurement.
+  llvm::SmallVector<mlir::Value, 16> todo{value};
+  while (!todo.empty()) {
+    mlir::Value next = todo.pop_back_val();
+    if (!seen.insert(next).second)
+      continue;
+    if (mlir::isa<pulse::MeasurementType>(next.getType()))
+      return true;
+    mlir::Operation *def = next.getDefiningOp();
+    if (!def || mlir::isa<classical::WaitOp>(def))
+      continue;
+    for (mlir::Value operand : llvm::reverse(def->getOperands()))
+      todo.push_back(operand);
+  }
+  return false;
 }
 
 /// The groups of `loop`'s carried values, or none when their independence
@@ -2115,29 +2131,36 @@ private:
   static void valueMeasurements(mlir::Value value,
                                 llvm::SmallVectorImpl<mlir::Value> &found,
                                 llvm::DenseSet<mlir::Value> &seen) {
-    if (!seen.insert(value).second)
-      return;
-    if (mlir::isa<pulse::MeasurementType>(value.getType())) {
-      found.push_back(value);
-      return;
+    // The values still to follow, the next one last: what a value is
+    // computed from in order (a branch's condition, then what each arm
+    // yields; an operation's operands), each to its end before the next.
+    llvm::SmallVector<mlir::Value, 16> todo{value};
+    while (!todo.empty()) {
+      mlir::Value next = todo.pop_back_val();
+      if (!seen.insert(next).second)
+        continue;
+      if (mlir::isa<pulse::MeasurementType>(next.getType())) {
+        found.push_back(next);
+        continue;
+      }
+      if (isTimedType(next.getType()))
+        continue;
+      mlir::Operation *def = next.getDefiningOp();
+      if (!def || mlir::isa<classical::WaitOp>(def))
+        continue;
+      if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(def)) {
+        auto index = mlir::cast<mlir::OpResult>(next).getResultNumber();
+        if (!branch.getElseRegion().empty())
+          todo.push_back(branch.elseYield().getOperand(index));
+        todo.push_back(branch.thenYield().getOperand(index));
+        todo.push_back(branch.getCondition());
+        continue;
+      }
+      if (def->getNumRegions())
+        continue;
+      for (mlir::Value operand : llvm::reverse(def->getOperands()))
+        todo.push_back(operand);
     }
-    if (isTimedType(value.getType()))
-      return;
-    mlir::Operation *def = value.getDefiningOp();
-    if (!def || mlir::isa<classical::WaitOp>(def))
-      return;
-    if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(def)) {
-      valueMeasurements(branch.getCondition(), found, seen);
-      auto index = mlir::cast<mlir::OpResult>(value).getResultNumber();
-      valueMeasurements(branch.thenYield().getOperand(index), found, seen);
-      if (!branch.getElseRegion().empty())
-        valueMeasurements(branch.elseYield().getOperand(index), found, seen);
-      return;
-    }
-    if (def->getNumRegions())
-      return;
-    for (mlir::Value operand : def->getOperands())
-      valueMeasurements(operand, found, seen);
   }
 
   /// The measurements the operands of timed op `op` other than its line and

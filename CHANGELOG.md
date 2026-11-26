@@ -607,6 +607,16 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A value computed through very many operations no longer ends the
+  process.** Several walks over what a value is computed from, or over what
+  it reaches, called themselves once per operation: a run-time selected
+  value that reached a waveform through about a hundred thousand
+  operations, or a call's argument computed through as many on a control
+  system of several controllers, ended the compile with a segmentation
+  fault. The walks of select lowering, of the schedule passes, of
+  `pulse-verify` and of the calls' timing now keep what is still to follow
+  on a stack of their own, in the order they visited it before.
+
 - **A classical function of the user's cannot take the name of a decoder
   message version.** cudaq-pulse names the versions of the CUDA-Q QEC
   decoder messages by decoder and length (`enqueue_syndromes__0_1`,

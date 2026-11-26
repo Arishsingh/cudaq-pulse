@@ -171,25 +171,32 @@ inline bool readers(mlir::Value value, const pulse::Controllers &controllers,
                     pulse::AllocationTracer &trace,
                     llvm::SmallVectorImpl<int64_t> &found,
                     llvm::DenseSet<mlir::Value> &seen) {
-  if (!seen.insert(value).second)
-    return true;
-  if (auto readout = value.getDefiningOp<pulse::ReadoutOp>()) {
-    if (value != readout.getResult())
-      return true;
-    int64_t reader = controllers.of(readout->getOperand(0), trace);
-    if (!llvm::is_contained(found, reader))
-      found.push_back(reader);
-    return reader >= 0;
+  // The values still to follow, the next one last: an operation's operands
+  // in their order, each with all it is computed from before the next.
+  llvm::SmallVector<mlir::Value, 16> todo{value};
+  while (!todo.empty()) {
+    mlir::Value next = todo.pop_back_val();
+    if (!seen.insert(next).second)
+      continue;
+    if (auto readout = next.getDefiningOp<pulse::ReadoutOp>()) {
+      if (next != readout.getResult())
+        continue;
+      int64_t reader = controllers.of(readout->getOperand(0), trace);
+      if (!llvm::is_contained(found, reader))
+        found.push_back(reader);
+      if (reader < 0)
+        return false;
+      continue;
+    }
+    if (mlir::isa<pulse::DriveLineType, pulse::ReadoutLineType, pulse::ToneType,
+                  LinkType>(next.getType()))
+      continue;
+    mlir::Operation *def = next.getDefiningOp();
+    if (!def || mlir::isa<WaitOp, SubmitOp>(def) || def->getNumRegions())
+      continue;
+    for (mlir::Value operand : llvm::reverse(def->getOperands()))
+      todo.push_back(operand);
   }
-  if (mlir::isa<pulse::DriveLineType, pulse::ReadoutLineType, pulse::ToneType,
-                LinkType>(value.getType()))
-    return true;
-  mlir::Operation *def = value.getDefiningOp();
-  if (!def || mlir::isa<WaitOp, SubmitOp>(def) || def->getNumRegions())
-    return true;
-  for (mlir::Value operand : def->getOperands())
-    if (!readers(operand, controllers, trace, found, seen))
-      return false;
   return true;
 }
 
