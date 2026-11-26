@@ -222,6 +222,16 @@ The data qudit's line now holds a wait from cycle 80 to 240, the echo from
 240 to 320 and a wait to 480; every operation of ``syndrome`` starts where
 it did, and the program is as long as it was (280 ns).
 
+.. themed-figure:: figures/idle_window_fill.svg
+   :alt: Two timelines of the syndrome kernel on D1's drive line and X1's drive and readout lines. As compiled, D1 has an X90 pulse, then an idle window from 40 to 240 ns while the ancilla is read out, then a second X90 pulse. After replace_idle, the window holds a wait, the echo pulse from 120 to 160 ns and a wait, and every other pulse starts where it did. The X and echo pulses have a small Q quadrature, drawn dashed.
+   :width: 100%
+
+   The schedule of ``syndrome`` as compiled and with the idle window
+   filled. The axis is in nanoseconds, and one nanosecond is two cycles
+   of the system's 2 GHz clock: the shaded stretch, 40 to 240 ns, is the
+   window of the report above, cycles 80 to 480. Dashed blue is a pulse's
+   Q quadrature, where it is large enough to draw.
+
 **Windows.** A qudit idles while its drive line has no operation, its
 line's tone does not play from another line (a cross-resonance pulse at its
 tone makes it busy), and its own readout does not run, in any iteration of
