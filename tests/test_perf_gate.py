@@ -1630,17 +1630,20 @@ def test_a_function_is_named_short_in_the_shift_detail():
 # main's (run0 of each): each listed function's own instructions and calls on
 # both sides, one of the program's own functions, and the rest of the row.
 _KEYED = json.loads((Path(__file__).parent / "perf_gate_address_keyed.json").read_text())
-_KEYED_ROWS = next(iter(_KEYED.values()))
+_KEYED_ROWS = next(rows for label, rows in _KEYED.items() if label.startswith("#274"))
+# coupling-lines-5: each listed lookup entered twice more than on its base
+# (two more ops and a type registered).
+_COUPLING = next(rows for label, rows in _KEYED.items() if label.startswith("coupling-lines-5"))
 
 
-def _keyed_sides(case):
+def _keyed_sides(case, rows=_KEYED_ROWS):
     """A recorded row as the judgement reads it: each side's own
     instructions and calls by function."""
     after, before, tree_calls, base_calls = {}, {}, {}, {}
-    for obj, name, b, a, n, m in _KEYED_ROWS[case]["functions"]:
+    for obj, name, b, a, n, m in rows[case]["functions"]:
         before[obj, name], after[obj, name] = b, a
         base_calls[obj, name], tree_calls[obj, name] = n, m
-    rest_before, rest_after = _KEYED_ROWS[case]["rest"]
+    rest_before, rest_after = rows[case]["rest"]
     before["", "(the rest)"], after["", "(the rest)"] = rest_before, rest_after
     return after, before, tree_calls, base_calls
 
@@ -1717,15 +1720,53 @@ def test_the_rest_is_held_to_the_stored_baseline_not_to_a_base_that_drifted():
     assert row.verdict == "slower"
 
 
-def test_a_listed_function_entered_more_often_stays_in_the_rest_and_fails():
+def test_a_listed_function_entered_many_more_times_stays_in_the_rest_and_fails():
     after, before, tree_calls, base_calls = _keyed_sides("first_compile")
     uniquer = next(f for f in after if "getParametricStorageTypeImpl" in f[1])
-    tree_calls[uniquer] += 1
+    # 200 more entries, far beyond 1% of 984, at the same cost per call.
+    after[uniquer] += 200 * after[uniquer] // tree_calls[uniquer]
+    tree_calls[uniquer] += 200
     row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
     assert row.verdict == "slower"
     assert any(
-        "getParametricStorageTypeImpl" in s and "calls 984 -> 985" in s for s in row.keyed.left_in
+        "getParametricStorageTypeImpl" in s and "calls 984 -> 1,184, more than 9 apart" in s
+        for s in row.keyed.left_in
     )
+
+
+def test_the_coupling_row_passes_with_its_few_extra_entries_counted_as_work():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile", _COUPLING)
+    baseline = _COUPLING["first_compile"]["baseline"]
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls, baseline)
+    assert row.delta > gate.REGRESSION
+    assert row.keyed.against_baseline == pytest.approx(0.00335, abs=5e-5)
+    assert row.verdict == "address-keyed"
+    insert = next(s for s in row.keyed.taken_out if "RegisteredOperationName::insert" in s)
+    assert "443 -> 445 calls, 911.2 -> 928.7 per call, taken out +7,797" in insert
+    assert "left in for +2 calls +1,822" in insert
+
+
+def test_the_entry_cap_is_one_percent_of_the_base_and_at_least_one():
+    assert [gate.entry_cap(n) for n in (0, 40, 99, 100, 443, 984)] == [1, 1, 1, 1, 4, 9]
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile", _COUPLING)
+    insert = next(f for f in after if "RegisteredOperationName::insert" in f[1])
+    for extra, taken in ((4, True), (5, False)):
+        calls = dict(tree_calls)
+        calls[insert] = base_calls[insert] + extra
+        keyed = gate.judge_address_keyed(after, before, calls, base_calls)
+        assert any("RegisteredOperationName::insert" in s for s in keyed.taken_out) is taken
+
+
+def test_fewer_entries_credit_the_rest_at_the_bases_cost_per_call():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    uniquer = next(f for f in after if "getParametricStorageTypeImpl" in f[1])
+    # Two fewer entries, each at the tree's cost per call.
+    per_call = after[uniquer] / tree_calls[uniquer]
+    after[uniquer] -= round(2 * per_call)
+    tree_calls[uniquer] -= 2
+    keyed = gate.judge_address_keyed(after, before, tree_calls, base_calls)
+    text = next(s for s in keyed.taken_out if "getParametricStorageTypeImpl" in s)
+    assert "984 -> 982 calls" in text and "left in for -2 calls -1,089" in text
 
 
 def test_a_listed_function_never_called_on_either_side_is_not_taken_out():

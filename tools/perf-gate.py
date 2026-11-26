@@ -1337,6 +1337,19 @@ def address_keyed_judgement(tree: str, base: str) -> Keyed | None:
     )
 
 
+# How many more or fewer times than its base a row may enter a listed
+# function and still have its change in cost per call taken out: 1% of the
+# base's entries, and at least one. With so few new entries the cost per
+# call is measured almost wholly on the base's own keys.
+ADDRESS_KEYED_ENTRIES = 0.01
+
+
+def entry_cap(entries: int) -> int:
+    """The most entries a listed function may gain or lose against
+    *entries* on the base and still be judged by its cost per call."""
+    return max(1, int(ADDRESS_KEYED_ENTRIES * entries))
+
+
 def judge_address_keyed(
     after: dict[Function, int],
     before: dict[Function, int],
@@ -1344,9 +1357,12 @@ def judge_address_keyed(
     base_calls: Calls,
 ) -> Keyed | None:
     """From each function's own instructions (*after* in the tree, *before*
-    on the base) and its calls: the ADDRESS_KEYED functions entered as
-    often on both sides, and at least once, are taken out. None when none
-    of them moved, where the rule has nothing to judge."""
+    on the base) and its calls: for each ADDRESS_KEYED function entered at
+    least once on both sides, and at most entry_cap more or fewer times in
+    the tree, its change in cost per call over the tree's entries is taken
+    out, and the entries it gained or lost stay in at the base's cost per
+    call. None when nothing was taken out, where the rule has nothing to
+    judge."""
     total, tree_total = sum(before.values()), sum(after.values())
     if not total or not tree_total:
         return None
@@ -1358,14 +1374,27 @@ def judge_address_keyed(
         n, m = base_calls.get(function, 0), tree_calls.get(function, 0)
         a, b = after.get(function, 0), before.get(function, 0)
         name = f"{function[0]}:{_short(function[1])}"
-        if n == m and n:
-            excluded += a - b
-            if a != b:
+        if n and m and abs(m - n) <= entry_cap(n):
+            # Its change in cost per call over the tree's entries; the
+            # entries it gained or lost stay in the rest at the base's
+            # cost per call.
+            took = m * (a / m - b / n)
+            excluded += took
+            if m == n and a != b:
                 taken_out.append(
                     f"{name} ({n:,} calls, {b / n:,.1f} -> {a / n:,.1f} per call, {a - b:+,})"
                 )
+            elif m != n:
+                taken_out.append(
+                    f"{name} ({n:,} -> {m:,} calls, {b / n:,.1f} -> {a / m:,.1f} per call, "
+                    f"taken out {took:+,.0f}, left in for {m - n:+,} calls "
+                    f"{(m - n) * b / n:+,.0f})"
+                )
         elif a != b or n != m:
-            left_in.append(f"{name} (calls {n:,} -> {m:,}, {a - b:+,})")
+            left_in.append(
+                f"{name} (calls {n:,} -> {m:,}, more than {entry_cap(n) if n else 0} apart, "
+                f"{a - b:+,})"
+            )
     if not taken_out:
         return None
     whole = tree_total - total
@@ -1834,23 +1863,29 @@ address-keyed functions:
   TypeID). A change that moves the build's layout moves their cost per
   call while they do the same work. A row that fails as a regression,
   and that this job measured on its base (either way above), is also
-  judged on its count less the change of the listed functions it entered
-  exactly as often as the base (and at least once): when that rest is at
-  most its tolerance (0.4% unless the case declares its own) above the
-  stored baseline, it passes as "address-keyed", with a notice that gives
-  its whole change from the baseline and from the base, the rest's, and
-  each function taken out with its calls and its cost per call on both
-  sides; it is not a gain to keep and the baseline is not changed. The
-  base only shows which listed functions were entered as often: the rest
-  is held to the stored baseline, so changes merged one after another
-  cannot add up. A listed function entered a different number of times
-  is left in the rest and named. The base is compared only when the change
-  keeps the MLIR toolchain's lock and fetch script, pyproject.toml and
-  uv.lock, so the listed functions' code is the same on both sides and
-  only their probes differ. A name is added to the list in a pull request
-  of its own, with what it keys on and the CI runs that showed it
-  entered as often on both sides with its cost per call moved, and the
-  owner approves it; only MLIR or LLVM functions may be listed.
+  judged on its count less the change in cost per call of the listed
+  functions it entered as often as the base, or at most 1% of the base's
+  entries (and at least one) more or fewer times, over its own entries;
+  the entries gained or lost stay in the rest at the base's cost per
+  call, so more work is counted as work at the base's price, and a
+  function entered more or fewer times than that keeps all its change in
+  the rest. When that rest is at most its tolerance (0.4% unless the
+  case declares its own) above the stored baseline, it passes as
+  "address-keyed", with a notice that gives its whole change from the
+  baseline and from the base, the rest's, and each function taken out
+  with its calls and its cost per call on both sides, and for one
+  entered more or fewer times what was taken out and what was left in
+  for those entries; it is not a gain to keep and the baseline is not
+  changed. The base only shows which listed functions were entered as
+  often, or nearly so: the rest is held to the stored baseline, so
+  changes merged one after another cannot add up. The base is compared
+  only when the change keeps the MLIR toolchain's lock and fetch script,
+  pyproject.toml and uv.lock, so the listed functions' code is the same
+  on both sides and only their probes differ. A name is added to the
+  list in a pull request of its own, with what it keys on and the CI
+  runs that showed it entered as often on both sides with its cost per
+  call moved, and the owner approves it; only MLIR or LLVM functions may
+  be listed.
 """
 
 
