@@ -667,6 +667,18 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   and the simulation goes from 7,915 ms to 7,895 ms (NVIDIA RTX A6000,
   driver 570.211.01, CUDA runtime 12.9.79, cuDensityMat 0.7.1). Which
   intervals are split, and every result, are as before.
+- **`controller.unroll` carries the time of rolled loops to their events.**
+  Every event of a format /2 program added up the periods of the loops
+  around it, and every iteration of a loop copied the list of those loops.
+  A loop now adds its period once per iteration and hands the time to the
+  events inside, and one list of loops serves the whole program. A program
+  of two nested loops and 10,240 events unrolls in 4,013,694 bytecodes
+  where it took 4,380,299, with 20,500 Python calls for 30,742 and 10,243
+  fewer calls of built-in functions (Python 3.12); an event outside every
+  loop saves the same sum. A period that is not an integer, which only an
+  export written elsewhere holds, is still added up at each event, to the
+  same rounding. The format /1 program, its branch numbers and every error
+  are as before.
 
 ### Fixed
 

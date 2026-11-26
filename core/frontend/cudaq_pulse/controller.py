@@ -1392,6 +1392,13 @@ def unroll(program: Mapping[str, Any]) -> dict[str, Any]:
     events: list[dict[str, Any]] = []
     latest: dict[int, int] = {}
     branches: dict[tuple[Any, ...], int] = {}
+    # (depth, iteration, iterations since the first, period, the branches
+    # around the loop) for each rolled loop around the event being written.
+    loops: list[Any] = []
+
+    def branch(condition: Mapping[str, Any]) -> int:
+        inner = tuple(j for _, _, j, _, outer in loops if condition["branch"] not in outer)
+        return branches.setdefault((condition["branch"], inner), len(branches))
 
     def place_of(leaf: Any) -> Any:
         if not isinstance(leaf, dict):
@@ -1436,31 +1443,44 @@ def unroll(program: Mapping[str, Any]) -> dict[str, Any]:
             for update in updates
         ]
 
-    def expand(items: Sequence[Mapping[str, Any]], loops: list[tuple[Any, ...]]) -> None:
-        # loops: (depth, iteration, iterations since the first, period, the
-        # branches around the loop) for each rolled loop around *items*.
+    def expand(items: Sequence[Mapping[str, Any]], whole: int | None) -> None:
+        # whole: the cycles the iterations of ``loops`` start after their
+        # first ones, while every period is a whole number of cycles.
+        nonlocal loops
         for item in items:
-            kind = _FLAT_KINDS.get(item["kind"], item["kind"])
+            kind = item["kind"]
             if kind == "loop":
                 outer = {c["branch"] for c in item.get("conditions", ())}
                 depth = len(item.get("iteration", ()))
                 first = item.get("first_iteration", 0)
-                for j in range(item["trips"]):
-                    loop = (depth, first + j, j, item["period_cycles"], outer)
-                    expand(item["body"], [*loops, loop])
+                period = item.get("period_cycles")
+                # One more loop on the stack, in place and without a call.
+                loops += (None,)
+                if whole is not None and period.__class__ is int:
+                    at = whole
+                    for j in range(item["trips"]):
+                        loops[-1] = (depth, first + j, j, period, outer)
+                        expand(item["body"], at)
+                        at += period
+                else:
+                    for j in range(item["trips"]):
+                        loops[-1] = (depth, first + j, j, item["period_cycles"], outer)
+                        expand(item["body"], None)
+                del loops[-1]
                 continue
-            shift = sum(j * period for _, _, j, period, _ in loops)
+            kind = _FLAT_KINDS.get(kind, kind)
+            if whole is None:
+                # A period of an export written elsewhere that is not an
+                # integer: summed as written, to the same rounding.
+                shift = sum(j * period for _, _, j, period, _ in loops)
+            else:
+                shift = whole
             start, duration = item["start_cycles"], item["duration_cycles"]
             if start is not None:
                 start += shift
             iteration = list(item.get("iteration", ()))
             for depth, k, _, _, _ in loops:
                 iteration[depth] = k
-
-            def branch(condition: Mapping[str, Any]) -> int:
-                inner = tuple(j for _, _, j, _, outer in loops if condition["branch"] not in outer)
-                return branches.setdefault((condition["branch"], inner), len(branches))
-
             conditions = [
                 {
                     "branch": branch(condition),
@@ -1571,7 +1591,7 @@ def unroll(program: Mapping[str, Any]) -> dict[str, Any]:
             latest[place[id(item)]] = event["index"]
             events.append(event)
 
-    expand(program["events"], [])
+    expand(program["events"], 0)
     frame_state = [
         {
             **frame,
@@ -1585,15 +1605,16 @@ def unroll(program: Mapping[str, Any]) -> dict[str, Any]:
         for frame in program.get("frame_state", ())
     ]
     flat_keys = {"controller": "limits"}
-    from . import _clocks
-
     # Format /1 states the rate after the schedule, and only when sampled.
     rate = program["sample_rate_ghz"] if "samples" in program else None
-    if rate is not None and _clocks.made_for(rate, program["clock_ghz"])[1] != 1:
-        raise InvalidValueError(
-            f"format /1 samples at a whole multiple of the clock; this program samples "
-            f"at {rate} GHz on a {program['clock_ghz']} GHz clock"
-        )
+    if rate is not None:
+        from . import _clocks
+
+        if _clocks.made_for(rate, program["clock_ghz"])[1] != 1:
+            raise InvalidValueError(
+                f"format /1 samples at a whole multiple of the clock; this program samples "
+                f"at {rate} GHz on a {program['clock_ghz']} GHz clock"
+            )
     flat: dict[str, Any] = {}
     for k, v in program.items():
         if k in ("programs", "bindings", "waveforms", "samples", "parameters", "sample_rate_ghz"):
