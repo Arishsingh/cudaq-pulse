@@ -51,10 +51,29 @@ def GetDriveLineOp : PulseOp<"get_drive_line", [Pure]> {
   let description = [{
     Returns the drive line and native tone associated with a qudit.
     The returned drive line starts at time t=0.
+
+    A broadcast drive line reaches several qudits with one tone: the op
+    names all of them, lowest index first, and a drive on the line drives
+    every one. Its `frequency_hz` is the frequency of the line's tone.
+
+    ```mlir
+    %line, %tone = pulse.get_drive_line %q0, %q1 {frequency_hz = 5.0e+09 : f64}
+        : (!pulse.qudit, !pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+    ```
   }];
-  let arguments = (ins QuditType:$qudit);
+  let arguments = (ins QuditType:$qudit, Variadic<QuditType>:$others);
   let results = (outs DriveLineType:$line, ToneType:$tone);
-  let assemblyFormat = "$qudit attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$qudit (`,` $others^)? attr-dict `:` functional-type(operands, results)";
+  // The builder of a line of one qudit, as before the line could name more.
+  let builders = [
+    OpBuilder<(ins "::mlir::Type":$line, "::mlir::Type":$tone,
+                   "::mlir::Value":$qudit), [{
+      $_state.addOperands(qudit);
+      $_state.addTypes(line);
+      $_state.addTypes(tone);
+    }]>
+  ];
+  let hasVerifier = 1;
 }
 
 def GetReadoutLineOp : PulseOp<"get_readout_line", [Pure]> {

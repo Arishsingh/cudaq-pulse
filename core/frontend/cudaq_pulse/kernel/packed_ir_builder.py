@@ -355,6 +355,10 @@ class PackedIRBuilder:
     # control system of several controllers. Waveforms are then sampled for
     # the line that plays them.
     sample_rate_of: Callable[[str, int], tuple[int, int] | None] | None = None
+    # The tracer of a program the plain one does not trace: lines of
+    # different sample rates (``_mixed_rates``), a broadcast drive line
+    # (``_broadcast_lines``); compile() sets it. None: ``PulseIREmitter``.
+    tracer: Any = None
     # The control system's model, which names links and whose controllers may fix
     # dispatch keys; compile() sets it. None: links are ids.
     machine: Any = None
@@ -1711,6 +1715,10 @@ class PackedIRBuilder:
         found.unroll_threshold = self.unroll_threshold
         found.machine = self.machine
         found.line_tones = self.line_tones
+        if self.tracer is not None and "broadcast_lines" in self.__dict__:
+            from .._broadcast_lines import armed_like
+
+            armed_like(found, self)
         found.locate_structural = self.locate_structural
         return found
 

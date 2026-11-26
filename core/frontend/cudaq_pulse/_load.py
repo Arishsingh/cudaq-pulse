@@ -99,8 +99,6 @@ def load(
         CompileOptions,
         _check_controller,
         _ClassicalFunctions,
-        _clocked_builder,
-        _clocked_module,
         _lowered,
     )
 
@@ -207,8 +205,8 @@ def load(
             if system is None or machine.controller is not None
             else system._links_attribute(machine, used, target.clock_ghz)
         )
-    clocks = _clocked_builder(_NoTrace(), machine, target)
-    fine_delays = _clocked_module(bound, machine, target, clocks, None)
+    clocks = machine._clocked_builder(_NoTrace(), target)
+    fine_delays = machine._clocked_module(bound, target, clocks, None)
     # The schedule as written is verified on the bound module, as a compiled
     # one is. A module that calls classical functions is also checked against
     # their latencies and its links: an answer is taken no earlier than it
