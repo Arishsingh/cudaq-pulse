@@ -729,11 +729,10 @@ def _decode(code: CodeType) -> DecodedCode:
                 # place; the tracer notes it first. One on a name (x += 1) is
                 # not noted unless its operator is a set's or dict's: a
                 # container a name holds is compared after a branch arm.
+                # index_at has an entry for each instruction up to this
+                # one, so its length is the index of the next.
                 fn = _NB_OPS[iarg]
-                if (
-                    fn in (_op.iand, _op.ior, _op.ixor)
-                    or raw[raw.index(ins) + 1].opname != "STORE_FAST"
-                ):
+                if fn in (_op.iand, _op.ior, _op.ixor) or raw[len(index_at)].opname != "STORE_FAST":
                     out.append([NOTE_INPLACE, None])
                 out.append([BINARY, fn])
         elif name == "BINARY_SLICE":
