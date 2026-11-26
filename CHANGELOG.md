@@ -670,8 +670,7 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   loops was not always reported. Both times change by a fixed amount
   per iteration of each loop, so the check now takes their extreme from
   one amount per loop. The iteration and the times an error names are the
-  ones it named before, and times past 64 bits are compared and printed as
-  they are.
+  ones it named before.
 
 - **Compiling many classical calls on several controllers takes time in
   proportion to the program.** On a control system of several controllers,
