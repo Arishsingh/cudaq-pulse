@@ -685,6 +685,20 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   2^50, one that counts unsigned, and a region other than a branch, a
   schedule block or an `scf.for`. Before, a loop without constant bounds
   was refused only when a drive, a readout or a wait was directly in it.
+
+- **The classical check no longer visits every corner of the loops around
+  a call.** For a call inside D loops, the check that an answer is taken no
+  earlier than it is due, and the check of a `reaction_deadline_ns`,
+  visited 2^D corners of the loops' iterations, also when every loop ran
+  once: each loop more doubled the work. And from 64 loops on the count
+  of corners no longer fit the number that held it, and only the first
+  corner or the first few were visited: an answer taken too early, or a
+  reaction deadline missed, in an iteration other than the first of such
+  loops was not always reported. Both times change by a fixed amount
+  per iteration of each loop, so the check now takes their extreme from
+  one amount per loop. The iteration and the times an error names are the
+  ones it named before.
+
 - **Compiling many classical calls on several controllers takes time in
   proportion to the program.** On a control system of several controllers,
   a call's budget takes the controllers that play what uses its answer: the
