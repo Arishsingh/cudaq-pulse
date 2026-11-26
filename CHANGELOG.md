@@ -653,6 +653,20 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   program's schedule twice, once to check it against the controller's part
   and once to write the controller's events. It builds it once; the export
   is the same.
+- **A GPU interval with no long idle stretch is found without building
+  its operators on the host.** With `backend="gpu"`, an interval of 1024
+  steps or more is checked for an idle stretch long enough to propagate
+  exactly on the host. The check built every operator of the interval as a
+  matrix on the whole register, and only then found that no stretch is
+  idle that long, or that the register is too large to keep a
+  superoperator for (more than 40 levels with collapse operators). It now
+  decides from the terms' supports and the register's size first, and
+  builds matrices only for an interval that has such a stretch; of those
+  it no longer builds the drives', which it did not use. For eight qubits
+  driven through 1024 steps the check took 20 ms or more and takes 0.1 ms,
+  and the simulation goes from 7,915 ms to 7,895 ms (NVIDIA RTX A6000,
+  driver 570.211.01, CUDA runtime 12.9.79, cuDensityMat 0.7.1). Which
+  intervals are split, and every result, are as before.
 
 ### Fixed
 
