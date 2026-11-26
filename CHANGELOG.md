@@ -656,6 +656,25 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **`simulate` finds its default end without listing a long loop's events.**
+  Without `t_end`, a simulation runs to the latest end of the program's
+  events, and built one `ScheduledEvent` per event of every iteration of
+  every loop to find it. Past 10,000 events, a loop kept as a loop now
+  gives its latest end from its last iteration, and below that no event
+  object is built. The end is the same.
+
+- **CPU simulation of drives apart from each other takes time in proportion
+  to the drives.** The CPU integrator steps each stretch of time in which
+  some drive plays, and asked every drive of the interval at every stretch
+  whether it plays there: n drives with idle time between them made n
+  stretches and n times n questions, so eight times the drives took well
+  over eight times as long. Past three stretches, each is now stepped
+  with its own drives alone, sorted into their stretches once. A drive adds
+  nothing outside its stretch and the drives of a stretch add in the same
+  order, so every density matrix is the same to the last bit. A program
+  whose drives overlap, touch or make up to three stretches is stepped as
+  before, and so is a register of detuned coupled qudits whose idle time
+  is propagated in the frame of its couplings.
 - **Finding a program's segments no longer walks a loop that opens none.**
   `segments()` went through every iteration of every loop kept as a loop
   once the program declared a classical function, so a loop of n
