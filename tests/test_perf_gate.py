@@ -1630,17 +1630,20 @@ def test_a_function_is_named_short_in_the_shift_detail():
 # main's (run0 of each): each listed function's own instructions and calls on
 # both sides, one of the program's own functions, and the rest of the row.
 _KEYED = json.loads((Path(__file__).parent / "perf_gate_address_keyed.json").read_text())
-_KEYED_ROWS = next(iter(_KEYED.values()))
+_KEYED_ROWS = next(rows for label, rows in _KEYED.items() if label.startswith("#274"))
+# coupling-lines-5: each listed lookup entered twice more than on its base
+# (two more ops and a type registered).
+_COUPLING = next(rows for label, rows in _KEYED.items() if label.startswith("coupling-lines-5"))
 
 
-def _keyed_sides(case):
+def _keyed_sides(case, rows=_KEYED_ROWS):
     """A recorded row as the judgement reads it: each side's own
     instructions and calls by function."""
     after, before, tree_calls, base_calls = {}, {}, {}, {}
-    for obj, name, b, a, n, m in _KEYED_ROWS[case]["functions"]:
+    for obj, name, b, a, n, m in rows[case]["functions"]:
         before[obj, name], after[obj, name] = b, a
         base_calls[obj, name], tree_calls[obj, name] = n, m
-    rest_before, rest_after = _KEYED_ROWS[case]["rest"]
+    rest_before, rest_after = rows[case]["rest"]
     before["", "(the rest)"], after["", "(the rest)"] = rest_before, rest_after
     return after, before, tree_calls, base_calls
 
@@ -1717,15 +1720,53 @@ def test_the_rest_is_held_to_the_stored_baseline_not_to_a_base_that_drifted():
     assert row.verdict == "slower"
 
 
-def test_a_listed_function_entered_more_often_stays_in_the_rest_and_fails():
+def test_a_listed_function_entered_many_more_times_stays_in_the_rest_and_fails():
     after, before, tree_calls, base_calls = _keyed_sides("first_compile")
     uniquer = next(f for f in after if "getParametricStorageTypeImpl" in f[1])
-    tree_calls[uniquer] += 1
+    # 200 more entries, far beyond 1% of 984, at the same cost per call.
+    after[uniquer] += 200 * after[uniquer] // tree_calls[uniquer]
+    tree_calls[uniquer] += 200
     row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
     assert row.verdict == "slower"
     assert any(
-        "getParametricStorageTypeImpl" in s and "calls 984 -> 985" in s for s in row.keyed.left_in
+        "getParametricStorageTypeImpl" in s and "calls 984 -> 1,184, more than 9 apart" in s
+        for s in row.keyed.left_in
     )
+
+
+def test_the_coupling_row_passes_with_its_few_extra_entries_counted_as_work():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile", _COUPLING)
+    baseline = _COUPLING["first_compile"]["baseline"]
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls, baseline)
+    assert row.delta > gate.REGRESSION
+    assert row.keyed.against_baseline == pytest.approx(0.00335, abs=5e-5)
+    assert row.verdict == "address-keyed"
+    insert = next(s for s in row.keyed.taken_out if "RegisteredOperationName::insert" in s)
+    assert "443 -> 445 calls, 911.2 -> 928.7 per call, taken out +7,797" in insert
+    assert "left in for +2 calls +1,822" in insert
+
+
+def test_the_entry_cap_is_one_percent_of_the_base_and_at_least_one():
+    assert [gate.entry_cap(n) for n in (0, 40, 99, 100, 443, 984)] == [1, 1, 1, 1, 4, 9]
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile", _COUPLING)
+    insert = next(f for f in after if "RegisteredOperationName::insert" in f[1])
+    for extra, taken in ((4, True), (5, False)):
+        calls = dict(tree_calls)
+        calls[insert] = base_calls[insert] + extra
+        keyed = gate.judge_address_keyed(after, before, calls, base_calls)
+        assert any("RegisteredOperationName::insert" in s for s in keyed.taken_out) is taken
+
+
+def test_fewer_entries_credit_the_rest_at_the_bases_cost_per_call():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    uniquer = next(f for f in after if "getParametricStorageTypeImpl" in f[1])
+    # Two fewer entries, each at the tree's cost per call.
+    per_call = after[uniquer] / tree_calls[uniquer]
+    after[uniquer] -= round(2 * per_call)
+    tree_calls[uniquer] -= 2
+    keyed = gate.judge_address_keyed(after, before, tree_calls, base_calls)
+    text = next(s for s in keyed.taken_out if "getParametricStorageTypeImpl" in s)
+    assert "984 -> 982 calls" in text and "left in for -2 calls -1,089" in text
 
 
 def test_a_listed_function_never_called_on_either_side_is_not_taken_out():
@@ -1775,10 +1816,150 @@ def test_a_regression_still_above_the_limit_says_so_outside_the_list():
     reason = gate.failure_reason(row)
     assert "regression" in reason
     assert (
-        "with the address-keyed functions it entered as often as its base 8311de57 taken out: "
+        "judged outside its address-keyed functions: "
         "outside the address-keyed functions +0.56% against the stored baseline" in reason
     )
     assert reason.endswith(": fails")
     # A layout-only row that also fails outside the list says both.
     row.on_base, row.own = True, 0.0085
     assert "outside the address-keyed functions +0.56%" in gate.failure_reason(row)
+
+
+# Rule 550: the listed functions judged like for like against the records the
+# baseline keeps of them. walks-without-recursion failed while main stood
+# +1.02% above the baseline after #274's address-keyed pass.
+_WALKS = next(rows for label, rows in _KEYED.items() if label.startswith("walks-without"))
+
+
+def _walks_row(case, edit=None):
+    """walks' recorded row, failing against the baseline, judged against the
+    baseline's records of its listed functions (*edit* changes its own
+    instructions and calls first)."""
+    c = _WALKS[case]
+    after = {(obj, name): ir for obj, name, ir, _ in c["functions"]}
+    calls = {(obj, name): n for obj, name, _, n in c["functions"]}
+    after["", "(the rest)"] = c["rest"]
+    if edit:
+        edit(after, calls)
+    row = gate.Row(
+        case, c["baseline"], sum(after.values()) / c["reps"], 0.0, None, "same", "slower"
+    )
+    gate.judge_row(row, gate.judge_records(after, calls, c["records"], c["baseline"], c["reps"]))
+    return row
+
+
+def test_a_change_merged_as_address_keyed_does_not_stay_in_later_rows():
+    row = _walks_row("first_compile")
+    assert row.delta == pytest.approx(0.00608, abs=5e-5)
+    assert row.keyed.records and row.keyed.against_baseline == pytest.approx(0.00133, abs=5e-5)
+    assert row.verdict == "address-keyed"
+    (note,) = gate.keyed_notes([row])
+    assert "from its base" not in note and "against the baseline's records" in note
+    assert "443 calls, 911.2 -> 931.9 per call" in note
+
+
+def test_work_outside_the_list_stays_held_to_the_baseline():
+    # walks' specialize_wait: main itself stood +0.23% above the baseline
+    # outside the listed functions, and walks adds about +0.24% more.
+    row = _walks_row("specialize_wait")
+    assert row.keyed.against_baseline == pytest.approx(0.00473, abs=5e-5)
+    assert row.verdict == "slower"
+
+
+def test_no_more_than_two_percent_of_the_baseline_is_taken_out():
+    def eightfold(after, calls):
+        for f in after:
+            if gate.address_keyed(f):
+                after[f] *= 8
+
+    row = _walks_row("first_compile", eightfold)
+    assert row.keyed.too_much and row.verdict == "slower"
+    assert "more than 2% of the baseline's count" in gate.failure_reason(row)
+
+
+def test_a_baseline_records_its_listed_functions_and_they_are_not_a_size():
+    records = {"first_compile": _WALKS["first_compile"]["records"]}
+    measured = gate.as_baseline(
+        {},
+        {"first_compile": {"ops": 1}},
+        {"first_compile": gate.Measured([12_000_000.0], [1.0])},
+        {},
+        {},
+        records=records,
+    )
+    entry = measured["cases"]["first_compile"]
+    assert entry["address_keyed"] == records["first_compile"]
+    (row,) = gate.compare(measured, {"first_compile": {"ops": 1}}, None)
+    assert row.verdict == "ok"
+
+
+def _keyed_dump(entries_a, cost_a, entries_b, cost_b, rest):
+    """A small Callgrind dump of one case: a caller that enters the uniquer
+    lookup in two objects, and the rest of its own work."""
+    name = "mlir::StorageUniquer::getParametricStorageTypeImpl(x)"
+    return "\n".join(
+        [
+            "desc: Trigger: Client Request: case",
+            "events: Ir",
+            "ob=(1) /x/liba.so",
+            "fn=(1) caller",
+            f"0 {rest}",
+            "cob=(2) /x/libb.so",
+            f"cfn=(2) {name}",
+            f"calls={entries_b} 0",
+            f"0 {cost_b}",
+            f"cfn=(3) {name}",
+            f"calls={entries_a} 0",
+            f"0 {cost_a}",
+            "fn=(3)",
+            f"0 {cost_a}",
+            "ob=(2)",
+            "fn=(2)",
+            f"0 {cost_b}",
+            "",
+        ]
+    )
+
+
+def test_records_round_trip_by_name_over_the_objects_that_hold_one():
+    text = _keyed_dump(1000, 500_000, 10, 5_000, 2_000_000)
+    records = gate.address_keyed_records(text, 10)
+    assert records == {"mlir::StorageUniquer::getParametricStorageTypeImpl(x)": [101.0, 50_500.0]}
+    baseline = sum(gate.dump_costs(text).values()) / 10
+    # The same dump against its own records: nothing moved, nothing to judge.
+    assert gate.judge_against_records(text, records, baseline, 10) is None
+    # Each call 10% dearer in both objects: all of it taken out, rest unchanged.
+    dearer = _keyed_dump(1000, 550_000, 10, 5_500, 2_000_000)
+    keyed = gate.judge_against_records(dearer, records, baseline, 10)
+    assert keyed.records and keyed.remainder == pytest.approx(0.0, abs=1e-12)
+    assert keyed.taken_out == (
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(...) "
+        "(1,010 calls, 500.0 -> 550.0 per call, +50,500)",
+    )
+
+
+def test_a_listed_function_s_own_cost_without_calls_in_an_object_counts_on_both_sides():
+    # Its own instructions in a third object it has no calls into there.
+    name = "mlir::StorageUniquer::getParametricStorageTypeImpl(x)"
+    extra = f"\nob=(3) /x/libc.so\nfn=(4) {name}\n0 7000\n"
+    text = _keyed_dump(1000, 500_000, 10, 5_000, 2_000_000) + extra
+    records = gate.address_keyed_records(text, 10)
+    baseline = sum(gate.dump_costs(text).values()) / 10
+    assert gate.judge_against_records(text, records, baseline, 10) is None
+
+
+def test_the_gate_judges_a_regression_against_the_records_for_its_repetitions():
+    text = _keyed_dump(1000, 500_000, 10, 5_000, 2_000_000)
+    records = {"case": gate.address_keyed_records(text, 10)}
+    baseline = sum(gate.dump_costs(text).values()) / 10
+    # Each call 3% dearer: 0.6% of the row taken out, within the 2% bound.
+    dearer = _keyed_dump(1000, 515_000, 10, 5_150, 2_000_000)
+    row = gate.Row(
+        "case", baseline, sum(gate.dump_costs(dearer).values()) / 10, 0.0, None, "same", "slower"
+    )
+    gate.apply_address_keyed([row], {"case": dearer}, {}, records, {"case": 10})
+    assert row.verdict == "address-keyed" and row.keyed.records
+    # Without the case's repetitions, nothing judges it against the records.
+    other = gate.Row("case", baseline, row.measured, 0.0, None, "same", "slower")
+    gate.apply_address_keyed([other], {"case": dearer}, {}, records, {})
+    assert other.verdict == "slower" and other.keyed is None
