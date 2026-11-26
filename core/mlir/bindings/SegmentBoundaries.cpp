@@ -86,5 +86,7 @@ void cudaq_pulse::walkSegmentBoundaries(
     mlir::Block &block, mlir::StringAttr variable, mlir::StringAttr blocking,
     llvm::function_ref<void(mlir::Operation *, llvm::ArrayRef<int64_t>)>
         visit) {
-  Walk{variable, blocking, visit, {}, {}}.run(block);
+  Walk walk{variable, blocking, visit, llvm::SmallVector<int64_t, 2>(),
+            llvm::SmallDenseMap<mlir::Operation *, bool, 4>()};
+  walk.run(block);
 }
