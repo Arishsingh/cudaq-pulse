@@ -636,6 +636,23 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **`pulse.load` holds a module's calls and loops to the bounds it states.**
+  Several of the bounds the guide gives for a loaded module could be passed.
+  Calls nest at most 256 deep, but a function already counted for an
+  earlier call was not measured again, so a second call that reached it
+  below 250 more functions loaded. Regions nest at most 256 deep, but only
+  in the module as given: functions that each nest 200 branches around a
+  call of the next loaded as one function nesting thousands. And an
+  operation's own `period_cycles` was not held to 0 to 2^50 cycles, as
+  its start, its duration and a call's periods are. Each is now refused,
+  the first two before any call is written in place. A loop's last trip is
+  held to the range as well: an operation whose start and periods are in
+  it, and whose start in the last trip of its loops is past 2^50 cycles,
+  is refused. So is a timed operation in a loop that gives no trip count
+  to check: one whose bounds or step are not index constants of at most
+  2^50, one that counts unsigned, and a region other than a branch, a
+  schedule block or an `scf.for`. Before, a loop without constant bounds
+  was refused only when a drive, a readout or a wait was directly in it.
 - **Compiling many classical calls on several controllers takes time in
   proportion to the program.** On a control system of several controllers,
   a call's budget takes the controllers that play what uses its answer: the
