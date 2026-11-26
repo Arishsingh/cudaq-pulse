@@ -132,7 +132,7 @@ without a fill only lists that stretch:
 .. code-block:: python
 
    listed = compiled.replace_idle(pulse.IdleReplacement(None, threshold=160 * pulse.ns, qudits=[d5]))
-   for window in listed.lower(d5, z2, 0, 0).idle_windows:
+   for window in listed.lower(d5, z2, 0, 0).idle_windows or ():
        print(f"qudit {window.qudit}: cycles {window.start} to {window.end}; {window.result}")
 
 .. code-block:: text

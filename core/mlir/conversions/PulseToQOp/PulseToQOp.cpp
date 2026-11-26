@@ -580,7 +580,7 @@ appendReadoutCrosstalk(ModuleOp module, func::FuncOp mainFunc,
   size_t at = 0;
   for (size_t i = 0; i < pairs.size(); i += 3) {
     const int64_t count = pairs[i + 2];
-    if (count < 1 || at + count > chis.size()) {
+    if (count < 1 || at + static_cast<size_t>(count) > chis.size()) {
       module.emitError("pulse.crosstalk_chi_hz is shorter than "
                        "pulse.crosstalk_pairs says");
       return failure();
@@ -621,9 +621,11 @@ appendReadoutCrosstalk(ModuleOp module, func::FuncOp mainFunc,
   int index = 0;
   for (auto &[occurrence, readOut] : found) {
     auto readout = cast<pulse::ReadoutOp>(occurrence.op);
-    if (!ops.simulated(readOut) ||
+    // Clang < 16 cannot capture a structured binding by name.
+    const int64_t readQudit = readOut;
+    if (!ops.simulated(readQudit) ||
         llvm::none_of(entries, [&](const Entry &entry) {
-          return entry.readOut == readOut && ops.simulated(entry.shifted);
+          return entry.readOut == readQudit && ops.simulated(entry.shifted);
         }))
       continue;
     // Only a readout whose photons can reach into the window: its
