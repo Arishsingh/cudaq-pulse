@@ -1210,6 +1210,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   spacing, detectors and calls that hold the lines. The pulses of an arm
   are paired only with those that can play with them, as when the loop is
   unrolled.
+- **A function with many augmented assignments (`x += 1`) no longer takes
+  time that grows with the square of their number to decode.** For each one
+  the decoder looked for the instruction after it from the function's first
+  instruction. It now reads that instruction directly. What is decoded is
+  the same.
 
 ## [0.1.0] - 2026-11-13
 

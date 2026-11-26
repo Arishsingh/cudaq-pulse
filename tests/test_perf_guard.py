@@ -34,6 +34,7 @@ from typing import Any
 import cudaq_pulse as pulse
 import pytest
 from cudaq_pulse import Controller, ControlSystem
+from cudaq_pulse.kernel._bytecode_normalize import _decode
 from cudaq_pulse.kernel._emitter import PulseIREmitter
 from cudaq_pulse.kernel._unroll import DEFAULT_UNROLL_THRESHOLD
 from cudaq_pulse.kernel.bytecode_bridge import _trace_kernel_with_builder
@@ -343,6 +344,19 @@ def test_a_wide_sync_traces_in_linear_time():
 
     # Eight times the lines: about 8x the time when linear, 64x when not.
     _assert_linear("trace", {n: program(n) for n in (500, 4000)}, 16)
+
+
+@pytest.mark.scaling
+def test_augmented_assignments_are_decoded_in_linear_time():
+    def decoding(n: int):
+        scope = {}
+        exec("def f(x):\n" + "    x += 1\n" * n + "    return x\n", scope)
+        code = scope["f"].__code__
+        return lambda: _decode(code)
+
+    # Eight times the assignments: about 8x the time when linear, 64x when
+    # the instruction after each is looked for from the first.
+    _assert_linear("decode", {n: decoding(n) for n in (1000, 8000)}, 16)
 
 
 @pytest.mark.scaling
