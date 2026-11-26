@@ -670,6 +670,16 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **Compiling a loop with very many classical calls in its body no longer
+  slows with the square of the calls.** To count the requests a link
+  holds at once, the classical check compared each call of the loop with
+  every other, twice: to find from which iteration the loop repeats
+  itself, and to count the requests in flight at each time it looks at.
+  Both are now taken from the calls in order, with the same counts, so
+  the work grows in step with the calls. (A loop whose calls start, or
+  end, in very many different periods of the loop is still counted call
+  by call.)
+
 - **`simulate` finds its default end without listing a long loop's events.**
   Without `t_end`, a simulation runs to the latest end of the program's
   events, and built one `ScheduledEvent` per event of every iteration of
