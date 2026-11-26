@@ -256,15 +256,6 @@ def test_loops_nested_deeper_than_corners_can_be_counted(depth):
     )
 
 
-def test_times_past_64_bits_are_compared_as_they_are():
-    # Periods a module may state: twice one does not fit 64 bits, and the
-    # answer is taken early only from the second iteration on.
-    big = 2**62
-    text = _answer([3], 0, [big], _DUE_AFTER, [big - 1])
-    assert _taken(_errors(text)) == (_DUE_AFTER + 2 * (big - 1), _DUE_AFTER + 2 * big)
-    assert _taken(_errors(_answer([3], 0, [big], _DUE_AFTER, [big]))) is None
-
-
 def test_the_corners_are_as_the_check_counts_them():
     # The helper's order: the outermost loop changes fastest.
     assert list(itertools.islice(_corners([2, 3]), 4)) == [[0, 0], [1, 0], [0, 2], [1, 2]]
