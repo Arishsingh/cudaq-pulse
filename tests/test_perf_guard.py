@@ -607,6 +607,37 @@ def test_rounds_around_repeats_of_a_call_cost_the_same_at_any_repeat_count():
 
 
 @pytest.mark.scaling
+def test_a_loop_of_many_calls_is_counted_in_flight_in_linear_time():
+    from cudaq_pulse._native._cudaq_pulse_native import MLIRPipeline
+
+    from tests.classical.test_check_in_flight import _loop
+
+    def program(calls: int, last: int):
+        # One loop of 100 iterations with *calls* calls in its body, one
+        # after the other, each held past the next two; the last of them
+        # for *last* cycles more.
+        held = [50] * (calls - 1) + [50 + last]
+        text = _loop(100, 20 * calls, [(20 * i, held[i]) for i in range(calls)])
+
+        def run():
+            module = MLIRPipeline().parse_to_module(text)
+            try:
+                module.run_passes(["pulse-classical-check"])
+            except RuntimeError:
+                pass
+
+        return run
+
+    # Eight times the calls: about 8x the time when the runs of the loop
+    # are taken in order, 64x when each is compared with every other. The
+    # same with the last call held into the loop's next period, so that the
+    # ends lie in two periods.
+    for what, last in (("calls in flight", 0), ("a call held over", 100)):
+        runs = {n: program(n, last) for n in (1_000, 8_000)}
+        _assert_linear(what, runs, 8 * TOLERANCE)
+
+
+@pytest.mark.scaling
 def test_calls_with_branches_on_their_answers_are_timed_in_linear_time():
     from cudaq_pulse.quantum_systems import PhysicalQudit
 
