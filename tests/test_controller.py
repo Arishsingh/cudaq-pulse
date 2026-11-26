@@ -303,6 +303,82 @@ def test_a_waveform_a_python_function_plays_cannot_be_sampled():
         sample_waveform(node, 32)
 
 
+def _square(real, imag, duration=40):
+    params = {"duration": duration, "amplitude": real, "amplitude_imag": imag}
+    return {"shape": "square", "params": params}
+
+
+def test_a_numeric_square_fills_its_array_without_a_list_of_its_samples():
+    import tracemalloc
+
+    node = _square(0.25, -0.0, 4096)
+    sample_waveform(node, 4096)
+    tracing = tracemalloc.is_tracing()
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        held = tracemalloc.get_traced_memory()[0]
+        samples = sample_waveform(node, 4096)
+        peak = tracemalloc.get_traced_memory()[1] - held
+    finally:
+        if not tracing:
+            tracemalloc.stop()
+    assert samples.nbytes == 4096 * 16
+    # The array and little more: not a list of 4096 floats for each part too.
+    assert peak < samples.nbytes + 4096 * 8
+
+
+@pytest.mark.parametrize("rate", [1, 2, 2.4, 0.5])
+def test_a_sampled_square_holds_the_samples_the_export_writes(rate):
+    from fractions import Fraction
+
+    for real, imag in [(0.25, -0.0), (-0.0, -0.0), (math.nan, math.inf), (1, True)]:
+        node = _square(real, imag)
+        listed = controller_module._sample(node, 40, Fraction(repr(float(rate))))
+        expected = np.empty(len(listed[0]), complex)
+        expected.real, expected.imag = listed
+        samples = sample_waveform(node, 40, rate)
+        assert samples.tobytes() == expected.tobytes()
+        assert samples.dtype == np.complex128
+        assert samples.flags.owndata and samples.flags.writeable
+        # The array is the caller's: a write does not reach the next one.
+        samples[0] = 5j
+        assert sample_waveform(node, 40, rate).tobytes() == expected.tobytes()
+
+
+def test_a_square_that_cannot_be_sampled_is_refused_as_it_is_inside_a_sum():
+    def outcome(node):
+        try:
+            return sample_waveform(node, 40).tobytes()
+        except (ValueError, TypeError, KeyError, OverflowError) as error:
+            return type(error), str(error)
+
+    zero = _square(0.0, 0.0)
+    refused = [
+        _square(None, 0.0),
+        _square("0.5", 0.0),
+        _square(10**400, 0.0),
+        {"shape": "square", "params": {"duration": 40, "amplitude": 0.5}},
+        {"shape": "square"},
+        {**zero, "of": [{"shape": "custom", "params": {"duration": 40}}]},
+    ]
+    for node in refused:
+        alone = outcome(node)
+        assert isinstance(alone, tuple)
+        assert alone == outcome({"shape": "add", "of": [node, zero]})
+    with pytest.raises(ValueError, match="3 cycles at 2.4 samples per cycle is 7.2 samples"):
+        sample_waveform(zero, 3, 2.4)
+    assert len(sample_waveform(zero, -3)) == 0
+    # More cycles than a list can hold are refused as a list refuses them.
+    for cycles in (10**30, -(10**30)):
+        with pytest.raises(OverflowError, match="cannot fit 'int' into an index-sized integer"):
+            sample_waveform(zero, cycles)
+    # A shape that only compares equal to "square" is not taken for one.
+    named = {**zero, "shape": np.str_("square"), "params": {"duration": 40, "amplitude": None}}
+    with pytest.raises(ValueError, match=r"cannot sample a np\.str_\('square'\) waveform"):
+        sample_waveform(named, 40)
+
+
 def test_shape_key_ignores_overall_amplitude_only():
     a = {"shape": "gaussian", "params": {"duration": 16.0, "amplitude": 0.5, "sigma": 4.0}}
     b = {"shape": "gaussian", "params": {"duration": 16.0, "amplitude": 0.1, "sigma": 4.0}}

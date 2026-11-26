@@ -667,6 +667,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   and the simulation goes from 7,915 ms to 7,895 ms (NVIDIA RTX A6000,
   driver 570.211.01, CUDA runtime 12.9.79, cuDensityMat 0.7.1). Which
   intervals are split, and every result, are as before.
+- **`controller.sample_waveform` writes a square's samples into its array.**
+  The samples of every waveform were built as two lists of floats, one per
+  part, and copied into the array. A square with numeric parameters is one
+  complex number repeated, and is now written into the array directly:
+  sampling 4,096 cycles allocates 66,384 bytes where it allocated 131,992
+  (`tracemalloc`), the array and little more. A square inside a sum, a
+  product or a scale, every other waveform, and the lists a sampled export
+  writes are sampled as before, with a little less work around each: the
+  table of the simulator's envelope kinds is no longer built for each one.
+  The samples, the array a caller owns, the check of a fractional rate and
+  every error are as before.
 
 ### Fixed
 
