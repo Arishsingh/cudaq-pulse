@@ -228,6 +228,15 @@ carries the lines and tones its body advances; the scheduler times every
 iteration. A loop bound given by a ``float`` argument specializes the kernel
 on its value; ``while`` loops are rejected.
 
+.. themed-figure:: figures/rolled_loop.svg
+   :alt: Two timelines of echo_sequence on one drive line. As exported, the loop is one body, a 20 ns pulse and a 20 ns wait, with 5 trips and a period of 40 ns. The schedule it stands for repeats that body 5 times, from 0 to 200 ns, with a dotted line where each trip starts.
+   :width: 100%
+
+   ``echo_sequence`` with a gap as long as its pulse. Kept rolled, the loop
+   is exported as one body with its trips and its period; the lower row is
+   the schedule it stands for, which is also the unrolled kernel's, with a
+   dotted line where each trip starts.
+
 **The unroll threshold** is ``pulse.compile(k, unroll_threshold=n)``, else
 ``@pulse.kernel(unroll_threshold=n)``, else 8. It is a non-negative ``int``;
 0 never unrolls, so every such loop stays rolled. Both forms are the same program: without passes their
@@ -452,6 +461,14 @@ runtime parameters, so a sweep over a delay compiles once:
    for tau in np.linspace(0, 10_000, 1000):  # nanoseconds
        # one compilation for the whole sweep
        compiled_echo.lower(q, tau, x_duration, x_sigma, x_beta, readout_duration)
+
+.. themed-figure:: figures/runtime_wait.svg
+   :alt: Three timelines of the echo kernel on a drive and a readout line, one per call of the compiled kernel: an x90 pulse, a wait, an x180 pulse, a wait, an x90 pulse, then the start of the 500 ns readout, which runs past the right edge at 325 ns. tau = 0 ns: no wait, readout from 60 ns; tau = 100.1 ns: two waits of 50 ns, readout from 160 ns; tau = 200.2 ns: two waits of 100 ns, readout from 260 ns. The x180 pulse's Q quadrature is drawn dashed.
+   :width: 100%
+
+   Three calls of ``compiled_echo`` from the sweep. Each wait is half of
+   ``tau``, rounded to a clock cycle (half a nanosecond here); the readout
+   runs past the right edge. Dashed blue is a pulse's Q quadrature.
 
 - Each call computes the length from its values, in clock cycles (here
   nanoseconds times ``qs.clock_ghz``), and rounds it to the nearest cycle,
