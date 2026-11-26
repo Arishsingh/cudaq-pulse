@@ -57,6 +57,7 @@ nanobind_add_module(
   ${_cudaq_pulse_nostrip}
   bindings.cpp
   "${_build_stamp}"
+  ContextDialects.cpp
   LengthInference.cpp
   ModuleLoader.cpp
   ProgramLimitError.cpp

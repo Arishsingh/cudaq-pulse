@@ -87,6 +87,7 @@
 #define GET_OP_CLASSES
 #include "cudaq-pulse/Dialect/Classical/ClassicalOps.h.inc"
 
+#include "ContextDialects.h"
 #include "LengthInference.h"
 #include "ModuleLoader.h"
 #include "SegmentBoundaries.h"
@@ -3495,6 +3496,8 @@ public:
           throw std::runtime_error("Cannot add pass: " + pass.str());
       }
     flush();
+    if (build)
+      cudaq_pulse::requireLoadedDialects(pm, ctx_.get(), "run_passes");
     programs_.clear();
     bool verify = verifyEverything();
     runPipelineVerifyingOnce(pm, *module_, "MLIR pass pipeline failed", verify);
@@ -3559,10 +3562,13 @@ public:
 
   std::string run_full_lowering() {
     std::lock_guard<std::recursive_mutex> guard(*lock_);
-    // Lower a clone so inspection does not consume the scheduled Pulse module;
+    // Lower a copy so inspection does not consume the scheduled Pulse module;
     // callers may lower repeatedly and still execute the original artifact.
-    auto lowered = mlir::OwningOpRef<mlir::ModuleOp>(module_->clone());
-    mlir::PassManager pm(ctx_.get());
+    // The copy is in a context this thread keeps for lowering: the module's
+    // context is shared and has no LLVM dialect, and loading one there would
+    // race with the threads working in it (ContextDialects.h).
+    auto lowered = cudaq_pulse::copyForLowering(*module_, makeRegistry);
+    mlir::PassManager pm(lowered->getContext());
     pm.addPass(pulse::createPulseToQOpPass());
     pm.addPass(qop::createQOpToCuDensityMatPass());
     pm.addPass(cudm::createCuDensityMatToLLVMPass());
@@ -6381,8 +6387,9 @@ private:
 // -----------------------------------------------------------------------
 // PulseModuleBuilder: decode a packed int64 buffer into in-memory Pulse IR
 // -----------------------------------------------------------------------
-/// Loading the dialects into a new context costs about 0.4 ms, so builders
-/// share a context. A context keeps every attribute it ever uniqued (each
+/// Loading the dialects into a new context takes a fraction of a millisecond,
+/// so builders share a context, made with the dialects its modules can hold
+/// (ContextDialects.h). A context keeps every attribute it ever uniqued (each
 /// compile with new qubit frequencies, for instance, adds a few hundred bytes
 /// per qubit), so it is retired after a number of builders or once the
 /// programs built in it reach a number of packed words, whichever comes
@@ -6411,7 +6418,7 @@ public:
     auto &pool = state();
     if (!pool.current || ++pool.uses > limits.modules ||
         pool.words >= limits.words) {
-      pool.current = makeContext(makeRegistry());
+      pool.current = makeContext(cudaq_pulse::sharedContextDialects());
       pool.current->loadAllAvailableDialects();
       pool.uses = 1;
       pool.words = 0;
