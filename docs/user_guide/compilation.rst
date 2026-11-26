@@ -170,6 +170,21 @@ Options, all keyword-only:
 Calling the kernel directly always uses the defaults: ``k(...)`` takes only
 the kernel's own arguments.
 
+.. themed-figure:: figures/schedule_policies.svg
+   :alt: Four timelines of one kernel on the drive lines of D1, D2 and D3: an X pulse on D1, one on D2 and two on D3, then a sync of the three lines. asap: D1 at 0 ns, D2 at 0 ns, D3 at 0 and 40 ns, done at 80 ns; alap: D1 at 40 ns, D2 at 40 ns, D3 at 0 and 40 ns, done at 80 ns; rcp: D1 at 0 ns, D2 at 0 ns, D3 at 40 and 80 ns, done at 120 ns; alap_rcp: D1 at 0 ns, D2 at 40 ns, D3 at 40 and 80 ns, done at 120 ns. asap and alap drive 3 lines at once; rcp and alap_rcp never more than 2. Each pulse's Q quadrature is drawn dashed where it is large enough.
+   :width: 100%
+
+   The four policies on one kernel: an X pulse on D1, one on D2 and two on
+   D3, then a ``sync`` of the three lines, for a control system with two
+   drive lanes (``max_concurrent_drives=2``) and no controllers. ``asap``
+   starts each pulse as early as its line allows and ``alap`` as late, and
+   without controllers neither is held to the lanes. ``rcp`` and
+   ``alap_rcp`` place operations in program order and never move a later
+   one ahead of an earlier one, so here D1 and D2 take both lanes first and
+   D3's pulses wait, though an order starting with D3 would end at 80 ns.
+   ``alap_rcp`` hands out lanes from the end in reverse program order, so
+   D1 here gets the first slot. Dashed blue is a pulse's Q quadrature.
+
 .. _idle-replacement:
 
 Idle replacement
@@ -221,6 +236,16 @@ and the window's length in clock cycles:
 The data qudit's line now holds a wait from cycle 80 to 240, the echo from
 240 to 320 and a wait to 480; every operation of ``syndrome`` starts where
 it did, and the program is as long as it was (280 ns).
+
+.. themed-figure:: figures/idle_window_fill.svg
+   :alt: Two timelines of the syndrome kernel on D1's drive line and X1's drive and readout lines. As compiled, D1 has an X90 pulse, then an idle window from 40 to 240 ns while the ancilla is read out, then a second X90 pulse. After replace_idle, the window holds a wait, the echo pulse from 120 to 160 ns and a wait, and every other pulse starts where it did. The X and echo pulses have a small Q quadrature, drawn dashed.
+   :width: 100%
+
+   The schedule of ``syndrome`` as compiled and with the idle window
+   filled. The axis is in nanoseconds, and one nanosecond is two cycles
+   of the system's 2 GHz clock: the shaded stretch, 40 to 240 ns, is the
+   window of the report above, cycles 80 to 480. Dashed blue is a pulse's
+   Q quadrature, where it is large enough to draw.
 
 **Windows.** A qudit idles while its drive line has no operation, its
 line's tone does not play from another line (a cross-resonance pulse at its

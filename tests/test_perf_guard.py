@@ -529,6 +529,43 @@ def test_a_round_on_many_controllers_is_checked_in_linear_time():
 
 
 @pytest.mark.scaling
+def test_calls_with_branches_on_their_answers_are_timed_in_linear_time():
+    from cudaq_pulse.quantum_systems import PhysicalQudit
+
+    @pulse.classical(max_latency_ns=60)
+    def decide(bits: pulse.Bits) -> bool:
+        return True
+
+    controllers = [Controller(clock_ghz=2.0, drive_lines=[i], readout_lines=[i]) for i in range(2)]
+    system = pulse.quantum_system(
+        name="calls",
+        qudits={i: PhysicalQudit(i, 4.5e9 + 1.0e5 * i, 37.7, 9.2) for i in range(2)},
+        control_system=ControlSystem(controllers=controllers, reference_clock_ghz=2.0),
+        clock_ghz=2.0,
+    )
+
+    def program(n: int):
+        @pulse.kernel
+        def kernel(qudits):
+            line = get_drive_line(qudits[0])
+            answer = get_readout_line(qudits[0])
+            for i in range(n):
+                if decide.submit([readout(answer, square(32 + 0 * i, 0.05))]).result():
+                    drive(line, square(40, 0.1))
+
+        # A fresh compiled kernel holds no specializations, so this compiles.
+        return lambda: pulse.compile(kernel, quantum_system=system, unroll_threshold=100_000).lower(
+            system.qudits[0:2]
+        )
+
+    # On several controllers a call's budget takes the controllers that play
+    # what uses its answer: the line a branch on it drives, through every
+    # branch after it. Eight times the calls: about 8x the time when the
+    # branches are followed once for all calls, 64x when once per call.
+    _assert_linear("calls", {n: program(n) for n in (250, 2000)}, 8 * TOLERANCE)
+
+
+@pytest.mark.scaling
 def test_the_pulses_at_once_are_counted_in_linear_time():
     from cudaq_pulse._concurrency import violations
     from cudaq_pulse.quantum_systems import PhysicalQudit
