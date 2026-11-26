@@ -170,11 +170,11 @@ def _passes(passes: Sequence[str]) -> tuple[Pass, ...]:
             f"passes must be a sequence of pass names, not the string {passes!r}"
         )
     members = []
-    names = [p.value for p in Pass]
     for name in passes:
         try:
             members.append(Pass(name))
         except ValueError:
+            names = [p.value for p in Pass]
             close = _closest(str(name), names)
             hint = "" if close is None else f" Did you mean {close!r}?"
             raise InvalidValueError(
