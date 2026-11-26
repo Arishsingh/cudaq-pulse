@@ -346,9 +346,11 @@ inline std::optional<double> boundNumber(mlir::Value value) {
   return computedNumber(value, bound);
 }
 
-/// `value` as an affine function of the entry function's arguments, if it
-/// is a constant, an argument, or arithmetic on them that stays affine.
-inline std::optional<Affine> affineNumber(mlir::Value value) {
+/// affineNumber() of a value that is not arithmetic on others, and in `op`
+/// the float arithmetic to follow to its operands when it is (else null).
+inline std::optional<Affine> affineLeaf(mlir::Value value,
+                                        mlir::Operation *&op) {
+  op = nullptr;
   if (mlir::Attribute attribute = constantAttribute(value)) {
     if (auto number = mlir::dyn_cast<mlir::FloatAttr>(attribute))
       return Affine(number.getValueAsDouble());
@@ -366,31 +368,82 @@ inline std::optional<Affine> affineNumber(mlir::Value value) {
       return Affine::argument(argument.getArgNumber());
     return std::nullopt;
   }
-  mlir::Operation *op = value.getDefiningOp();
+  mlir::Operation *def = value.getDefiningOp();
+  if (def &&
+      mlir::isa<mlir::arith::NegFOp, mlir::arith::AddFOp, mlir::arith::SubFOp,
+                mlir::arith::MulFOp, mlir::arith::DivFOp>(def))
+    op = def;
+  return std::nullopt;
+}
+
+/// The affine functions found for the values that are arithmetic on others.
+using AffineNumbers =
+    llvm::SmallDenseMap<mlir::Value, std::optional<Affine>, 4>;
+
+/// `value` as an affine function of the entry function's arguments, if it
+/// is a constant, an argument, or arithmetic on them that stays affine.
+/// Each operation is computed once, in `numbers`, however many use it and
+/// however deep it is.
+inline std::optional<Affine> affineNumber(mlir::Value value,
+                                          AffineNumbers &numbers) {
+  mlir::Operation *op;
+  std::optional<Affine> leaf = affineLeaf(value, op);
   if (!op)
-    return std::nullopt;
-  auto operand = [&](unsigned index) {
-    return affineNumber(op->getOperand(index));
-  };
-  if (mlir::isa<mlir::arith::NegFOp>(op)) {
-    auto x = operand(0);
-    return x ? std::optional(-*x) : std::nullopt;
+    return leaf;
+  if (auto found = numbers.find(value); found != numbers.end())
+    return found->second;
+  llvm::SmallVector<mlir::Operation *, 16> todo{op};
+  while (!todo.empty()) {
+    op = todo.back();
+    if (numbers.count(op->getResult(0))) {
+      todo.pop_back();
+      continue;
+    }
+    std::optional<Affine> of[2];
+    bool ready = true;
+    unsigned operands = mlir::isa<mlir::arith::NegFOp>(op) ? 1 : 2;
+    for (unsigned i = 0; i < operands; ++i) {
+      mlir::Operation *inner;
+      of[i] = affineLeaf(op->getOperand(i), inner);
+      if (!inner)
+        continue;
+      if (auto found = numbers.find(op->getOperand(i));
+          found != numbers.end()) {
+        of[i] = found->second;
+      } else {
+        todo.push_back(inner);
+        ready = false;
+      }
+    }
+    if (!ready)
+      continue;
+    todo.pop_back();
+    std::optional<Affine> out;
+    if (operands == 1) {
+      if (of[0])
+        out = -*of[0];
+    } else if (of[0] && of[1]) {
+      if (mlir::isa<mlir::arith::AddFOp>(op))
+        out = *of[0] + *of[1];
+      else if (mlir::isa<mlir::arith::SubFOp>(op))
+        out = *of[0] - *of[1];
+      else if (mlir::isa<mlir::arith::MulFOp>(op))
+        out = of[0]->times(*of[1]);
+      else if (of[1]->isConstant())
+        out = *of[0] / of[1]->constant;
+    }
+    numbers[op->getResult(0)] = std::move(out);
   }
-  if (!mlir::isa<mlir::arith::AddFOp, mlir::arith::SubFOp, mlir::arith::MulFOp,
-                 mlir::arith::DivFOp>(op))
-    return std::nullopt;
-  auto lhs = operand(0), rhs = operand(1);
-  if (!lhs || !rhs)
-    return std::nullopt;
-  if (mlir::isa<mlir::arith::AddFOp>(op))
-    return *lhs + *rhs;
-  if (mlir::isa<mlir::arith::SubFOp>(op))
-    return *lhs - *rhs;
-  if (mlir::isa<mlir::arith::MulFOp>(op))
-    return lhs->times(*rhs);
-  if (!rhs->isConstant())
-    return std::nullopt;
-  return *lhs / rhs->constant;
+  return numbers.find(value)->second;
+}
+
+inline std::optional<Affine> affineNumber(mlir::Value value) {
+  mlir::Operation *op;
+  std::optional<Affine> leaf = affineLeaf(value, op);
+  if (!op)
+    return leaf;
+  AffineNumbers numbers;
+  return affineNumber(value, numbers);
 }
 
 } // namespace pulse
