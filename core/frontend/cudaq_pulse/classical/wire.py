@@ -417,13 +417,15 @@ def _export(
     ``_segments()`` and its calls (``_program``), when the caller has them."""
     segments, after = lowered._segments() if program is None else program[0]
     starts = [e.start_cycles for e in segments]
-    segment_of = lowered._event_segments(syncs=False) if with_events else None
     takes = None
-    if part is not None:
-        takes = part[3]
-        assert not with_events or len(takes) == len(lowered.schedule)
-    events = (
-        [
+    if with_events:
+        segment_of = lowered._event_segments(syncs=False)
+        # Read once: each read of ``schedule`` builds it anew.
+        schedule = lowered.schedule
+        if part is not None:
+            takes = part[3]
+            assert len(takes) == len(schedule)
+        events = [
             {
                 "kind": event.kind,
                 "line": event.line,
@@ -438,12 +440,11 @@ def _export(
                 ),
                 "segment_start_cycles": starts[index],
             }
-            for position, event in enumerate(lowered.schedule)
+            for position, event in enumerate(schedule)
             if takes is None or takes[position]
         ]
-        if with_events
-        else []
-    )
+    else:
+        events = []
     machine = lowered.options.machine
     data = {
         "format": _EMULATION_FORMAT,

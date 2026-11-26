@@ -264,5 +264,122 @@
     "passes": true
    }
   }
+ },
+ "coupling-lines-5 at its CI run 45704243103, on its base built in the job, run0 of each": {
+  "first_compile": {
+   "functions": [
+    [
+     "_cudaq_pulse_native.cpython-312-x86_64-linux-gnu.so",
+     "mlir::RegisteredOperationName::insert(std::unique_ptr<mlir::OperationName::Impl, std::default_delete<mlir::OperationName::Impl> >, llvm::ArrayRef<llvm::StringRef>)",
+     403662,
+     413281,
+     443,
+     445
+    ],
+    [
+     "_cudaq_pulse_native.cpython-312-x86_64-linux-gnu.so",
+     "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)",
+     535220,
+     538933,
+     984,
+     986
+    ],
+    [
+     "_cudaq_pulse_native.cpython-312-x86_64-linux-gnu.so",
+     "mlir::detail::AttributeUniquer::initializeAttributeStorage(mlir::AttributeStorage*, mlir::MLIRContext*, mlir::TypeID)",
+     24357,
+     25199,
+     688,
+     690
+    ],
+    [
+     "_cudaq_pulse_native.cpython-312-x86_64-linux-gnu.so",
+     "pulse::createPulseRewritePass(llvm::ArrayRef<pulse::RewriteStage const*>)",
+     2065,
+     2065,
+     7,
+     7
+    ]
+   ],
+   "rest": [
+    11183840,
+    11229404
+   ],
+   "expected": {
+    "whole": 0.004917,
+    "remainder": 0.003996
+   },
+   "baseline": 12156973
+  }
+ },
+ "walks-without-recursion at its CI run 45727749669, against the records of the baseline's run 45638819498, run0 of each": {
+  "first_compile": {
+   "baseline": 12156973,
+   "reps": 1,
+   "records": {
+    "mlir::RegisteredOperationName::insert(std::unique_ptr<mlir::OperationName::Impl, std::default_delete<mlir::OperationName::Impl> >, llvm::ArrayRef<llvm::StringRef>)": [
+     443.0,
+     403662.0
+    ],
+    "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+     984.0,
+     535867.0
+    ],
+    "mlir::detail::AttributeUniquer::initializeAttributeStorage(mlir::AttributeStorage*, mlir::MLIRContext*, mlir::TypeID)": [
+     688.0,
+     24357.0
+    ]
+   },
+   "functions": [
+    [
+     "_cudaq_pulse_native.cpython-312-x86_64-linux-gnu.so",
+     "mlir::RegisteredOperationName::insert(std::unique_ptr<mlir::OperationName::Impl, std::default_delete<mlir::OperationName::Impl> >, llvm::ArrayRef<llvm::StringRef>)",
+     412842,
+     443
+    ],
+    [
+     "_cudaq_pulse_native.cpython-312-x86_64-linux-gnu.so",
+     "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)",
+     566836,
+     984
+    ],
+    [
+     "_cudaq_pulse_native.cpython-312-x86_64-linux-gnu.so",
+     "mlir::detail::AttributeUniquer::initializeAttributeStorage(mlir::AttributeStorage*, mlir::MLIRContext*, mlir::TypeID)",
+     41913,
+     688
+    ]
+   ],
+   "rest": 11209273
+  },
+  "specialize_wait": {
+   "baseline": 318125,
+   "reps": 20,
+   "records": {
+    "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+     9.0,
+     2302.0
+    ],
+    "mlir::detail::AttributeUniquer::initializeAttributeStorage(mlir::AttributeStorage*, mlir::MLIRContext*, mlir::TypeID)": [
+     2.4,
+     110.0
+    ]
+   },
+   "functions": [
+    [
+     "_cudaq_pulse_native.cpython-312-x86_64-linux-gnu.so",
+     "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)",
+     46882,
+     180
+    ],
+    [
+     "_cudaq_pulse_native.cpython-312-x86_64-linux-gnu.so",
+     "mlir::detail::AttributeUniquer::initializeAttributeStorage(mlir::AttributeStorage*, mlir::MLIRContext*, mlir::TypeID)",
+     3144,
+     48
+    ]
+   ],
+   "rest": 6344332
+  }
  }
 }
