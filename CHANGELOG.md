@@ -709,6 +709,26 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   fault. The walks of select lowering, of the schedule passes, of
   `pulse-verify` and of the calls' timing now keep what is still to follow
   on a stack of their own, in the order they visited it before.
+- **The classical check reports a call whose times run past what it
+  counts in, and no longer writes a long loop of calls out one entry per
+  iteration in two cases.** The check counts and orders the calls of a
+  function from their starts in each iteration. A start that did not fit
+  64 bits was computed anyway (a signed overflow), and a call in a long
+  loop whose last execution did not fit was written out per iteration,
+  which ran out of memory at very many iterations. A call whose start in
+  some iteration, or whose length, is past 2^61 cycles either way is now
+  reported (`the call of 'f' starts, or lasts, past the cycles a schedule
+  counts in`) and left out of the count and the order; a long loop of
+  calls whose last execution is past it is reported with its start, period
+  and count, and its link's calls are then not counted or ordered. Another
+  operation the order of calls depends on (a readout or an answer a call
+  sends, an operation in a branch on an answer) with such a time is
+  reported as well. The bounds on when an answer is taken and on a
+  reaction deadline compare such times as they are. And a call that does
+  not move from one iteration to the next was
+  written out per iteration to count the requests in flight; its
+  executions are now counted together, with the same result.
+
 - **`pulse.load` holds a module's calls and loops to the bounds it states.**
   Several of the bounds the guide gives for a loaded module could be passed.
   Calls nest at most 256 deep, but a function already counted for an
