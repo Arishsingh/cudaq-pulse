@@ -681,6 +681,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   in a mode the exports do not take yet is still refused at `load` in a
   program of up to 10,000 events, where the list refused it, and a longer
   program loads as it did.
+- **RK4 on the GPU uploads its step factors once per interval.** With
+  `backend="gpu"` and the default `integrator="rk4"`, each step adds states
+  into one another eleven times, each time scaled by a factor that the
+  runtime first copied from the host to the device. The factors of a step
+  are the same for every step of an interval, so the runtime now uploads
+  the five of them once and every step reads them on the device. One
+  interval of 200 steps of a driven qubit made 2,214 host-to-device copies
+  and now makes 17, with the same 3,802 kernel launches (Nsight Systems,
+  NVIDIA RTX A6000, driver 570.211.01, CUDA runtime 12.9.79, cuDensityMat
+  0.7.1). Results are the same bit for bit, for one state and for a batch;
+  the other integrators run as before.
 
 ### Fixed
 
