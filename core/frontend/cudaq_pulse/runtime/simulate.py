@@ -1530,6 +1530,12 @@ def _active_ranges(
     return merged
 
 
+# Past this many ranges of steps on which drive terms play, each range is
+# stepped with its own terms alone (_Stepper.play_apart). Up to it, asking
+# every term in every range costs no more than sorting the terms into
+# their ranges does.
+_APART_RANGES = 3
+
 # A driven stretch of a register too large for kept maps builds the
 # Hamiltonians of its steps (three per step) in parts; a part and the one
 # built after it take at most about this many bytes.
@@ -1658,6 +1664,55 @@ class _Stepper:
             rho = self._stretch(rho, values[:, pending:, :])
         return rho
 
+    def ranges(self, t0: float, steps: int) -> list[tuple[int, int]]:
+        """``_active_ranges`` of this stepper's drive terms over *steps*
+        steps from *t0*, from the supports it keeps."""
+        ranges = []
+        for support in self.supports:
+            lo, hi = _step_range(support, t0, self.h, steps)
+            if hi > lo:
+                ranges.append((lo, hi))
+        ranges.sort()
+        merged: list[tuple[int, int]] = []
+        for lo, hi in ranges:
+            if merged and lo <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+            else:
+                merged.append((lo, hi))
+        return merged
+
+    def play_apart(self, rho: Any, t0: float, steps: int, ranges: list[tuple[int, int]]) -> Any:
+        """All *steps* steps from *t0*: the idle stretches and each of
+        *ranges* (``ranges(t0, steps)``) in turn, as ``idle`` and ``play``
+        step them, but each range asking only its own terms.
+
+        A term's steps lie in one range, the last that starts at or before
+        them, and ``play`` adds nothing for a term outside the range it
+        steps. So a copy of this stepper that holds a range's terms alone,
+        in the order they have here, plays the range with the same
+        coefficients, added in the same order: the result is the same to
+        the last bit, and n terms in n ranges cost n evaluations where
+        asking every term in every range costs n times n tests."""
+        import copy
+        from bisect import bisect_right
+
+        starts = [lo for lo, _ in ranges]
+        members: list[list[tuple[Any, int, tuple[float, float]]]] = [[] for _ in ranges]
+        for term in zip(self.driven, self.row_of, self.supports, strict=True):
+            lo, hi = _step_range(term[2], t0, self.h, steps)
+            if hi > lo:
+                members[bisect_right(starts, lo) - 1].append(term)
+        part = copy.copy(self)
+        for (lo, hi), terms in zip(ranges, members, strict=True):
+            part.driven, part.row_of, part.supports = (
+                list(column) for column in zip(*terms, strict=True)
+            )
+            rho = part.idle(rho, lo - part.done)
+            rho = part.play(rho, t0, lo, hi)
+        rho = part.idle(rho, steps - part.done)
+        self.done = part.done
+        return rho
+
     def _stretch(self, rho: Any, values: npt.NDArray[np.float64]) -> Any:
         """RK4 over steps whose coefficients (terms x steps x 3) vary."""
         n = values.shape[1]
@@ -1774,11 +1829,16 @@ class _CpuBackend(_Backend):
             rho = step_through(stepper, self.dims, state, t0, steps, self.dt_ns)
             if rho is not None:
                 return rho
-        rho = state
-        for lo, hi in _active_ranges(driven, t0, h, steps):
-            rho = stepper.idle(rho, lo - stepper.done)
-            rho = stepper.play(rho, t0, lo, hi)
-        return stepper.idle(rho, steps - stepper.done)
+        if driven:
+            ranges = stepper.ranges(t0, steps)
+            if len(ranges) > _APART_RANGES:
+                # Drives apart from each other: each stretch of them asks
+                # only its own terms.
+                return stepper.play_apart(state, t0, steps, ranges)
+            for lo, hi in ranges:
+                state = stepper.idle(state, lo - stepper.done)
+                state = stepper.play(state, t0, lo, hi)
+        return stepper.idle(state, steps - stepper.done)
 
 
 class _GpuBackend(_Backend):
