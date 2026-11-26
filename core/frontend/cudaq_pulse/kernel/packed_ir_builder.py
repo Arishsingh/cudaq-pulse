@@ -492,9 +492,50 @@ class PackedIRBuilder:
         self._ensure(0)
 
     def limit_cycles(self, cycles: int) -> None:
-        """Make a program longer than *cycles* (the controller's longest
-        program) an error when the module is built."""
+        """Make a program that sums, op after op, to more than *cycles* (the
+        controller's longest program) times the lines it takes an error when
+        the module is built: no schedule of it fits, since the operations of
+        one line follow each other. Within that the schedule decides. Only a
+        builder given a limit counts its lines, when its buffer is taken.
+        Of several limits the lowest holds."""
+        import weakref
+
+        earlier = vars(self).get("get_buffer")
+        if earlier is not None:
+            earlier.lowest[0] = min(earlier.lowest[0], cycles)
+            return
+        # The record holds the most the program may sum to, which is known
+        # when the buffer is taken.
+        at = self._cur + 1
         self._record(_MAX_CYCLES, [cycles])
+        # The builder holds the function and the function must not hold the
+        # builder, nor do the functions here hold each other in a ring: a
+        # builder under a limit is freed as any other is.
+        held = weakref.ref(self)
+        lowest = [cycles]
+
+        def stop() -> int:
+            builder = held()
+            assert builder is not None
+            return min(lowest[0] * max(1, len(builder._line_qudit)), 1 << 60)
+
+        def with_stop() -> Any:
+            builder = held()
+            assert builder is not None
+            builder._buf[at] = stop()
+            return PackedIRBuilder.get_buffer(builder)
+
+        def restated(message: str) -> str:
+            # The module's error gives the sum it stopped at as the longest
+            # program; the controller's is the limit.
+            return message.replace(
+                f"more than {stop()} cycles, the longest program",
+                f"more than {lowest[0]} cycles, the longest program",
+            )
+
+        with_stop.lowest = lowest  # type: ignore[attr-defined]
+        with_stop.restated = restated  # type: ignore[attr-defined]
+        self.get_buffer = with_stop  # type: ignore[method-assign]
 
     def _w(self, val: int) -> None:
         self._buf[self._cur] = val
