@@ -396,6 +396,40 @@ def test_an_if_in_a_called_kernel_costs_what_its_arms_change():
 
 
 @pytest.mark.scaling
+def test_a_further_name_of_a_list_of_lines_costs_an_if_what_one_of_a_list_of_numbers_does():
+    # Measurement-conditioned ifs over a list of lines that further names
+    # hold: each if keeps one record of the list and puts it back once, so a
+    # further name of it costs an if what a further name of a list of
+    # numbers does (the if still looks at each name once). With a record for
+    # each name, it cost over three times that.
+    def program(n: int, held: str):
+        source = (
+            "def k(q, r):\n"
+            "    lines = [get_drive_line(r)]\n"
+            "    numbers = [0.1, 0.2]\n"
+            "    probe = get_readout_line(q)\n"
+            + "".join(f"    n{i} = {held}\n" for i in range(n))
+            + "    for _ in range(24):\n"
+            "        if readout(probe, square(40, 0.05)):\n"
+            "            drive(lines[0], square(8, numbers[0]))\n"
+            "        else:\n"
+            "            drive(lines[0], square(8, numbers[1]))\n"
+        )
+        scope = dict(vars(pulse))
+        exec(compile(source, f"<{n} names of {held}>", "exec"), scope)
+        kernel = pulse.kernel(scope["k"], unroll_threshold=10_000)
+        return lambda: pulse.compile(kernel).lower(Q[0], Q[1])
+
+    # What 240 further names add to the Python work of the 24 ifs.
+    added = {}
+    for held in ("lines", "numbers"):
+        work = {n: python_work(program(n, held)) for n in (16, 256)}
+        added[held] = {count: work[256][count] - work[16][count] for count in work[16]}
+    for count in ("lines", "calls"):
+        assert added["lines"][count] <= added["numbers"][count] * 1.5, (count, added)
+
+
+@pytest.mark.scaling
 def test_the_events_of_a_long_line_are_listed_in_linear_time():
     def program(n: int):
         @pulse.kernel
