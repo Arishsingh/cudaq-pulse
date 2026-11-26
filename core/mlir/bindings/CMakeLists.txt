@@ -60,6 +60,7 @@ nanobind_add_module(
   LengthInference.cpp
   ModuleLoader.cpp
   ProgramLimitError.cpp
+  SegmentBoundaries.cpp
   # The pulse-broadcast-lines pass, which registers itself (transforms/).
   $<TARGET_OBJECTS:CudaqPulseBroadcastLines>
 )

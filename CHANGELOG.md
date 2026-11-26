@@ -636,6 +636,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **Finding a program's segments no longer walks a loop that opens none.**
+  `segments()` went through every iteration of every loop kept as a loop
+  once the program declared a classical function, so a loop of n
+  iterations followed by one call took time in proportion to n to answer,
+  though it adds no segment. A loop that holds no variable wait and no
+  blocking answer is now passed over, at any trip count; one that holds
+  either is walked as before, each iteration opening its segments. The
+  segments are unchanged, as are the segment of every event and call,
+  which are found as before: an export that lists each event's segment
+  still visits every iteration.
+
 - **Compiling many classical calls on several controllers takes time in
   proportion to the program.** On a control system of several controllers,
   a call's budget takes the controllers that play what uses its answer: the
