@@ -565,6 +565,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   as given; to leave them unchecked, set them to `null` in the file.
 - The first compile of a kernel with many measurement-conditioned ifs no
   longer takes time in the square of their number.
+- **The first compile in a process no longer loads the LLVM dialect.** The
+  MLIR context that compiled modules share is made with the dialects those
+  modules can hold; `mlir("llvm")` lowers a copy in a context the calling
+  thread keeps for it and gives the text it gave. `pulse.load` of a module
+  that also holds operations, types or attributes of the LLVM dialect now
+  fails to read it, naming the dialect; such a module loaded before if the
+  entry and what it calls held none.
 - **Control systems of many controllers build and compile faster.** Checking
   that no `Controller` is listed twice and placing a link's controllers take
   time in proportion to the number of controllers, not its square, and so

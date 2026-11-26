@@ -693,6 +693,6 @@ compiled:
 Each must be a whole number from 1 to 2\ :sup:`40`; any other value makes
 compiling raise ``ValueError`` naming the variable. Lower values bound the
 memory a long session keeps (a loop that compiles a large program for many
-quantum systems, for example) at the cost of creating contexts more often, about
-0.4 ms each. ``python -m cudaq_pulse.doctor`` prints the limits in effect,
+quantum systems, for example) at the cost of creating contexts more often, a
+fraction of a millisecond each. ``python -m cudaq_pulse.doctor`` prints the limits in effect,
 the process quantum system and the kernel cache size.
