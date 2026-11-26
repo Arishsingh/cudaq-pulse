@@ -642,11 +642,16 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   once Pages takes its source from GitHub Actions, and warns until then.
 - `property-nightly.yml`: the property tests (every test file that imports
   hypothesis) with random examples, the slow physics checks (`nightly`),
-  the perf guard and check-pulse on macOS with Python 3.15, every night and
+  the perf guard, and check-pulse at every test level on the platforms and
+  Python versions of `ci.yml` and on macOS with Python 3.15, every night and
   on manual dispatch, with the seed in the job summary and the example
-  database kept in the Actions cache. GitHub runs scheduled workflows from the default
-  branch, so the schedule tests `main`; a manual dispatch tests the branch it
-  is dispatched on.
+  database kept in the Actions cache. One job runs the suite twice more under
+  hash seeds it logs (replay one with `PYTHONHASHSEED=<seed>`), and one
+  reports the coverage of the Python package, without a threshold. GitHub
+  runs scheduled workflows from the default branch, so the schedule tests
+  `main`; a manual dispatch tests the branch it is dispatched on. A scheduled
+  run that fails opens or updates the one nightly issue (see
+  [Test levels](#test-levels)).
 
 ### Which jobs a change runs
 
