@@ -440,19 +440,22 @@ table, and how many instructions a call takes follows where the key lands,
 so a change that moves the build's layout moves their cost per call while
 they do the same work (`ADDRESS_KEYED` in `tools/perf-gate.py`: MLIR's
 parametric storage lookup, an attribute storage's initialization and an
-operation's registration, each keyed on a `TypeID`). A row that fails as a
-regression, and whose base the job measured, is also judged on its count
-less the change in cost per call of the listed functions it entered as
-often as the base, or at most 1% of the base's entries (and at least one)
-more or fewer times: the entries gained or lost stay in the rest at the
-base's cost per call, so more work still counts. It passes as
-`address-keyed` when that rest is at most its tolerance above the stored
-baseline (the base only shows which functions were entered as often, or
-nearly so, so changes merged one after another cannot add up). Its notice
-gives the whole change, the rest's, and each function taken out with its
-calls and its cost per call on both sides, and what was left in for entries
-gained or lost; a listed function called more or fewer times than that
-keeps all its change in the rest. Only MLIR or LLVM functions can be
+operation's registration, each keyed on a `TypeID`). The baseline records
+each listed function's entries and instructions per repetition for each
+case, from the run it was taken from. A row that fails as a regression is
+also judged against those records: a listed function entered as often, or
+at most 1% of its recorded entries (and at least one) more or fewer times,
+has its change in cost per call taken out over the row's entries, and the
+entries gained or lost stay in the rest at the baseline's cost per call, so
+more work still counts. The row passes as `address-keyed` when that rest is
+at most its tolerance above the stored baseline and what was taken out is
+at most 2% of the baseline's count. The rest is compared like for like with
+the baseline's, so an address-keyed change merged into main doesn't stay in
+later rows, and nothing outside the listed functions can add up across
+merges. Its notice gives each listed function's entries and cost per call
+in the baseline and in the row, what was taken out and what was left in. A
+baseline taken before these records existed is judged the same way against
+the change's base built in the job. Only MLIR or LLVM functions can be
 listed. A new entry is its own pull request, changing only the list and its
 test, with what the function keys on and the CI runs that showed it entered
 as often on both sides with its cost per call moved, and the owner approves

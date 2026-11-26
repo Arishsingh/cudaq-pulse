@@ -1816,10 +1816,150 @@ def test_a_regression_still_above_the_limit_says_so_outside_the_list():
     reason = gate.failure_reason(row)
     assert "regression" in reason
     assert (
-        "with the address-keyed functions it entered as often as its base 8311de57 taken out: "
+        "judged outside its address-keyed functions: "
         "outside the address-keyed functions +0.56% against the stored baseline" in reason
     )
     assert reason.endswith(": fails")
     # A layout-only row that also fails outside the list says both.
     row.on_base, row.own = True, 0.0085
     assert "outside the address-keyed functions +0.56%" in gate.failure_reason(row)
+
+
+# Rule 550: the listed functions judged like for like against the records the
+# baseline keeps of them. walks-without-recursion failed while main stood
+# +1.02% above the baseline after #274's address-keyed pass.
+_WALKS = next(rows for label, rows in _KEYED.items() if label.startswith("walks-without"))
+
+
+def _walks_row(case, edit=None):
+    """walks' recorded row, failing against the baseline, judged against the
+    baseline's records of its listed functions (*edit* changes its own
+    instructions and calls first)."""
+    c = _WALKS[case]
+    after = {(obj, name): ir for obj, name, ir, _ in c["functions"]}
+    calls = {(obj, name): n for obj, name, _, n in c["functions"]}
+    after["", "(the rest)"] = c["rest"]
+    if edit:
+        edit(after, calls)
+    row = gate.Row(
+        case, c["baseline"], sum(after.values()) / c["reps"], 0.0, None, "same", "slower"
+    )
+    gate.judge_row(row, gate.judge_records(after, calls, c["records"], c["baseline"], c["reps"]))
+    return row
+
+
+def test_a_change_merged_as_address_keyed_does_not_stay_in_later_rows():
+    row = _walks_row("first_compile")
+    assert row.delta == pytest.approx(0.00608, abs=5e-5)
+    assert row.keyed.records and row.keyed.against_baseline == pytest.approx(0.00133, abs=5e-5)
+    assert row.verdict == "address-keyed"
+    (note,) = gate.keyed_notes([row])
+    assert "from its base" not in note and "against the baseline's records" in note
+    assert "443 calls, 911.2 -> 931.9 per call" in note
+
+
+def test_work_outside_the_list_stays_held_to_the_baseline():
+    # walks' specialize_wait: main itself stood +0.23% above the baseline
+    # outside the listed functions, and walks adds about +0.24% more.
+    row = _walks_row("specialize_wait")
+    assert row.keyed.against_baseline == pytest.approx(0.00473, abs=5e-5)
+    assert row.verdict == "slower"
+
+
+def test_no_more_than_two_percent_of_the_baseline_is_taken_out():
+    def eightfold(after, calls):
+        for f in after:
+            if gate.address_keyed(f):
+                after[f] *= 8
+
+    row = _walks_row("first_compile", eightfold)
+    assert row.keyed.too_much and row.verdict == "slower"
+    assert "more than 2% of the baseline's count" in gate.failure_reason(row)
+
+
+def test_a_baseline_records_its_listed_functions_and_they_are_not_a_size():
+    records = {"first_compile": _WALKS["first_compile"]["records"]}
+    measured = gate.as_baseline(
+        {},
+        {"first_compile": {"ops": 1}},
+        {"first_compile": gate.Measured([12_000_000.0], [1.0])},
+        {},
+        {},
+        records=records,
+    )
+    entry = measured["cases"]["first_compile"]
+    assert entry["address_keyed"] == records["first_compile"]
+    (row,) = gate.compare(measured, {"first_compile": {"ops": 1}}, None)
+    assert row.verdict == "ok"
+
+
+def _keyed_dump(entries_a, cost_a, entries_b, cost_b, rest):
+    """A small Callgrind dump of one case: a caller that enters the uniquer
+    lookup in two objects, and the rest of its own work."""
+    name = "mlir::StorageUniquer::getParametricStorageTypeImpl(x)"
+    return "\n".join(
+        [
+            "desc: Trigger: Client Request: case",
+            "events: Ir",
+            "ob=(1) /x/liba.so",
+            "fn=(1) caller",
+            f"0 {rest}",
+            "cob=(2) /x/libb.so",
+            f"cfn=(2) {name}",
+            f"calls={entries_b} 0",
+            f"0 {cost_b}",
+            f"cfn=(3) {name}",
+            f"calls={entries_a} 0",
+            f"0 {cost_a}",
+            "fn=(3)",
+            f"0 {cost_a}",
+            "ob=(2)",
+            "fn=(2)",
+            f"0 {cost_b}",
+            "",
+        ]
+    )
+
+
+def test_records_round_trip_by_name_over_the_objects_that_hold_one():
+    text = _keyed_dump(1000, 500_000, 10, 5_000, 2_000_000)
+    records = gate.address_keyed_records(text, 10)
+    assert records == {"mlir::StorageUniquer::getParametricStorageTypeImpl(x)": [101.0, 50_500.0]}
+    baseline = sum(gate.dump_costs(text).values()) / 10
+    # The same dump against its own records: nothing moved, nothing to judge.
+    assert gate.judge_against_records(text, records, baseline, 10) is None
+    # Each call 10% dearer in both objects: all of it taken out, rest unchanged.
+    dearer = _keyed_dump(1000, 550_000, 10, 5_500, 2_000_000)
+    keyed = gate.judge_against_records(dearer, records, baseline, 10)
+    assert keyed.records and keyed.remainder == pytest.approx(0.0, abs=1e-12)
+    assert keyed.taken_out == (
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(...) "
+        "(1,010 calls, 500.0 -> 550.0 per call, +50,500)",
+    )
+
+
+def test_a_listed_function_s_own_cost_without_calls_in_an_object_counts_on_both_sides():
+    # Its own instructions in a third object it has no calls into there.
+    name = "mlir::StorageUniquer::getParametricStorageTypeImpl(x)"
+    extra = f"\nob=(3) /x/libc.so\nfn=(4) {name}\n0 7000\n"
+    text = _keyed_dump(1000, 500_000, 10, 5_000, 2_000_000) + extra
+    records = gate.address_keyed_records(text, 10)
+    baseline = sum(gate.dump_costs(text).values()) / 10
+    assert gate.judge_against_records(text, records, baseline, 10) is None
+
+
+def test_the_gate_judges_a_regression_against_the_records_for_its_repetitions():
+    text = _keyed_dump(1000, 500_000, 10, 5_000, 2_000_000)
+    records = {"case": gate.address_keyed_records(text, 10)}
+    baseline = sum(gate.dump_costs(text).values()) / 10
+    # Each call 3% dearer: 0.6% of the row taken out, within the 2% bound.
+    dearer = _keyed_dump(1000, 515_000, 10, 5_150, 2_000_000)
+    row = gate.Row(
+        "case", baseline, sum(gate.dump_costs(dearer).values()) / 10, 0.0, None, "same", "slower"
+    )
+    gate.apply_address_keyed([row], {"case": dearer}, {}, records, {"case": 10})
+    assert row.verdict == "address-keyed" and row.keyed.records
+    # Without the case's repetitions, nothing judges it against the records.
+    other = gate.Row("case", baseline, row.measured, 0.0, None, "same", "slower")
+    gate.apply_address_keyed([other], {"case": dearer}, {}, records, {})
+    assert other.verdict == "slower" and other.keyed is None
