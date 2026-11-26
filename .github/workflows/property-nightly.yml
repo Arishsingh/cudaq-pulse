@@ -15,7 +15,7 @@
 # perf guard.
 #
 # The test jobs run check-pulse at every test level (CONTRIBUTING.md, Test
-# levels) on the legs of ci.yml, where a pull request runs levels 0 and 1
+# levels) on the legs of ci.yml, where a pull request runs level 0
 # and a push to main levels 0 to 2, and on macOS with Python 3.15; one leg
 # runs the suite twice more under hash seeds it logs. The coverage job
 # reports the coverage of the Python package.
