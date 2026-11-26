@@ -10,18 +10,18 @@
   },
   "source": {
     "repository": "NVIDIA/cudaq-pulse",
-    "run": 45738054732,
+    "run": 45758620025,
     "attempt": 1,
     "event": "workflow_dispatch",
     "ref": "refs/heads/main",
-    "commit": "8523c4220e57247742a464d8529e7a4b5134b2ff",
+    "commit": "c1de2bc92e5e1983094ae8f0ee6c7d77d09862d8",
     "processes": 5
   },
   "cases": {
     "bind_cached": {
       "op_count": 8,
       "instructions": 19177,
-      "estimated_cycles": 29421,
+      "estimated_cycles": 29375,
       "python_work": {
         "bytecodes": 371.06,
         "python_calls": 15.0,
@@ -31,7 +31,7 @@
     "bind_new_value": {
       "op_count": 8,
       "instructions": 19930,
-      "estimated_cycles": 30667,
+      "estimated_cycles": 30657,
       "python_work": {
         "bytecodes": 377.06,
         "python_calls": 15.0,
@@ -41,195 +41,301 @@
     "compile_bell": {
       "op_count": 15,
       "packed_bytes": 744,
-      "instructions": 1483130,
-      "estimated_cycles": 2389509,
+      "instructions": 1483573,
+      "estimated_cycles": 2390126,
       "python_work": {
         "bytecodes": 15903.2,
         "python_calls": 248.0,
         "c_calls": 666.2
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          56.0,
+          14194.0
+        ]
       }
     },
     "compile_calls_large": {
       "op_count": 1025,
       "packed_bytes": 59872,
-      "instructions": 68038904,
-      "estimated_cycles": 104959560,
+      "instructions": 68022272,
+      "estimated_cycles": 105006390,
       "python_work": {
         "bytecodes": 838439.0,
         "python_calls": 14493.0,
         "c_calls": 37540.0
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          3176.0,
+          757528.0
+        ]
       }
     },
     "compile_calls_small": {
       "op_count": 12,
       "packed_bytes": 640,
-      "instructions": 1356694,
-      "estimated_cycles": 2291598,
+      "instructions": 1358745,
+      "estimated_cycles": 2295083,
       "python_work": {
         "bytecodes": 13267.4,
         "python_calls": 250.0,
         "c_calls": 632.4
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          84.0,
+          22290.0
+        ]
       }
     },
     "compile_cnot_cr": {
       "op_count": 12,
       "packed_bytes": 616,
-      "instructions": 1160114,
-      "estimated_cycles": 1898906,
+      "instructions": 1160205,
+      "estimated_cycles": 1898945,
       "python_work": {
         "bytecodes": 12373.2,
         "python_calls": 203.0,
         "c_calls": 505.2
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          48.0,
+          11649.0
+        ]
       }
     },
     "compile_dd_cpmg8": {
       "op_count": 7,
       "packed_bytes": 296,
-      "instructions": 957576,
-      "estimated_cycles": 1616770,
+      "instructions": 957497,
+      "estimated_cycles": 1616613,
       "python_work": {
         "bytecodes": 9188.2,
         "python_calls": 160.0,
         "c_calls": 419.2
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          38.0,
+          9256.0
+        ]
       }
     },
     "compile_qaoa4": {
       "op_count": 52,
       "packed_bytes": 2656,
-      "instructions": 4616296,
-      "estimated_cycles": 7135168,
+      "instructions": 4615149,
+      "estimated_cycles": 7132405,
       "python_work": {
         "bytecodes": 57533.4,
         "python_calls": 704.0,
         "c_calls": 2264.4
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          133.0,
+          33554.0
+        ]
       }
     },
     "compile_surface_d5": {
       "op_count": 295,
       "packed_bytes": 17248,
-      "instructions": 28787209,
-      "estimated_cycles": 43428685,
+      "instructions": 28788398,
+      "estimated_cycles": 43416220,
       "python_work": {
         "bytecodes": 653461.0,
         "python_calls": 4752.0,
         "c_calls": 24523.0
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          280.0,
+          72650.0
+        ]
       }
     },
     "compile_syndrome": {
       "op_count": 53,
       "packed_bytes": 2736,
-      "instructions": 4713098,
-      "estimated_cycles": 7274729,
+      "instructions": 4709902,
+      "estimated_cycles": 7269615,
       "python_work": {
         "bytecodes": 59613.4,
         "python_calls": 730.0,
         "c_calls": 2373.4
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          130.0,
+          32642.0
+        ]
       }
     },
     "compile_tone_list": {
       "op_count": 9,
       "packed_bytes": 440,
-      "instructions": 1370807,
-      "estimated_cycles": 2281060,
+      "instructions": 1371066,
+      "estimated_cycles": 2281377,
       "python_work": {
         "bytecodes": 17612.4,
         "python_calls": 241.0,
         "c_calls": 765.4
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          49.0,
+          12371.0
+        ]
       }
     },
     "compile_vqe_hea": {
       "op_count": 58,
       "packed_bytes": 2872,
-      "instructions": 4962170,
-      "estimated_cycles": 7669673,
+      "instructions": 4960719,
+      "estimated_cycles": 7666650,
       "python_work": {
         "bytecodes": 68998.4,
         "python_calls": 793.0,
         "c_calls": 2682.4
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          148.0,
+          37949.0
+        ]
       }
     },
     "export_to_controller": {
       "export_bytes": 87794,
-      "instructions": 4661596,
-      "estimated_cycles": 7211951,
+      "instructions": 4654877,
+      "estimated_cycles": 7204649,
       "python_work": {
-        "bytecodes": 1368.0,
+        "bytecodes": 1362.0,
         "python_calls": 30.0,
         "c_calls": 75.667
       }
     },
     "export_to_controller_detuned": {
       "export_events": 1001,
-      "instructions": 13185364,
-      "estimated_cycles": 20143487,
+      "instructions": 13181579,
+      "estimated_cycles": 20135408,
       "python_work": {
-        "bytecodes": 841.0,
+        "bytecodes": 835.0,
         "python_calls": 27.0,
         "c_calls": 38.667
       }
     },
     "export_to_controller_sampled": {
       "export_bytes": 49449,
-      "instructions": 1502581,
-      "estimated_cycles": 2366394,
+      "instructions": 1501367,
+      "estimated_cycles": 2365976,
       "python_work": {
-        "bytecodes": 5295.0,
+        "bytecodes": 5289.0,
         "python_calls": 41.0,
         "c_calls": 162.667
       }
     },
     "export_to_emulator": {
       "export_bytes": 39736,
-      "instructions": 5804839,
-      "estimated_cycles": 8719051,
+      "instructions": 5808079,
+      "estimated_cycles": 8728017,
       "python_work": {
-        "bytecodes": 34561.0,
+        "bytecodes": 34559.0,
         "python_calls": 625.0,
         "c_calls": 2383.667
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          65.0,
+          17917.0
+        ]
       }
     },
     "first_compile": {
       "op_count": 15,
       "packed_bytes": 744,
-      "instructions": 12274872,
-      "estimated_cycles": 19399600,
+      "instructions": 12279809,
+      "estimated_cycles": 19422305,
       "python_work": {
         "bytecodes": 56958.0,
         "python_calls": 866.0,
         "c_calls": 2740.0
+      },
+      "address_keyed": {
+        "mlir::RegisteredOperationName::insert(std::unique_ptr<mlir::OperationName::Impl, std::default_delete<mlir::OperationName::Impl> >, llvm::ArrayRef<llvm::StringRef>)": [
+          443.0,
+          387835.0
+        ],
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          984.0,
+          582044.0
+        ],
+        "mlir::detail::AttributeUniquer::initializeAttributeStorage(mlir::AttributeStorage*, mlir::MLIRContext*, mlir::TypeID)": [
+          688.0,
+          85937.0
+        ]
       }
     },
     "simulate_setup": {
       "density_matrix_entries": 4,
       "time_points": 2,
-      "instructions": 1200892,
-      "estimated_cycles": 2053292,
+      "instructions": 1200893,
+      "estimated_cycles": 2052306,
       "python_work": {
         "bytecodes": 4946.0,
         "python_calls": 122.0,
         "c_calls": 364.667
       },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          4.0,
+          1073.0
+        ]
+      },
       "tolerance": 0.0045
     },
     "specialize_amplitude": {
       "mlir_bytes": 1303,
-      "instructions": 373282,
-      "estimated_cycles": 593207,
+      "instructions": 373729,
+      "estimated_cycles": 593911,
       "python_work": {
         "bytecodes": 439.6,
         "python_calls": 16.0,
         "c_calls": 16.1
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          37.0,
+          10153.0
+        ],
+        "mlir::detail::AttributeUniquer::initializeAttributeStorage(mlir::AttributeStorage*, mlir::MLIRContext*, mlir::TypeID)": [
+          1.85,
+          244.15
+        ]
       }
     },
     "specialize_wait": {
       "schedule_cycles": 145,
       "schedule_events": 3,
-      "instructions": 318915,
-      "estimated_cycles": 502373,
+      "instructions": 320081,
+      "estimated_cycles": 504054,
       "python_work": {
         "bytecodes": 640.6,
         "python_calls": 22.0,
         "c_calls": 37.1
+      },
+      "address_keyed": {
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(mlir::TypeID, unsigned int, llvm::function_ref<bool (mlir::StorageUniquer::BaseStorage const*)>, llvm::function_ref<mlir::StorageUniquer::BaseStorage* (mlir::StorageUniquer::StorageAllocator&)>)": [
+          9.0,
+          2922.2
+        ],
+        "mlir::detail::AttributeUniquer::initializeAttributeStorage(mlir::AttributeStorage*, mlir::MLIRContext*, mlir::TypeID)": [
+          2.4,
+          328.4
+        ]
       }
     },
     "submit": {
