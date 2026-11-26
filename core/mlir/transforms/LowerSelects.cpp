@@ -414,23 +414,33 @@ private:
   /// Erase the ops copied into arms, the selects they read and their
   /// conditions, once nothing uses them.
   void eraseDead() {
-    bool erased = true;
-    while (erased) {
-      erased = false;
-      for (mlir::Operation *op : llvm::to_vector(dead)) {
-        if (!op->use_empty())
-          continue;
-        dead.remove(op);
-        for (mlir::Value operand : op->getOperands())
-          if (mlir::Operation *def = operand.getDefiningOp())
-            if (computesOnly(def) &&
-                !mlir::isa<pulse::QuditAllocOp, pulse::GetDriveLineOp,
-                           pulse::GetReadoutLineOp>(def))
-              dead.insert(def);
-        op->erase();
-        erased = true;
-      }
+    // The ops still to look at, and those erased: an op is looked at again
+    // when one that used it goes, so each is looked at once per use.
+    llvm::SmallVector<mlir::Operation *, 16> todo(dead.begin(), dead.end());
+    llvm::DenseSet<mlir::Operation *> erased;
+    while (!todo.empty()) {
+      mlir::Operation *op = todo.pop_back_val();
+      if (erased.contains(op) || !op->use_empty())
+        continue;
+      for (mlir::Value operand : op->getOperands())
+        if (mlir::Operation *def = operand.getDefiningOp())
+          if (computesOnly(def) &&
+              !mlir::isa<pulse::QuditAllocOp, pulse::GetDriveLineOp,
+                         pulse::GetReadoutLineOp>(def)) {
+            dead.insert(def);
+            todo.push_back(def);
+          } else if (dead.contains(def)) {
+            // A condition's op, dead whatever it is: looked at again too.
+            todo.push_back(def);
+          }
+      // An op with regions (a condition's own branch) takes the uses of
+      // the ops in them with it: every dead op is looked at again.
+      if (op->getNumRegions())
+        todo.append(dead.begin(), dead.end());
+      erased.insert(op);
+      op->erase();
     }
+    dead.remove_if([&](mlir::Operation *op) { return erased.contains(op); });
   }
 
   mlir::func::FuncOp function;
