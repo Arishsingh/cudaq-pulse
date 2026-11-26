@@ -70,6 +70,37 @@ namespace {
 /// body.
 constexpr int64_t kSummarizedTrips = 64;
 
+/// The times the calls of a function are counted and ordered at: starts,
+/// and the lengths added to them, of at most this many cycles either way,
+/// so that the sums and differences of a few of them fit 64 bits. A call
+/// with a time outside it is reported, not computed with. (A loaded
+/// module's times are within 2^50.)
+constexpr int64_t kMostCycles = int64_t(1) << 61;
+
+static bool withinCycles(int64_t cycles) {
+  return cycles >= -kMostCycles && cycles <= kMostCycles;
+}
+
+/// pulse::scheduledStart within kMostCycles: none when `op` has no start,
+/// or its start in `iteration` is outside it or does not fit 64 bits. An
+/// op outside loops needs no periods.
+static std::optional<int64_t> startWithin(mlir::Operation *op,
+                                          llvm::ArrayRef<int64_t> iteration) {
+  std::optional<int64_t> start = pulse::startCycles(op);
+  if (!start)
+    return std::nullopt;
+  int64_t time = *start;
+  if (!iteration.empty())
+    for (auto [k, period] : llvm::zip(iteration, pulse::periodCycles(op))) {
+      int64_t moved;
+      if (__builtin_mul_overflow(k, period, &moved))
+        return std::nullopt;
+      if (__builtin_add_overflow(time, moved, &time))
+        return std::nullopt;
+    }
+  return withinCycles(time) ? std::optional<int64_t>(time) : std::nullopt;
+}
+
 /// The executions of a submission over the iterations of one loop, or its
 /// one execution: in iteration k of `count` it starts at start + k *
 /// period, holds its link for `duration` and a slot for `busy`. The runs of
@@ -159,21 +190,29 @@ struct Submissions {
                bool inBranch) {
     for (mlir::Operation &op : block) {
       if (auto submit = mlir::dyn_cast<classical::SubmitOp>(op)) {
-        auto start = pulse::scheduledStart(&op, iteration);
-        if (!start)
+        auto start = startWithin(&op, iteration);
+        int64_t duration = pulse::scheduledDuration(&op).value_or(1);
+        int64_t budget = classical::intAttr(&op, "classical.budget_cycles");
+        if (!start || !withinCycles(duration) || !withinCycles(budget)) {
+          if (pulse::hasStart(&op))
+            past(submit);
           continue;
+        }
         LinkKey device{classical::intAttr(&op, "classical.device"),
                        classical::intAttr(&op, classical::kInstanceAttr, -1),
                        classical::intAttr(&op, classical::kTimelineAttr, -1)};
-        int64_t duration = pulse::scheduledDuration(&op).value_or(1);
         if (!Ordering || recording) {
           int64_t period = 0;
           if (level) {
             iteration[*level] = 1;
-            period = *pulse::scheduledStart(&op, iteration) - *start;
+            auto next = startWithin(&op, iteration);
             iteration[*level] = 0;
+            if (!next) {
+              past(submit);
+              continue;
+            }
+            period = *next - *start;
           }
-          int64_t budget = classical::intAttr(&op, "classical.budget_cycles");
           Run run{
               *start, period, level ? trips : 1, duration, duration + budget,
               group,  &op};
@@ -260,18 +299,33 @@ private:
                     llvm::Twine(answered));
   }
 
-  /// pulse::scheduledStart, which an op outside loops needs no periods for.
-  static std::optional<int64_t> startIn(mlir::Operation *op,
-                                        llvm::ArrayRef<int64_t> iteration) {
-    if (!iteration.empty())
-      return pulse::scheduledStart(op, iteration);
-    return pulse::startCycles(op);
+  /// A call with a time the check does not compute with.
+  void past(classical::SubmitOp submit) {
+    error(submit, "the call of '" + submit.getCallee() +
+                      "' starts, or lasts, past the cycles a schedule counts "
+                      "in");
+  }
+
+  /// The start of `op`, an operation the order of calls depends on, in the
+  /// iteration walked; one with a time the check does not compute with is
+  /// reported, not passed over.
+  std::optional<int64_t> startIn(mlir::Operation *op,
+                                 llvm::ArrayRef<int64_t> iteration) {
+    std::optional<int64_t> start = startWithin(op, iteration);
+    if (!start && pulse::hasStart(op))
+      pastOperation(op);
+    return start;
+  }
+
+  void pastOperation(mlir::Operation *op) {
+    error(op, "an operation the order of calls depends on starts, or lasts, "
+              "past the cycles a schedule counts in");
   }
 
   /// When `op`, a readout or an answer the op walked depends on, ends in the
   /// iteration walked: the loops around it are among those around the op.
-  static std::optional<int64_t> endOf(mlir::Operation *op,
-                                      llvm::ArrayRef<int64_t> iteration) {
+  std::optional<int64_t> endOf(mlir::Operation *op,
+                               llvm::ArrayRef<int64_t> iteration) {
     size_t depth = 0;
     for (mlir::Operation *parent = op->getParentOp(); parent;
          parent = parent->getParentOp())
@@ -281,7 +335,12 @@ private:
     std::optional<int64_t> start = startIn(op, iteration.take_front(depth));
     if (!start)
       return std::nullopt;
-    return *start + pulse::scheduledDuration(op).value_or(0);
+    int64_t duration = pulse::scheduledDuration(op).value_or(0);
+    if (!withinCycles(duration)) {
+      pastOperation(op);
+      return std::nullopt;
+    }
+    return *start + duration;
   }
 
   void orderSubmit(classical::SubmitOp submit, int64_t start, int64_t duration,
@@ -375,33 +434,44 @@ static int64_t floorDiv(int64_t a, int64_t b) {
 
 static int64_t ceilDiv(int64_t a, int64_t b) { return -floorDiv(-a, b); }
 
-/// Whether a run's last execution ends without overflow.
+/// Whether a run's last execution starts within kMostCycles, as its first
+/// does: every execution then starts within it, and ends within three
+/// times it.
 static bool fits(const Run &run) {
-  int64_t span, last, end;
+  int64_t span, last;
   if (__builtin_mul_overflow(run.count - 1, run.period, &span))
     return false;
   if (__builtin_add_overflow(run.start, span, &last))
     return false;
-  if (__builtin_add_overflow(last, run.busy, &end))
-    return false;
-  return true;
+  return withinCycles(last);
 }
 
 /// The most requests `runs` hold at once and the earliest time they do (0
 /// when none is ever held), from every execution: a sweep over interval
-/// ends, each half-open (a slot freed at t can be reused at t).
+/// ends, each half-open (a slot freed at t can be reused at t). The
+/// executions of a run that does not move from one iteration to the next
+/// are all at one time, and counted there together.
 static std::pair<int64_t, int64_t> sweepInFlight(llvm::ArrayRef<Run> runs) {
-  std::vector<std::pair<int64_t, int>> events;
-  for (const Run &run : runs)
+  std::vector<std::pair<int64_t, int64_t>> events;
+  for (const Run &run : runs) {
+    if (run.period == 0) {
+      events.push_back({run.start, +run.count});
+      events.push_back({run.start + run.busy, -run.count});
+      continue;
+    }
     for (int64_t k = 0; k < run.count; ++k) {
       int64_t start = run.start + k * run.period;
       events.push_back({start, +1});
       events.push_back({start + run.busy, -1});
     }
+  }
   std::sort(events.begin(), events.end());
   int64_t inFlight = 0, worst = 0, when = 0;
   for (auto [time, delta] : events) {
-    inFlight += delta;
+    // The counts of runs that do not move can add up past 64 bits.
+    if (__builtin_add_overflow(inFlight, delta, &inFlight))
+      inFlight = delta > 0 ? std::numeric_limits<int64_t>::max()
+                           : std::numeric_limits<int64_t>::min();
     if (inFlight > worst) {
       worst = inFlight;
       when = time;
@@ -1042,10 +1112,25 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
     else
       submissions.collect<false>(body, iteration, false);
     failed |= submissions.failed;
+    // A call whose last execution in a loop would start or end past what
+    // 64 bits count is no schedule: it is reported, and its link's calls
+    // are not counted or ordered from times that do not exist.
+    for (auto &[key, runs] : submissions.perLink)
+      for (const Run &run : runs)
+        if (!fits(run)) {
+          run.op->emitError("the call of '")
+              << mlir::cast<classical::SubmitOp>(run.op).getCallee()
+              << "' starts at " << run.start << " and " << run.period
+              << " cycles later in each of " << run.count
+              << " iterations: the last is past the cycles a schedule counts "
+                 "in";
+          failed = true;
+          break;
+        }
     // S8: requests in flight at once.
     for (auto &[key, runs] : submissions.perLink) {
       auto [device, instance, timeline] = key;
-      if (runs.empty())
+      if (runs.empty() || !llvm::all_of(runs, fits))
         continue;
       int64_t capacity =
           classical::intAttr(runs.front().op, "classical.slots", 64);
@@ -1069,17 +1154,9 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
     }
     // S9: one submission at a time on a link, in program order.
     for (auto &[key, runs] : submissions.ordered) {
-      std::optional<OutOfOrder> found;
-      if (llvm::all_of(runs, fits)) {
-        found = firstOutOfOrder(runs);
-      } else {
-        std::vector<Run> each;
-        for (const Run &run : runs)
-          for (int64_t k = 0; k < run.count; ++k)
-            each.push_back({run.start + k * run.period, 0, 1, run.duration,
-                            run.busy, -1, run.op});
-        found = firstOutOfOrder(each);
-      }
+      if (!llvm::all_of(runs, fits))
+        continue;
+      std::optional<OutOfOrder> found = firstOutOfOrder(runs);
       if (found) {
         found->op->emitError("submission on link ")
             << std::get<0>(key) << " starts at " << found->start
