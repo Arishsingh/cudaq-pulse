@@ -295,6 +295,9 @@ def _uses_pulse_ops(
     if owner is None:
         return False
     owners = [owner]
+    # The ids of the objects in *owners*, which keeps them alive; made
+    # when the first object *owner* holds is found.
+    known: set[int] | None = None
     for holder in owners:
         for name in fn.__code__.co_names:
             attr = _static_attr(holder, name)
@@ -305,8 +308,12 @@ def _uses_pulse_ops(
             if isinstance(attr, types.FunctionType):
                 if _uses_pulse_ops(attr, seen, holder, strict=True):
                     return True
-            elif _may_own_helpers(attr) and all(attr is not o for o in owners):
-                owners.append(attr)
+            elif _may_own_helpers(attr):
+                if known is None:
+                    known = {id(owner)}
+                if id(attr) not in known:
+                    known.add(id(attr))
+                    owners.append(attr)
     return False
 
 

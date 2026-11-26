@@ -359,6 +359,33 @@ def test_augmented_assignments_are_decoded_in_linear_time():
 
 
 @pytest.mark.scaling
+def test_a_method_of_an_object_that_reaches_many_is_traced_in_linear_time():
+    class Link:
+        def __init__(self, following):
+            self.following = following
+
+        def amplitude(self):
+            return 0.1 if self.following is None else 0.2
+
+    def program(n: int):
+        head = Link(None)
+        for _ in range(n - 1):
+            head = Link(head)
+
+        @pulse.kernel
+        def kernel(qudits):
+            line = get_drive_line(qudits[0])
+            drive(line, square(8, head.amplitude()))
+
+        return _packed_trace(kernel, 1)
+
+    # Whether the method is a pulse helper is looked for in every object
+    # its own reaches. Eight times the objects: 8x the work when linear,
+    # 64x when each is compared with those before it.
+    _assert_linear("trace", {n: program(n) for n in (500, 4000)}, 16)
+
+
+@pytest.mark.scaling
 def test_an_if_costs_what_its_arms_change_not_the_lines_held_in_lists():
     # A readout and a measurement-conditioned if per qudit, with every line
     # held in a list: each if puts back the list slots its arms wrote, not
