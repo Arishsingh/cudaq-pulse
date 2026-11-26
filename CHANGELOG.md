@@ -598,6 +598,35 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   module-level values as before. The quick example of the README and of
   Getting Started now reads the qubit out and runs by calling the kernel,
   which returns the outcome of one simulated shot.
+- **`Controller.max_program_duration` is checked on the schedule.** The
+  limit was also held against the sum of the program's operations op after
+  op, so three 400-cycle drives on three lines at the same time were
+  refused under a limit of 1000 cycles though the program ends at cycle
+  400. The scheduled length now decides, for a compiled kernel and for
+  each call of one whose waits floats set. The sum is kept as an early
+  stop for a kernel no schedule can save: it is an error once it passes
+  the limit times the number of lines the program has taken, which a
+  program that fits cannot. A program on one line is checked as before. A
+  wait whose length is known only when the program runs counts at its
+  highest length in the scheduled check, as it did in the sum, for the
+  lines it holds back: a line that nothing ties to the wait ends when it
+  is scheduled to. A call whose values take the schedule past the limit
+  is still a `ValueError`; its message now gives the scheduled length.
+  Stricter than before: such a wait with no highest length
+  (`bounds=(lowest, None)`, or no `bounds`) that holds back a line of a
+  controller with `max_program_duration` is now a `CompilationError` at
+  the wait, which says to bound it, as under `max_duration_cycles`. It
+  compiled before, counted at its lowest length, and could run past the
+  limit. So is a wait for the answer of a blocking classical function
+  (`latency_mode="blocking"`) that an operation of such a controller
+  follows: the error at the wait says to use `"bounded"` or `"timeout"`.
+  The waits of run-time length are held to the limit by
+  `pulse-classical-check`, which the compiler runs after the schedule for a
+  module with classical calls: a schedule pass run alone
+  (`cudaq-pulse-opt --pulse-schedule-asap`) holds the program to the limit
+  as scheduled only, and a hand-written module that marks a wait
+  `classical.variable` without declaring a classical function is not
+  checked for it.
 - **`viz.save_schedule` takes a path-like path and names its keywords.**
   `path` may be a `pathlib.Path` as well as a string, and the function takes
   `figsize` and `title`, the two keywords of `plot_schedule`, where it passed

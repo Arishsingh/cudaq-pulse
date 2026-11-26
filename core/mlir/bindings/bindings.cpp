@@ -5489,10 +5489,16 @@ public:
     result.loops_ = loops_;
     result.runTime_ = runTime_;
     result.keepSource();
-    runSchedule(*result.module_, true, schedule, maxDrives, maxReadouts,
-                readoutLatency, switchPenalty,
-                "specialize: pass pipeline failed", specialized_.frameChanges,
-                verifyEverything());
+    try {
+      runSchedule(*result.module_, true, schedule, maxDrives, maxReadouts,
+                  readoutLatency, switchPenalty,
+                  "specialize: pass pipeline failed", specialized_.frameChanges,
+                  verifyEverything());
+    } catch (const std::runtime_error &error) {
+      // Values that take the schedule past a controller's longest program
+      // are what is wrong: an error of the values.
+      pulse::rethrowPastProgramLimit(error);
+    }
     // Verified, or trusted as the verified module it is rescheduled from.
     result.verified();
     return result;
