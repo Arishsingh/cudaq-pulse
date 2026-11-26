@@ -667,6 +667,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   and the simulation goes from 7,915 ms to 7,895 ms (NVIDIA RTX A6000,
   driver 570.211.01, CUDA runtime 12.9.79, cuDensityMat 0.7.1). Which
   intervals are split, and every result, are as before.
+- **The exports of a program's parts scan its events once for the
+  controllers that take each answer.** On a control system of several
+  controllers, `export_to_controller(controller=...)` splits the program
+  into each controller's part and checks it against the whole system. Both
+  need to know which controllers play a pulse that uses each answer of a
+  classical call, and each found it by its own scan of every event. The
+  check now reads the scan the parts were made from, where it checks those
+  same events; a check that counts in a controller's own cycles converts
+  copies of the events, and scans those as before. On two controllers that
+  state what they support, the exports of a loop of 1,000 rounds that each
+  branch on an answer go from about 13.0 million bytecodes of Python work
+  to 11.2 million. The search that tells a program with no answer from one
+  with answers no longer runs Python code per event, so a program that
+  makes no call, or only submits, does less too. Every exported program
+  and every violation is as before.
 
 ### Fixed
 
