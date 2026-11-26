@@ -455,6 +455,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 - **Faster compiles of branches beside long lists of lines.** Tracing a
   measurement-conditioned `if` in a kernel that keeps many lines or tones
   in a list costs less; the programs compiled are unchanged.
+- **A list of lines held under several names costs a branch once.** A
+  measurement-conditioned `if` kept a record of a list of lines or tones for
+  every local name that held it (a further variable, or a called kernel
+  given the list as several arguments) and put the list back between its
+  arms once for each name, so a kernel with many names of one list spent
+  most of its compile there. The `if` keeps one record of each list and
+  puts it back once, and a further name of a list of lines costs it what a
+  further name of any other list does. Programs and errors are as before.
 - **`alap` and `alap_rcp` end a program at its last operation.** They placed
   every line as late as the forward schedule's end, and that end could come
   after the last operation: under `rcp` a readout holds its line for the
