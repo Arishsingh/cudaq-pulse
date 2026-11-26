@@ -38,7 +38,7 @@ from .._errors import (
 )
 from .._native._cudaq_pulse_native import evaluate_callback
 from .._units import Time, as_nanoseconds
-from ..compiler import ScheduledEvent
+from ..compiler import _LISTED_EVENTS, ScheduledEvent
 from . import _propagate
 from ._attributes import _VALID_INTEGRATORS, _f64, _level_attributes, _target_attributes
 
@@ -977,13 +977,25 @@ def _simulate_compiled(
 
     path_end = t_end is None and bool(functions)
     if t_end is None:
-        events = [ScheduledEvent(*e) for e in module.events()]
-        ends = [
-            e.start_cycles + e.duration_cycles
-            for e in events
-            if e.start_cycles is not None and e.duration_cycles is not None
-        ]
-        t_end = max(ends, default=0) / clock_ghz
+        # The latest end of the events that have a start and a length. Past
+        # _LISTED_EVENTS of them a loop kept as a loop comes as a loop, whose
+        # latest end is that of its last iteration: its events are not
+        # listed once per iteration.
+        events = module.event_tree(_LISTED_EVENTS)
+        if events.__class__ is list:
+            ends = [
+                start + length
+                for _, _, _, start, length in events
+                if start is not None and length is not None
+            ]
+            latest = max(ends, default=0)
+        else:
+            from .._loops import Schedule
+
+            end = Schedule(events[0], ScheduledEvent).latest_end(timed_only=True)
+            assert end is not None
+            latest = end
+        t_end = latest / clock_ghz
     if t_end < t_start:
         raise InvalidValueError(f"t_end ({t_end}) must not precede t_start ({t_start})")
 

@@ -636,6 +636,13 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **`simulate` finds its default end without listing a long loop's events.**
+  Without `t_end`, a simulation runs to the latest end of the program's
+  events, and built one `ScheduledEvent` per event of every iteration of
+  every loop to find it. Past 10,000 events, a loop kept as a loop now
+  gives its latest end from its last iteration, and below that no event
+  object is built. The end is the same.
+
 - **CPU simulation of drives apart from each other takes time in proportion
   to the drives.** The CPU integrator steps each stretch of time in which
   some drive plays, and asked every drive of the interval at every stretch
