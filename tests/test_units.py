@@ -107,8 +107,10 @@ def test_a_numpy_number_on_the_left_follows_the_same_rules(number):
         _ = number + 20 * ns
     with pytest.raises(TypeError, match="compares a time with a bare number"):
         _ = number == 4 * ns
-    with pytest.raises(TypeError, match="unsupported operand"):
+    with pytest.raises(TypeError, match="multiply its elements"):
         _ = np.array([number]) * ns
+    with pytest.raises(TypeError, match="multiply its elements"):
+        _ = ns * np.array([number])
 
 
 def test_a_time_never_hashes_like_a_number():
