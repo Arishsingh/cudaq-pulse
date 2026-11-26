@@ -112,7 +112,7 @@ docs = [
     "nvidia-sphinx-theme==0.0.9.post1",
 ]
 bench = ["matplotlib>=3.9"]
-# The coverage job in ci.yml only; not part of dev.
+# The coverage job in property-nightly.yml only; not part of dev.
 coverage = ["coverage>=7.10"]
 dev = [
     { include-group = "build" },
