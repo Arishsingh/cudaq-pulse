@@ -2772,7 +2772,8 @@ private:
                readouts = key("readouts"), result = key("result"),
                role = key("role"), runtime = key("runtime"),
                samples = key("samples"), shape = key("shape"),
-               start = key("start_cycles"), test = key("test"),
+               start = key("start_cycles"), term = key("term"),
+               table = key("terms"), test = key("test"),
                timeout = key("timeout_ns"), tone = key("tone"),
                type = key("type"), unknown = key("unknown"),
                value = key("value"), values = key("values"), wait = key("wait"),
@@ -2888,6 +2889,27 @@ private:
 
   nb::object expression(int32_t index) {
     using Expression = ControllerEventWalk::Expression;
+    return walk->written(
+        index, [&](int32_t at) { return leaf(at); },
+        [&](int n) {
+          nb::object out = dict();
+          put(out, keys.term, integer(n));
+          return out;
+        },
+        [&](const Expression &e, nb::handle of, nb::handle table) {
+          nb::object out = dict();
+          if (table.is_valid())
+            put(out, keys.table, table);
+          put(out, keys.op, keys.terms[e.term]);
+          put(out, keys.type, keys.types[e.type]);
+          put(out, keys.of, of);
+          return out;
+        });
+  }
+
+  /// What is no term of an expression.
+  nb::object leaf(int32_t index) {
+    using Expression = ControllerEventWalk::Expression;
     const Expression &e = walk->expressions[index];
     if (e.kind == Expression::Number)
       return textNumber(e.number);
@@ -2909,14 +2931,8 @@ private:
       put(out, keys.answer, integer(e.event));
       put(out, keys.result, integer(e.result));
       break;
-    default: {
-      put(out, keys.op, keys.terms[e.term]);
-      put(out, keys.type, keys.types[e.type]);
-      nb::list of = list(e.of.size());
-      for (size_t i = 0; i < e.of.size(); ++i)
-        set(of, i, expression(e.of[i]));
-      put(out, keys.of, of);
-    }
+    default:
+      break;
     }
     return out;
   }
@@ -5473,10 +5489,16 @@ public:
     result.loops_ = loops_;
     result.runTime_ = runTime_;
     result.keepSource();
-    runSchedule(*result.module_, true, schedule, maxDrives, maxReadouts,
-                readoutLatency, switchPenalty,
-                "specialize: pass pipeline failed", specialized_.frameChanges,
-                verifyEverything());
+    try {
+      runSchedule(*result.module_, true, schedule, maxDrives, maxReadouts,
+                  readoutLatency, switchPenalty,
+                  "specialize: pass pipeline failed", specialized_.frameChanges,
+                  verifyEverything());
+    } catch (const std::runtime_error &error) {
+      // Values that take the schedule past a controller's longest program
+      // are what is wrong: an error of the values.
+      pulse::rethrowPastProgramLimit(error);
+    }
     // Verified, or trusted as the verified module it is rescheduled from.
     result.verified();
     return result;

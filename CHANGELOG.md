@@ -345,6 +345,25 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **A run-time expression of the controller export names a term that
+  several terms use, and no expression is too deep to export.** A value the
+  program computes at run time from a term it uses twice, forty times over,
+  was written with every use written out (2^40 copies), so its export and
+  its check did not finish; and a value more than 65 operations deep was
+  refused. An expression may now have `"terms": [...]` beside its `op`,
+  `type` and `of`, and `{"term": n}` where term `n` is used. A term is
+  named there when the expression uses it more than once, or when the
+  text would otherwise nest more than 65 terms deep, so an expression of
+  any size exports, in text that grows with its operations and never
+  nests deeper than it could before (65 terms, and up to three more for a
+  length converted to a controller's own cycles). `evaluate_expression` computes a named term once.
+  An expression that shares no term and is not that deep is written as
+  before, in format /1 and /2 alike, and both formats keep their names; a
+  reader that does not know `{"term": n}` fails on it, as on any leaf it
+  does not know. A backend that evaluates through `evaluate_expression`
+  needs no change; one that walks `of` itself must follow `{"term": n}`
+  into `terms`. The `id` of a format /2 waveform whose parameter is such
+  an expression changes with its text.
 - **Coupled qudits are driven at their dressed frequencies.** In a quantum
   system with couplings, each qudit's drive tone now plays at its 0-1
   frequency with the couplings included (`qs.qudits[i].dressed_frequency_hz`,
@@ -579,6 +598,35 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   module-level values as before. The quick example of the README and of
   Getting Started now reads the qubit out and runs by calling the kernel,
   which returns the outcome of one simulated shot.
+- **`Controller.max_program_duration` is checked on the schedule.** The
+  limit was also held against the sum of the program's operations op after
+  op, so three 400-cycle drives on three lines at the same time were
+  refused under a limit of 1000 cycles though the program ends at cycle
+  400. The scheduled length now decides, for a compiled kernel and for
+  each call of one whose waits floats set. The sum is kept as an early
+  stop for a kernel no schedule can save: it is an error once it passes
+  the limit times the number of lines the program has taken, which a
+  program that fits cannot. A program on one line is checked as before. A
+  wait whose length is known only when the program runs counts at its
+  highest length in the scheduled check, as it did in the sum, for the
+  lines it holds back: a line that nothing ties to the wait ends when it
+  is scheduled to. A call whose values take the schedule past the limit
+  is still a `ValueError`; its message now gives the scheduled length.
+  Stricter than before: such a wait with no highest length
+  (`bounds=(lowest, None)`, or no `bounds`) that holds back a line of a
+  controller with `max_program_duration` is now a `CompilationError` at
+  the wait, which says to bound it, as under `max_duration_cycles`. It
+  compiled before, counted at its lowest length, and could run past the
+  limit. So is a wait for the answer of a blocking classical function
+  (`latency_mode="blocking"`) that an operation of such a controller
+  follows: the error at the wait says to use `"bounded"` or `"timeout"`.
+  The waits of run-time length are held to the limit by
+  `pulse-classical-check`, which the compiler runs after the schedule for a
+  module with classical calls: a schedule pass run alone
+  (`cudaq-pulse-opt --pulse-schedule-asap`) holds the program to the limit
+  as scheduled only, and a hand-written module that marks a wait
+  `classical.variable` without declaring a classical function is not
+  checked for it.
 - **`viz.save_schedule` takes a path-like path and names its keywords.**
   `path` may be a `pathlib.Path` as well as a string, and the function takes
   `figsize` and `title`, the two keywords of `plot_schedule`, where it passed
@@ -605,6 +653,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   2^50, one that counts unsigned, and a region other than a branch, a
   schedule block or an `scf.for`. Before, a loop without constant bounds
   was refused only when a drive, a readout or a wait was directly in it.
+- **Compiling many classical calls on several controllers takes time in
+  proportion to the program.** On a control system of several controllers,
+  a call's budget takes the controllers that play what uses its answer: the
+  line a branch on the answer drives, followed through every branch after
+  it. That was followed again for every call, so a program of n calls, each
+  with a branch on its answer, did n times n steps: eight times the calls
+  took 64 times the work. What each value reaches is now followed once for
+  all the calls of a function. No budget, instance or message changes.
 
 - **A classical function of the user's cannot take the name of a decoder
   message version.** cudaq-pulse names the versions of the CUDA-Q QEC
@@ -660,10 +716,9 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   calls, however long the chain; and a condition that several parts of
   another use, also through `^`, `==` and `!=`, is computed once in the
   program, where it was computed once per use. A value that shares nothing
-  compiles to the same program and reads the same in errors. Not
-  covered yet: an amplitude, phase or frequency, or a value from an answer,
-  that doubles a term many times is still written out in the controller
-  export, which grows with its terms.
+  compiles to the same program and reads the same in errors. The
+  controller export and the check write such a value with each term once
+  too (see Changed).
 - **A time in a runtime `list[float]` argument is refused, as for a `float`
   parameter.** `[100 * pulse.ns]` was taken as its nanoseconds and used as
   that many clock cycles, so a scan of waits written with units played half
