@@ -360,6 +360,33 @@ def test_augmented_assignments_are_decoded_in_linear_time():
 
 
 @pytest.mark.scaling
+def test_a_method_of_an_object_that_reaches_many_is_traced_in_linear_time():
+    class Link:
+        def __init__(self, following):
+            self.following = following
+
+        def amplitude(self):
+            return 0.1 if self.following is None else 0.2
+
+    def program(n: int):
+        head = Link(None)
+        for _ in range(n - 1):
+            head = Link(head)
+
+        @pulse.kernel
+        def kernel(qudits):
+            line = get_drive_line(qudits[0])
+            drive(line, square(8, head.amplitude()))
+
+        return _packed_trace(kernel, 1)
+
+    # Whether the method is a pulse helper is looked for in every object
+    # its own reaches. Eight times the objects: 8x the work when linear,
+    # 64x when each is compared with those before it.
+    _assert_linear("trace", {n: program(n) for n in (500, 4000)}, 16)
+
+
+@pytest.mark.scaling
 def test_an_if_costs_what_its_arms_change_not_the_lines_held_in_lists():
     # A readout and a measurement-conditioned if per qudit, with every line
     # held in a list: each if puts back the list slots its arms wrote, not
@@ -575,6 +602,35 @@ def test_a_round_on_many_controllers_is_checked_in_linear_time():
     # each controller is checked on its own pulses, 64x when each is checked
     # on a copy of every controller's.
     _assert_linear("a round's check", {n: program(n) for n in (70, 560)}, 8 * TOLERANCE)
+
+
+@pytest.mark.scaling
+def test_rounds_around_repeats_of_a_call_cost_the_same_at_any_repeat_count():
+    @pulse.classical(max_latency_ns=60)
+    def decide(bits: pulse.Bits) -> bool:
+        return True
+
+    def program(repeats: int):
+        @pulse.kernel
+        def rounds(q):
+            d = get_drive_line(q)
+            r = get_readout_line(q)
+            for _ in range(100):
+                if decide.submit([readout(r, square(32, 0.05))]).result():
+                    drive(d, square(24, 0.1))
+                for _ in range(repeats):
+                    if decide.submit([readout(r, square(32, 0.05))]).result():
+                        drive(d, square(40, 0.1))
+
+        # A fresh compiled kernel holds no specializations, so this compiles.
+        return lambda: pulse.compile(rounds).lower(Q[0])
+
+    # Both loops are kept as loops. The classical check keeps one of them as
+    # one run and walks the other: here the repeats are kept, which is the
+    # less work, so the rounds are walked 100 times whatever the repeats.
+    # With the rounds kept, every repeat was an entry compared with every
+    # other: eight times the repeats took 64 times as long.
+    _assert_flat("rounds of repeats", {n: program(n) for n in (2_000, 16_000)})
 
 
 @pytest.mark.scaling
