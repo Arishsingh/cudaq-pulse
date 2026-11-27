@@ -97,10 +97,11 @@ jobs:
         # newest; macOS runs 3.12 to 3.14.
         #
         # A pull request runs test level 0 of the pytest suite
-        # (CONTRIBUTING.md, Test levels) on every leg; a push to main and a
-        # manual run, levels 0 to 2 on every leg. Level 3, the suite under
-        # two hash seeds and coverage run every night
-        # (property-nightly.yml).
+        # (CONTRIBUTING.md, Test levels) on every leg, and with it the test
+        # files it adds or changes, up to level 2
+        # (tools/ci-changed-tests.py); a push to main and a manual run,
+        # levels 0 to 2 on every leg. Level 3, the suite under two hash
+        # seeds and coverage run every night (property-nightly.yml).
         include:
           - { platform: linux-x86_64, runner: ubuntu-24.04, python: "3.12" }
           - { platform: linux-x86_64, runner: ubuntu-24.04, python: "3.13" }
@@ -127,11 +128,26 @@ jobs:
       - name: Configure
         run: uv run --no-sync cmake --preset dev
 
-      # The log ends with the 30 slowest tests, to see where the time goes.
-      # The lit suite and the runtime host tests have no level and always run.
+      # The paths a pull request changes, as the changes action lists them
+      # (.github/actions/changes): pytest reads them as data, and runs the
+      # test files among them beside level 0 (--changed-paths,
+      # tools/ci-changed-tests.py). Without the list the job fails.
+      - name: Paths this pull request changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: git diff --name-only --no-renames "$BASE" "$GITHUB_SHA" -- > "$RUNNER_TEMP/changed-paths.txt"
+
+      # The log ends with the 30 slowest tests, to see where the time goes,
+      # and with the test files of the change that ran above level 0 and the
+      # ones that were left. The lit suite and the runtime host tests have no
+      # level and always run.
       - name: check-pulse (lit + pytest)
         env:
-          PYTEST_ADDOPTS: --durations=30 --level ${{ github.event_name == 'pull_request' && '0' || '2' }}
+          PYTEST_ADDOPTS: >-
+            --durations=30 --level
+            ${{ github.event_name == 'pull_request'
+            && format('0 --changed-paths={0}/changed-paths.txt', runner.temp) || '2' }}
         run: uv run --no-sync cmake --build build/dev --target check-pulse
 
       - name: Every pass has a lit test
@@ -368,8 +384,8 @@ jobs:
           --pyright "$RUNNER_TEMP/user/bin/pyright"
 
   # Free-threaded CPython: the extension is built to run without the GIL and
-  # the whole CPU suite, tests/test_threads.py included, runs with the GIL
-  # off; any extension that turns it back on fails the job. wheels.yml builds
+  # the CPU suite, at the levels of the test job, runs with the GIL off; any
+  # extension that turns it back on fails the job. wheels.yml builds
   # and tests the cp314t release wheels the same way.
   test-free-threaded:
     name: test (linux-x86_64, py3.14t)
@@ -409,10 +425,23 @@ jobs:
           assert sysconfig.get_config_var('Py_GIL_DISABLED'), 'not a free-threaded interpreter';
           assert not sys._is_gil_enabled(), 'importing cudaq_pulse enabled the GIL'"
 
-      # Level 0 for a pull request, 0 to 2 otherwise, as the test job.
+      # As the test job.
+      - name: Paths this pull request changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: git diff --name-only --no-renames "$BASE" "$GITHUB_SHA" -- > "$RUNNER_TEMP/changed-paths.txt"
+
+      # Level 0 and the test files of the change for a pull request, levels
+      # 0 to 2 otherwise, as the test job. Level 0 holds three tests of
+      # tests/test_threads.py: concurrent compiles, and the kernel cache and
+      # the target cache filled from several threads at once.
       - name: check-pulse (lit + pytest)
         env:
-          PYTEST_ADDOPTS: --durations=30 --level ${{ github.event_name == 'pull_request' && '0' || '2' }}
+          PYTEST_ADDOPTS: >-
+            --durations=30 --level
+            ${{ github.event_name == 'pull_request'
+            && format('0 --changed-paths={0}/changed-paths.txt', runner.temp) || '2' }}
         run: uv run --no-sync cmake --build build/dev --target check-pulse
 
   # The oldest compilers the build supports, Ubuntu 22.04's GCC 11 and
