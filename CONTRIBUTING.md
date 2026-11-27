@@ -662,9 +662,11 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   the perf guard, and check-pulse at every test level on the platforms and
   Python versions of `ci.yml` and on macOS with Python 3.15, every night and
   on manual dispatch, with the seed in the job summary and the example
-  database kept in the Actions cache. One job runs the suite twice more under
-  hash seeds it logs (replay one with `PYTHONHASHSEED=<seed>`), and one
-  reports the coverage of the Python package, without a threshold. GitHub
+  database kept in the Actions cache. Two jobs run the suite once more each
+  under a hash seed drawn for the run, which the job's name, the run's
+  summary and the nightly issue give (replay one with
+  `PYTHONHASHSEED=<seed>`), and one reports the coverage of the Python
+  package, without a threshold. GitHub
   runs scheduled workflows from the default branch, so the schedule tests
   `main`; a manual dispatch tests the branch it is dispatched on. A scheduled
   run that fails opens or updates the one nightly issue (see
