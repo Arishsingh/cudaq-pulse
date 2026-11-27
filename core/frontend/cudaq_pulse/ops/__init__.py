@@ -366,6 +366,10 @@ def drag(duration: Numeric, amplitude: Numeric, sigma: Numeric, beta: Numeric) -
 def cosine(duration: Numeric, amplitude: Numeric) -> Waveform:
     """Create a raised-cosine envelope waveform.
 
+    The envelope is ``amplitude * (1 - cos(2 * pi * t / duration)) / 2``
+    at time ``t`` from the start of the pulse. It starts at 0, peaks at
+    *amplitude* in the middle, and returns to 0 at the end.
+
     Args:
         duration: Pulse duration: an int number of clock cycles, or a time
             (``20 * pulse.ns``).
@@ -380,6 +384,13 @@ def cosine(duration: Numeric, amplitude: Numeric) -> Waveform:
 
 def tanh_ramp(duration: Numeric, amplitude: Numeric, sigma: Numeric) -> Waveform:
     """Create a hyperbolic-tangent ramp waveform.
+
+    The envelope is ``amplitude * (1 + tanh((t - duration / 2) / sigma)) / 2``
+    at time ``t`` from the start of the pulse. It passes *amplitude* / 2 at
+    the midpoint ``t = duration / 2``, rising from
+    ``amplitude * (1 - tanh(duration / (2 * sigma))) / 2`` at the start to
+    ``amplitude * (1 + tanh(duration / (2 * sigma))) / 2`` at the end: with
+    ``duration = 4 * sigma``, about 2% and 98% of *amplitude*.
 
     Args:
         duration: Pulse duration: an int number of clock cycles, or a time
@@ -403,6 +414,14 @@ def gaussian_square(
     """Create a Gaussian-square (flat-top Gaussian) waveform.
 
     A square pulse with Gaussian rise and fall edges.
+
+    The envelope is a Gaussian rise, a flat top of *width*, and a Gaussian
+    fall. With ``edge = (duration - width) / 2`` the length of each edge,
+    it is ``amplitude * exp(-(t - edge)**2 / (2 * sigma**2))`` for
+    ``t < edge``, *amplitude* for ``edge <= t < duration - edge``, and
+    ``amplitude * exp(-(t - (duration - edge))**2 / (2 * sigma**2))``
+    after that. It starts and ends at
+    ``amplitude * exp(-edge**2 / (2 * sigma**2))``.
 
     Args:
         duration: Total pulse duration: an int number of clock cycles, or
