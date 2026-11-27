@@ -807,6 +807,18 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   calls outweigh what the repeats would save. The check's verdicts are
   the same, and so are its messages for times within what the check
   counts in.
+
+- **`pulse-verify` checks a schedule's times in loops nested to any depth.**
+  The check of each drive, readout and wait (not before time zero, not
+  before the measurements its branches wait for, not before the operation
+  before it on its line ends) walked every loop at its first two
+  iterations and its last, one inside the other: three to the power of
+  the loops' depth. Twelve nested loops took half a million walks of the
+  innermost body, and a module given to `pulse.load` may nest far deeper.
+  It now takes the operations times the depth, and reports what it
+  reported: the same operations, messages and times, each operation once
+  and in the same order.
+
 - **Compiling a loop with very many classical calls in its body no longer
   slows with the square of the calls.** To count the requests a link
   holds at once, the classical check compared each call of the loop with
@@ -1127,6 +1139,10 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   does the work it did; a number of another type (an int, a numpy scalar)
   is made a plain float where it is bound. `bind()` refuses a numpy bool
   (`np.True_`) as it refuses a `bool`; it was taken as `1.0`.
+- `pulse.simulate` now names the value it rejected in its `dt_ns` error and
+  the qudit and its level count in the error for fewer than two levels, also
+  when a per-qudit `levels` mapping is used.
+
 - Binding the values of a call with a long `list[float]` parameter crashed
   the process (a segmentation fault) from about 65,500 values on, when the
   kernel was compiled with `fold_phases` or `fuse_pulses` (both are default
@@ -1268,6 +1284,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   pulse that plays with it. The frame runs at its old frequency until then.
   Phase changes play as before; their frame updates' `start_cycles` move to
   the end of such a wait or readout.
+- The errors for a `ControlSystem`'s `max_concurrent_drives`,
+  `max_concurrent_readouts`, readout latency and
+  `line_switch_penalty_cycles`, and for a drive's
+  `amplitude_scale_rad_per_ns`, end with the value that was checked
+  (`ControlSystem.max_concurrent_drives must be positive, got 0`).
 - After a wait whose length a `float` argument sets, `classical_report()`
   and the `"calls"` of `export_to_controller()` (formats /1 and /2, and
   `unroll`) and of `export_to_emulator()` gave each call's times with the
