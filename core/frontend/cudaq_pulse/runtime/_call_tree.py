@@ -395,13 +395,16 @@ def simulate_tree(
                     f"{callee}: IQ points are drawn per shot; simulate with shots_count"
                 )
             drives = {
-                (i + readouts, tuple(it)): (f, a) for i, it, f, a in current.readout_drives(entries)
+                (i + readouts, tuple(it)): (f, a, s)
+                for i, it, f, a, s in current.readout_drives(entries)
             }
 
             def point(key: tuple[int, tuple[int, ...]]) -> tuple[float, float]:
                 _, _, qudit, begin, finish = seen[key]
-                frequency, amplitude = drives.get(key, (math.nan, math.nan))
-                return iq_model.sample(rng, qudit, truth[key], frequency, amplitude, finish - begin)
+                frequency, amplitude, line_start = drives.get(key, (math.nan, math.nan, math.nan))
+                return iq_model.sample(
+                    rng, qudit, truth[key], frequency, amplitude, finish - begin, line_start
+                )
 
             # Each shot draws its own points; a path that got no shots still
             # draws one, for the ensemble state. What follows depends only on

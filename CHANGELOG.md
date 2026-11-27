@@ -13,6 +13,20 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Added
 
+- **Readout crosstalk.** `qs.replace(readout_crosstalk=[ReadoutCrosstalk(
+  resonator_of=14, qudit=4, chi_hz=-20e3)])` states that a readout of qudit
+  14 shifts qudit 4 by `chi_hz` per photon in qudit 14's resonator (level j
+  of qudit 4 by j times that); a tuple gives the shift by qudit 14's level.
+  `pulse.simulate` adds the shift while the readout plays and as its
+  resonator rings down, with the photons the resonator's equation gives for
+  each level of the qudit read out at the tone and amplitude played. A
+  resonator without a stated `frequency_hz` sits at the tone its readout
+  line starts the program at. An entry whose qudit read out has no
+  `DispersiveReadout` with its `dispersive_shift_hz` and `linewidth_hz` is
+  refused when the program reads that qudit out, and lowers nothing when it
+  does not. The entries are checked, are part of the fingerprint, pickle and
+  go in the system file. A system without any lowers and simulates as
+  before.
 - **`pulse.call`, a placed call of a function scheduled on its own.** In MLIR,
   `pulse.call @f(args) <{start_cycles = s, duration_cycles = d}>` runs `@f`
   at one start time, every timed op of `@f` keeping its start relative to
@@ -345,6 +359,18 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **A readout resonator without a stated frequency sits at the tone its
+  line starts at.** The IQ points of a readout whose `DispersiveReadout`
+  gives no `frequency_hz` were drawn with the resonator at whatever tone the
+  readout played, so a `shift_frequency` of the readout line's tone never
+  detuned it. The resonator now sits at the tone the line starts the
+  program at (on a system whose qudits give no frequencies, its carrier),
+  and a later frequency change detunes the readout as it does one with a
+  stated frequency. A program that never changes its readout tone's
+  frequency draws the same points. A readout whose tone the readout model
+  cannot compute, on a line whose starting tone it can, or the other way
+  round, is now an error, as an unknown tone is for a resonator with a
+  stated frequency.
 - **A run-time expression of the controller export names a term that
   several terms use, and no expression is too deep to export.** A value the
   program computes at run time from a term it uses twice, forty times over,
@@ -682,6 +708,18 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   with answers no longer runs Python code per event, so a program that
   makes no call, or only submits, does less too. Every exported program
   and every violation is as before.
+- **`controller.unroll` carries the time of rolled loops to their events.**
+  Every event of a format /2 program added up the periods of the loops
+  around it, and every iteration of a loop copied the list of those loops.
+  A loop now adds its period once per iteration and hands the time to the
+  events inside, and one list of loops serves the whole program. A program
+  of two nested loops and 10,240 events unrolls in 4,013,694 bytecodes
+  where it took 4,380,299, with 20,500 Python calls for 30,742 and 10,243
+  fewer calls of built-in functions (Python 3.12); an event outside every
+  loop saves the same sum. A period that is not an integer, which only an
+  export written elsewhere holds, is still added up at each event, to the
+  same rounding. The format /1 program, its branch numbers and every error
+  are as before.
 - **`controller.sample_waveform` writes a square's samples into its array.**
   The samples of every waveform were built as two lists of floats, one per
   part, and copied into the array. A square with numeric parameters is one
