@@ -622,6 +622,44 @@ def test_the_python_sweep_under_the_sanitizers_is_advisory():
     assert '-m "not gpu and not slow"' in sweep
 
 
+def test_the_nightly_hash_seeds_are_drawn_each_run_logged_and_counted():
+    """Two seeds are drawn in the run, not written in the workflow; each has
+    a job of its own that runs the suite under it and names it; and the
+    nightly issue waits for both and gives the seeds."""
+    text = (_WORKFLOWS / "property-nightly.yml").read_text(encoding="utf-8")
+    jobs = _jobs("property-nightly.yml")
+    # Every job but the report-only coverage counts toward the issue.
+    waited = set(re.findall(r"[\w-]+", jobs["nightly-issue"][0]))
+    assert waited == set(jobs) - {"nightly-issue", "coverage"}
+    assert {"seeds", "hash-seeds"} <= waited
+    assert jobs["hash-seeds"][0] == "seeds" and jobs["seeds"][0] == ""
+
+    def job(name):
+        return re.split(r"\n\n  (?=[#A-Za-z])", text[text.index(f"\n  {name}:\n") + 1 :])[0]
+
+    draw = job("seeds")
+    assert "shuf -i 1-4294967295 -n 2" in draw
+    assert 'echo "first=${seeds[0]}"' in draw and 'echo "second=${seeds[1]}"' in draw
+    assert "::notice title=PYTHONHASHSEED::" in draw and "$GITHUB_STEP_SUMMARY" in draw
+    assert not re.search(r"PYTHONHASHSEED[=:] *\d", text), "a seed written in the workflow"
+    suite = job("hash-seeds")
+    for output in ("first", "second"):
+        assert f"          - ${{{{ needs.seeds.outputs.{output} }}}}\n" in suite
+    assert suite.split("\n    needs:")[0].endswith("PYTHONHASHSEED=${{ matrix.seed }})")
+    assert "          PYTHONHASHSEED: ${{ matrix.seed }}\n" in suite
+    assert 'if [ -z "$PYTHONHASHSEED" ]; then' in suite
+    assert 'pytest tests -q -m "not gpu" -p no:cacheprovider' in suite
+    assert "continue-on-error" not in draw + suite
+    assert "fail-fast: false" in suite and re.search(r"(?m)^    timeout-minutes: \d+$", suite)
+    # The test legs no longer run the suite a second and third time.
+    assert "hash-seeds: true" not in text and "for seed in" not in text
+    issue = job("nightly-issue")
+    for name in ("first", "second"):
+        assert f"{name.upper()}_SEED: ${{{{ needs.seeds.outputs.{name} }}}}\n" in issue
+    assert "were given the hash seeds $FIRST_SEED and $SECOND_SEED" in issue
+    assert issue.count('"$seeds" \\\n') == 1
+
+
 def _module():
     spec = importlib.util.spec_from_file_location("ci_changes", _TOOL)
     module = importlib.util.module_from_spec(spec)
