@@ -202,12 +202,66 @@ def test_the_summary_fails_when_a_job_that_ran_failed_and_passes_on_skips(result
 
 @pytest.mark.parametrize(
     ("workflow", "job", "wanted"),
-    [("docs.yml", "build", "docs"), ("sanitizers.yml", "sanitizers", "python")],
+    [
+        ("docs.yml", "build", "docs"),
+        ("sanitizers.yml", "sanitizers", "python"),
+        ("sanitizers.yml", "python-sweep", "python"),
+    ],
 )
 def test_the_other_workflows_gate_their_job_on_the_same_classes(workflow, job, wanted):
     needs, condition = _jobs(workflow)[job]
     assert "changes" in needs
     assert f"needs.changes.outputs.{wanted} == 'true'" in condition
+
+
+def _job_text(workflow, job):
+    text = (_WORKFLOWS / workflow).read_text(encoding="utf-8")
+    body = text[text.index(f"\n  {job}:\n") + 1 :]
+    following = re.search(r"(?m)^  [A-Za-z][\w-]*:\n", body[len(job) + 4 :])
+    return body[: len(job) + 4 + following.start()] if following else body
+
+
+def test_the_sanitizer_job_to_require_fails_on_each_of_its_steps():
+    """Nothing in the address+undefined row is allowed to fail: only the
+    thread row may, and the job keeps the name that is required."""
+    job = _job_text("sanitizers.yml", "sanitizers")
+    assert "    name: sanitizers (${{ matrix.name }})\n" in job
+    assert "- { name: address+undefined," in job
+    assert re.findall(r"continue-on-error: (.*)", job) == ["${{ matrix.sanitizers == 'thread' }}"]
+    assert "timeout " not in job
+    for step in ("check-pulse-runtime", "check-pulse-mlir", "Python binding smoke check"):
+        assert step in job
+
+
+def test_the_sanitizer_smoke_check_names_tests_that_exist():
+    job = _job_text("sanitizers.yml", "sanitizers")
+    named = re.findall(r"(tests/[\w/]+\.py)::(\w+)", job)
+    assert {path for path, _ in named} == {
+        "tests/test_native_bindings.py",
+        "tests/test_load.py",
+        "tests/test_import.py",
+    }
+    assert 3 <= len(named) <= 8, "a smoke check, not the suite"
+    for path, test in named:
+        assert f"\ndef {test}(" in (_ROOT / path).read_text(encoding="utf-8"), (path, test)
+    # A whole file or directory would not be a smoke check.
+    code = "\n".join(line for line in job.splitlines() if not line.lstrip().startswith("#"))
+    assert len(re.findall(r"(?<![\w/])tests\b", code)) == len(named)
+
+
+def test_the_python_sweep_under_the_sanitizers_is_advisory():
+    """It cannot fail the run or the required job, says so in its name, and
+    leaves pull requests alone."""
+    jobs = _jobs("sanitizers.yml")
+    assert set(jobs) == {"changes", "sanitizers", "python-sweep"}
+    assert jobs["sanitizers"][0] == "changes"
+    needs, condition = jobs["python-sweep"]
+    assert needs == "changes"
+    assert "github.event_name != 'pull_request'" in condition
+    sweep = _job_text("sanitizers.yml", "python-sweep")
+    assert "    name: sanitizers (python sweep, advisory)\n" in sweep
+    assert "\n    continue-on-error: true\n" in sweep
+    assert '-m "not gpu and not slow"' in sweep
 
 
 def _module():
