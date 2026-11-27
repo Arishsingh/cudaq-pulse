@@ -693,6 +693,18 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   and the simulation goes from 7,915 ms to 7,895 ms (NVIDIA RTX A6000,
   driver 570.211.01, CUDA runtime 12.9.79, cuDensityMat 0.7.1). Which
   intervals are split, and every result, are as before.
+- **The amplitude check reads a waveform that events share once.** Where
+  the native check does not count a controller's limits (several clocks,
+  lines a call holds, a count of pulses on a controller that runs loops),
+  `check` and the export find each event's peak by the text of its waveform,
+  and wrote that text for every event. The events of one op share one
+  waveform, and its text is now written when the waveform changes from one
+  event of a line to the next, not for each: 256 drives of one envelope
+  write it once. Equal waveforms that are not one object are still sampled
+  once. An event whose waveform is not the one before it runs one bytecode
+  more and one call of a built-in function fewer than it did, and each
+  line's check two bytecodes more. Every violation and its text are as
+  before.
 - **The exports of a program's parts scan its events once for the
   controllers that take each answer.** On a control system of several
   controllers, `export_to_controller(controller=...)` splits the program

@@ -3039,19 +3039,24 @@ def _over_amplitude(
     *unresolved*, an envelope whose peak needs the call's values is noted
     there, to be checked with them. Each distinct envelope is sampled once,
     once for all the lines that share *peaks*."""
-    found = []
+    found: list[str] = []
     if peaks is None:
         peaks = {}
+    # The waveform of the event before, for as long as this check runs: the
+    # events of one op share theirs, and its peak stands without its text.
+    # (No event's waveform is the list of what is found.)
+    tree: Any = found
     for event in events:
-        tree = event.get("waveform")
-        key = repr(tree)
-        if key not in peaks:
-            peaks[key] = _peak_amplitude(tree)
-        peak = peaks[key]
-        if peak is None and tree is not None and unresolved is not None:
-            unresolved.append(f"line {line['line']}: amplitude")
-            unresolved = None
-        if peak is not None and peak > most:
+        if tree is not (tree := event.get("waveform")):
+            key = f"{tree!r}"
+            if key not in peaks:
+                peaks[key] = _peak_amplitude(tree)
+            peak = peaks[key]
+        if peak is None:
+            if tree is not None and unresolved is not None:
+                unresolved.append(f"line {line['line']}: amplitude")
+                unresolved = None
+        elif peak > most:
             found.append(
                 f"line {line['line']} ({line['role']} of qudit {line['qudit']}): the "
                 f"{event['kind']} at {event['start_cycles']} peaks at amplitude {peak:.6g}; "

@@ -1043,6 +1043,57 @@ def test_the_amplitude_check_samples_each_envelope_once_and_reports_every_pulse(
     assert all("amplitude 0.9;" in v for v in found)
 
 
+def test_the_amplitude_check_reads_a_waveform_its_events_share_once(monkeypatch):
+    from cudaq_pulse import controller
+
+    written = []
+
+    class Tree(dict):
+        def __repr__(self):
+            written.append(id(self))
+            return super().__repr__()
+
+    def tree(amplitude):
+        params = {"duration": 40.0, "amplitude": amplitude, "amplitude_imag": 0.0}
+        return Tree(shape="square", params=params)
+
+    def events(trees):
+        return [
+            {"kind": "drive", "start_cycles": 40 * k, "waveform": t} for k, t in enumerate(trees)
+        ]
+
+    line = {"line": 0, "role": "drive", "qudit": 0}
+    sampled = []
+    peak = controller._peak_amplitude
+    monkeypatch.setattr(
+        controller, "_peak_amplitude", lambda tree: sampled.append(tree) or peak(tree)
+    )
+    # The events of one op share its waveform: its text is written once.
+    shared = tree(0.9)
+    found = controller._over_amplitude(line, events([shared] * 256), 0.5)
+    assert len(found) == 256 and len(written) == 1 and len(sampled) == 1
+    # Equal waveforms that are not one object are each written, and sampled once.
+    del written[:], sampled[:]
+    found = controller._over_amplitude(line, events([tree(0.9) for _ in range(8)]), 0.5)
+    assert len(found) == 8 and len(written) == 8 and len(sampled) == 1
+    # Two that alternate are each written at every change.
+    del written[:], sampled[:]
+    low = tree(0.3)
+    found = controller._over_amplitude(line, events([shared, low] * 4), 0.5)
+    assert len(found) == 4 and len(written) == 8 and len(sampled) == 2
+    # A waveform changed between two checks is read again, not remembered.
+    peaks = {}
+    again = events([low, low])
+    assert controller._over_amplitude(line, again, 0.5, None, peaks) == []
+    low["params"]["amplitude"] = 0.9
+    assert len(controller._over_amplitude(line, again, 0.5, None, peaks)) == 2
+    # Events without a waveform, and a peak not known yet, are noted as before.
+    unresolved = []
+    unset = events([None, None, tree(None), tree(None)])
+    assert controller._over_amplitude(line, unset, 0.5, unresolved) == []
+    assert unresolved == ["line 0: amplitude"]
+
+
 @pulse.kernel
 def two_envelopes_everywhere(*qudits):
     for q in qudits:
