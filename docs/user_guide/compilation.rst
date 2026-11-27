@@ -551,6 +551,48 @@ with line delays, or a controller with ``max_instructions`` or
 ``max_program_duration``, is refused: ``load`` does not apply or check those
 yet.
 
+Assembly is the form to pass between different builds: it holds an
+operation's properties by name. Bytecode holds them by position, in the
+shape the writer's copy of the dialects gives them, so it is read only with
+the dialect source that wrote it. Bytecode states that source in its
+producer string, as ``cudaq-pulse-dialects=<source>``: the LLVM version and a
+digest of the definition files of the Pulse and Classical dialects
+(``22.1.8-cf2faa24b237fcb9``). The bytecode of a pickled program and of
+``cudaq-pulse-opt --emit-bytecode`` states it. ``load`` refuses bytecode that
+states another source than its own, naming both, before it reads anything
+else of the module. Two sources are the same when their digests are equal
+and their LLVM versions have the same major and minor: bytecode written with
+LLVM 22.1.4 and the same dialect files is read by a build with LLVM 22.1.8,
+and bytecode written with 22.2.0 or 23.1.8 is refused. Bytecode that states
+no source is read as it is given.
+
+A compiler built from a checkout of this repository states the source of
+that checkout. ``cmake/write_dialect_source.cmake`` computes it and writes it
+as a C++ string literal:
+
+.. code-block:: bash
+
+   cmake -DROOT=<checkout> -DLLVM_VERSION=<LLVM version> \
+         -DOUTPUT=dialect_source.inc -P <checkout>/cmake/write_dialect_source.cmake
+
+.. code-block:: cpp
+
+   mlir::BytecodeWriterConfig config("mycompiler 1.0 cudaq-pulse-dialects="
+   #include "dialect_source.inc"
+   );
+   mlir::writeBytecodeToFile(module, os, config);
+
+``LLVM_VERSION`` is the version of the LLVM the compiler is built with, in
+full, as LLVM's CMake package gives it (``LLVM_PACKAGE_VERSION``,
+``22.1.8``). ``load`` compares the digest, which is what follows the last
+hyphen of the source, and the version's first two numbers; what follows the
+second dot (a patch number, a suffix such as ``22.1.8git``) is not compared.
+A stated source that has no hyphen, or whose version does not start with two
+numbers and a dot between them, is refused. The producer string is the
+compiler's own name, then ``cudaq-pulse-dialects=`` and the source, set apart
+by spaces. The first ``cudaq-pulse-dialects=`` in the string counts, and the
+source ends at the next space or at the string's end.
+
 Two attributes that are neither an operation's own nor named ``pulse.`` are
 kept, on a ``pulse.drive`` and as a finite ``f64``: ``frame_phase_offset``, a
 constant phase shift that ``compile`` folds into the drive after it (the tone

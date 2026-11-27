@@ -305,6 +305,32 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   kernel's calls of them are compiled. A call of another function of the
   module that states its start (`pulse.start_cycles`, provisional) is written
   in place.
+- **Bytecode states the dialect source it was written with, and `pulse.load`
+  refuses one written with another.** MLIR bytecode holds an operation's
+  properties by position, in the shape the writer's copy of the dialect
+  gives them, so bytecode read with dialects of another shape can be misread
+  without an error: a start read as a duration. The bytecode this package
+  writes (a pickled program's module) and the bytecode of
+  `cudaq-pulse-opt --emit-bytecode` now state the source of the Pulse and
+  Classical dialects in their producer string, as
+  `cudaq-pulse-dialects=<source>`
+  (`cudaq-pulse cudaq-pulse-dialects=22.1.8-cf2faa24b237fcb9`): the LLVM
+  version and a digest of the two dialects' definition files. `pulse.load`
+  reads the producer string before anything else of the module and refuses
+  bytecode that states another source than its own, naming both: give that
+  module as assembly, which holds properties by name. Two sources are the
+  same when their digests are equal and their LLVM versions have the same
+  major and minor: bytecode from a writer built with another patch release
+  of the same LLVM minor and the same dialect files is read, and a stated
+  source that cannot be read as a version and a digest is refused. Assembly
+  states no source, and bytecode that states none is read as before. A writer outside
+  this repository states the source the same way: it runs
+  `cmake -DROOT=<checkout> -DLLVM_VERSION=<version> -DOUTPUT=<file> -P
+  cmake/write_dialect_source.cmake` on the checkout it is built from, with
+  the version of the LLVM it is built with (`LLVM_PACKAGE_VERSION`), which
+  writes the source as a C++ string, and puts
+  `cudaq-pulse-dialects=<source>` in the producer string of its
+  `mlir::BytecodeWriterConfig`, after its own name and a space.
 - **Broadcast drive lines.** A drive line whose one tone reaches several
   qudits at once, as one antenna or beam over several, is declared on the line:
   `DriveLine([0, 1, 2], broadcast=True)`. A kernel gets it with
@@ -799,6 +825,27 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **Compiling loops of classical calls inside loops no longer slows with
+  the trips of any of them.** Of the loops around a call, the classical
+  check took one from a single copy of its body and walked the others
+  iteration by iteration, so rounds around repeats cost the trips of one
+  of the two, and in 100 rounds around 100,000 repeats twice the repeats
+  once took four times as long. Every loop of 64 or more trips is now
+  taken from one copy of its body: a call is one run with a period and a
+  count for each loop around it, and how many requests a link holds at
+  once, and whether they go out in program order, are worked out from
+  those. 800 rounds of 16,000 repeats are the work of 100 rounds of
+  2,000. The check's verdicts are the same, and so are its messages for
+  times within what the check counts in. Still counted
+  with one loop taken from one copy and those inside it walked, as
+  before: a loop whose calls do not all move by the same period, a loop
+  whose iterations start closer together than the loops inside it take
+  to start, and a call held for a negative time, none of which a
+  schedule the compiler makes has. A loop of fewer
+  than 64 trips is written out, which is less work than taking it from
+  one copy. In a function with a branch, the order of calls is still
+  checked at the first two iterations and the last of each loop, one
+  inside the other.
 - **A module given to `pulse.load` exports the frame changes that nothing
   takes.** A phase or frequency change that no later drive or readout on
   its tone takes (one after the last pulse, in a loop whose last iteration
@@ -817,20 +864,6 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   Each change stays at the start the module gives it. The marks in a
   module's text are no longer read: one on a change that a pulse takes
   gave a frame update the program does not have.
-- **Compiling rounds around many repeats of a classical call no longer
-  slows with the square of the repeats.** Of the loops around a call, the
-  classical check keeps at most one as a single run and walks the others
-  iteration by iteration. It kept the outermost loop of 64 or more trips,
-  so in 100 rounds around 100,000 repeats every repeat became an entry
-  compared with every other, and twice the repeats took four times as
-  long. It now keeps that loop unless walking it and keeping a longer
-  loop inside it is much less work, counted in the operations the walk
-  visits and the entries it compares: the repeats here, and still the
-  rounds when they are the longer loop, or when their body or their own
-  calls outweigh what the repeats would save. The check's verdicts are
-  the same, and so are its messages for times within what the check
-  counts in.
-
 - **`pulse.load` keeps a phase folded into a drive.** The compiler folds a
   constant `shift_phase` into the drive after it, as `frame_phase_offset` on
   that drive, and the export and the simulator read it there. `load` kept

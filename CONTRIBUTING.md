@@ -273,6 +273,44 @@ Without `--level` every level runs. Select with `--level`, not with
 `-m level2`: `-m` sees only markers, not the table, and matches a marker on
 a file even for a test in it that is marked otherwise.
 
+### Tests of an installed wheel
+
+`wheels.yml` runs the suite against each built wheel and again against the
+wheels installed in clean images. Those tests run from a copy of `tests/`
+outside the checkout, so that the installed package is the one imported,
+and the copy has only the files that `test-sources` of `[tool.cibuildwheel]`
+in `pyproject.toml` lists. That list is the only one: cibuildwheel copies it,
+and `tools/ci/install-test.sh` copies it with `python tests/_sources.py copy`.
+
+A test that reads a file outside `tests/` does one of two things:
+
+- It runs against the wheels too: it takes the path from
+  `tests._sources.source_file("benchmarks/...")`, with the path written out,
+  and the file is added to `test-sources`. A listed Python file that loads
+  another file of the tree needs that one listed as well.
+- It needs the rest of the tree (`docs/`, `tools/`, every example): it skips
+  itself where the file is absent, with a reason that begins
+  `needs the source tree`.
+
+`python tests/_sources.py check` fails in a second when a listed file is
+absent, when a `source_file` call names a file that is not listed and, in a
+checkout, when a listed Python file names an unlisted one. It runs as
+`tests/test_sources.py` at level 0, so in each `test (...)` job of a pull
+request that runs the suite, in the `version` job of `wheels.yml` before any
+wheel is built, and
+first in each wheel's test command and in `install-test.sh`, on the copy
+itself, before the long run. A path built by hand instead
+(`_ROOT / "benchmarks" / ...`) is not seen by the check and fails only in
+`wheels.yml`, which does not run on pull requests.
+
+Only the examples a test loads by name are listed. `tests/test_examples.py`
+runs every example it finds, so all of them in a checkout and the listed
+ones against a wheel. Without the whole tree, `tests/test_levels.py` does
+not ask that a `tests/levels.toml` line for parameters of a collected test
+names a test, since such parameters may come from files that are not there;
+a line for a file or for a test is still checked, and a checkout checks the
+lines it always did.
+
 ## Writing passes
 
 Compiler passes are C++ MLIR passes in `core/mlir/transforms/`. To try one
@@ -394,7 +432,13 @@ PYTHONPATH=build/dev/python python tools/perf-gate.py --update
 ```
 
 Without Valgrind (macOS, or Linux on another architecture), the tool
-compares and updates only the program sizes. The instruction counts depend
+compares and updates only the program sizes, and where `setarch -R` is
+refused it measures with address randomization on. Both pass at a desk. In
+CI the job passes `--strict` on every run but the one that takes a baseline:
+a strict run fails unless it measured instruction counts, with address
+randomization off, against a measured baseline (one with a count for every
+case, its environment and the CI run it came from, and no `bootstrap`
+field), so the job can't pass having gated nothing. The instruction counts depend
 on the toolchain, so they are taken in CI's environment, where the image,
 its packages, uv and Python are pinned. Once a change that moves them on
 purpose is on its pull request's branch in this repository, a manual run of
@@ -414,10 +458,12 @@ the branch, which must still be the commit the run measured (the file's
 `python tools/perf-gate.py --help` lists the same steps.
 
 **Bootstrap mode.** A baseline that says `"bootstrap": true` and holds no
-instruction counts is in bootstrap mode. The job still measures every case
+instruction counts is in bootstrap mode. The tool still measures every case
 twice and reports the counts and their spread, but they don't fail the run;
 program sizes block as always. The summary says so in a banner, together
-with the `gh run download` command for that run. Taking a run's
+with the `gh run download` command for that run. That holds for a run at a
+desk and for the manual `perf_baseline` run; a pull request's run is strict
+and fails on such a baseline until a measured one is committed. Taking a run's
 measurements as the baseline removes the field, and `"bootstrap": true`
 next to any instruction count is an
 error (in the job and in `tests/test_perf_gate.py`), so the gate can't stay
@@ -726,9 +772,11 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   the perf guard, and check-pulse at every test level on the platforms and
   Python versions of `ci.yml` and on macOS with Python 3.15, every night and
   on manual dispatch, with the seed in the job summary and the example
-  database kept in the Actions cache. One job runs the suite twice more under
-  hash seeds it logs (replay one with `PYTHONHASHSEED=<seed>`), and one
-  reports the coverage of the Python package, without a threshold. GitHub
+  database kept in the Actions cache. Two jobs run the suite once more each
+  under a hash seed drawn for the run, which the job's name, the run's
+  summary and the nightly issue give (replay one with
+  `PYTHONHASHSEED=<seed>`), and one reports the coverage of the Python
+  package, without a threshold. GitHub
   runs scheduled workflows from the default branch, so the schedule tests
   `main`; a manual dispatch tests the branch it is dispatched on. A scheduled
   run that fails opens or updates the one nightly issue (see
@@ -757,9 +805,9 @@ for the native and python classes, which is every change that can move it.
 `tests/test_ci_changes.py` holds the classes, the condition on each job, the
 tests that `test-docs` runs and the summary.
 
-One gap: `editor-types` type-checks the Python code blocks of the pages and
-does not run for a change to the pages alone; it runs on `main` after the
-merge.
+One gap: the editor-types steps of `test (linux-x86_64, py3.12)` type-check
+the Python code blocks of the pages and do not run for a change to the pages
+alone; they run on `main` after the merge.
 
 `ci-ok` is the summary of `ci.yml`: it always runs and holds the run to the
 plan that the classifier's answers give (`tools/ci-ok.py`). It passes when

@@ -16,9 +16,9 @@
 #
 # The test jobs run check-pulse at every test level (CONTRIBUTING.md, Test
 # levels) on the legs of ci.yml, where a pull request runs level 0
-# and a push to main levels 0 to 2, and on macOS with Python 3.15; one leg
-# runs the suite twice more under hash seeds it logs. The coverage job
-# reports the coverage of the Python package.
+# and a push to main levels 0 to 2, and on macOS with Python 3.15. Two more
+# jobs run the suite under a hash seed each, drawn for the run and logged.
+# The coverage job reports the coverage of the Python package.
 #
 # A scheduled run that fails opens the issue "The nightly run fails", or
 # comments on it while it is open, and the next scheduled run that passes
@@ -129,15 +129,13 @@ jobs:
   test:
     name: test (${{ matrix.platform }}, py${{ matrix.python }})
     runs-on: ${{ matrix.runner }}
-    # The leg with hash-seeds runs the suite three times (about half an
-    # hour each); 90 minutes cancelled it in its last pass.
-    timeout-minutes: 150
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
           - { platform: linux-x86_64, runner: ubuntu-24.04, python: "3.12" }
-          - { platform: linux-x86_64, runner: ubuntu-24.04, python: "3.13", hash-seeds: true }
+          - { platform: linux-x86_64, runner: ubuntu-24.04, python: "3.13" }
           - { platform: linux-x86_64, runner: ubuntu-24.04, python: "3.14" }
           - { platform: linux-x86_64, runner: ubuntu-24.04, python: "3.15" }
           - { platform: linux-aarch64, runner: ubuntu-24.04-arm, python: "3.12" }
@@ -168,22 +166,85 @@ jobs:
           PYTEST_ADDOPTS: --durations=30
         run: uv run --no-sync cmake --build build/dev --target check-pulse
 
-      # Python randomizes str hashes in every run (PYTHONHASHSEED=random is
-      # the default), but a failure that depends on the seed can't be
-      # replayed without it. This leg runs the suite again under two seeds it
-      # draws and logs; replay one with PYTHONHASHSEED=<seed>.
-      - name: pytest under two logged hash seeds
-        if: matrix.hash-seeds
+  # Python randomizes str hashes in every run (PYTHONHASHSEED=random is the
+  # default), but a failure that depends on the seed can't be replayed
+  # without it. Two seeds are drawn here for the run, different ones every
+  # night, and logged: in this job's notice, in the run's summary, in the
+  # name of the job that runs the suite under each (hash-seeds), and in the
+  # nightly issue. Replay one with PYTHONHASHSEED=<seed>.
+  seeds:
+    name: hash seeds (drawn for the run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      first: ${{ steps.draw.outputs.first }}
+      second: ${{ steps.draw.outputs.second }}
+    steps:
+      - name: Draw and log two hash seeds
+        id: draw
+        run: |
+          mapfile -t seeds < <(shuf -i 1-4294967295 -n 2)
+          if [ "${#seeds[@]}" -ne 2 ]; then
+            echo "::error title=PYTHONHASHSEED::no two seeds were drawn"
+            exit 1
+          fi
+          {
+            echo "first=${seeds[0]}"
+            echo "second=${seeds[1]}"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice title=PYTHONHASHSEED::hash seeds of this run: ${seeds[0]} and ${seeds[1]}"
+          {
+            echo "### Hash seeds: \`${seeds[0]}\` and \`${seeds[1]}\`"
+            echo
+            echo "Replay one locally with \`PYTHONHASHSEED=<seed> pytest tests -m \"not gpu\"\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The suite once under each seed, on Linux x86-64 with Python 3.13, each
+  # in a job of its own beside the test jobs: the leg that ran both after
+  # its own pass took three times half an hour.
+  hash-seeds:
+    name: test (linux-x86_64, py3.13, PYTHONHASHSEED=${{ matrix.seed }})
+    needs: seeds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        seed:
+          - ${{ needs.seeds.outputs.first }}
+          - ${{ needs.seeds.outputs.second }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.13"
+      - run: uv sync --locked
+      - uses: ./.github/actions/mlir-toolchain
+
+      - name: Build
+        run: |
+          uv run --no-sync cmake --preset dev
+          uv run --no-sync cmake --build --preset dev
+
+      # An empty seed would leave the hashes random and the run not
+      # replayable; Python itself refuses one that is not a number in range.
+      - name: pytest under the logged hash seed
         env:
           PYTHONPATH: build/dev/python
+          PYTHONHASHSEED: ${{ matrix.seed }}
         run: |
-          for seed in $(shuf -i 1-4294967295 -n 2); do
-            echo "::notice title=PYTHONHASHSEED::pytest with PYTHONHASHSEED=$seed"
-            if ! PYTHONHASHSEED=$seed uv run --no-sync python -m pytest tests -q -m "not gpu" -p no:cacheprovider; then
-              echo "::error title=PYTHONHASHSEED::the suite failed with PYTHONHASHSEED=$seed"
-              exit 1
-            fi
-          done
+          if [ -z "$PYTHONHASHSEED" ]; then
+            echo "::error title=PYTHONHASHSEED::no seed was drawn for this job"
+            exit 1
+          fi
+          echo "::notice title=PYTHONHASHSEED::pytest with PYTHONHASHSEED=$PYTHONHASHSEED"
+          if ! uv run --no-sync python -m pytest tests -q -m "not gpu" -p no:cacheprovider; then
+            echo "::error title=PYTHONHASHSEED::the suite failed with PYTHONHASHSEED=$PYTHONHASHSEED"
+            exit 1
+          fi
 
   # Free-threaded CPython, as ci.yml's test-free-threaded, at every level.
   test-free-threaded:
@@ -272,14 +333,15 @@ jobs:
   # One issue for the nightly run, found by its title. A scheduled run in
   # which a job failed or was cancelled opens it, or comments on it while it
   # is open, with the jobs and a link to the run; the next scheduled run
-  # that passes closes it. A manual run tests a branch and leaves the issue
-  # alone, as does a fork. A failure of level 0 to 2 is fixed before other
-  # work; a failure of level 3 alone does not block a merge
-  # (CONTRIBUTING.md, Test levels).
+  # that passes closes it. The hash-seed jobs count as the test jobs do,
+  # and the issue names the run's seeds. A manual run tests a branch and
+  # leaves the issue alone, as does a fork. A failure of level 0 to 2 is
+  # fixed before other work; a failure of level 3 alone does not block a
+  # merge (CONTRIBUTING.md, Test levels).
   nightly-issue:
     name: nightly issue
     if: ${{ always() && github.event_name == 'schedule' && github.repository == 'NVIDIA/cudaq-pulse' }}
-    needs: [hypothesis, test, test-free-threaded]
+    needs: [hypothesis, test, seeds, hash-seeds, test-free-threaded]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -290,6 +352,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           NEEDS: ${{ toJSON(needs) }}
+          FIRST_SEED: ${{ needs.seeds.outputs.first }}
+          SECOND_SEED: ${{ needs.seeds.outputs.second }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TITLE: The nightly run fails
         run: |
@@ -297,10 +361,15 @@ jobs:
             | "- `\(.key)`: \(.value.result)"' <<<"$NEEDS")"
           issue="$(gh issue list --state open --limit 1000 --json number,title \
             --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
+          seeds="No hash seeds were drawn, so the \`hash-seeds\` jobs did not run."
+          if [ -n "$FIRST_SEED" ] && [ -n "$SECOND_SEED" ]; then
+            seeds="The \`hash-seeds\` jobs were given the hash seeds $FIRST_SEED and $SECOND_SEED; replay one with \`PYTHONHASHSEED=<seed>\`."
+          fi
           if [ -n "$failed" ]; then
-            body="$(printf '%s\n\n%s\n\n%s\n' \
+            body="$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
               "The nightly run failed on \`main\` at $GITHUB_SHA: $RUN_URL" \
               "$failed" \
+              "$seeds" \
               "A failure of test level 0 to 2 is fixed before other work; a failure of level 3 alone does not block a merge. The next nightly run that passes closes this issue.")"
             if [ -n "$issue" ]; then
               gh issue comment "$issue" --body "$body"
