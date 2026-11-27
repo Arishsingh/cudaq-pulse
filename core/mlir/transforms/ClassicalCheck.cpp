@@ -159,12 +159,17 @@ static void sentValues(mlir::ValueRange values,
 /// Every execution of every submission, per link, in program order. Both
 /// arms of a branch are listed, so capacity is checked for the worst case.
 /// Of the loops around a submission at most one is kept as runs, and the
-/// others are walked iteration by iteration: the outermost loop with at
-/// least `summarizeFrom` trips (none when 0) that walking would not be
-/// much less work for (keptAs). Of rounds around many more repeats that is
-/// the repeats; of loops of equal trips, the outer; and a loop with a
-/// large body or submissions of its own stays the one kept until a loop
-/// inside it is long enough to pay for walking it.
+/// others are walked iteration by iteration. The outermost loop with at
+/// least `summarizeFrom` trips (none when 0) is walked as the one kept.
+/// Where that walk first meets a loop inside it, the two are weighed
+/// (keptAs): if walking the loop would be much less work, its walk as the
+/// loop kept is given up and it is walked, the loops inside it taken the
+/// same way in turn. Of rounds around many more repeats the repeats are
+/// then the loop kept; of loops of equal trips, the outer; and a loop with
+/// a large body or submissions of its own stays the one kept until a loop
+/// inside it is long enough to pay for walking it. A loop with no loop
+/// inside it is kept as it is walked; it is weighed only as part of a
+/// loop around it.
 ///
 /// With `Ordering` (a function with a branch), the walk also checks the
 /// order of the calls a branch on an answer relies on: the scheduler bounds
@@ -227,42 +232,7 @@ struct Submissions {
         if (Ordering && !skipped)
           orderSubmit(submit, *start, duration, device, inBranch, iteration);
       } else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
-        int64_t count = pulse::constantTripCount(loop).value_or(0);
-        iteration.push_back(0);
-        if ((!Ordering || recording) && !level && summarizeFrom > 0 &&
-            count >= summarizeFrom &&
-            (!holdsLoop(loop) || keptAs(loop).second)) {
-          level = iteration.size() - 1;
-          group = groups++;
-          trips = count;
-          collect<Ordering>(*loop.getBody(), iteration, inBranch);
-          level.reset();
-          group = -1;
-          if (Ordering && !skipped) {
-            recording = false;
-            for (int64_t k : {int64_t{1}, count - 1}) {
-              iteration.back() = k;
-              collect<Ordering>(*loop.getBody(), iteration, inBranch);
-            }
-            recording = true;
-          }
-        } else if (!Ordering) {
-          for (int64_t k = 0; k < count; ++k) {
-            iteration.back() = k;
-            collect<Ordering>(*loop.getBody(), iteration, inBranch);
-          }
-        } else {
-          for (int64_t k = 0; k < count; ++k) {
-            if (!recording && k == 2 && count > 3)
-              k = count - 1;
-            iteration.back() = k;
-            bool skip = k >= 2 && k != count - 1;
-            skipped += skip;
-            collect<Ordering>(*loop.getBody(), iteration, inBranch);
-            skipped -= skip;
-          }
-        }
-        iteration.pop_back();
+        collectLoop<Ordering>(loop, iteration, inBranch);
       } else if constexpr (!Ordering) {
         bool branch = inBranch || mlir::isa<mlir::scf::IfOp>(op);
         for (mlir::Region &region : op.getRegions())
@@ -370,27 +340,88 @@ private:
     return total;
   }
 
-  /// Whether a loop is inside `loop`: without one there is nothing to keep
-  /// in its place, and the loop is kept without being measured.
-  bool holdsLoop(mlir::scf::ForOp loop) {
-    auto found = holding.find(loop.getOperation());
-    if (found != holding.end())
-      return found->second;
-    llvm::SmallVector<mlir::Block *, 4> blocks{loop.getBody()};
-    bool holds = false;
-    while (!holds && !blocks.empty())
-      for (mlir::Operation &op : *blocks.pop_back_val()) {
-        if (op.getNumRegions() == 0)
-          continue;
-        if (mlir::isa<mlir::scf::ForOp>(op)) {
-          holds = true;
-          break;
-        }
-        for (mlir::Region &region : op.getRegions())
-          for (mlir::Block &nested : region)
-            blocks.push_back(&nested);
+  /// The submissions of `loop`: kept as runs, or walked iteration by
+  /// iteration (see the comment above). Apart from collect, so that the
+  /// walk over a block's operations stays small.
+  template <bool Ordering>
+  LLVM_ATTRIBUTE_NOINLINE void
+  collectLoop(mlir::scf::ForOp loop, llvm::SmallVectorImpl<int64_t> &iteration,
+              bool inBranch) {
+    if (level) {
+      // The first loop met inside the loop being kept: only now can there
+      // be a loop to keep in its place. If walking the loop kept is less
+      // work (keptAs), its walk as the loop kept is given up: the loops
+      // inside it are passed over, and it is walked again from the start.
+      if (!met) {
+        met = true;
+        givenUp = !keptAs(mlir::cast<mlir::scf::ForOp>(keeping)).second;
+        // What follows the loops passed over is not in order with what
+        // came before them: its order is left to the walk that follows.
+        skipped += givenUp;
       }
-    return holding[loop.getOperation()] = holds;
+      if (givenUp)
+        return;
+    }
+    int64_t count = pulse::constantTripCount(loop).value_or(0);
+    iteration.push_back(0);
+    if ((!Ordering || recording) && !level && summarizeFrom > 0 &&
+        count >= summarizeFrom) {
+      level = iteration.size() - 1;
+      group = groups++;
+      trips = count;
+      keeping = loop;
+      met = false;
+      givenUp = false;
+      // The order's state, to walk the loop again from if its walk as the
+      // loop kept is given up.
+      decltype(linkEnds) ends;
+      if constexpr (Ordering)
+        ends = linkEnds;
+      collect<Ordering>(*loop.getBody(), iteration, inBranch);
+      level.reset();
+      int64_t kept = group;
+      group = -1;
+      if (LLVM_UNLIKELY(givenUp)) {
+        givenUp = false;
+        --skipped;
+        // What was recorded and ordered before the walk was given up is
+        // recorded and ordered again by the walk that follows, from the
+        // same state: an error it found is one of that walk's, and
+        // reported once.
+        for (auto *recorded : {&perLink, &ordered})
+          for (auto &[key, runs] : *recorded)
+            while (!runs.empty() && runs.back().group == kept)
+              runs.pop_back();
+        if constexpr (Ordering)
+          linkEnds = std::move(ends);
+        walk<Ordering>(loop, count, iteration, inBranch);
+      } else if (Ordering && !skipped) {
+        recording = false;
+        for (int64_t k : {int64_t{1}, count - 1}) {
+          iteration.back() = k;
+          collect<Ordering>(*loop.getBody(), iteration, inBranch);
+        }
+        recording = true;
+      }
+    } else {
+      walk<Ordering>(loop, count, iteration, inBranch);
+    }
+    iteration.pop_back();
+  }
+
+  /// Walks `loop`, of `count` trips, iteration by iteration.
+  template <bool Ordering>
+  void walk(mlir::scf::ForOp loop, int64_t count,
+            llvm::SmallVectorImpl<int64_t> &iteration, bool inBranch) {
+    for (int64_t k = 0; k < count; ++k) {
+      if (Ordering && !recording && k == 2 && count > 3)
+        k = count - 1;
+      iteration.back() = k;
+      bool skip = Ordering && k >= 2 && k != count - 1;
+      skipped += skip;
+      collect<Ordering>(*loop.getBody(), iteration, inBranch);
+      skipped -= skip;
+    }
   }
 
   /// What an iteration of `loop` costs, and whether the loop is kept as
@@ -547,8 +578,11 @@ private:
   /// The latest answer a branch around the op walked is on.
   int64_t answered = kNone;
   llvm::DenseSet<mlir::Operation *> reported;
-  /// holdsLoop and keptAs of the loops asked so far.
-  llvm::DenseMap<mlir::Operation *, bool> holding;
+  /// The loop being kept as runs; whether its walk has met a loop inside
+  /// it, and has been given up for a walk iteration by iteration.
+  mlir::Operation *keeping = nullptr;
+  bool met = false, givenUp = false;
+  /// keptAs of the loops asked so far.
   llvm::DenseMap<mlir::Operation *, std::pair<Listed, bool>> kept;
 };
 
