@@ -677,14 +677,17 @@ that classes the change by the paths it touches (`tools/ci-changes.py`):
 
 | The change touches | Class | What runs |
 | --- | --- | --- |
-| `core/mlir`, `core/runtime`, CMake files, `cmake/`, `packaging/`, `test/`, `.github/workflows` or `.github/actions`, or a path the tool does not name | native | every job |
-| `core/frontend`, `tests/`, `examples/`, `challenges/`, `benchmarks/`, `tools/`, `pyproject.toml`, `pyrightconfig.json`, `uv.lock`, `.pre-commit-config.yaml` | python | every job but `old-compilers` |
+| `core/mlir`, `core/runtime`, `cmake/`, `packaging/`, `test/`, `.github/workflows` or `.github/actions`; an input of the native build in any directory (a C or C++ source or header, a CMake file, `tools/mlir-toolchain.lock.json`, `tools/fetch-mlir-toolchain.py`, `tests/runtime/fake_cudensitymat/`, `pyproject.toml`, `uv.lock`); or a path the tool does not name | native | every job |
+| anything else in `core/frontend`, `tests/`, `examples/`, `challenges/`, `benchmarks/`, `tools/`; `pyrightconfig.json`, `.pre-commit-config.yaml` | python | every job but `old-compilers` |
 | `docs/`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, the license and notice files | docs | lint, the docs build and `test-docs`, one job with the tests that read these files |
 | only files no test reads (`CITATION.cff`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, issue templates) | none | lint |
 
 A change takes the widest class of its paths. A path the tool does not name
 runs every job, so a new directory is tested in full until it is placed in
-the tool. Only a pull request is classed: a push to `main`, a manual run
+the tool. `pyproject.toml` holds the build's configuration and `uv.lock` the
+versions of CMake, Ninja, lit and nanobind that the build jobs install, so
+a change of either, a dependency update included, also builds with the old
+compilers. Only a pull request is classed: a push to `main`, a manual run
 and a run whose base cannot be compared run every job. The perf gate runs
 for the native and python classes, which is every change that can move it.
 `tests/test_ci_changes.py` holds the classes, the condition on each job, the
@@ -694,10 +697,19 @@ One gap: `editor-types` type-checks the Python code blocks of the pages and
 does not run for a change to the pages alone; it runs on `main` after the
 merge.
 
-`ci-ok` is the summary of `ci.yml`: it always runs, fails when a job that
-ran failed or was cancelled, and passes when the jobs a change does not need
-were skipped. Require it on `main`, with `docs (build)` and
-`sanitizers (address+undefined)`, whose skipped runs count as passed.
+`ci-ok` is the summary of `ci.yml`: it always runs and holds the run to the
+plan that the classifier's answers give (`tools/ci-ok.py`). It passes when
+every job the change needs succeeded and every other job was skipped. It
+fails when a job the change needs was skipped, was cancelled or failed, when
+a job the change does not need ran, and when the classifier did not succeed
+or its answers are not each `true` or `false`. A job's `if:` in `ci.yml` and
+its line in the tool's plan say the same condition, and
+`tests/test_ci_changes.py` fails when they differ: a new job, or a changed
+condition, is written in both. Require `ci-ok` on `main`, with `docs (build)`
+and `sanitizers (address+undefined)`, whose skipped runs count as passed:
+unless its run is cancelled, each is skipped only when the classifier
+succeeded and answered that the change cannot reach it, and otherwise runs,
+with a first step that fails unless the classifier succeeded and answered.
 
 ### GPU CI
 
