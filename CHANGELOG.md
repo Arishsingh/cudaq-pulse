@@ -1292,6 +1292,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   the decoder looked for the instruction after it from the function's first
   instruction. It now reads that instruction directly. What is decoded is
   the same.
+- **A call of a method whose object reaches many others no longer takes
+  time that grows with the square of their number to trace.** To tell
+  whether a method is a pulse helper, the tracer goes through the objects
+  its object holds, and it compared each one it found with all it had
+  found. It now keeps their identities in a set. The objects are gone
+  through in the same order, and the program traced is the same.
 
 ## [0.1.0] - 2026-11-13
 
