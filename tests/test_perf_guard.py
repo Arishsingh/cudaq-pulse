@@ -300,6 +300,58 @@ def test_verify_does_constant_work_per_unused_line(tmp_path):
         assert stderr.count("\n") == 3 * len(warnings), stderr[:2000]
 
 
+def _scaled_chain(n: int) -> str:
+    """Pulse MLIR of *n* drives on one line, each on the waveform before it
+    scaled once more: the waveform of drive i is i scales deep."""
+    lines = [
+        "func.func @main() {",
+        "  %q = pulse.qudit_alloc {qudit = 0 : i64} : !pulse.qudit",
+        "  %d0, %t0 = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)",
+        "  %c40 = arith.constant 40 : i64",
+        "  %amp = arith.constant 0.1 : f64",
+        "  %zero = arith.constant 0.0 : f64",
+        "  %half = arith.constant 0.5 : f64",
+        "  %w0 = pulse.square %c40, %amp, %zero : i64, f64, f64 -> !pulse.waveform",
+    ]
+    for i in range(1, n + 1):
+        lines.append(
+            f"  %w{i} = pulse.scale %w{i - 1}, %half : !pulse.waveform, f64 -> !pulse.waveform"
+        )
+        lines.append(
+            f"  %d{i}, %t{i} = pulse.drive %d{i - 1}, %w{i}, %t{i - 1} : !pulse.drive_line, "
+            "!pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone"
+        )
+    lines += ["  return", "}", ""]
+    return "\n".join(lines)
+
+
+@pytest.mark.scaling
+@pytest.mark.parametrize("schedule", ["asap", "alap"])
+def test_drives_on_waveforms_scaled_from_each_other_are_scheduled_in_linear_time(
+    schedule, tmp_path
+):
+    # A scaled waveform lasts what the one it scales lasts. Following the
+    # scales back for every drive, each time a pass asks, is the square of
+    # the drives: 64 times the time for 8 times the drives.
+    opt = shutil.which("cudaq-pulse-opt", path=str(_BUILD_BIN)) or shutil.which("cudaq-pulse-opt")
+    if opt is None:
+        missing("cudaq-pulse-opt", "cudaq-pulse-opt is not built or on PATH")
+    seconds = {}
+    for n in (2000, 16000):
+        module = tmp_path / f"scaled_chain_{n}.mlir"
+        module.write_text(_scaled_chain(n))
+        out = tmp_path / f"scheduled_{n}.mlir"
+        command = [opt, f"--pulse-schedule-{schedule}", str(module), "-o", str(out)]
+
+        def run(command=command):
+            subprocess.run(command, capture_output=True, check=True, timeout=300)
+
+        seconds[n] = _best(run, min_reps=3, budget_s=0.0)
+        starts = [int(s) for s in re.findall(r"start_cycles = (\d+)", out.read_text())]
+        assert starts == [40 * i for i in range(n)]
+    assert seconds[16000] < seconds[2000] * 8 * TOLERANCE, seconds
+
+
 @pytest.mark.scaling
 def test_compiling_a_kernel_that_reads_a_dict_is_flat_in_its_size():
     def program(n: int):

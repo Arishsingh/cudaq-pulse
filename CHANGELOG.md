@@ -820,6 +820,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- The schedule passes no longer take the square of the number of drives on
+  waveforms computed from one another (`w = wf_scale(w, 0.5)` before each
+  drive, or sums and products of earlier waveforms): they keep the length
+  each such waveform has instead of following it back to its first operand
+  every time they ask. The schedules are the same. Building such a kernel
+  and `pulse-verify` still follow each waveform back.
 - **Compiling loops of classical calls inside loops no longer slows with
   the trips of any of them.** Of the loops around a call, the classical
   check took one from a single copy of its body and walked the others
