@@ -722,6 +722,62 @@ def shaped_twice_plain(a, b):
     drive(db, square(8, 0.1))
 
 
+def test_a_check_in_a_controllers_own_cycles_scans_its_copies_for_the_takers_of_answers(
+    monkeypatch,
+):
+    """The exports of a program's parts scan its events once for the
+    controllers that take each answer, and the check reads that scan. A
+    check that counts in a controller's own cycles is given copies of the
+    events, converted: the scan is not of those, so it scans them."""
+    from cudaq_pulse import _system
+
+    @pulse.kernel
+    def rounds(a, c):
+        ro = get_readout_line(a)
+        da = get_drive_line(a)
+        dc = get_drive_line(c)
+        for _ in range(3):
+            drive(da, square(16, 0.5))
+            sync(da, ro)
+            fix = echo_bit.submit([readout(ro, square(100, 0.05))]).result()
+            sync(dc, ro)
+            if fix[0]:
+                drive(dc, square(16, 0.5))
+
+    scanned: list[object] = []
+    scan = _system._takers
+
+    def counting(events, owners):
+        scanned.append(events)
+        return scan(events, owners)
+
+    monkeypatch.setattr(_system, "_takers", counting)
+    for clocks, scans in (((1.0, 1.0), 1), ((1.0, 0.5), 2)):
+        control = pulse.ControlSystem(
+            controllers=[
+                pulse.Controller(
+                    drive_lines=[2 * k, 2 * k + 1],
+                    readout_lines=[2 * k, 2 * k + 1],
+                    clock_ghz=clock,
+                    alignment_tolerance_cycles=2,
+                    supports=list(pulse.Capability),
+                )
+                for k, clock in enumerate(clocks)
+            ],
+            links={"host": Link(fixed_ns=50, feedback_ns=100)},
+        )
+        device = _device(system=control)
+        lowered = pulse.compile(rounds, quantum_system=device, unroll_threshold=0).lower(
+            device.qudits[0], device.qudits[2]
+        )
+        del scanned[:]
+        parts = [lowered.export_to_controller(controller=c) for c in (0, 1)]
+        assert any(e["kind"] == "answer" for e in parts[1]["events"])
+        assert len(scanned) == scans, clocks
+        # The second scan is of the converted copies, not of the walk's events.
+        assert len({id(events) for events in scanned}) == scans
+
+
 def test_a_one_controller_device_exports_as_before():
     qpu = _device(0.5)
     lowered = pulse.compile(mixed, schedule="asap", quantum_system=qpu).lower(

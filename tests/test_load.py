@@ -394,6 +394,40 @@ def _as_written(system, machine, kernel=None):
     return native, text
 
 
+@pulse.kernel
+def unread(a, c):
+    ro = get_readout_line(a)  # noqa: F821
+    da = get_drive_line(a)  # noqa: F821
+    dc = get_drive_line(c)  # noqa: F821
+    for _ in range(5000):
+        drive(da, square(16, 0.5))  # noqa: F821
+        sync(da, ro)  # noqa: F821
+        m = readout(ro, square(100, 0.05))  # noqa: F821
+        decide.submit([m])
+        sync(dc, ro)  # noqa: F821
+
+
+def test_a_report_refuses_the_readout_its_events_refuse_when_no_answer_is_used(system):
+    """A report lists the program's events, up to the larger of 10,000 and
+    1,000 per call, and that list refuses a readout in a mode the exports do
+    not take yet. A report in which no answer is used makes no such list,
+    and refuses the readout all the same."""
+    machine = _links()
+    native, text = _as_written(system, machine, unread)
+    assert len(native.schedule) == 15_000
+    qudits = [system.qudits[0], system.qudits[2]]
+    loaded = pulse.load(text, entry="main", qudits=qudits, control_system=machine)
+    report = loaded.classical_report()
+    assert report == native.classical_report() and len(report) == 5000
+    assert {call.first_use_cycles for call in report} == {None}
+    traced = pulse.load(
+        text.replace(", iq <{", ", trace <{"), entry="main", qudits=qudits, control_system=machine
+    )
+    message = "readout mode trace is not supported by the exports yet; only iq is"
+    with pytest.raises(NotImplementedError, match=message):
+        traced.classical_report()
+
+
 def _calls(program):
     exported = program.export_to_controller()
     return exported["calls"], exported["links"], exported["manifest"]

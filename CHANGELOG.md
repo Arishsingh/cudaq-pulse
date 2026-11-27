@@ -705,6 +705,21 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   more and one call of a built-in function fewer than it did, and each
   line's check two bytecodes more. Every violation and its text are as
   before.
+- **The exports of a program's parts scan its events once for the
+  controllers that take each answer.** On a control system of several
+  controllers, `export_to_controller(controller=...)` splits the program
+  into each controller's part and checks it against the whole system. Both
+  need to know which controllers play a pulse that uses each answer of a
+  classical call, and each found it by its own scan of every event. The
+  check now reads the scan the parts were made from, where it checks those
+  same events; a check that counts in a controller's own cycles converts
+  copies of the events, and scans those as before. On two controllers that
+  state what they support, the exports of a loop of 1,000 rounds that each
+  branch on an answer go from about 13.0 million bytecodes of Python work
+  to 11.2 million. The search that tells a program with no answer from one
+  with answers no longer runs Python code per event, so a program that
+  makes no call, or only submits, does less too. Every exported program
+  and every violation is as before.
 - **`controller.unroll` carries the time of rolled loops to their events.**
   Every event of a format /2 program added up the periods of the loops
   around it, and every iteration of a loop copied the list of those loops.
@@ -753,6 +768,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   NVIDIA RTX A6000, driver 570.211.01, CUDA runtime 12.9.79, cuDensityMat
   0.7.1). Results are the same bit for bit, for one state and for a batch;
   the other integrators run as before.
+- **A report of classical calls whose answers are unused makes none of
+  the program's events.** `classical_report()`, which every controller and
+  emulator export of a program with calls runs, lists the program's events
+  (up to the larger of 10,000 and 1,000 per call) to find how long the
+  first use of each answer waits (`exposed_cycles`). Only a call whose
+  answer is used asks that, and a program that only submits (a readout
+  sent to a decoder whose answer no pulse waits for) listed every event
+  all the same. For a loop of 8,192 rounds that each submit one call
+  (24,576 events), the Python work of the report goes from about 1,590,000
+  bytecodes to 492,000 and its peak traced allocation from 12.7 MB to
+  5.4 MB. Every report, every exported program in format /1 and /2, and
+  every error are as before, and a program in which any answer is used
+  is read as it was.
 
 ### Fixed
 
