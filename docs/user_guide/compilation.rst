@@ -541,7 +541,16 @@ get that system's frequencies.
 check it: on its qudits and control system the function is verified as every
 scheduled program is, and checked against what the controllers can play. A
 module that states its clock must state the quantum system's. Attributes
-another compiler put on the function or its operations are dropped. A phase
+another compiler put on the function or its operations are dropped. Two that
+``compile`` uses for its own programs are a module's to state only where
+they mean what they say: ``classical.variable``, the mark of a wait whose
+length is the answer of a classical call, is kept on a ``pulse.wait`` whose
+length is computed from an answer, which then reserves its lowest length
+(its ``duration_cycles`` is its ``pulse.min_cycles``), and dropped anywhere
+else, where a drive, a readout or a wait of constant length is verified for
+the length it has; and answers bound to a call (``classical.answers``, which
+a simulation writes on its own copy of a program) are dropped, so that a
+loaded program takes every answer while it runs. A phase
 or frequency change keeps the start the module gives it; which changes no
 later drive or readout takes, and so are frame updates in the export
 (:doc:`controller_backends`), ``load`` finds from the function's operations

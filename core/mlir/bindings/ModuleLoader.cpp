@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ModuleLoader.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -281,6 +282,71 @@ public:
     auto phase = mlir::dyn_cast<mlir::FloatAttr>(attribute.getValue());
     return phase && mlir::isa<pulse::DriveOp>(op) && phase.getType().isF64() &&
            phase.getValue().isFinite();
+  }
+  /// The operations of `function` that compute from the answer of a
+  /// classical call, through operations without regions: what the verifier
+  /// takes for a value that depends on an answer.
+  static llvm::DenseSet<mlir::Operation *>
+  computedFromAnswers(mlir::func::FuncOp function) {
+    llvm::DenseSet<mlir::Operation *> computed;
+    llvm::SmallVector<mlir::Operation *, 16> open;
+    function.walk([&](classical::WaitOp answer) { open.push_back(answer); });
+    while (!open.empty())
+      for (mlir::Operation *user : open.pop_back_val()->getUsers())
+        if (user->getNumRegions() == 0 && computed.insert(user).second)
+          open.push_back(user);
+    return computed;
+  }
+  /// What telling such a wait takes: the function, its name for a refusal,
+  /// and the operations computed from an answer, found when first needed.
+  struct Marked {
+    mlir::func::FuncOp function;
+    const std::string &entry;
+    std::optional<llvm::DenseSet<mlir::Operation *>> computed;
+  };
+  /// Whether `op`, which carries the mark of a wait whose length is the
+  /// answer of a classical call (`classical.variable`), is such a wait: a
+  /// pulse.wait whose length is computed from an answer. The verifier does
+  /// not hold a marked operation to the length it takes, since the answer
+  /// gives it while the program runs, so the mark is kept only where an
+  /// answer does: on any other operation it is another compiler's
+  /// attribute, and a drive, a readout or a wait of constant length is then
+  /// verified for the length it has. A wait that keeps the mark states its
+  /// lowest length (`pulse.min_cycles`, a 64-bit integer) and reserves
+  /// that, as the scheduler places it.
+  [[gnu::cold, gnu::noinline]] static bool isRunTimeWait(mlir::Operation *op,
+                                                         Marked &marked) {
+    const std::string &entry = marked.entry;
+    std::optional<llvm::DenseSet<mlir::Operation *>> &computed =
+        marked.computed;
+    mlir::func::FuncOp function = marked.function;
+    auto wait = mlir::dyn_cast<pulse::WaitOp>(op);
+    if (!wait)
+      return false;
+    if (!computed)
+      computed = computedFromAnswers(function);
+    mlir::Operation *length = wait.getDuration().getDefiningOp();
+    if (!length || !computed->contains(length))
+      return false;
+    auto lowest = op->getAttrOfType<mlir::IntegerAttr>("pulse.min_cycles");
+    std::optional<int64_t> reserved = pulse::durationCycles(op);
+    if (!lowest || !lowest.getType().isSignlessInteger(64))
+      throw std::invalid_argument(
+          "load: " + entry +
+          " has a wait whose length is the answer of a classical call "
+          "(classical.variable) without a lowest length; such a wait is a "
+          "pulse.variable_wait that states it in pulse.min_cycles, a 64-bit "
+          "integer");
+    if (reserved && *reserved != lowest.getInt())
+      throw std::invalid_argument(
+          "load: " + entry +
+          " has a wait whose length is the answer of a classical call "
+          "(classical.variable) with duration_cycles = " +
+          std::to_string(*reserved) +
+          " and pulse.min_cycles = " + std::to_string(lowest.getInt()) +
+          "; such a wait reserves its lowest length, and what follows it "
+          "starts after that");
+    return true;
   }
   /// The function `caller` calls by `name`, checked to be one a call can be
   /// written in place of: defined, scheduled, one block that ends in a
@@ -713,18 +779,27 @@ public:
     main.setSymName("main");
     main.setPublic();
     // Attributes of other compilers on the operations are not the program's:
-    // only an operation's own attributes, the Pulse dialect's, the two a
-    // classical wait's meaning is in (what the classical check writes on a
-    // call it writes again) and the two phases of a drive are kept.
+    // only an operation's own attributes, the Pulse dialect's, the mark of
+    // a wait whose length is an answer, on such a wait, and the two phases
+    // of a drive are kept. What the classical check writes on a call it
+    // writes again, and answers bound to a call (`classical.answers`, which
+    // a simulation writes on its own copy) are not a module's to state: a
+    // loaded program takes every answer while it runs.
+    Marked marked{main, entry, std::nullopt};
     main.walk([&](mlir::Operation *op) {
       if (op == main.getOperation())
         return;
+      // Read once: an operation that keeps some in its properties builds
+      // the list each time. One without attributes has none to drop.
+      llvm::ArrayRef<mlir::NamedAttribute> stated = op->getAttrs();
+      if (stated.empty())
+        return;
       llvm::ArrayRef<mlir::StringAttr> own = op->getName().getAttributeNames();
       mlir::NamedAttrList attributes;
-      for (mlir::NamedAttribute attribute : op->getAttrs())
+      for (mlir::NamedAttribute attribute : stated)
         if (attribute.getName().getValue().starts_with("pulse.") ||
-            attribute.getName().getValue() == "classical.variable" ||
-            attribute.getName().getValue() == "classical.answers" ||
+            (attribute.getName().getValue() == "classical.variable" &&
+             isRunTimeWait(op, marked)) ||
             llvm::is_contained(own, attribute.getName()) ||
             isDrivePhase(op, attribute))
           attributes.append(attribute);
