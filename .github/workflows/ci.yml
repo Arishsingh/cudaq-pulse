@@ -37,7 +37,9 @@ jobs:
   # (tools/ci-changes.py): "native" runs every job, "python" every job but
   # old-compilers, "docs" only test-docs beside lint, and a change of none of
   # them lint alone. A path the tool does not name is native. Only a pull
-  # request is classed: a push and a manual run are native.
+  # request is classed: a push and a manual run are native. The ci-ok job
+  # holds the run to these answers (tools/ci-ok.py): a job's condition here
+  # and its line in that tool's plan say the same.
   changes:
     name: changes
     if: ${{ !startsWith(github.ref, 'refs/heads/pull-request/') }}
@@ -487,14 +489,16 @@ jobs:
           PATH="$PWD/build/dev/bin:$PATH" uv run --no-sync python -m pytest
           tests/test_tutorials.py tests/test_tutorial_scripts.py tests/test_tutorial_figures.py
           tests/test_examples.py tests/test_conventions.py tests/test_transmon_surface17_page.py
-          tests/test_release_tools.py
+          tests/test_release_tools.py tests/test_readme_example.py
           tests/test_api_docs.py tests/test_error_codes.py tests/test_third_party_notices.py
           tests/test_ci_changes.py tests/test_perf_gate.py
           -q -m "not gpu" -p no:cacheprovider
 
-  # The check of this workflow to require on main. It runs whatever the
-  # others did, fails when one of them failed or was cancelled, and passes
-  # when the jobs a change does not need were skipped. It has the required
+  # The check of this workflow to require on main. It always runs, and holds
+  # the run to the plan the classifier's answers give (tools/ci-ok.py): every
+  # job the change needs succeeded and every other job was skipped. A needed
+  # job that was skipped, cancelled or failed fails it, and so does a
+  # classifier that did not succeed or did not answer. It has the required
   # name only for a pull request and for main: a pull-request/<N> branch and
   # a perf-baseline run test only a part, on a commit that may be a pull
   # request's head, and must not stand in for the real one.
@@ -507,23 +511,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Every job that ran passed
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Every job the change needs passed
         env:
           NEEDS: ${{ toJSON(needs) }}
           GPU_ONLY: ${{ startsWith(github.ref, 'refs/heads/pull-request/') }}
-        run: |
-          python3 - <<'PY'
-          import json, os, sys
-
-          results = {job: need["result"] for job, need in json.loads(os.environ["NEEDS"]).items()}
-          print(json.dumps(results, indent=2))
-          bad = {job: result for job, result in results.items() if result not in ("success", "skipped")}
-          # The classifier itself must have run: without it every job is
-          # skipped. A pull-request/<N> branch runs the gpu job alone.
-          if results.get("changes") != "success" and os.environ.get("GPU_ONLY") != "true":
-              bad["changes"] = results.get("changes")
-          sys.exit(f"not passed: {bad}" if bad else 0)
-          PY
+          PERF_BASELINE: ${{ inputs.perf_baseline }}
+        run: python3 tools/ci-ok.py summary
 
   # A source build with GPU support and the GPU tests (gpu-tests.yml), in the
   # CUDA 12.9 development image on a GPU runner, once the GPU_RUNNERS

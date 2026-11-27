@@ -182,7 +182,7 @@ PYTHON_OR_TEXT = (
     "pyrightconfig.json",
     ".clang-format",
     "tools/check-*.py",
-    "tools/ci-changes.py",
+    "tools/ci-*.py",
     "tools/stubtest-allowlist.txt",
     "tools/tutorial-scripts.py",
     "benchmarks/baselines/*",

@@ -129,7 +129,9 @@ jobs:
   test:
     name: test (${{ matrix.platform }}, py${{ matrix.python }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    # The leg with hash-seeds runs the suite three times (about half an
+    # hour each); 90 minutes cancelled it in its last pass.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:

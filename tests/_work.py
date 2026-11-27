@@ -23,6 +23,8 @@ from collections.abc import Callable, Hashable
 import pytest
 from cudaq_pulse._native._cudaq_pulse_native import PulseModule
 
+from tests import _tools
+
 
 def python_work(fn: Callable[[], object]) -> dict[str, int]:
     """The lines run and the calls made by a call of *fn* after a first,
@@ -72,7 +74,11 @@ def _least[K: Hashable](
     a hundred rounds at most. The garbage collector runs before each round
     and is held off through it; as a collection leaves the caches cold, each
     round starts with the next run in turn, so that every run is also timed
-    after another rather than after a collection."""
+    after another rather than after a collection.
+
+    Under a sanitizer runtime the test that asks is skipped: no test there
+    asserts a time."""
+    _tools.skip_raw_limit("a timing")
     for run in runs.values():
         run()
     best = dict.fromkeys(runs, float("inf"))
