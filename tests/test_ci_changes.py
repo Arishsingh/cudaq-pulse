@@ -159,7 +159,6 @@ def _jobs(workflow):
 _CI = {
     "test": "python == 'true'",
     "perf-gate": "python == 'true'",
-    "editor-types": "python == 'true'",
     "test-free-threaded": "python == 'true'",
     "old-compilers": "native == 'true'",
     "test-docs": "docs == 'true'",
@@ -179,6 +178,32 @@ def test_each_ci_job_runs_for_the_class_that_can_break_it():
     assert "needs.changes.outputs.python != 'true'" in jobs["test-docs"][1]
     # Lint runs for every change.
     assert "needs.changes" not in jobs["lint"][1] and "changes" not in jobs["lint"][0]
+
+
+def test_the_editor_types_check_runs_in_one_test_leg_from_a_fresh_environment():
+    """It is steps of the test job, so the summary waits for it with the
+    job: on the Linux x86-64, Python 3.12 leg, last, with the installed
+    component in an environment outside the checkout."""
+    ci = (_WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert "editor-types" not in _jobs("ci.yml")
+    test = re.split(r"\n\n  (?=[#A-Za-z])", ci[ci.index("\n  test:\n") + 1 :])[0]
+    steps = test.split("\n      - ")[1:]
+    editor = [step for step in steps if step.startswith("name: Editor types, ")]
+    assert len(editor) == 3 and editor == steps[-3:]
+    leg = "if: matrix.platform == 'linux-x86_64' && matrix.python == '3.12'\n"
+    assert all(leg in step and "continue-on-error" not in step for step in editor)
+    install, environment, check = editor
+    assert "cmake --install build/dev --component CudaqPulse --prefix installed" in install
+    assert 'uv venv "$RUNNER_TEMP/user"' in environment
+    assert 'cp -R installed/. "$site/"' in environment
+    assert "PYTHONPATH" not in environment + check and "uv run" not in environment + check
+    assert "python3 tools/check-editor-types.py" in check
+    assert '--python "$RUNNER_TEMP/user/bin/python"' in check
+    assert '--pyright "$RUNNER_TEMP/user/bin/pyright"' in check
+    # The leg is in the matrix, and pyright is the version the tests use.
+    assert '- { platform: linux-x86_64, runner: ubuntu-24.04, python: "3.12" }' in test
+    version = re.search(r'"pyright==([\d.]+)"', (_ROOT / "pyproject.toml").read_text()).group(1)
+    assert f"pyright=={version} " in environment
 
 
 def test_the_perf_gate_runs_for_every_change_that_can_move_it():
@@ -240,8 +265,7 @@ def _answers(widest):
     }
 
 
-_ALL = ("changes", "lint", "test", "test-docs", "perf-gate", "editor-types")
-_ALL += ("test-free-threaded", "old-compilers")
+_ALL = ("changes", "lint", "test", "test-docs", "perf-gate", "test-free-threaded", "old-compilers")
 
 
 def _results(ran, **other):
@@ -249,7 +273,7 @@ def _results(ran, **other):
     return {**{job: "success" if job in ran else "skipped" for job in _ALL}, **other}
 
 
-_PYTHON_JOBS = ("changes", "lint", "test", "perf-gate", "editor-types", "test-free-threaded")
+_PYTHON_JOBS = ("changes", "lint", "test", "perf-gate", "test-free-threaded")
 _NATIVE_JOBS = (*_PYTHON_JOBS, "old-compilers")
 _DOCS_JOBS = ("changes", "lint", "test-docs")
 
@@ -271,7 +295,7 @@ _DOCS_JOBS = ("changes", "lint", "test-docs")
         ("native", _results(("changes", "lint")), False),
         ("native", _results(_PYTHON_JOBS), False),
         ("python", _results(("changes", "lint")), False),
-        ("python", _results(_PYTHON_JOBS, **{"editor-types": "skipped"}), False),
+        ("python", _results(_PYTHON_JOBS, **{"test-free-threaded": "skipped"}), False),
         ("docs", _results(("changes", "lint")), False),
         ("native", _results(_NATIVE_JOBS, lint="skipped"), False),
         # A job the change does not need was skipped, which is the plan; one

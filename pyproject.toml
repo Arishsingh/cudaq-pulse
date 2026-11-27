@@ -101,7 +101,7 @@ lint = [
     "ruff>=0.6",
     "mypy>=1.11",
     "pre-commit>=3.7",
-    # The editor-types CI job runs this version; keep the two in step.
+    # ci.yml's editor-types steps run this version; keep the two in step.
     "pyright==1.1.414",
     # mypy checks cudaq_pulse.viz against matplotlib's own annotations.
     "matplotlib>=3.9",

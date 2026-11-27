@@ -73,7 +73,6 @@ def plan(
         "lint": whole,
         "test": whole and python,
         "perf-gate": not gpu_only and python,
-        "editor-types": whole and python,
         "test-free-threaded": whole and python,
         "old-compilers": whole and native,
         "test-docs": whole and docs and not python,

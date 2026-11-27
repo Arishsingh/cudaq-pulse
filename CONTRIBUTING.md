@@ -805,9 +805,9 @@ for the native and python classes, which is every change that can move it.
 `tests/test_ci_changes.py` holds the classes, the condition on each job, the
 tests that `test-docs` runs and the summary.
 
-One gap: `editor-types` type-checks the Python code blocks of the pages and
-does not run for a change to the pages alone; it runs on `main` after the
-merge.
+One gap: the editor-types steps of `test (linux-x86_64, py3.12)` type-check
+the Python code blocks of the pages and do not run for a change to the pages
+alone; they run on `main` after the merge.
 
 `ci-ok` is the summary of `ci.yml`: it always runs and holds the run to the
 plan that the classifier's answers give (`tools/ci-ok.py`). It passes when
