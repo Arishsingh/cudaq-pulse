@@ -794,6 +794,24 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A module given to `pulse.load` exports the frame changes that nothing
+  takes.** A phase or frequency change that no later drive or readout on
+  its tone takes (one after the last pulse, in a loop whose last iteration
+  leaves it, before a branch that only one arm plays, on a tone nothing
+  plays) is a `"frame_update"` event of the controller export. For a
+  compiled kernel the compiler finds those changes; a loaded program took
+  them from marks in the module's text (`pulse.unconsumed`,
+  `pulse.carried` and the lists on loops and branches), which only the
+  compiler's own text carries. A module of another compiler therefore
+  exported no frame update at all, and its export left out the frame its
+  tone ends in. `load` now finds them from the function's operations, with
+  the code the compiler uses, so a loaded module exports the frame updates
+  of the compiled kernel it is the text of; with `Controller(
+  persistent_frames=True)` it gives `frame_state` and no frame update, as
+  a compile does.
+  Each change stays at the start the module gives it. The marks in a
+  module's text are no longer read: one on a change that a pulse takes
+  gave a frame update the program does not have.
 - **Compiling rounds around many repeats of a classical call no longer
   slows with the square of the repeats.** Of the loops around a call, the
   classical check keeps at most one as a single run and walks the others
@@ -808,6 +826,18 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   the same, and so are its messages for times within what the check
   counts in.
 
+- **`pulse.load` keeps a phase folded into a drive.** The compiler folds a
+  constant `shift_phase` into the drive after it, as `frame_phase_offset` on
+  that drive, and the export and the simulator read it there. `load` kept
+  only an operation's own attributes and those named `pulse.`, so the
+  scheduled module of a compiled kernel lost every folded phase when it was
+  loaded: `shift_phase(d.tone, 0.3)` before a drive played at phase 0.3
+  compiled and at phase 0 loaded, in both controller formats, with no
+  error. `load` now keeps `frame_phase_offset` and `phase_offset` (the
+  phase of one drive alone, read the same way) on a `pulse.drive`, each as
+  a finite `f64`; under those names on another operation, or with another
+  type, they are dropped as before, like every other attribute of another
+  compiler.
 - **`pulse-verify` checks a schedule's times in loops nested to any depth.**
   The check of each drive, readout and wait (not before time zero, not
   before the measurements its branches wait for, not before the operation
