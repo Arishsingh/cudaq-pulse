@@ -1063,6 +1063,7 @@ def test_python_sources_and_files_the_job_never_reads_keep_the_measured_code(rep
             ".github__workflows__docs.yml": "",
             "tools__check-k.py": "",
             "tools__ci-changes.py": "",
+            "tools__ci-ok.py": "",
             "challenges__k__score.py": "",
             "benchmarks__baselines__perf_gate.json": '{"a": 1}\n',
             # Dev dependencies, tool settings and the sdist's contents are not built.
