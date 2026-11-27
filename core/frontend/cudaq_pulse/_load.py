@@ -55,6 +55,15 @@ def load(
     (``pulse.control_system`` with ``clock_period_fs``) must state the
     quantum system's.
 
+    Bytecode holds an operation's properties by position, in the shape of
+    the writer's copy of the dialects, so it is read only with the dialect
+    source that wrote it. A writer can state that source in the bytecode's
+    producer string, as ``cudaq-pulse-dialects=<source>``, and bytecode that
+    states another source than this build's is refused
+    (``CompilationError``): give the module as assembly, which holds
+    properties by name. Assembly states no source, and bytecode that states
+    none is read as it is given.
+
     *qudits* gives, for each argument in order, the qudit of the quantum
     system it plays on; their quantum system is the program's. The lines get
     that system's frequencies. *control_system* is as for ``compile``; without
@@ -107,6 +116,10 @@ def load(
         text = module.encode()
     elif isinstance(module, (bytes, bytearray, memoryview)):
         text = bytes(module)
+        # Bytecode that states its dialect source names it in its producer
+        # string, which starts within 13 bytes and ends at a zero byte.
+        if text[:4] == b"ML\xefR" and text.find(_DIALECT_SOURCE_KEY, 4, text.find(b"\0", 13)) >= 0:
+            _check_dialect_source(text)
     else:
         raise InvalidTypeError(
             "load() takes a module's assembly (str) or bytecode (bytes), "
@@ -248,6 +261,63 @@ def load(
         count = scheduled.event_count(_LISTED_EVENTS)
     program.metrics.op_count = len(program.schedule) if count is None else count
     return program
+
+
+# What a writer puts before its dialect source in the producer string of the
+# bytecode it writes: "<tool> cudaq-pulse-dialects=22.1.8-0123456789abcdef".
+# The first one in the string counts, and the source is what follows it up
+# to white space or the string's end.
+_DIALECT_SOURCE_KEY = b"cudaq-pulse-dialects="
+
+
+def _stated_dialect_source(module: bytes) -> tuple[str, str] | None:
+    """The dialect source the bytecode *module* states and its producer
+    string, or None for a module that states none: assembly, or bytecode
+    whose producer string does not name one. MLIR bytecode starts with four
+    magic bytes, the format's version as a variable-length integer (the low
+    bits of its first byte say how many bytes follow) and the producer
+    string, which a zero byte ends; nothing else of the module is read."""
+    if module[:4] != b"ML\xefR" or len(module) < 5:
+        return None
+    first = module[4]
+    start = 4 + (9 if first == 0 else (first & -first).bit_length())
+    end = module.find(b"\0", start)
+    at = module.find(_DIALECT_SOURCE_KEY, start, end) if end >= 0 else -1
+    if at < 0:
+        return None
+    rest = module[at + len(_DIALECT_SOURCE_KEY) : end]
+    stated = rest.split(None, 1)[0] if rest and not rest[:1].isspace() else b""
+    return stated.decode(errors="replace"), module[start:end][:120].decode(errors="replace")
+
+
+def _check_dialect_source(module: bytes) -> None:
+    """Refuse bytecode that states another dialect source than this
+    build's (cmake/write_dialect_source.cmake), before anything after its
+    producer string is read:
+    bytecode holds an operation's properties by position, in the shape of
+    the writer's dialects, and read with dialects of another shape a value
+    lands in another property without an error."""
+    found = _stated_dialect_source(module)
+    if found is None:
+        return
+    from ._dialect_source import DIALECT_SOURCE
+    from ._errors import CompilationError
+
+    stated, producer = found
+    if stated != DIALECT_SOURCE:
+        # The module is another compiler's: what the message shows of it is
+        # bounded and printable.
+        shown = stated[:64]
+        if not shown.isprintable():
+            shown = repr(shown)
+        raise CompilationError(
+            f"load: this bytecode states the dialect source {shown or 'with no value'} "
+            f"(its producer is {producer!r}), and this cudaq-pulse's is {DIALECT_SOURCE}; "
+            "bytecode holds an operation's properties by position and is read only with "
+            "the dialect source that wrote it: give the module as assembly, or write its "
+            "bytecode with this source",
+            code="wrong_argument",
+        )
 
 
 def _target_links(

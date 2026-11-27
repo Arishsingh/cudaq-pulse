@@ -42,6 +42,30 @@ add_custom_command(
 add_custom_target(CudaqPulseSourceStamp DEPENDS "${_cudaq_pulse_source_stamp}")
 add_dependencies(_cudaq_pulse_native CudaqPulseSourceStamp)
 
+# The source of the Pulse and Classical dialects, which pulse.load holds a
+# bytecode module that states one to (see cmake/write_dialect_source.cmake).
+file(GLOB_RECURSE _cudaq_pulse_dialect_definitions CONFIGURE_DEPENDS
+  "${CUDAQ_PULSE_SOURCE_DIR}/core/mlir/include/cudaq-pulse/Dialect/Pulse/*"
+  "${CUDAQ_PULSE_SOURCE_DIR}/core/mlir/include/cudaq-pulse/Dialect/Classical/*"
+  "${CUDAQ_PULSE_SOURCE_DIR}/core/mlir/dialects/Pulse/*"
+  "${CUDAQ_PULSE_SOURCE_DIR}/core/mlir/dialects/Classical/*")
+list(FILTER _cudaq_pulse_dialect_definitions INCLUDE REGEX "\\.(td|h|cpp)$")
+# The list is an input of the hash: a file added or removed changes it.
+set(_cudaq_pulse_dialect_list "${CMAKE_BINARY_DIR}/dialect_definitions.txt")
+list(JOIN _cudaq_pulse_dialect_definitions "\n" _cudaq_pulse_dialect_lines)
+file(CONFIGURE OUTPUT "${_cudaq_pulse_dialect_list}" CONTENT "${_cudaq_pulse_dialect_lines}\n")
+set(_cudaq_pulse_dialect_source "${CMAKE_BINARY_DIR}/python/cudaq_pulse/_dialect_source.py")
+add_custom_command(
+  OUTPUT "${_cudaq_pulse_dialect_source}"
+  COMMAND "${CMAKE_COMMAND}" "-DROOT=${CUDAQ_PULSE_SOURCE_DIR}"
+    "-DLLVM_VERSION=${LLVM_PACKAGE_VERSION}" "-DOUTPUT=${_cudaq_pulse_dialect_source}"
+    -P "${CUDAQ_PULSE_SOURCE_DIR}/cmake/write_dialect_source.cmake"
+  DEPENDS ${_cudaq_pulse_dialect_definitions} "${_cudaq_pulse_dialect_list}"
+    "${CUDAQ_PULSE_SOURCE_DIR}/cmake/write_dialect_source.cmake"
+  COMMENT "Hashing the dialect definitions into _dialect_source.py")
+add_custom_target(CudaqPulseDialectSource DEPENDS "${_cudaq_pulse_dialect_source}")
+add_dependencies(_cudaq_pulse_native CudaqPulseDialectSource)
+
 # The kernel language as builtins for type checkers, beside the package at
 # the root of site-packages (see cmake/write_builtins_stub.py).
 set(_cudaq_pulse_builtins_stub "${CMAKE_BINARY_DIR}/python/__builtins__.pyi")
@@ -59,7 +83,8 @@ set(_cudaq_pulse_build_targets
   _cudaq_pulse_native
   _cudaq_pulse_native_stub
   CudaqPulsePythonStaging
-  CudaqPulseSourceStamp)
+  CudaqPulseSourceStamp
+  CudaqPulseDialectSource)
 if(CUDAQ_PULSE_BUILD_OPT)
   list(APPEND _cudaq_pulse_build_targets cudaq-pulse-opt)
 endif()
@@ -112,6 +137,7 @@ install(DIRECTORY "${CUDAQ_PULSE_FRONTEND_DIR}"
   PATTERN "*.pyc" EXCLUDE)
 install(FILES "${CMAKE_BINARY_DIR}/python/cudaq_pulse/_build_config.py"
   "${_cudaq_pulse_source_stamp}"
+  "${_cudaq_pulse_dialect_source}"
   DESTINATION cudaq_pulse
   COMPONENT CudaqPulse)
 install(FILES "${_cudaq_pulse_builtins_stub}"

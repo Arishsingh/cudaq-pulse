@@ -547,6 +547,18 @@ with line delays, or a controller with ``max_instructions`` or
 ``max_program_duration``, is refused: ``load`` does not apply or check those
 yet.
 
+Assembly is the form to pass between different builds: it holds an
+operation's properties by name. Bytecode holds them by position, in the
+shape the writer's copy of the dialects gives them, so it is read only with
+the dialect source that wrote it. A writer can state that source in the
+producer string of its bytecode, as ``cudaq-pulse-dialects=<source>``
+(``mytool 0.3 cudaq-pulse-dialects=22.1.8-cf2faa24b237fcb9``): the LLVM
+version and a digest of the definition files of the Pulse and Classical
+dialects, which ``cmake/write_dialect_source.cmake`` computes from a
+checkout. ``load`` refuses bytecode that states another source than its
+own, naming both, before it reads anything else of the module. Bytecode
+that states no source is read as it is given.
+
 A module given to ``load`` is another compiler's and is treated as untrusted
 input. Nested modules are refused; the entry and the functions it calls are
 those of the module's own symbol table; what its calls would write in place
