@@ -59,7 +59,7 @@ MAX_CASES = 1000
 #: The paths a test file reads, beside itself. Prefixes end in "/"; anything
 #: else is a whole path.
 WATCHES = {
-    "tests/test_ci_changes.py": (".github/", "tools/ci-changes.py"),
+    "tests/test_ci_changes.py": (".github/", "tools/ci-changes.py", "tools/ci-ok.py"),
     "tests/test_ci_changed_tests.py": (
         ".github/",
         "tools/ci-changed-tests.py",

@@ -159,7 +159,6 @@ def _jobs(workflow):
 _CI = {
     "test": "python == 'true'",
     "perf-gate": "python == 'true'",
-    "editor-types": "python == 'true'",
     "test-free-threaded": "python == 'true'",
     "old-compilers": "native == 'true'",
     "test-docs": "docs == 'true'",
@@ -179,6 +178,32 @@ def test_each_ci_job_runs_for_the_class_that_can_break_it():
     assert "needs.changes.outputs.python != 'true'" in jobs["test-docs"][1]
     # Lint runs for every change.
     assert "needs.changes" not in jobs["lint"][1] and "changes" not in jobs["lint"][0]
+
+
+def test_the_editor_types_check_runs_in_one_test_leg_from_a_fresh_environment():
+    """It is steps of the test job, so the summary waits for it with the
+    job: on the Linux x86-64, Python 3.12 leg, last, with the installed
+    component in an environment outside the checkout."""
+    ci = (_WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert "editor-types" not in _jobs("ci.yml")
+    test = re.split(r"\n\n  (?=[#A-Za-z])", ci[ci.index("\n  test:\n") + 1 :])[0]
+    steps = test.split("\n      - ")[1:]
+    editor = [step for step in steps if step.startswith("name: Editor types, ")]
+    assert len(editor) == 3 and editor == steps[-3:]
+    leg = "if: matrix.platform == 'linux-x86_64' && matrix.python == '3.12'\n"
+    assert all(leg in step and "continue-on-error" not in step for step in editor)
+    install, environment, check = editor
+    assert "cmake --install build/dev --component CudaqPulse --prefix installed" in install
+    assert 'uv venv "$RUNNER_TEMP/user"' in environment
+    assert 'cp -R installed/. "$site/"' in environment
+    assert "PYTHONPATH" not in environment + check and "uv run" not in environment + check
+    assert "python3 tools/check-editor-types.py" in check
+    assert '--python "$RUNNER_TEMP/user/bin/python"' in check
+    assert '--pyright "$RUNNER_TEMP/user/bin/pyright"' in check
+    # The leg is in the matrix, and pyright is the version the tests use.
+    assert '- { platform: linux-x86_64, runner: ubuntu-24.04, python: "3.12" }' in test
+    version = re.search(r'"pyright==([\d.]+)"', (_ROOT / "pyproject.toml").read_text()).group(1)
+    assert f"pyright=={version} " in environment
 
 
 def test_the_perf_gate_runs_for_every_change_that_can_move_it():
@@ -240,8 +265,7 @@ def _answers(widest):
     }
 
 
-_ALL = ("changes", "lint", "test", "test-docs", "perf-gate", "editor-types")
-_ALL += ("test-free-threaded", "old-compilers")
+_ALL = ("changes", "lint", "test", "test-docs", "perf-gate", "test-free-threaded", "old-compilers")
 
 
 def _results(ran, **other):
@@ -249,7 +273,7 @@ def _results(ran, **other):
     return {**{job: "success" if job in ran else "skipped" for job in _ALL}, **other}
 
 
-_PYTHON_JOBS = ("changes", "lint", "test", "perf-gate", "editor-types", "test-free-threaded")
+_PYTHON_JOBS = ("changes", "lint", "test", "perf-gate", "test-free-threaded")
 _NATIVE_JOBS = (*_PYTHON_JOBS, "old-compilers")
 _DOCS_JOBS = ("changes", "lint", "test-docs")
 
@@ -271,7 +295,7 @@ _DOCS_JOBS = ("changes", "lint", "test-docs")
         ("native", _results(("changes", "lint")), False),
         ("native", _results(_PYTHON_JOBS), False),
         ("python", _results(("changes", "lint")), False),
-        ("python", _results(_PYTHON_JOBS, **{"editor-types": "skipped"}), False),
+        ("python", _results(_PYTHON_JOBS, **{"test-free-threaded": "skipped"}), False),
         ("docs", _results(("changes", "lint")), False),
         ("native", _results(_NATIVE_JOBS, lint="skipped"), False),
         # A job the change does not need was skipped, which is the plan; one
@@ -620,6 +644,44 @@ def test_the_python_sweep_under_the_sanitizers_is_advisory():
     assert "    name: sanitizers (python sweep, advisory)\n" in sweep
     assert "\n    continue-on-error: true\n" in sweep
     assert '-m "not gpu and not slow"' in sweep
+
+
+def test_the_nightly_hash_seeds_are_drawn_each_run_logged_and_counted():
+    """Two seeds are drawn in the run, not written in the workflow; each has
+    a job of its own that runs the suite under it and names it; and the
+    nightly issue waits for both and gives the seeds."""
+    text = (_WORKFLOWS / "property-nightly.yml").read_text(encoding="utf-8")
+    jobs = _jobs("property-nightly.yml")
+    # Every job but the report-only coverage counts toward the issue.
+    waited = set(re.findall(r"[\w-]+", jobs["nightly-issue"][0]))
+    assert waited == set(jobs) - {"nightly-issue", "coverage"}
+    assert {"seeds", "hash-seeds"} <= waited
+    assert jobs["hash-seeds"][0] == "seeds" and jobs["seeds"][0] == ""
+
+    def job(name):
+        return re.split(r"\n\n  (?=[#A-Za-z])", text[text.index(f"\n  {name}:\n") + 1 :])[0]
+
+    draw = job("seeds")
+    assert "shuf -i 1-4294967295 -n 2" in draw
+    assert 'echo "first=${seeds[0]}"' in draw and 'echo "second=${seeds[1]}"' in draw
+    assert "::notice title=PYTHONHASHSEED::" in draw and "$GITHUB_STEP_SUMMARY" in draw
+    assert not re.search(r"PYTHONHASHSEED[=:] *\d", text), "a seed written in the workflow"
+    suite = job("hash-seeds")
+    for output in ("first", "second"):
+        assert f"          - ${{{{ needs.seeds.outputs.{output} }}}}\n" in suite
+    assert suite.split("\n    needs:")[0].endswith("PYTHONHASHSEED=${{ matrix.seed }})")
+    assert "          PYTHONHASHSEED: ${{ matrix.seed }}\n" in suite
+    assert 'if [ -z "$PYTHONHASHSEED" ]; then' in suite
+    assert 'pytest tests -q -m "not gpu" -p no:cacheprovider' in suite
+    assert "continue-on-error" not in draw + suite
+    assert "fail-fast: false" in suite and re.search(r"(?m)^    timeout-minutes: \d+$", suite)
+    # The test legs no longer run the suite a second and third time.
+    assert "hash-seeds: true" not in text and "for seed in" not in text
+    issue = job("nightly-issue")
+    for name in ("first", "second"):
+        assert f"{name.upper()}_SEED: ${{{{ needs.seeds.outputs.{name} }}}}\n" in issue
+    assert "were given the hash seeds $FIRST_SEED and $SECOND_SEED" in issue
+    assert issue.count('"$seeds" \\\n') == 1
 
 
 def _module():

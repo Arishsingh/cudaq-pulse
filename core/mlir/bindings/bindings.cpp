@@ -3562,7 +3562,8 @@ public:
       std::string bytes;
       llvm::raw_string_ostream os(bytes);
       if (mlir::failed(mlir::writeBytecodeToFile(
-              module, os, mlir::BytecodeWriterConfig("cudaq-pulse"))))
+              module, os,
+              mlir::BytecodeWriterConfig(cudaq_pulse::kBytecodeProducer))))
         throw std::runtime_error("cannot write the module as bytecode");
       return bytes;
     };

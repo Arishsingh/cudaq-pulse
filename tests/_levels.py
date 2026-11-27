@@ -329,7 +329,7 @@ def load(text: str) -> tuple[list[Resolved], set[str]]:
 
 
 def stale_entries(
-    entries: list[Entry], tests: list[Resolved], skipped_files: set[str]
+    entries: list[Entry], tests: list[Resolved], skipped_files: set[str], whole_tree: bool = True
 ) -> list[str]:
     """The table entries that name none of *tests*.
 
@@ -337,10 +337,18 @@ def stale_entries(
     skipped itself, and one for parameters of a test that was collected
     without any (pytest's ``NOTSET`` case), as a test over the examples is
     where the examples are not installed.
+
+    Without the *whole_tree* (the tests of an installed wheel have a few
+    files of the source tree, tests/_sources.py), a test over the files of
+    the tree is collected with some of its parameters: there an entry for
+    parameters of a test that was collected cannot be told either. An entry
+    for a file or for a test is told everywhere.
     """
     named = {key for test in tests for key in test.entries}
     unset = {
-        (t.path, t.name) for t in tests if t.param is not None and t.param.startswith("NOTSET")
+        (t.path, t.name)
+        for t in tests
+        if t.param is not None and (not whole_tree or t.param.startswith("NOTSET"))
     }
     return [
         e.key
