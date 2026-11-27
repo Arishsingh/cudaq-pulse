@@ -370,14 +370,6 @@ def shape_key(node: Mapping[str, Any] | None) -> tuple[Any, ...] | None:
     return (shape, node.get("name"), kept)
 
 
-def _exact(value: float) -> Fraction:
-    """*value* as the decimal it is written as, so that rates such as 2.4
-    samples per cycle divide exactly."""
-    from fractions import Fraction
-
-    return Fraction(repr(float(value)))
-
-
 # The terms of the expressions of run-time values; see evaluate_expression.
 _ARITHMETIC = frozenset({"add", "sub", "mul", "div", "neg", "max", "min"})
 _COMPARISONS: Mapping[str, Any] = {
@@ -611,38 +603,39 @@ def sample_waveform(
     evaluate: a ``pulse.custom`` op of hand-written IR, whose samples the
     runtime computes, or one whose parameters are not numbers.
     """
+    from fractions import Fraction
+
     import numpy as np
 
-    real, imag = _sample(node, duration_cycles, _exact(samples_per_cycle))
-    samples = np.empty(len(real), complex)
-    samples.real = real
-    samples.imag = imag
-    return samples
+    # The rate as the decimal it is written as, so that rates such as 2.4
+    # samples per cycle divide exactly.
+    return _sample(  # type: ignore[no-any-return]
+        node, duration_cycles, Fraction(repr(float(samples_per_cycle))), np.empty
+    )
 
 
-def _sample(node: Mapping[str, Any], duration_cycles: int, ratio: Fraction | int) -> _Samples:
-    """``sample_waveform``'s samples at *ratio* samples per cycle, as the
-    lists of floats the export writes: the simulator's own envelopes,
-    sampled natively, without NumPy."""
+# The kinds of the simulator's waveform callbacks (WaveformCallback.h) that
+# take an envelope's parameters; custom samples are kind 7.
+_ENVELOPE_KINDS = {"gaussian": 2, "drag": 3, "cosine": 4, "tanh_ramp": 5, "gaussian_square": 6}
+
+
+def _sample(node: Mapping[str, Any], duration_cycles: int, ratio: Any, new: Any = None) -> Any:
+    """``sample_waveform``'s samples at *ratio* samples per cycle (a whole
+    number or a ``Fraction``), as the lists of floats the export writes: the
+    simulator's own envelopes, sampled natively, without NumPy. With *new*,
+    ``numpy.empty``, they are the complex array ``sample_waveform`` returns
+    instead."""
     # Absolute, so that the import costs no relative name's resolution.
     from cudaq_pulse._native._cudaq_pulse_native import sample_envelope
 
-    # The kinds of the simulator's waveform callbacks (WaveformCallback.h).
-    kinds = {
-        "gaussian": 2,
-        "drag": 3,
-        "cosine": 4,
-        "tanh_ramp": 5,
-        "gaussian_square": 6,
-        "custom_samples": 7,
-    }
     per, over = ratio.numerator, ratio.denominator
-    if int(duration_cycles) * per % over:
+    total = int(duration_cycles) * per
+    if total % over:
         raise InvalidValueError(
             f"{duration_cycles} cycles at {per / over:g} samples per cycle is "
-            f"{int(duration_cycles) * per / over:g} samples, not a whole number"
+            f"{total / over:g} samples, not a whole number"
         )
-    count = int(duration_cycles) * per // over
+    count = total // over
     rate = per if over == 1 else per / over
 
     def evaluate(node: Mapping[str, Any]) -> _Samples:
@@ -672,7 +665,7 @@ def _sample(node: Mapping[str, Any], duration_cycles: int, ratio: Fraction | int
         # rotation an envelope leaves at 0, then any samples.
         if shape == "custom_samples":
             held = (0.0, max(duration_cycles, 1), *[0.0] * 8, *node["samples"])
-            return sample_envelope(kinds[shape], held, count, rate)
+            return sample_envelope(7, held, count, rate)
         if shape not in _AMPLITUDES or any(
             not isinstance(v, (int, float)) for v in params.values()
         ):
@@ -682,9 +675,35 @@ def _sample(node: Mapping[str, Any], duration_cycles: int, ratio: Fraction | int
         get = params.get
         shaped = (get("sigma", 0.0), get("beta", 0.0), get("risefall", 0.0))
         envelope = (0.0, get("duration"), get("amplitude"), 0.0, *shaped, 0.0, 0.0, 0.0)
-        return sample_envelope(kinds[shape], envelope, count, rate)
+        return sample_envelope(_ENVELOPE_KINDS[shape], envelope, count, rate)
 
-    return evaluate(node)
+    if new is None:
+        return evaluate(node)
+    # The parts of the samples: a number each for a square, else a list each.
+    real: Any
+    imag: Any
+    if (
+        node.__class__ is dict
+        and node["shape"] == "square"
+        and node["shape"].__class__ is str
+        and -1 < count < 1 << 24
+    ):
+        # ``evaluate`` of a square, written out: its two numbers fill the
+        # array, without a list of floats for each part. (A longer square
+        # is listed as before, and so fails as before where it must.)
+        for child in node.get("of", ()):
+            evaluate(child)
+        params = node.get("params", {})
+        if any(not isinstance(v, (int, float)) for v in params.values()):
+            raise ValueError("cannot sample a 'square' waveform without numeric parameters")
+        real, imag = float(params["amplitude"]), float(params["amplitude_imag"])
+        samples = new(count, complex)
+    else:
+        real, imag = evaluate(node)
+        samples = new(len(real), complex)
+    samples.real = real
+    samples.imag = imag
+    return samples
 
 
 # ── Export ───────────────────────────────────────────────────────────────────
