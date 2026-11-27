@@ -807,6 +807,18 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   calls outweigh what the repeats would save. The check's verdicts are
   the same, and so are its messages for times within what the check
   counts in.
+
+- **`pulse-verify` checks a schedule's times in loops nested to any depth.**
+  The check of each drive, readout and wait (not before time zero, not
+  before the measurements its branches wait for, not before the operation
+  before it on its line ends) walked every loop at its first two
+  iterations and its last, one inside the other: three to the power of
+  the loops' depth. Twelve nested loops took half a million walks of the
+  innermost body, and a module given to `pulse.load` may nest far deeper.
+  It now takes the operations times the depth, and reports what it
+  reported: the same operations, messages and times, each operation once
+  and in the same order.
+
 - **Compiling a loop with very many classical calls in its body no longer
   slows with the square of the calls.** To count the requests a link
   holds at once, the classical check compared each call of the loop with
