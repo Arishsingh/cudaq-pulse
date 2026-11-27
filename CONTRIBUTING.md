@@ -226,6 +226,44 @@ Without `--level` every level runs. Select with `--level`, not with
 `-m level2`: `-m` sees only markers, not the table, and matches a marker on
 a file even for a test in it that is marked otherwise.
 
+### Tests of an installed wheel
+
+`wheels.yml` runs the suite against each built wheel and again against the
+wheels installed in clean images. Those tests run from a copy of `tests/`
+outside the checkout, so that the installed package is the one imported,
+and the copy has only the files that `test-sources` of `[tool.cibuildwheel]`
+in `pyproject.toml` lists. That list is the only one: cibuildwheel copies it,
+and `tools/ci/install-test.sh` copies it with `python tests/_sources.py copy`.
+
+A test that reads a file outside `tests/` does one of two things:
+
+- It runs against the wheels too: it takes the path from
+  `tests._sources.source_file("benchmarks/...")`, with the path written out,
+  and the file is added to `test-sources`. A listed Python file that loads
+  another file of the tree needs that one listed as well.
+- It needs the rest of the tree (`docs/`, `tools/`, every example): it skips
+  itself where the file is absent, with a reason that begins
+  `needs the source tree`.
+
+`python tests/_sources.py check` fails in a second when a listed file is
+absent, when a `source_file` call names a file that is not listed and, in a
+checkout, when a listed Python file names an unlisted one. It runs as
+`tests/test_sources.py` at level 0, so in each `test (...)` job of a pull
+request that runs the suite, in the `version` job of `wheels.yml` before any
+wheel is built, and
+first in each wheel's test command and in `install-test.sh`, on the copy
+itself, before the long run. A path built by hand instead
+(`_ROOT / "benchmarks" / ...`) is not seen by the check and fails only in
+`wheels.yml`, which does not run on pull requests.
+
+Only the examples a test loads by name are listed. `tests/test_examples.py`
+runs every example it finds, so all of them in a checkout and the listed
+ones against a wheel. Without the whole tree, `tests/test_levels.py` does
+not ask that a `tests/levels.toml` line for parameters of a collected test
+names a test, since such parameters may come from files that are not there;
+a line for a file or for a test is still checked, and a checkout checks the
+lines it always did.
+
 ## Writing passes
 
 Compiler passes are C++ MLIR passes in `core/mlir/transforms/`. To try one
