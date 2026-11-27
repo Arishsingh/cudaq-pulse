@@ -222,13 +222,23 @@ before-test = "python -m pip install --no-index --find-links {project}/tools-whe
 test-extras = ["cu12", "viz"]
 test-groups = ["test"]
 test-environment = { CUDAQ_PULSE_OPTIONAL_TOOLS = "pyright,mypy" }
+# What the tests get of the source tree: they run from a copy of these, so
+# that the installed wheel is the package imported. tools/ci/install-test.sh
+# copies the same list (tests/_sources.py), and a test takes a file outside
+# tests/ from it with tests._sources.source_file. The examples listed are
+# those a test loads by name; every example runs in ci.yml's test job.
 test-sources = [
     "tests",
     "pyproject.toml",
     "benchmarks/compiler/compile_time.py",
     "benchmarks/baselines/compile_time.json",
+    "benchmarks/perf_gate/cases.py",
+    "benchmarks/classical/classical_calls.py",
+    "examples/transmon/transmon_surface17_surface_code_cycle.py",
 ]
 test-command = [
+    # In a second, before the long run: the copy holds every file listed.
+    "python tests/_sources.py check",
     "python -c \"import cudaq_pulse._build_config as c; assert sorted(c.GPU_RUNTIME_LIBRARIES) == [12, 13], 'release wheels must include the CUDA 12 and CUDA 13 GPU runtimes'\"",
     "python -c \"import sys, sysconfig, cudaq_pulse; assert not sysconfig.get_config_var('Py_GIL_DISABLED') or not sys._is_gil_enabled(), 'importing cudaq_pulse enabled the GIL'\"",
     "cudaq-pulse-opt --version",
@@ -253,6 +263,7 @@ archs = ["arm64"]
 environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
 test-extras = ["viz"]
 test-command = [
+    "python tests/_sources.py check",
     "python -c \"import cudaq_pulse._build_config as c; assert not c.GPU_RUNTIME_ENABLED, 'macOS wheels must be compiler-only'\"",
     "python -c \"import sys, sysconfig, cudaq_pulse; assert not sysconfig.get_config_var('Py_GIL_DISABLED') or not sys._is_gil_enabled(), 'importing cudaq_pulse enabled the GIL'\"",
     "cudaq-pulse-opt --version",
