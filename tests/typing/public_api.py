@@ -36,6 +36,7 @@ from cudaq_pulse.quantum_systems import (
     MicrowaveDrive,
     PhysicalQudit,
     Readout,
+    ReadoutCrosstalk,
     ReadoutPulse,
     ResidualZZ,
     VirtualZ,
@@ -332,6 +333,9 @@ Coupling((0, 1), 5.7e6, gate=cz)  # type: ignore[call-arg]
 zz = ResidualZZ((0, 1), 1.5e4)
 assert_type(zz.rate_hz, float)
 ResidualZZ((0, 1), 1.5e4, zz_coupling=0.5)  # type: ignore[call-arg]
+crosstalk = ReadoutCrosstalk(resonator_of=14, qudit=4, chi_hz=-20e3)
+assert_type(crosstalk.chi_hz, float | tuple[float, ...])
+ReadoutCrosstalk(14, 4, (-20e3, -26e3))
 pair = pulse.quantum_system(
     name="pair",
     qudits={0: PhysicalQudit(0, 5.0e9, 50.0, 30.0, anharmonicity_hz=-2.5e8)},
