@@ -8,12 +8,18 @@ parameter, on the test, on its class, on its module (``pytestmark``); its
 entry in the level table (``tests/levels.toml``); level 1. Without
 ``--level`` nothing is deselected. ``CONTRIBUTING.md`` says what each level
 means.
+
+``--level N --changed-paths FILE`` also runs, above level N, the test files
+that the change listed in FILE adds, edits or is read by
+(``tools/ci-changed-tests.py``, which says how far and how many).
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import sys
 import tomllib
 from collections import Counter
 from collections.abc import Iterator
@@ -27,6 +33,7 @@ DEFAULT_LEVEL = 1
 PLUGIN = "cudaq-pulse-test-levels"
 _MARKERS = {f"level{level}": level for level in LEVELS}
 _TESTS = Path(__file__).resolve().parent
+_CHANGED_TOOL = _TESTS.parent / "tools" / "ci-changed-tests.py"
 
 
 def _pattern(text: str) -> re.Pattern[str]:
@@ -161,6 +168,8 @@ class LevelPlugin:
         self.skipped_files: set[str] = set()
         self._level_of: dict[int, Resolved] = {}
         self._relative_paths: dict[Path, str] = {}
+        #: What ``--changed-paths`` selected, ran and left, as lines to print.
+        self.changed_report: list[str] = []
 
     def _relative(self, path: Path) -> str:
         try:
@@ -226,14 +235,56 @@ class LevelPlugin:
         limit = config.getoption("--level")
         if limit is None:
             return
+        # A test file of the change runs up to a level of its own.
+        changed = self._changed_levels(resolved, limit)
         kept, dropped = [], []
         for item, test in zip(items, resolved, strict=True):
-            (kept if test.level <= limit else dropped).append(item)
+            (kept if test.level <= changed.get(test.path, limit) else dropped).append(item)
         if dropped:
             config.hook.pytest_deselected(items=dropped)
             items[:] = kept
 
+    def _changed_levels(self, tests: list[Resolved], limit: int) -> dict[str, int]:
+        """The level each test file selected by ``--changed-paths`` runs up
+        to in a run at level *limit*; nothing without the option."""
+        listed = self.config.getoption("--changed-paths")
+        if listed is None:
+            return {}
+        try:
+            # The paths of a change are data: undecodable bytes select nothing.
+            paths = Path(listed).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as error:
+            raise pytest.UsageError(f"--changed-paths cannot be read: {error}") from error
+        try:
+            spec = importlib.util.spec_from_file_location("ci_changed_tests", _CHANGED_TOOL)
+            tool = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = tool
+            spec.loader.exec_module(tool)
+        except Exception as error:
+            raise pytest.UsageError(
+                f"--changed-paths needs tools/{_CHANGED_TOOL.name}, "
+                f"which cannot be loaded: {error!r}"
+            ) from error
+        selection = tool.select(paths, lambda path: (self.root / path).is_file())
+        counts: dict[str, Counter[int]] = {file: Counter() for file in selection.tests}
+        for test in tests:
+            if test.path in counts:
+                counts[test.path][test.level] += 1
+        reached = tool.plan(counts, limit)
+        self.changed_report = tool.report(selection, counts, reached, limit)
+        return reached
+
+    def _print_changed_report(self) -> None:
+        writer = self.config.get_terminal_writer()
+        for line in self.changed_report:
+            writer.line(line)
+
+    def pytest_terminal_summary(self) -> None:
+        # At the end of the log as well, beside the result.
+        self._print_changed_report()
+
     def pytest_collection_finish(self, session: pytest.Session) -> None:
+        self._print_changed_report()
         # Nothing to report when the collection stopped on a usage error.
         if self.config.getoption("--level-report") and self._level_of:
             writer = self.config.get_terminal_writer()
@@ -348,6 +399,14 @@ def add_options(parser: pytest.Parser) -> None:
         metavar="N",
         help="run the tests of level N and lower (0 contract, 1 behaviour, 2 exhaustive, "
         "3 fine detail and long cases); without it every level runs",
+    )
+    group.addoption(
+        "--changed-paths",
+        metavar="FILE",
+        default=None,
+        help="with --level N: also run, above level N, the test files that the changed "
+        "paths listed in FILE (one per line) add, edit or are read by; how far and how "
+        "many, tools/ci-changed-tests.py says",
     )
     group.addoption(
         "--level-report",
