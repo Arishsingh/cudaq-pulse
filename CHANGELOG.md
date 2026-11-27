@@ -794,19 +794,27 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
-- **Compiling rounds around many repeats of a classical call no longer
-  slows with the square of the repeats.** Of the loops around a call, the
-  classical check keeps at most one as a single run and walks the others
-  iteration by iteration. It kept the outermost loop of 64 or more trips,
-  so in 100 rounds around 100,000 repeats every repeat became an entry
-  compared with every other, and twice the repeats took four times as
-  long. It now keeps that loop unless walking it and keeping a longer
-  loop inside it is much less work, counted in the operations the walk
-  visits and the entries it compares: the repeats here, and still the
-  rounds when they are the longer loop, or when their body or their own
-  calls outweigh what the repeats would save. The check's verdicts are
-  the same, and so are its messages for times within what the check
-  counts in.
+- **Compiling loops of classical calls inside loops no longer slows with
+  the trips of any of them.** Of the loops around a call, the classical
+  check took one from a single copy of its body and walked the others
+  iteration by iteration, so rounds around repeats cost the trips of one
+  of the two, and in 100 rounds around 100,000 repeats twice the repeats
+  once took four times as long. Every loop of 64 or more trips is now
+  taken from one copy of its body: a call is one run with a period and a
+  count for each loop around it, and how many requests a link holds at
+  once, and whether they go out in program order, are worked out from
+  those. 800 rounds of 16,000 repeats are the work of 100 rounds of
+  2,000. The check's verdicts are the same, and so are its messages for
+  times within what the check counts in. Still counted
+  with one loop taken from one copy and those inside it walked, as
+  before: a loop whose calls do not all move by the same period, a loop
+  whose iterations start closer together than the loops inside it take
+  to start, and a call held for a negative time, none of which a
+  schedule the compiler makes has. A loop of fewer
+  than 64 trips is written out, which is less work than taking it from
+  one copy. In a function with a branch, the order of calls is still
+  checked at the first two iterations and the last of each loop, one
+  inside the other.
 
 - **`pulse-verify` checks a schedule's times in loops nested to any depth.**
   The check of each drive, readout and wait (not before time zero, not
