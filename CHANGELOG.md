@@ -826,6 +826,18 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   the same, and so are its messages for times within what the check
   counts in.
 
+- **`pulse.load` keeps a phase folded into a drive.** The compiler folds a
+  constant `shift_phase` into the drive after it, as `frame_phase_offset` on
+  that drive, and the export and the simulator read it there. `load` kept
+  only an operation's own attributes and those named `pulse.`, so the
+  scheduled module of a compiled kernel lost every folded phase when it was
+  loaded: `shift_phase(d.tone, 0.3)` before a drive played at phase 0.3
+  compiled and at phase 0 loaded, in both controller formats, with no
+  error. `load` now keeps `frame_phase_offset` and `phase_offset` (the
+  phase of one drive alone, read the same way) on a `pulse.drive`, each as
+  a finite `f64`; under those names on another operation, or with another
+  type, they are dropped as before, like every other attribute of another
+  compiler.
 - **`pulse-verify` checks a schedule's times in loops nested to any depth.**
   The check of each drive, readout and wait (not before time zero, not
   before the measurements its branches wait for, not before the operation
