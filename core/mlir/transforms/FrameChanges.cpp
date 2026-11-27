@@ -48,6 +48,12 @@
 // whose frames persist from one shot to the next declares it with the
 // module's `pulse.persistent_frames`: then nothing is marked, and the
 // export gives instead the frame each tone ends the shot in.
+//
+// A module another compiler scheduled has its frame changes placed already,
+// and none of these marks: what it carries under their names is not read.
+// `markFrameUpdates` sets the marks as the pass does, in place of those its
+// frame changes, loops and branches carry, each change staying where it is
+// written.
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -763,9 +769,18 @@ private:
                                   pulse::GetReadoutLineOp, pulse::ToneOp>(def))
       return true;
     if (isFrameChange(def)) {
-      if (!tail(def->getOperand(0), out))
+      // The changes made in a row, back to what they were made on: however
+      // many they are, without a call for each.
+      llvm::SmallVector<mlir::Operation *> row;
+      mlir::Value before = tone;
+      for (mlir::Operation *change = def; change && isFrameChange(change);
+           change = before.getDefiningOp()) {
+        row.push_back(change);
+        before = change->getOperand(0);
+      }
+      if (!tail(before, out))
         return false;
-      out.push_back(def);
+      out.append(row.rbegin(), row.rend());
       return true;
     }
     if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(def)) {
@@ -834,6 +849,74 @@ private:
   }
 };
 
+/// The work of pulse-frame-changes on `module`: with `Place`, each frame
+/// change gets its place; either way the marks are removed and set again
+/// from the code. Returns whether the module may have changed.
+template <bool Place>
+bool placeAndMark(mlir::ModuleOp module) {
+  mlir::MLIRContext *context = module.getContext();
+  bool persistent = pulse::persistentFrames(module);
+  auto mark = mlir::UnitAttr::get(context);
+  auto i64 = mlir::IntegerType::get(context, 64);
+  int64_t nextId = 0;
+  const Names names(context);
+  bool changed = false;
+  for (auto function : module.getOps<mlir::func::FuncOp>()) {
+    FramePlacement placement(context, names);
+    std::optional<LinesAtChanges> lines;
+    bool changes = false;
+    function.walk<mlir::WalkOrder::PreOrder>([&](mlir::Operation *op) {
+      bool change = isFrameChange(op);
+      // Only a frame change, loop or branch carries a mark.
+      if (change || mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp>(op)) {
+        mlir::DictionaryAttr attributes = op->getRawDictionaryAttrs();
+        if (!attributes.empty())
+          for (mlir::StringAttr name : names.marks())
+            if (attributes.contains(name)) {
+              op->removeAttr(name);
+              changed = true;
+            }
+      }
+      if (change) {
+        if constexpr (Place) {
+          if (!lines)
+            lines.emplace(function);
+          placement.place(op, lines->at(op));
+        }
+        changes = true;
+      }
+    });
+    changed |= changes;
+    // Without a frame change, none is pending anywhere.
+    if (persistent || !changes)
+      continue;
+    PendingChanges pending(function, names, nextId);
+    function.walk([&](mlir::Operation *op) {
+      if (isFrameChange(op))
+        pending.unconsumed(op);
+      else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op))
+        pending.exits(loop);
+      else if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op))
+        pending.arms(branch);
+    });
+    for (mlir::Operation *change : pending.inPlace)
+      change->setAttr(names.unconsumed, mark);
+    llvm::MapVector<mlir::Operation *, llvm::SmallVector<int64_t>> within;
+    for (auto [change, id] : pending.ids) {
+      change->setAttr(names.carried, mlir::IntegerAttr::get(i64, id));
+      for (mlir::scf::ForOp loop : pulse::enclosingLoops(change))
+        within[loop].push_back(id);
+    }
+    for (auto &[site, ids] : pending.lists)
+      site.first->setAttr(site.second,
+                          mlir::DenseI64ArrayAttr::get(context, ids));
+    for (auto &[loop, ids] : within)
+      loop->setAttr(names.carriedIn,
+                    mlir::DenseI64ArrayAttr::get(context, ids));
+  }
+  return changed;
+}
+
 struct PulseFrameChangesPass
     : public mlir::PassWrapper<PulseFrameChangesPass,
                                mlir::OperationPass<mlir::ModuleOp>> {
@@ -846,67 +929,8 @@ struct PulseFrameChangesPass
   }
 
   void runOnOperation() override {
-    mlir::ModuleOp module = getOperation();
-    mlir::MLIRContext *context = &getContext();
-    bool persistent = pulse::persistentFrames(module);
-    auto mark = mlir::UnitAttr::get(context);
-    auto i64 = mlir::IntegerType::get(context, 64);
-    int64_t nextId = 0;
-    const Names names(context);
-    bool changed = false;
-    for (auto function : module.getOps<mlir::func::FuncOp>()) {
-      FramePlacement placement(context, names);
-      std::optional<LinesAtChanges> lines;
-      bool changes = false;
-      function.walk<mlir::WalkOrder::PreOrder>([&](mlir::Operation *op) {
-        bool change = isFrameChange(op);
-        // Only a frame change, loop or branch carries a mark.
-        if (change || mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp>(op)) {
-          mlir::DictionaryAttr attributes = op->getRawDictionaryAttrs();
-          if (!attributes.empty())
-            for (mlir::StringAttr name : names.marks())
-              if (attributes.contains(name)) {
-                op->removeAttr(name);
-                changed = true;
-              }
-        }
-        if (change) {
-          if (!lines)
-            lines.emplace(function);
-          placement.place(op, lines->at(op));
-          changes = true;
-        }
-      });
-      changed |= changes;
-      // Without a frame change, none is pending anywhere.
-      if (persistent || !changes)
-        continue;
-      PendingChanges pending(function, names, nextId);
-      function.walk([&](mlir::Operation *op) {
-        if (isFrameChange(op))
-          pending.unconsumed(op);
-        else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op))
-          pending.exits(loop);
-        else if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op))
-          pending.arms(branch);
-      });
-      for (mlir::Operation *change : pending.inPlace)
-        change->setAttr(names.unconsumed, mark);
-      llvm::MapVector<mlir::Operation *, llvm::SmallVector<int64_t>> within;
-      for (auto [change, id] : pending.ids) {
-        change->setAttr(names.carried, mlir::IntegerAttr::get(i64, id));
-        for (mlir::scf::ForOp loop : pulse::enclosingLoops(change))
-          within[loop].push_back(id);
-      }
-      for (auto &[site, ids] : pending.lists)
-        site.first->setAttr(site.second,
-                            mlir::DenseI64ArrayAttr::get(context, ids));
-      for (auto &[loop, ids] : within)
-        loop->setAttr(names.carriedIn,
-                      mlir::DenseI64ArrayAttr::get(context, ids));
-    }
     // An unchanged module needs no verifying again.
-    if (!changed)
+    if (!placeAndMark<true>(getOperation()))
       markAllAnalysesPreserved();
   }
 };
@@ -915,6 +939,11 @@ struct PulseFrameChangesPass
 
 std::unique_ptr<mlir::Pass> pulse::createPulseFrameChangesPass() {
   return std::make_unique<PulseFrameChangesPass>();
+}
+
+bool pulse::markFrameUpdates(mlir::ModuleOp module) {
+  // Without a frame change or a mark there is none to remove or to set.
+  return hasFrameChangeWork(module) && placeAndMark<false>(module);
 }
 
 bool pulse::hasFrameChangeWork(mlir::Operation *op) {
