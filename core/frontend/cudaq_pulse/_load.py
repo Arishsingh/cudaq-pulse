@@ -95,6 +95,7 @@ def load(
     from ._errors import CompilationError, InvalidTypeError, InvalidValueError, UnsupportedError
     from ._native import _cudaq_pulse_native as native
     from .compiler import (
+        _LISTED_EVENTS,
         CompileMetrics,
         CompileOptions,
         _check_controller,
@@ -239,7 +240,13 @@ def load(
         called.routes = routes
         program.classical = called
     program = _check_controller(program)
-    program.metrics.op_count = len(program.schedule)
+    # The schedule's length, counted in the module: no event is made for it.
+    # A schedule of up to _LISTED_EVENTS events is a list of them, and the
+    # count refuses the readout that list would.
+    scheduled = program._concrete() if program.rescheduled or program.carriers else program._module
+    with program._lock:
+        count = scheduled.event_count(_LISTED_EVENTS)
+    program.metrics.op_count = len(program.schedule) if count is None else count
     return program
 
 

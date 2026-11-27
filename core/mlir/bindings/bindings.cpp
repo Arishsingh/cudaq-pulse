@@ -3651,6 +3651,52 @@ public:
     return result;
   }
 
+  /// How many events event_tree(limit) lists or stands for, without making
+  /// one: where event_tree(limit) is events(), the readout events() refuses
+  /// is refused here, with its error. None for more events than an int64_t
+  /// counts.
+  std::optional<int64_t> event_count(int64_t limit) {
+    std::lock_guard<std::recursive_mutex> guard(*lock_);
+    // The first readout events() refuses, in the order it lists them: it
+    // lists no op of a loop that runs no iteration.
+    mlir::Operation *refused = nullptr;
+    auto add = [](uint64_t a, uint64_t b) {
+      return checkedAdd(a, b).value_or(UINT64_MAX);
+    };
+    std::function<uint64_t(mlir::Block &)> count =
+        [&](mlir::Block &block) -> uint64_t {
+      uint64_t n = 0;
+      for (mlir::Operation &op : block) {
+        if (auto readout = mlir::dyn_cast<pulse::ReadoutOp>(op)) {
+          if (!refused && readout.getMode() != pulse::ReadoutMode::IQ)
+            refused = &op;
+          n = add(n, 1);
+        } else if (mlir::isa<pulse::DriveOp, pulse::WaitOp, classical::SubmitOp,
+                             classical::WaitOp>(op)) {
+          n = add(n, 1);
+        } else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+          int64_t trips = pulse::constantTripCount(loop).value_or(0);
+          if (trips > 0)
+            n = add(n, checkedMul(static_cast<uint64_t>(trips),
+                                  count(*loop.getBody()))
+                           .value_or(UINT64_MAX));
+        } else {
+          for (mlir::Region &region : op.getRegions())
+            for (mlir::Block &nested : region)
+              n = add(n, count(nested));
+        }
+      }
+      return n;
+    };
+    uint64_t events = count(*module_->getBody());
+    if (refused && limit >= 0 &&
+        (!loops_ || events <= static_cast<uint64_t>(limit)))
+      requireExportedMode(refused);
+    if (events > static_cast<uint64_t>(INT64_MAX))
+      return std::nullopt;
+    return static_cast<int64_t>(events);
+  }
+
   /// events(), or, when it lists more than `limit` events, a 1-tuple of
   /// their loops: a list of nodes in program order, each (kind, line, qubit,
   /// start_cycles, duration_cycles, shifts) for an op at the first iteration
@@ -8421,6 +8467,9 @@ NB_MODULE(_cudaq_pulse_native, m) {
            "Schedule pulse operations", nb::arg("policy"),
            nb::arg("max_drives") = 4, nb::arg("max_readouts") = 2,
            nb::arg("readout_latency") = 0, nb::arg("switch_penalty") = 0)
+      .def("event_count", &PulseModule::event_count, nb::arg("limit"),
+           "The number of events event_tree(limit) lists or stands for, "
+           "refusing what it refuses")
       .def(
           "events", &PulseModule::events,
           nb::call_guard<nb::gil_scoped_release>(),
