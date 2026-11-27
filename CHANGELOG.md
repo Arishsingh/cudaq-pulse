@@ -1244,6 +1244,26 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   its line (`t = a; drive(a, w); if m: lines[0] = t`) holds the line, as
   outside an `if`, instead of failing to compile; and a helper that binds a
   parameter to another value (`x = y`) no longer rebinds the caller's name.
+- On a control system of several controllers, an operation after a branch on
+  a readout no longer waits for the outcome to reach every controller, under
+  every schedule. A line the branch played on is there once the outcome
+  reaches the line's own controller (after the feedback latency alone when
+  that is the reader), a tone once it reaches every controller that plays a
+  pulse on it, and any other value once it reaches the controllers of the
+  pulses that use it (every controller, as before, where a call, a branch, a
+  loop bound or a block takes it). A measurement that a loop carries or an
+  `if` yields counts as read on the controller of the readouts it may be,
+  not on any controller, so a branch on it waits for the outcome to reach
+  only the controllers its arms play on. With 200 ns of feedback and 200 ns
+  of peer latency, the round after an active reset started at 1424 ns
+  instead of 1248 ns, as on one controller. The schedules and exported
+  timing of such programs move earlier by up to the peer latency and start
+  uncertainty after each such branch. A program that calls a kernel with its
+  own `schedule=` still waits for every controller, as before. Under `alap`
+  and `alap_rcp`, operations that no longer have to precede such a branch
+  may move later, as those schedules place them as late as the program
+  allows. Programs on one controller, or on controllers with no latency
+  between them, schedule as before.
 - The schedule passes and `Pass.SIMPLIFY_CONTROL_FLOW` no longer crash on
   two inputs. A schedule block that yields one of its own arguments, passing
   an input through, is inlined with that input as its result; the passes

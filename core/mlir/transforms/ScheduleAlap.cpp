@@ -1833,10 +1833,74 @@ private:
     return controllerOfLine(op->getOperand(0));
   }
 
-  /// The controller that read `measurement`, or -1.
+  /// The controller that read `measurement`, or -1. A measurement a loop
+  /// carries, or a branch yields, may be any readout it is carried from:
+  /// their one controller, or -1 where they differ or one is not a readout.
   int64_t readerOf(mlir::Value measurement) {
-    auto readout = measurement.getDefiningOp<pulse::ReadoutOp>();
-    return readout ? controllerOf(readout) : -1;
+    if (auto readout = measurement.getDefiningOp<pulse::ReadoutOp>())
+      return controllerOf(readout);
+    if (!several() || blocksPresent())
+      return kAnyOwner;
+    auto [it, inserted] = carriedReaders.try_emplace(measurement, kAnyOwner);
+    if (!inserted)
+      return it->second;
+    int64_t reader = kNoOwner;
+    llvm::SmallVector<mlir::Value, 4> work{measurement};
+    llvm::DenseSet<mlir::Value> seen;
+    while (!work.empty() && reader != kAnyOwner) {
+      mlir::Value value = work.pop_back_val();
+      if (!seen.insert(value).second)
+        continue;
+      if (seen.size() > kMostFollowed) {
+        reader = kAnyOwner;
+        continue;
+      }
+      if (auto readout = value.getDefiningOp<pulse::ReadoutOp>()) {
+        int64_t c = controllerOf(readout);
+        reader = reader == kNoOwner || reader == c ? c : kAnyOwner;
+        continue;
+      }
+      // One asked about before is taken as found then, so a chain of
+      // them is walked once.
+      if (value != measurement) {
+        auto known = carriedReaders.find(value);
+        if (known != carriedReaders.end()) {
+          int64_t c = known->second;
+          reader = c != kAnyOwner && (reader == kNoOwner || reader == c)
+                       ? c
+                       : kAnyOwner;
+          continue;
+        }
+      }
+      if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+        auto loop = mlir::dyn_cast<mlir::scf::ForOp>(
+            argument.getOwner()->getParentOp());
+        if (!loop || argument.getArgNumber() == 0) {
+          reader = kAnyOwner;
+          continue;
+        }
+        unsigned index = argument.getArgNumber() - 1;
+        work.push_back(loop.getInitArgs()[index]);
+        work.push_back(loop.getBody()->getTerminator()->getOperand(index));
+        continue;
+      }
+      auto result = mlir::cast<mlir::OpResult>(value);
+      mlir::Operation *op = result.getOwner();
+      unsigned index = result.getResultNumber();
+      if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+        work.push_back(loop.getInitArgs()[index]);
+        work.push_back(loop.getBody()->getTerminator()->getOperand(index));
+      } else if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
+        work.push_back(branch.thenYield().getOperand(index));
+        if (!branch.getElseRegion().empty())
+          work.push_back(branch.elseYield().getOperand(index));
+      } else {
+        reader = kAnyOwner;
+      }
+    }
+    it = carriedReaders.find(measurement);
+    it->second = reader == kNoOwner ? kAnyOwner : reader;
+    return it->second;
   }
 
   /// The controllers the ops of schedule block `block` play on (-1: one
@@ -1969,6 +2033,159 @@ private:
     starts.clear();
     if (armStarts.size() > kArmIndexedAfter)
       indexArmStarts();
+  }
+
+  /// The controllers that play with what `branch` yields as result `index`
+  /// (-1: one not known, so any): a line's own (of the line either arm
+  /// yields), every one that plays a pulse on a tone, and for any other
+  /// value those of the pulses that read it or a value computed from it.
+  /// Under a branch on readouts the result waits for the outcomes to reach
+  /// each of them, and no other.
+  llvm::ArrayRef<int64_t> usersOf(mlir::scf::IfOp branch, unsigned index) {
+    mlir::Value result = branch.getResult(index);
+    auto [it, inserted] = resultUsers.try_emplace(result);
+    if (!inserted)
+      return it->second;
+    llvm::SmallVector<int64_t, 2> found;
+    auto add = [&](int64_t c) {
+      if (!llvm::is_contained(found, c))
+        found.push_back(c);
+    };
+    auto addTone = [&](mlir::Value tone) {
+      mlir::Operation *allocation = nullptr;
+      if constexpr (Gridded)
+        allocation = lines(tone);
+      if (!allocation)
+        return add(kAnyOwner);
+      for (int64_t c : toneUsersOf(allocation))
+        add(c);
+    };
+    llvm::SmallVector<mlir::Value, 8> work;
+    work.push_back(branch.thenYield().getOperand(index));
+    if (!branch.getElseRegion().empty())
+      work.push_back(branch.elseYield().getOperand(index));
+    mlir::Type type = result.getType();
+    if (isLineType(type)) {
+      for (mlir::Value line : work)
+        add(controllerOfLine(line));
+      work.clear();
+    } else if (mlir::isa<pulse::ToneType>(type)) {
+      for (mlir::Value tone : work)
+        addTone(tone);
+      work.clear();
+    } else {
+      work.assign({result});
+    }
+    llvm::DenseSet<mlir::Value> seen;
+    while (!work.empty() && !llvm::is_contained(found, kAnyOwner)) {
+      mlir::Value value = work.pop_back_val();
+      if (!seen.insert(value).second)
+        continue;
+      if (seen.size() > kMostFollowed) {
+        add(kAnyOwner);
+        break;
+      }
+      if (isLineType(value.getType())) {
+        add(controllerOfLine(value));
+        continue;
+      }
+      if (mlir::isa<pulse::ToneType>(value.getType())) {
+        addTone(value);
+        continue;
+      }
+      for (mlir::OpOperand &use : value.getUses()) {
+        mlir::Operation *user = use.getOwner();
+        unsigned at = use.getOperandNumber();
+        auto loop = mlir::dyn_cast<mlir::scf::ForOp>(user);
+        if (mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp>(user)) {
+          add(controllerOf(user));
+        } else if (mlir::isa<mlir::scf::YieldOp>(user)) {
+          mlir::Operation *parent = user->getParentOp();
+          if (auto outer = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+            work.push_back(outer.getRegionIterArgs()[at]);
+            work.push_back(outer->getResult(at));
+          } else if (mlir::isa<mlir::scf::IfOp>(parent)) {
+            work.push_back(parent->getResult(at));
+          } else {
+            add(kAnyOwner);
+          }
+        } else if (loop && at >= loop.getNumControlOperands()) {
+          at -= loop.getNumControlOperands();
+          work.push_back(loop.getRegionIterArgs()[at]);
+          work.push_back(loop->getResult(at));
+        } else if (!isTimedOp(user) && user->getNumRegions() == 0 &&
+                   user->getNumResults() > 0 &&
+                   !mlir::isa<pulse::SyncOp>(user)) {
+          llvm::append_range(work, user->getResults());
+        } else {
+          // A call, a branch or loop on it, a block given it, or a value
+          // handed out: any controller may use it.
+          add(kAnyOwner);
+        }
+      }
+    }
+    it = resultUsers.find(result);
+    it->second = std::move(found);
+    return it->second;
+  }
+
+  /// The controllers that play a pulse on a tone of `allocation`, or
+  /// acquire with it: any (-1) once some tone played does not trace to its
+  /// allocation.
+  llvm::ArrayRef<int64_t> toneUsersOf(mlir::Operation *allocation) {
+    static constexpr int64_t any[] = {kAnyOwner};
+    if (!toneUsersFound) {
+      toneUsersFound = true;
+      if constexpr (Gridded)
+        region->walk([&](mlir::Operation *op) {
+          mlir::Value tone = toneOperand(op);
+          if (auto acquire = mlir::dyn_cast<pulse::IQAcquireOp>(op))
+            tone = acquire.getTone();
+          if (!tone)
+            return;
+          mlir::Operation *of = lines(tone);
+          if (!of) {
+            tonesUntraced = true;
+            return;
+          }
+          auto &users = toneUsers[of];
+          int64_t owner = controllerOf(op);
+          if (!llvm::is_contained(users, owner))
+            users.push_back(owner);
+        });
+    }
+    if (tonesUntraced)
+      return any;
+    auto it = toneUsers.find(allocation);
+    if (it == toneUsers.end())
+      return {};
+    return it->second;
+  }
+
+  /// When what `branch` yields as result `index` is there, in a branch on
+  /// readouts: once their outcomes reach every controller that plays with
+  /// it (usersOf).
+  int64_t yieldFloorOf(mlir::scf::IfOp branch, unsigned index) {
+    if (armFloors.empty())
+      return 0;
+    if (!several() || blocksPresent())
+      return armFloorOf(kAnyOwner);
+    int64_t latest = 0;
+    for (int64_t c : usersOf(branch, index))
+      latest = std::max(latest, armFloorOf(c));
+    return latest;
+  }
+
+  /// How much later than on `reader` the outcome of its readout reaches
+  /// every controller that plays with what `branch` yields as result
+  /// `index` (usersOf).
+  int64_t yieldExtraOf(mlir::scf::IfOp branch, unsigned index, int64_t reader) {
+    if (blocksPresent())
+      return controllers.extra(reader, -1);
+    int64_t most = 0;
+    for (int64_t c : usersOf(branch, index))
+      most = std::max(most, controllers.extra(reader, c));
+    return most;
   }
 
   /// How long after a lane's op of `owner` an op of `controller` may start
@@ -4433,8 +4650,9 @@ private:
       }
     }
     if (yieldsAfterCondition(branch))
-      for (int64_t &time : results)
-        time = std::max({time, floor, armFloorOf(kAnyOwner)});
+      for (auto [index, time] : llvm::enumerate(results))
+        time = std::max(
+            {time, floor, yieldFloorOf(branch, static_cast<unsigned>(index))});
     for (auto [result, time] : llvm::zip(branch.getResults(), results))
       readyAt[result] = time;
     floor = savedFloor;
@@ -5200,9 +5418,19 @@ private:
         needed = std::min(needed, late(result));
       if (needed != kNever) {
         if (several()) {
+          // Each result once the outcomes reach the controllers that play
+          // with it (yieldFloorOf).
           AnswerGroup &group = answerGroup(branch.getCondition());
-          for (auto [reader, bounded] : llvm::zip(group.readers, group.latest))
-            bounded = std::min(bounded, needed - controllers.extra(reader, -1));
+          for (auto [index, result] : llvm::enumerate(branch.getResults())) {
+            int64_t at = late(result);
+            if (at == kNever)
+              continue;
+            auto place = static_cast<unsigned>(index);
+            for (auto [reader, bounded] :
+                 llvm::zip(group.readers, group.latest))
+              bounded =
+                  std::min(bounded, at - yieldExtraOf(branch, place, reader));
+          }
         } else
           for (mlir::Value measurement :
                conditionMeasurements(branch.getCondition(), false))
@@ -5322,6 +5550,35 @@ private:
   static constexpr size_t kArmIndexedAfter = 8;
   /// The controller of each lane's last op.
   Lanes driveOwners, readoutOwners;
+  /// Whether the region is a schedule block's body or holds a block: a
+  /// block's shape does not tell which controllers use what it hands out,
+  /// so there what a branch yields waits for every controller, and a
+  /// measurement not read out where it is may be any controller's. Found
+  /// where a branch on readouts, or a measurement not read out where it is
+  /// used, first asks, on several controllers.
+  bool blocksPresent() {
+    if (blocksFound < 0)
+      blocksFound = mlir::isa_and_nonnull<pulse::ScheduleBlockOp>(
+                        region->getParentOp()) ||
+                    region
+                        ->walk([](pulse::ScheduleBlockOp) {
+                          return mlir::WalkResult::interrupt();
+                        })
+                        .wasInterrupted();
+    return blocksFound > 0;
+  }
+  int8_t blocksFound = -1;
+  /// What readerOf found for each measurement not read out where it is.
+  llvm::DenseMap<mlir::Value, int64_t> carriedReaders;
+  /// What usersOf found for each branch result, and toneUsersOf for each
+  /// tone allocation.
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<int64_t, 2>> resultUsers;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<int64_t, 2>> toneUsers;
+  bool toneUsersFound = false, tonesUntraced = false;
+  /// How many values readerOf and usersOf follow for one answer before
+  /// they answer any controller, which is what every result waited for
+  /// before: long chains of carried values stay linear to schedule.
+  static constexpr size_t kMostFollowed = 256;
   /// Per timeline, how many ops have taken its drive and readout lanes.
   llvm::SmallVector<int64_t, 1> driveUses, readoutUses;
   bool lanesKnown = false, lanesInterchangeable = false;
