@@ -682,6 +682,17 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   with answers no longer runs Python code per event, so a program that
   makes no call, or only submits, does less too. Every exported program
   and every violation is as before.
+- **`controller.sample_waveform` writes a square's samples into its array.**
+  The samples of every waveform were built as two lists of floats, one per
+  part, and copied into the array. A square with numeric parameters is one
+  complex number repeated, and is now written into the array directly:
+  sampling 4,096 cycles allocates 66,384 bytes where it allocated 131,992
+  (`tracemalloc`), the array and little more. A square inside a sum, a
+  product or a scale, every other waveform, and the lists a sampled export
+  writes are sampled as before, with a little less work around each: the
+  table of the simulator's envelope kinds is no longer built for each one.
+  The samples, the array a caller owns, the check of a fractional rate and
+  every error are as before.
 - **`pulse.load` counts a program's events without making them.** The
   number `load` records as the program's operations (`metrics.op_count`,
   shown in its `repr`) is the length of its schedule, and `load` read
@@ -696,9 +707,33 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   in a mode the exports do not take yet is still refused at `load` in a
   program of up to 10,000 events, where the list refused it, and a longer
   program loads as it did.
+- **RK4 on the GPU uploads its step factors once per interval.** With
+  `backend="gpu"` and the default `integrator="rk4"`, each step adds states
+  into one another eleven times, each time scaled by a factor that the
+  runtime first copied from the host to the device. The factors of a step
+  are the same for every step of an interval, so the runtime now uploads
+  the five of them once and every step reads them on the device. One
+  interval of 200 steps of a driven qubit made 2,214 host-to-device copies
+  and now makes 17, with the same 3,802 kernel launches (Nsight Systems,
+  NVIDIA RTX A6000, driver 570.211.01, CUDA runtime 12.9.79, cuDensityMat
+  0.7.1). Results are the same bit for bit, for one state and for a batch;
+  the other integrators run as before.
 
 ### Fixed
 
+- **Compiling rounds around many repeats of a classical call no longer
+  slows with the square of the repeats.** Of the loops around a call, the
+  classical check keeps at most one as a single run and walks the others
+  iteration by iteration. It kept the outermost loop of 64 or more trips,
+  so in 100 rounds around 100,000 repeats every repeat became an entry
+  compared with every other, and twice the repeats took four times as
+  long. It now keeps that loop unless walking it and keeping a longer
+  loop inside it is much less work, counted in the operations the walk
+  visits and the entries it compares: the repeats here, and still the
+  rounds when they are the longer loop, or when their body or their own
+  calls outweigh what the repeats would save. The check's verdicts are
+  the same, and so are its messages for times within what the check
+  counts in.
 - **Compiling a loop with very many classical calls in its body no longer
   slows with the square of the calls.** To count the requests a link
   holds at once, the classical check compared each call of the loop with

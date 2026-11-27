@@ -5,6 +5,12 @@
 Quantum systems
 ===============
 
+.. toctree::
+   :hidden:
+   :maxdepth: 1
+
+   transmon_surface17
+
 A *quantum system* is the calibrated physics of a machine (qudit
 frequencies and anharmonicities, couplings, residual ZZ, T1/T2, the pulses
 its gates are calibrated for, and the pulse clock) together with a
