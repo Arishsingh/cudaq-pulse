@@ -1383,6 +1383,98 @@ def test_the_last_trip_of_a_loop_starts_within_the_range(system):
         pulse.load(whiled, entry="shot", qudits=system.qudits[:1])
 
 
+# ── The number of events ─────────────────────────────────────────────────────
+
+R = "!pulse.readout_line, !pulse.tone"
+
+
+def _rounds(trips, mode="iq"):
+    """An entry whose loop plays a drive and a readout in each of *trips*
+    rounds, 80 cycles apart."""
+    period = "period_cycles = array<i64: 80>"
+    return f"""module {{
+  func.func @shot(%q: !pulse.qudit) {TIMED} {{
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %trips = arith.constant {trips} : index
+    %n = arith.constant 8 : i64
+    %long = arith.constant 64 : i64
+    %amp = arith.constant 0.5 : f64
+    %zero = arith.constant 0.0 : f64
+    %a, %at = pulse.get_drive_line %q : (!pulse.qudit) -> ({T})
+    %r, %rt = pulse.get_readout_line %q : (!pulse.qudit) -> ({R})
+    %w = pulse.square %n, %amp, %zero : i64, f64, f64 -> !pulse.waveform
+    %rw = pulse.square %long, %amp, %zero : i64, f64, f64 -> !pulse.waveform
+    %out:4 = scf.for %i = %c0 to %trips step %c1
+        iter_args(%l = %a, %lt = %at, %m = %r, %mt = %rt) -> ({T}, {R}) {{
+      %l1, %lt1 = pulse.drive %l, %w, %lt {_at(0, 8, period)}
+          : !pulse.drive_line, !pulse.waveform, !pulse.tone -> {T}
+      %m1, %mt1, %bit = pulse.readout %m, %rw, %mt, {mode} {_at(8, 64, period)}
+          : !pulse.readout_line, !pulse.waveform, !pulse.tone -> {R}, !pulse.measurement
+      scf.yield %l1, %lt1, %m1, %mt1 : {T}, {R}
+    }}
+    return
+  }}
+}}"""
+
+
+@pytest.mark.parametrize("trips", [0, 1, 5000, 5001, 60_000])
+def test_the_op_count_is_the_length_of_the_schedule(system, trips):
+    program = pulse.load(_rounds(trips), entry="shot", qudits=system.qudits[:1])
+    schedule = program.schedule
+    assert program.metrics.op_count == len(schedule) == 2 * trips
+    # Up to 10,000 events the schedule is a list of them.
+    assert isinstance(schedule, list) == (2 * trips <= 10_000)
+    if trips:
+        last = schedule[-1]
+        assert (last.kind, last.start_cycles, last.duration_cycles) == (
+            "readout",
+            80 * (trips - 1) + 8,
+            64,
+        )
+
+
+def test_the_events_are_counted_without_making_them(system):
+    """What load() does in Python, and what it allocates, does not grow with
+    the events of a loop: they are counted in the module, and no event is
+    made to count them."""
+    import tracemalloc
+
+    from tests._work import python_work
+
+    def loading(trips):
+        text = _rounds(trips)
+        return lambda: pulse.load(text, entry="shot", qudits=system.qudits[:1])
+
+    few, many = loading(16), loading(4096)
+    assert many().metrics.op_count == 8192
+    assert python_work(many) == python_work(few)
+    peaks = []
+    for load in (few, many):
+        tracemalloc.start()
+        try:
+            load()
+            peaks.append(tracemalloc.get_traced_memory()[1])
+        finally:
+            tracemalloc.stop()
+    # 8,192 listed events are over 2 MB.
+    assert peaks[1] < peaks[0] + 100_000, peaks
+
+
+def test_a_readout_the_listed_schedule_refuses_is_refused_at_load(system):
+    """A schedule of up to 10,000 events is a list, which refuses a readout
+    in a mode the exports do not take yet; counting the events refuses it
+    as reading that list does, and no other program."""
+    message = "readout mode trace is not supported by the exports yet; only iq is"
+    for trips in (1, 5000):
+        with pytest.raises(NotImplementedError, match=message):
+            pulse.load(_rounds(trips, "trace"), entry="shot", qudits=system.qudits[:1])
+    # A longer schedule is not a list, and a loop of no round lists nothing.
+    for trips in (5001, 0):
+        program = pulse.load(_rounds(trips, "trace"), entry="shot", qudits=system.qudits[:1])
+        assert program.metrics.op_count == len(program.schedule) == 2 * trips
+
+
 def _attribute(value):
     return MODULE.replace("module {", "module attributes {made.by = " + value + "} {", 1)
 

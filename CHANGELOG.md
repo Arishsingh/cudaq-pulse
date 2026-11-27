@@ -682,8 +682,32 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   with answers no longer runs Python code per event, so a program that
   makes no call, or only submits, does less too. Every exported program
   and every violation is as before.
+- **`pulse.load` counts a program's events without making them.** The
+  number `load` records as the program's operations (`metrics.op_count`,
+  shown in its `repr`) is the length of its schedule, and `load` read
+  `schedule` to take it: for a program of up to 10,000 events that built
+  the list of every event and one Python object per event, only to count
+  them. The events are now counted in the module, once per operation with
+  each loop's iterations multiplied in. For a loop of 4,096 rounds of a
+  drive and a readout (8,192 events), the Python work of a `load` goes from
+  about 356,000 bytecodes to under 4,000 and its peak traced allocation
+  from 2.3 MB to 26 KB, the same as for a loop of 16 rounds. The count,
+  the schedule a later read gives and every error are as before: a readout
+  in a mode the exports do not take yet is still refused at `load` in a
+  program of up to 10,000 events, where the list refused it, and a longer
+  program loads as it did.
 
 ### Fixed
+
+- **Compiling a loop with very many classical calls in its body no longer
+  slows with the square of the calls.** To count the requests a link
+  holds at once, the classical check compared each call of the loop with
+  every other, twice: to find from which iteration the loop repeats
+  itself, and to count the requests in flight at each time it looks at.
+  Both are now taken from the calls in order, with the same counts, so
+  the work grows in step with the calls. (A loop whose calls start, or
+  end, in very many different periods of the loop is still counted call
+  by call.)
 
 - **`simulate` finds its default end without listing a long loop's events.**
   Without `t_end`, a simulation runs to the latest end of the program's
@@ -1283,6 +1307,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   the decoder looked for the instruction after it from the function's first
   instruction. It now reads that instruction directly. What is decoded is
   the same.
+- **A call of a method whose object reaches many others no longer takes
+  time that grows with the square of their number to trace.** To tell
+  whether a method is a pulse helper, the tracer goes through the objects
+  its object holds, and it compared each one it found with all it had
+  found. It now keeps their identities in a set. The objects are gone
+  through in the same order, and the program traced is the same.
 
 ## [0.1.0] - 2026-11-13
 

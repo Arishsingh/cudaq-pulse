@@ -120,7 +120,6 @@ _CI = {
     "perf-gate": "python == 'true'",
     "editor-types": "python == 'true'",
     "test-free-threaded": "python == 'true'",
-    "coverage": "python == 'true'",
     "old-compilers": "native == 'true'",
     "test-docs": "docs == 'true'",
 }
@@ -155,8 +154,8 @@ def test_the_summary_waits_for_every_job_and_always_runs():
     jobs = _jobs("ci.yml")
     needs, condition = jobs["ci-ok"]
     waited = set(re.findall(r"[\w-]+", needs))
-    # coverage reports only (continue-on-error) and gpu runs elsewhere.
-    assert waited == set(jobs) - {"ci-ok", "coverage", "gpu"}
+    # gpu runs elsewhere.
+    assert waited == set(jobs) - {"ci-ok", "gpu"}
     assert condition.startswith("${{ always()")
 
 

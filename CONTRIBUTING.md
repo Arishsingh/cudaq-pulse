@@ -143,9 +143,25 @@ failure also gives its seed in the job summary, replayed with
 ### Test levels
 
 Every test in `tests/` has one level, 0 to 3. The level says how much a
-failure matters and how soon the test has to run. CI still runs every level
-on every change for now; the levels are in place so that it can later run
-the lower ones on every change and all of them less often.
+failure matters and how soon the test has to run:
+
+| When | Levels |
+|---|---|
+| A pull request | 0 in each `test (...)` job of `ci.yml` |
+| A push to `main`, a manual run of `ci.yml` | 0 to 2 in each `test (...)` job |
+| Every night | all four, and the suite twice more under logged hash seeds, and under coverage |
+
+The jobs that run a part of the suite for another purpose take no level and
+run what they ran: `test-docs` (the tests that read the pages, for a change
+of the pages alone), the docs build, the sanitizers and the wheels' install
+tests.
+
+A nightly run that fails opens the issue "The nightly run fails", or
+comments on it while it is open, and the next one that passes closes it. A
+failure of level 0 to 2, found on the push to `main` or at night, is fixed
+before other work; a failure of level 3 alone does not block a merge. A
+change that touches what a level 1 or 2 test checks runs that test before
+it is pushed: `pytest <its file> --level 2`.
 
 The levels are for the pytest suite only. The lit suite in `test/`, the C++
 runtime host tests and the perf gate have no level and are not selected by
@@ -620,6 +636,7 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   without the GIL, as the free-threaded wheels do). `old-compilers` builds
   and runs lit with GCC 11 and Clang 14 on Ubuntu 22.04. The `gpu` job
   builds with GPU support and runs the GPU tests (see [GPU CI](#gpu-ci)).
+  The pytest suite runs at the [test levels](#test-levels) of the event.
 - `wheels.yml`: cibuildwheel for the `cudaq-pulse-tools` wheel (`py3-none`)
   first, then the `cudaq-pulse` wheels for `cp312-abi3` (3.12 and newer) and
   `cp314-cp314t` (free-threaded 3.14, which has no stable ABI), on
@@ -642,11 +659,16 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
   once Pages takes its source from GitHub Actions, and warns until then.
 - `property-nightly.yml`: the property tests (every test file that imports
   hypothesis) with random examples, the slow physics checks (`nightly`),
-  the perf guard and check-pulse on macOS with Python 3.15, every night and
+  the perf guard, and check-pulse at every test level on the platforms and
+  Python versions of `ci.yml` and on macOS with Python 3.15, every night and
   on manual dispatch, with the seed in the job summary and the example
-  database kept in the Actions cache. GitHub runs scheduled workflows from the default
-  branch, so the schedule tests `main`; a manual dispatch tests the branch it
-  is dispatched on.
+  database kept in the Actions cache. One job runs the suite twice more under
+  hash seeds it logs (replay one with `PYTHONHASHSEED=<seed>`), and one
+  reports the coverage of the Python package, without a threshold. GitHub
+  runs scheduled workflows from the default branch, so the schedule tests
+  `main`; a manual dispatch tests the branch it is dispatched on. A scheduled
+  run that fails opens or updates the one nightly issue (see
+  [Test levels](#test-levels)).
 
 ### Which jobs a change runs
 

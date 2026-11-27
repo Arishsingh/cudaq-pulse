@@ -480,6 +480,117 @@ static std::pair<int64_t, int64_t> sweepInFlight(llvm::ArrayRef<Run> runs) {
   return {worst, when};
 }
 
+/// How many runs a loop has for them to be put in order (GroupInFlight).
+constexpr size_t kSortedFrom = 8;
+
+/// The runs of one loop, which share its period and count, as the count of
+/// requests in flight asks of them. A loop of very many submissions makes
+/// as many runs, so neither question compares each run with every other.
+struct GroupInFlight {
+  /// Times of the runs' iteration 0 (their starts, or their ends), in
+  /// order, and where each whole period after the first of them begins
+  /// among them: (periods after the first, index of its first time).
+  struct Times {
+    std::vector<int64_t> at;
+    std::vector<std::pair<int64_t, size_t>> periods;
+
+    void order(int64_t period) {
+      std::sort(at.begin(), at.end());
+      for (size_t i = 0; i < at.size(); ++i) {
+        int64_t after = (at[i] - at.front()) / period;
+        if (periods.empty() || periods.back().first != after)
+          periods.push_back({after, i});
+      }
+    }
+
+    /// How many of the times have come by `time`, over `trips` iterations
+    /// a `period` apart. Of the times within one period of each other,
+    /// those no later in it than `time` is have come once more.
+    int64_t come(int64_t time, int64_t period, int64_t trips) const {
+      int64_t since = time - at.front();
+      int64_t whole = floorDiv(since, period);
+      int64_t within = since - whole * period;
+      int64_t total = 0;
+      for (size_t i = 0; i < periods.size(); ++i) {
+        auto [after, begin] = periods[i];
+        size_t end = i + 1 < periods.size() ? periods[i + 1].second : at.size();
+        auto sooner = static_cast<int64_t>(
+            std::upper_bound(at.begin() + begin, at.begin() + end,
+                             at.front() + after * period + within) -
+            (at.begin() + begin));
+        auto later = static_cast<int64_t>(end - begin) - sooner;
+        total += sooner * std::clamp<int64_t>(whole - after + 1, 0, trips) +
+                 later * std::clamp<int64_t>(whole - after, 0, trips);
+      }
+      return total;
+    }
+  };
+
+  /// Where a request of iteration 0 is in flight: the runs' [start, start
+  /// + busy), those that overlap or touch joined, in order.
+  std::vector<std::pair<int64_t, int64_t>> held;
+  Times starts, ends;
+  /// Whether the count at a time is taken from the starts and the ends in
+  /// order: every run holds its slot for a time that is not negative, and
+  /// the starts and the ends lie in few enough periods for that to be less
+  /// work than a look at every run.
+  bool ordered = true;
+  int64_t period = 0, trips = 0;
+
+  explicit GroupInFlight(llvm::ArrayRef<const Run *> group)
+      : period(group.front()->period), trips(group.front()->count) {
+    std::vector<std::pair<int64_t, int64_t>> each;
+    starts.at.reserve(group.size());
+    ends.at.reserve(group.size());
+    each.reserve(group.size());
+    for (const Run *run : group) {
+      starts.at.push_back(run->start);
+      ends.at.push_back(run->start + run->busy);
+      ordered &= run->busy >= 0;
+      if (run->busy > 0)
+        each.push_back({run->start, run->start + run->busy});
+    }
+    starts.order(period);
+    ends.order(period);
+    // A look per period the times lie in, each a search, against one per
+    // run.
+    ordered &= 8 * (starts.periods.size() + ends.periods.size()) <=
+               std::max<size_t>(group.size(), 16);
+    std::sort(each.begin(), each.end());
+    for (auto [begin, end] : each) {
+      if (!held.empty() && begin <= held.back().second)
+        held.back().second = std::max(held.back().second, end);
+      else
+        held.push_back({begin, end});
+    }
+  }
+
+  /// The iteration from which the requests of the loop in flight at a
+  /// start of a run that starts at `start` are those at the start a period
+  /// before, moved by a period: the most periods after `start` at which a
+  /// request of iteration 0 is still in flight, and no more than the
+  /// trips. (For each run that is in flight at start + m periods for some
+  /// m, the largest such m; the most over the runs.)
+  int64_t steadyFrom(int64_t start) const {
+    // Only what is held past a period after `start` gives one or more.
+    for (size_t i = held.size(); i-- > 0;) {
+      auto [begin, end] = held[i];
+      if (end - 1 < start + period)
+        break;
+      int64_t periods = floorDiv(end - 1 - start, period);
+      if (start + periods * period >= begin)
+        return std::min(periods, trips);
+    }
+    return 0;
+  }
+
+  /// The requests of the loop in flight at `time`: those started less
+  /// those ended.
+  int64_t inFlight(int64_t time) const {
+    return starts.come(time, period, trips) - ends.come(time, period, trips);
+  }
+};
+
 /// sweepInFlight from each loop's runs rather than every execution, or none
 /// when that would not be cheaper. The count only rises where a request
 /// starts. Past a loop's first iterations, each start of a run finds no
@@ -534,20 +645,34 @@ summarizedInFlight(llvm::ArrayRef<Run> runs) {
   int64_t loopRuns = static_cast<int64_t>(runs.size() - singleStarts.size());
   int64_t budget = 4 * executions / (loopRuns + 1) + 64;
   std::vector<int64_t> starts(singleStarts);
+  // The runs of a loop of many submissions are taken in order; those of a
+  // loop of a few, one against the other, which is less work than putting
+  // them in order.
+  std::map<int64_t, GroupInFlight> sorted;
+  for (auto &[id, group] : groups)
+    if (group.size() >= kSortedFrom)
+      sorted.try_emplace(id, group);
   for (auto &[id, group] : groups) {
     int64_t period = group.front()->period, trips = group.front()->count;
+    auto found = sorted.find(id);
+    const GroupInFlight *loop =
+        found == sorted.end() ? nullptr : &found->second;
     for (const Run *run : group) {
       // From `first` on, the loop's requests in flight at each start of the
       // run are those at the start before, moved by a period, but those of
       // iterations past the last.
       int64_t first = 0;
-      for (const Run *other : group) {
-        int64_t lo =
-            floorDiv(run->start - other->start - other->busy, period) + 1;
-        if (lo <= floorDiv(run->start - other->start, period))
-          first = std::max(first, -lo);
+      if (loop) {
+        first = loop->steadyFrom(run->start);
+      } else {
+        for (const Run *other : group) {
+          int64_t lo =
+              floorDiv(run->start - other->start - other->busy, period) + 1;
+          if (lo <= floorDiv(run->start - other->start, period))
+            first = std::max(first, -lo);
+        }
+        first = std::min(first, trips);
       }
-      first = std::min(first, trips);
       std::vector<std::pair<int64_t, int64_t>> ranges;
       if (first > 0)
         ranges.push_back({0, first - 1});
@@ -590,7 +715,14 @@ summarizedInFlight(llvm::ArrayRef<Run> runs) {
          singleStarts.begin()) -
         (std::upper_bound(singleEnds.begin(), singleEnds.end(), t) -
          singleEnds.begin());
-    for (auto &[id, group] : groups)
+    for (auto &[id, group] : groups) {
+      if (group.size() >= kSortedFrom) {
+        const GroupInFlight &loop = sorted.at(id);
+        if (loop.ordered) {
+          count += loop.inFlight(t);
+          continue;
+        }
+      }
       for (const Run *run : group) {
         int64_t hi =
             std::min(floorDiv(t - run->start, run->period), run->count - 1);
@@ -598,6 +730,7 @@ summarizedInFlight(llvm::ArrayRef<Run> runs) {
             floorDiv(t - run->start - run->busy, run->period) + 1, 0);
         count += std::max<int64_t>(0, hi - lo + 1);
       }
+    }
     if (count > worst || (count == worst && count > 0 && t < when)) {
       worst = count;
       when = t;

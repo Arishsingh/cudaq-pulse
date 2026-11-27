@@ -360,6 +360,33 @@ def test_augmented_assignments_are_decoded_in_linear_time():
 
 
 @pytest.mark.scaling
+def test_a_method_of_an_object_that_reaches_many_is_traced_in_linear_time():
+    class Link:
+        def __init__(self, following):
+            self.following = following
+
+        def amplitude(self):
+            return 0.1 if self.following is None else 0.2
+
+    def program(n: int):
+        head = Link(None)
+        for _ in range(n - 1):
+            head = Link(head)
+
+        @pulse.kernel
+        def kernel(qudits):
+            line = get_drive_line(qudits[0])
+            drive(line, square(8, head.amplitude()))
+
+        return _packed_trace(kernel, 1)
+
+    # Whether the method is a pulse helper is looked for in every object
+    # its own reaches. Eight times the objects: 8x the work when linear,
+    # 64x when each is compared with those before it.
+    _assert_linear("trace", {n: program(n) for n in (500, 4000)}, 16)
+
+
+@pytest.mark.scaling
 def test_an_if_costs_what_its_arms_change_not_the_lines_held_in_lists():
     # A readout and a measurement-conditioned if per qudit, with every line
     # held in a list: each if puts back the list slots its arms wrote, not
@@ -575,6 +602,37 @@ def test_a_round_on_many_controllers_is_checked_in_linear_time():
     # each controller is checked on its own pulses, 64x when each is checked
     # on a copy of every controller's.
     _assert_linear("a round's check", {n: program(n) for n in (70, 560)}, 8 * TOLERANCE)
+
+
+@pytest.mark.scaling
+def test_a_loop_of_many_calls_is_counted_in_flight_in_linear_time():
+    from cudaq_pulse._native._cudaq_pulse_native import MLIRPipeline
+
+    from tests.classical.test_check_in_flight import _loop
+
+    def program(calls: int, last: int):
+        # One loop of 100 iterations with *calls* calls in its body, one
+        # after the other, each held past the next two; the last of them
+        # for *last* cycles more.
+        held = [50] * (calls - 1) + [50 + last]
+        text = _loop(100, 20 * calls, [(20 * i, held[i]) for i in range(calls)])
+
+        def run():
+            module = MLIRPipeline().parse_to_module(text)
+            try:
+                module.run_passes(["pulse-classical-check"])
+            except RuntimeError:
+                pass
+
+        return run
+
+    # Eight times the calls: about 8x the time when the runs of the loop
+    # are taken in order, 64x when each is compared with every other. The
+    # same with the last call held into the loop's next period, so that the
+    # ends lie in two periods.
+    for what, last in (("calls in flight", 0), ("a call held over", 100)):
+        runs = {n: program(n, last) for n in (1_000, 8_000)}
+        _assert_linear(what, runs, 8 * TOLERANCE)
 
 
 @pytest.mark.scaling
