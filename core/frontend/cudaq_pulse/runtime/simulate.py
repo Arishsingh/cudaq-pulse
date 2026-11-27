@@ -576,7 +576,7 @@ def _step(
     if given is None:
         step = _default_step(lowered, target, levels)
     elif given <= 0:
-        raise InvalidValueError("dt_ns must be positive")
+        raise InvalidValueError(f"dt_ns must be positive, got {given}")
     else:
         step = given
         # A step of fewer than 20 per period of what the simulation holds
