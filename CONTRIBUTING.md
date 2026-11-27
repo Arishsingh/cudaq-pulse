@@ -96,8 +96,8 @@ fails instead of skipping), `physics` (everything in `tests/physics`),
 `nightly` (slow physics checks, skipped without `--run-nightly`),
 `benchmark` (timing guards, skipped without `--run-benchmarks`),
 `scaling` (benchmarks that compare two sizes in one run) and `slow` (tests
-that spend seconds in native code or child processes, which the sanitizer job
-leaves out). `tests/conftest.py`
+that spend seconds in native code or child processes, which the sanitizers'
+Python sweep leaves out). `tests/conftest.py`
 sets `CUDAQ_PULSE_QUANTUM_SYSTEM=ladder:8192` for the whole session, and
 `CUDAQ_PULSE_VERIFY=1` unless it is set already. Tests run with
 the default unroll threshold; a test of a rolled loop of a few iterations
@@ -287,15 +287,30 @@ module-level dictionary; a kernel that reads module-level constants is fine.
 cudaq-pulse's own C++; the prebuilt MLIR toolchain stays uninstrumented. The
 `sanitizers` workflow builds both variants on Linux. The address and
 undefined-behavior build runs `check-pulse-mlir`, `check-pulse-runtime` and
-the Python suite; the thread build runs `check-pulse-runtime`, whose GPU
-runtime host test evolves runs concurrently. Under address and undefined
-behavior, `check-pulse-mlir` and `check-pulse-runtime` block a merge. The
-Python suite there and the thread build are informational until the MLIR
-toolchain is built with the sanitizers too; it leaves out the tests marked
-`slow` and stops after 40 minutes. For the Python suite, preload the runtimes
-into the uninstrumented interpreter; tests that run a tool other than Python
-or cudaq-pulse-opt (pyright, git, a C compiler) remove them from its
-environment with `tool_env` (`tests/_tools.py`):
+a smoke check of the Python bindings; the thread build runs
+`check-pulse-runtime`, whose GPU runtime host test evolves runs
+concurrently. Under address and undefined behavior all three block a merge.
+The smoke check is five tests, named in the workflow: a module made from a
+kernel is checked, specialized, scheduled and lowered to the LLVM dialect;
+one parsed from text is lowered to qop and cudm; a pass, a parse and the
+verification of a loaded module fail with their errors; and a child interpreter imports the package,
+compiles, lowers and exits.
+
+The Python suite runs under address and undefined behavior in a job of its
+own, `sanitizers (python sweep, advisory)`, on a push to `main` and on a
+manual run of the workflow (`gh workflow run sanitizers.yml --ref <branch>`),
+not on a pull request. It and the thread build are informational until the
+MLIR toolchain is built with the sanitizers too: a failure there fails
+neither the workflow's run nor a required check. The sweep leaves out the
+tests marked `slow` and stops after 40 minutes, as a failure. A test of a
+raw time or memory limit skips itself under a sanitizer runtime, which
+multiplies both (`skip_raw_limit` and `under_sanitizers` in
+`tests/_tools.py`; the child limits of `tests/_child.py` and the timings of
+`tests/_work.py` call it); the unsanitized jobs check those limits. For the
+Python suite, preload the runtimes into the uninstrumented interpreter;
+tests that run a tool other than Python or cudaq-pulse-opt (pyright, git, a
+C compiler) remove them from its environment with `tool_env`
+(`tests/_tools.py`):
 
 ```bash
 LD_PRELOAD="$(gcc -print-file-name=libasan.so):$(gcc -print-file-name=libubsan.so)" \
