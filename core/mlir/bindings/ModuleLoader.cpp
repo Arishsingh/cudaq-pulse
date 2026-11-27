@@ -265,6 +265,23 @@ public:
       }
     });
   }
+  /// Whether `attribute` of `op` is one of the two phases a drive is read
+  /// with beside its tone's frame: `frame_phase_offset`, a constant phase
+  /// shift folded into the drive (pulse-fold-phases writes it), which stays
+  /// in the tone's frame, and `phase_offset`, the drive's own, which no
+  /// pass sets (fusing two drives carries one over) and the export and the
+  /// simulator read. Each is a finite f64 on a pulse.drive; under these
+  /// names anything else, or on any other operation, is another compiler's
+  /// attribute.
+  static bool isDrivePhase(mlir::Operation *op,
+                           mlir::NamedAttribute attribute) {
+    llvm::StringRef name = attribute.getName().getValue();
+    if (name != "frame_phase_offset" && name != "phase_offset")
+      return false;
+    auto phase = mlir::dyn_cast<mlir::FloatAttr>(attribute.getValue());
+    return phase && mlir::isa<pulse::DriveOp>(op) && phase.getType().isF64() &&
+           phase.getValue().isFinite();
+  }
   /// The function `caller` calls by `name`, checked to be one a call can be
   /// written in place of: defined, scheduled, one block that ends in a
   /// return, and no loop, schedule block or qudit of its own.
@@ -696,9 +713,9 @@ public:
     main.setSymName("main");
     main.setPublic();
     // Attributes of other compilers on the operations are not the program's:
-    // only an operation's own attributes, the Pulse dialect's and the two a
-    // classical wait's meaning is in are kept (what the classical check
-    // writes on a call it writes again).
+    // only an operation's own attributes, the Pulse dialect's, the two a
+    // classical wait's meaning is in (what the classical check writes on a
+    // call it writes again) and the two phases of a drive are kept.
     main.walk([&](mlir::Operation *op) {
       if (op == main.getOperation())
         return;
@@ -708,7 +725,8 @@ public:
         if (attribute.getName().getValue().starts_with("pulse.") ||
             attribute.getName().getValue() == "classical.variable" ||
             attribute.getName().getValue() == "classical.answers" ||
-            llvm::is_contained(own, attribute.getName()))
+            llvm::is_contained(own, attribute.getName()) ||
+            isDrivePhase(op, attribute))
           attributes.append(attribute);
       op->setAttrs(attributes);
     });

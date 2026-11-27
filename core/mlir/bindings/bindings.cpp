@@ -3506,6 +3506,18 @@ public:
     ContextStore::keepPipeline(ctx_.get(), pipeline, std::move(passes));
   }
 
+  /// Mark the frame changes of this scheduled module that some path leaves
+  /// to no drive or readout, as pulse-frame-changes does, each change
+  /// staying where it is: for a module another compiler scheduled, whose
+  /// own marks are not read.
+  void mark_frame_updates() {
+    std::lock_guard<std::recursive_mutex> guard(*lock_);
+    if (pulse::markFrameUpdates(*module_)) {
+      changed();
+      programs_.clear();
+    }
+  }
+
   /// Keep the selects whose uses all set a parameter of a kind in
   /// `runtime`; run every other op that reads one in both arms of an if.
   /// Returns whether a select is kept.
@@ -8561,6 +8573,10 @@ NB_MODULE(_cudaq_pulse_native, m) {
       .def("run_passes", &PulseModule::run_passes,
            nb::call_guard<nb::gil_scoped_release>(),
            "Run named MLIR passes on this module")
+      .def("mark_frame_updates", &PulseModule::mark_frame_updates,
+           nb::call_guard<nb::gil_scoped_release>(),
+           "Mark the frame changes no drive or readout takes on some path, "
+           "each where the module places it")
       .def("lower_selects", &PulseModule::lower_selects,
            nb::call_guard<nb::gil_scoped_release>(), nb::arg("runtime"),
            "Keep the selects of the run-time parameter kinds given; run "

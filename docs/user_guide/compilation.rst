@@ -541,7 +541,11 @@ get that system's frequencies.
 check it: on its qudits and control system the function is verified as every
 scheduled program is, and checked against what the controllers can play. A
 module that states its clock must state the quantum system's. Attributes
-another compiler put on the function or its operations are dropped. The
+another compiler put on the function or its operations are dropped. A phase
+or frequency change keeps the start the module gives it; which changes no
+later drive or readout takes, and so are frame updates in the export
+(:doc:`controller_backends`), ``load`` finds from the function's operations
+as ``compile`` does, and a module does not say. The
 function plays on the qudits it takes and allocates none. A control system
 with line delays, or a controller with ``max_instructions`` or
 ``max_program_duration``, is refused: ``load`` does not apply or check those
@@ -588,6 +592,15 @@ hyphen and a digest is refused. The producer string is the compiler's own name, 
 ``cudaq-pulse-dialects=`` and the source, set apart by spaces. The first
 ``cudaq-pulse-dialects=`` in the string counts, and the source ends at the
 next space or at the string's end.
+
+Two attributes that are neither an operation's own nor named ``pulse.`` are
+kept, on a ``pulse.drive`` and as a finite ``f64``: ``frame_phase_offset``, a
+constant phase shift that ``compile`` folds into the drive after it (the tone
+keeps it from that drive on), and ``phase_offset``, the phase of that drive
+alone, which ``compile`` does not write. With the first, the scheduled module
+of a compiled kernel loads to the program it was compiled to. On another
+operation, or of another type, they are dropped like any attribute of another
+compiler.
 
 A module given to ``load`` is another compiler's and is treated as untrusted
 input. Nested modules are refused; the entry and the functions it calls are

@@ -101,7 +101,18 @@ def load(
     none. What the function returns is dropped: read a record from its
     readout in the export. Attributes another compiler put on the function
     or on its operations are not part of the program: an operation keeps its
-    own attributes and those named ``pulse.``.
+    own attributes and those named ``pulse.``, and a ``pulse.drive`` its two
+    phases, each a finite ``f64``: ``frame_phase_offset``, a phase shift
+    folded into the drive, as ``compile`` writes it, and ``phase_offset``,
+    the phase of that drive alone, which ``compile`` does not write and
+    the export and the simulator read.
+
+    A frame change keeps the start the module gives it. Which changes no
+    drive or readout takes on some path, and so are frame updates in the
+    export, is decided from the function's operations as ``compile`` decides
+    it: the module does not have to say, and what it says of that (the
+    marks ``compile`` writes on such changes, loops and branches) is not
+    read.
 
     The result is what ``kernel.lower(...)`` returns: ``schedule``,
     ``timeline()``, ``export_to_controller()`` and the backends take it.
@@ -243,6 +254,10 @@ def load(
         submissions = cast("list[Any]", builder.load_submissions(bound.serialize()[0]))
         _check_submissions(submissions)
         _check_messages(submissions, stated)
+    # Which frame changes no drive or readout takes is decided here from the
+    # function's operations, as for a compiled program, and not read from the
+    # module: the export gives each as a frame update.
+    bound.mark_frame_updates()
     metrics = CompileMetrics(quantum_system=target.name)
     program = _lowered(
         bound,
