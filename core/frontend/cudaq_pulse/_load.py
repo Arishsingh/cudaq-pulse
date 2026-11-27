@@ -8,6 +8,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from ._dialect_source import DIALECT_SOURCE
+
 if TYPE_CHECKING:
     from ._device import Qudit
     from ._system import Controller, ControlSystem
@@ -57,8 +59,9 @@ def load(
 
     Bytecode holds an operation's properties by position, in the shape of
     the writer's copy of the dialects, so it is read only with the dialect
-    source that wrote it. A writer can state that source in the bytecode's
-    producer string, as ``cudaq-pulse-dialects=<source>``, and bytecode that
+    source that wrote it. A writer states that source in the bytecode's
+    producer string, as ``cudaq-pulse-dialects=<source>``, as this package
+    and ``cudaq-pulse-opt`` do, and bytecode that
     states another source than this build's is refused
     (``CompilationError``): give the module as assembly, which holds
     properties by name. Assembly states no source, and bytecode that states
@@ -116,9 +119,9 @@ def load(
         text = module.encode()
     elif isinstance(module, (bytes, bytearray, memoryview)):
         text = bytes(module)
-        # Bytecode that states its dialect source names it in its producer
-        # string, which starts within 13 bytes and ends at a zero byte.
-        if text[:4] == b"ML\xefR" and text.find(_DIALECT_SOURCE_KEY, 4, text.find(b"\0", 13)) >= 0:
+        # The package's own bytecode states this build's dialect source in
+        # a producer string known here; any other bytecode is held to it.
+        if text[:4] == b"ML\xefR" and not text.startswith(_OWN_PRODUCER, 5):
             _check_dialect_source(text)
     else:
         raise InvalidTypeError(
@@ -269,6 +272,13 @@ def load(
 # to white space or the string's end.
 _DIALECT_SOURCE_KEY = b"cudaq-pulse-dialects="
 
+# The key and this build's dialect source, and the whole producer string of
+# the bytecode the package writes, with the zero byte that ends it. That
+# string follows the four magic bytes and the format's version, one byte
+# today; after a longer version what is left of it still states the source.
+_STATED_HERE = _DIALECT_SOURCE_KEY + DIALECT_SOURCE.encode()
+_OWN_PRODUCER = b"cudaq-pulse " + _STATED_HERE + b"\0"
+
 
 def _stated_dialect_source(module: bytes) -> tuple[str, str] | None:
     """The dialect source the bytecode *module* states and its producer
@@ -293,14 +303,28 @@ def _stated_dialect_source(module: bytes) -> tuple[str, str] | None:
 def _check_dialect_source(module: bytes) -> None:
     """Refuse bytecode that states another dialect source than this
     build's (cmake/write_dialect_source.cmake), before anything after its
-    producer string is read:
-    bytecode holds an operation's properties by position, in the shape of
-    the writer's dialects, and read with dialects of another shape a value
-    lands in another property without an error."""
+    producer string is read: bytecode holds an operation's properties by
+    position, in the shape of the writer's dialects, and read with dialects
+    of another shape a value lands in another property without an error."""
+    # The producer string starts within 13 bytes of the module's start and a
+    # zero byte ends it: a module without the key there states no source.
+    at = module.find(_DIALECT_SOURCE_KEY, 5, module.find(b"\0", 13))
+    if at < 0:
+        return
+    # This build's own source, ended by white space or the string's end, in
+    # a module whose format version is one byte, so that the string starts
+    # at byte 5: what cudaq-pulse-opt and a writer built from this build's
+    # dialects write.
+    end = at + len(_STATED_HERE)
+    if (
+        module[4] & 1
+        and module.startswith(_STATED_HERE, at)
+        and module[end : end + 1] in b"\0 \t\n\r\x0b\x0c"
+    ):
+        return
     found = _stated_dialect_source(module)
     if found is None:
         return
-    from ._dialect_source import DIALECT_SOURCE
     from ._errors import CompilationError
 
     stated, producer = found

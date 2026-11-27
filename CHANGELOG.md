@@ -305,21 +305,28 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   kernel's calls of them are compiled. A call of another function of the
   module that states its start (`pulse.start_cycles`, provisional) is written
   in place.
-- **A bytecode module can state the dialect source it was written with, and
-  `pulse.load` refuses one written with another.** MLIR bytecode holds an
-  operation's properties by position, in the shape the writer's copy of the
-  dialect gives them, so bytecode read with dialects of another shape can
-  be misread without an error: a start read as a duration. A writer can
-  state the source of its Pulse and Classical dialects in the producer
-  string of the bytecode it writes, as `cudaq-pulse-dialects=<source>`
-  (`mytool 0.3 cudaq-pulse-dialects=22.1.8-cf2faa24b237fcb9`): the LLVM
-  version and a digest of the two dialects' definition files, which
-  `cmake/write_dialect_source.cmake` computes from a checkout and says how.
-  `pulse.load` reads the producer string before anything else of the module
-  and refuses bytecode that states another source than its own, naming
-  both: give that module as assembly, which holds properties by name.
-  Assembly states no source, and bytecode that states none is read as
-  before.
+- **Bytecode states the dialect source it was written with, and `pulse.load`
+  refuses one written with another.** MLIR bytecode holds an operation's
+  properties by position, in the shape the writer's copy of the dialect
+  gives them, so bytecode read with dialects of another shape can be misread
+  without an error: a start read as a duration. The bytecode this package
+  writes (a pickled program's module) and the bytecode of
+  `cudaq-pulse-opt --emit-bytecode` now state the source of the Pulse and
+  Classical dialects in their producer string, as
+  `cudaq-pulse-dialects=<source>`
+  (`cudaq-pulse cudaq-pulse-dialects=22.1.8-cf2faa24b237fcb9`): the LLVM
+  version and a digest of the two dialects' definition files. `pulse.load`
+  reads the producer string before anything else of the module and refuses
+  bytecode that states another source than its own, naming both: give that
+  module as assembly, which holds properties by name. Assembly states no
+  source, and bytecode that states none is read as before. A writer outside
+  this repository states the source the same way: it runs
+  `cmake -DROOT=<checkout> -DLLVM_VERSION=<version> -DOUTPUT=<file> -P
+  cmake/write_dialect_source.cmake` on the checkout it is built from, with
+  the version of the LLVM it is built with (`LLVM_PACKAGE_VERSION`), which
+  writes the source as a C++ string, and puts
+  `cudaq-pulse-dialects=<source>` in the producer string of its
+  `mlir::BytecodeWriterConfig`, after its own name and a space.
 - **Broadcast drive lines.** A drive line whose one tone reaches several
   qudits at once, as one antenna or beam over several, is declared on the line:
   `DriveLine([0, 1, 2], broadcast=True)`. A kernel gets it with

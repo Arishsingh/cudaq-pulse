@@ -43,24 +43,14 @@ add_custom_target(CudaqPulseSourceStamp DEPENDS "${_cudaq_pulse_source_stamp}")
 add_dependencies(_cudaq_pulse_native CudaqPulseSourceStamp)
 
 # The source of the Pulse and Classical dialects, which pulse.load holds a
-# bytecode module that states one to (see cmake/write_dialect_source.cmake).
-file(GLOB_RECURSE _cudaq_pulse_dialect_definitions CONFIGURE_DEPENDS
-  "${CUDAQ_PULSE_SOURCE_DIR}/core/mlir/include/cudaq-pulse/Dialect/Pulse/*"
-  "${CUDAQ_PULSE_SOURCE_DIR}/core/mlir/include/cudaq-pulse/Dialect/Classical/*"
-  "${CUDAQ_PULSE_SOURCE_DIR}/core/mlir/dialects/Pulse/*"
-  "${CUDAQ_PULSE_SOURCE_DIR}/core/mlir/dialects/Classical/*")
-list(FILTER _cudaq_pulse_dialect_definitions INCLUDE REGEX "\\.(td|h|cpp)$")
-# The list is an input of the hash: a file added or removed changes it.
-set(_cudaq_pulse_dialect_list "${CMAKE_BINARY_DIR}/dialect_definitions.txt")
-list(JOIN _cudaq_pulse_dialect_definitions "\n" _cudaq_pulse_dialect_lines)
-file(CONFIGURE OUTPUT "${_cudaq_pulse_dialect_list}" CONTENT "${_cudaq_pulse_dialect_lines}\n")
+# bytecode module that states one to (see cmake/CudaqPulseDialectSource.cmake).
 set(_cudaq_pulse_dialect_source "${CMAKE_BINARY_DIR}/python/cudaq_pulse/_dialect_source.py")
 add_custom_command(
   OUTPUT "${_cudaq_pulse_dialect_source}"
   COMMAND "${CMAKE_COMMAND}" "-DROOT=${CUDAQ_PULSE_SOURCE_DIR}"
     "-DLLVM_VERSION=${LLVM_PACKAGE_VERSION}" "-DOUTPUT=${_cudaq_pulse_dialect_source}"
     -P "${CUDAQ_PULSE_SOURCE_DIR}/cmake/write_dialect_source.cmake"
-  DEPENDS ${_cudaq_pulse_dialect_definitions} "${_cudaq_pulse_dialect_list}"
+  DEPENDS ${CUDAQ_PULSE_DIALECT_DEFINITIONS} "${CUDAQ_PULSE_DIALECT_LIST}"
     "${CUDAQ_PULSE_SOURCE_DIR}/cmake/write_dialect_source.cmake"
   COMMENT "Hashing the dialect definitions into _dialect_source.py")
 add_custom_target(CudaqPulseDialectSource DEPENDS "${_cudaq_pulse_dialect_source}")

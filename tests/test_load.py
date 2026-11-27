@@ -92,30 +92,91 @@ def test_bytecode_is_accepted(system):
 # Bytecode holds an operation's properties by position, in the shape of the
 # writer's dialects: read with dialects of another shape, a start lands in a
 # duration and nothing reports it. A writer states the source of its
-# dialects in the producer string of its bytecode, and load reads only
-# bytecode that states this build's or none.
+# dialects in the producer string of its bytecode, as the package and
+# cudaq-pulse-opt do, and load reads only bytecode that states this build's
+# or none.
 
-
-def _bytecode(text):
-    from cudaq_pulse._native import _cudaq_pulse_native as native
-
-    return native.MLIRPipeline().parse_to_module(text).serialize()[0]
-
-
-def _stating(bytecode, source, tool="elsewhere 0.3"):
-    """*bytecode* as a writer that states *source* writes it: the producer
-    string follows the magic bytes and the format's version, and a zero
-    byte ends it."""
-    assert bytecode[:4] == b"ML\xefR" and bytecode[4] & 1
-    end = bytecode.index(b"\0", 5)
-    assert bytecode[5:end] == b"cudaq-pulse"
-    return bytecode[:5] + f"{tool} cudaq-pulse-dialects={source}".encode() + bytecode[end:]
+_KEY = b"cudaq-pulse-dialects="
 
 
 def _source():
     from cudaq_pulse._dialect_source import DIALECT_SOURCE
 
     return DIALECT_SOURCE
+
+
+def _bytecode(text):
+    """*text* as the package writes it: a pickled program's module."""
+    from cudaq_pulse._native import _cudaq_pulse_native as native
+
+    return native.MLIRPipeline().parse_to_module(text).serialize()[0]
+
+
+def _producer(bytecode):
+    """The producer string of *bytecode*: it follows the magic bytes and the
+    format's version, and a zero byte ends it."""
+    assert bytecode[:4] == b"ML\xefR" and bytecode[4] & 1
+    return bytecode[5 : bytecode.index(b"\0", 5)]
+
+
+def _produced_by(bytecode, producer):
+    """*bytecode* with another producer string."""
+    return bytecode[:5] + producer + bytecode[5 + len(_producer(bytecode)) :]
+
+
+def _stating(bytecode, source, tool="elsewhere 0.3"):
+    """*bytecode* as another writer that states *source* writes it."""
+    return _produced_by(bytecode, f"{tool} cudaq-pulse-dialects={source}".encode())
+
+
+def _restated(bytecode, other):
+    """*bytecode* that states this build's source, with *other* in its
+    place in the header and every other byte as it was."""
+    stated = _KEY + _source().encode()
+    assert len(other) == len(_source()) and other != _source()
+    assert _producer(bytecode).count(stated) == 1
+    return bytecode.replace(stated, _KEY + other.encode(), 1)
+
+
+def test_the_packages_bytecode_states_this_builds_dialect_source(system):
+    bytecode = _bytecode(MODULE)
+    assert _producer(bytecode).split()[-1] == _KEY + _source().encode()
+    program = pulse.load(bytecode, entry="round", qudits=system.qudits[:2])
+    assert events(program) == events(pulse.load(MODULE, entry="round", qudits=system.qudits[:2]))
+
+
+def test_the_drivers_bytecode_states_this_builds_dialect_source(system, tmp_path):
+    """``cudaq-pulse-opt --emit-bytecode``, from assembly and from its own
+    bytecode."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    built = Path(pulse.__file__).parent.parent.parent / "bin" / "cudaq-pulse-opt"
+    driver = str(built) if built.exists() else shutil.which("cudaq-pulse-opt")
+    if driver is None:
+        pytest.skip("cudaq-pulse-opt is neither in the build tree nor on PATH")
+    (tmp_path / "round.mlir").write_text(MODULE)
+    expected = events(pulse.load(MODULE, entry="round", qudits=system.qudits[:2]))
+    given = "round.mlir"
+    for written in ("first.mlirbc", "second.mlirbc"):
+        subprocess.run(
+            [driver, "--emit-bytecode", given, "-o", written],
+            cwd=tmp_path,
+            timeout=60,
+            check=True,
+        )
+        bytecode = (tmp_path / written).read_bytes()
+        producer = _producer(bytecode)
+        assert producer.startswith(b"cudaq-pulse-opt ")
+        assert producer.split()[-1] == _KEY + _source().encode()
+        program = pulse.load(bytecode, entry="round", qudits=system.qudits[:2])
+        assert events(program) == expected
+        with pytest.raises(pulse.CompilationError, match="states the dialect source"):
+            pulse.load(
+                _restated(bytecode, _another("digest")), entry="round", qudits=system.qudits[:2]
+            )
+        given = written
 
 
 @pytest.mark.parametrize("tool", ["elsewhere 0.3", "", "a (b) c"])
@@ -139,8 +200,10 @@ def _another(part):
 @pytest.mark.level0
 @pytest.mark.parametrize("part", ["digest", "llvm"])
 def test_bytecode_of_another_dialect_source_is_refused(system, part):
+    """The package's own bytecode, with another source in its header and
+    every other byte as written."""
     other = _another(part)
-    bytecode = _stating(_bytecode(MODULE), other)
+    bytecode = _restated(_bytecode(MODULE), other)
     with pytest.raises(pulse.CompilationError) as refused:
         pulse.load(bytecode, entry="round", qudits=system.qudits[:2])
     assert refused.value.code == "wrong_argument"
@@ -170,10 +233,8 @@ def test_another_dialect_source_is_refused_before_the_module_is_parsed(system):
     ],
 )
 def test_the_first_stated_source_counts_up_to_white_space(system, producer, refused):
-    bytecode = _bytecode(MODULE)
-    end = bytecode.index(b"\0", 5)
     stated = producer.format(mine=_source(), other=_another("digest")).encode()
-    module = bytecode[:5] + stated + bytecode[end:]
+    module = _produced_by(_bytecode(MODULE), stated)
     if refused:
         with pytest.raises(pulse.CompilationError, match="states the dialect source"):
             pulse.load(module, entry="round", qudits=system.qudits[:2])
@@ -223,18 +284,19 @@ def test_a_refusal_shows_the_start_of_a_long_producer_string(system):
 
 
 def test_bytecode_that_states_no_dialect_source_loads_as_before(system):
-    """Bytecode from a writer that states none: read as it is given. The
-    package's own bytecode, a pickled program's, is such a module, and so is
-    one whose producer string names the source of something else."""
+    """Bytecode from a writer that states none is read as it is given: the
+    package's with the key written over, with the producer string an older
+    build wrote, with one that names the source of something else and with
+    none."""
     bytecode = _bytecode(MODULE)
-    assert b"cudaq-pulse-dialects" not in bytecode
     expected = events(pulse.load(MODULE, entry="round", qudits=system.qudits[:2]))
     for module in (
-        bytecode,
-        bytecode.replace(b"ML\xefR\rcudaq-pulse\0", b"ML\xefR\rother-dialects=1.2-ab\0", 1),
-        bytecode.replace(b"ML\xefR\rcudaq-pulse\0", b"ML\xefR\r\0", 1),
+        bytecode.replace(_KEY, b"x" * len(_KEY), 1),
+        _produced_by(bytecode, b"cudaq-pulse"),
+        _produced_by(bytecode, b"other-dialects=1.2-ab"),
+        _produced_by(bytecode, b""),
     ):
-        assert module[:5] == bytecode[:5] and (module is bytecode or module != bytecode)
+        assert _KEY not in _producer(module)
         program = pulse.load(module, entry="round", qudits=system.qudits[:2])
         assert events(program) == expected
 
@@ -272,10 +334,23 @@ def test_bytecode_cut_short_in_its_header_is_left_to_the_parser(system, module):
     assert "dialect source" not in str(refused.value)
 
 
-def test_a_loaded_program_is_written_with_this_builds_dialects(system):
+@pytest.mark.parametrize("version", [b"\r", b"\x02\x00", b"\x00" + b"\x01" * 8])
+def test_the_header_is_read_past_a_format_version_of_any_length(version):
+    """A version of more than one byte is not MLIR's today; the producer
+    string is found after it all the same."""
+    from cudaq_pulse import _load
+
+    stated = b"ML\xefR" + version + b"a tool " + _KEY
+    assert _load._check_dialect_source(stated + _source().encode() + b"\0rest") is None
+    assert _load._check_dialect_source(stated + _source().encode() + b" b\0rest") is None
+    with pytest.raises(pulse.CompilationError, match="states the dialect source"):
+        _load._check_dialect_source(stated + _another("digest").encode() + b"\0rest")
+
+
+def test_a_loaded_program_is_written_with_this_builds_dialect_source(system):
     """The source is the writer's, not the program's: a program loaded from
-    bytecode that states a source pickles as every program does, and its
-    module as the package writes it for itself states none."""
+    another writer's bytecode pickles as every program does, and its module
+    as the package writes it states this build's source."""
     import pickle
 
     program = pulse.load(
@@ -283,8 +358,8 @@ def test_a_loaded_program_is_written_with_this_builds_dialects(system):
     )
     again = pickle.loads(pickle.dumps(program))
     assert events(again) == events(program)
-    written = program._module.serialize()[0]
-    assert written[:4] == b"ML\xefR" and b"cudaq-pulse-dialects" not in written
+    for written in (program._module.serialize()[0], again._module.serialize()[0]):
+        assert _producer(written).split()[-1] == _KEY + _source().encode()
 
 
 @pytest.mark.level3

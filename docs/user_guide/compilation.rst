@@ -550,14 +550,37 @@ yet.
 Assembly is the form to pass between different builds: it holds an
 operation's properties by name. Bytecode holds them by position, in the
 shape the writer's copy of the dialects gives them, so it is read only with
-the dialect source that wrote it. A writer can state that source in the
-producer string of its bytecode, as ``cudaq-pulse-dialects=<source>``
-(``mytool 0.3 cudaq-pulse-dialects=22.1.8-cf2faa24b237fcb9``): the LLVM
-version and a digest of the definition files of the Pulse and Classical
-dialects, which ``cmake/write_dialect_source.cmake`` computes from a
-checkout. ``load`` refuses bytecode that states another source than its
-own, naming both, before it reads anything else of the module. Bytecode
-that states no source is read as it is given.
+the dialect source that wrote it. Bytecode states that source in its
+producer string, as ``cudaq-pulse-dialects=<source>``: the LLVM version and a
+digest of the definition files of the Pulse and Classical dialects
+(``22.1.8-cf2faa24b237fcb9``). The bytecode of a pickled program and of
+``cudaq-pulse-opt --emit-bytecode`` states it. ``load`` refuses bytecode that
+states another source than its own, naming both, before it reads anything
+else of the module. Bytecode that states no source is read as it is given.
+
+A compiler built from a checkout of this repository states the source of
+that checkout. ``cmake/write_dialect_source.cmake`` computes it and writes it
+as a C++ string literal:
+
+.. code-block:: bash
+
+   cmake -DROOT=<checkout> -DLLVM_VERSION=<LLVM version> \
+         -DOUTPUT=dialect_source.inc -P <checkout>/cmake/write_dialect_source.cmake
+
+.. code-block:: cpp
+
+   mlir::BytecodeWriterConfig config("mycompiler 1.0 cudaq-pulse-dialects="
+   #include "dialect_source.inc"
+   );
+   mlir::writeBytecodeToFile(module, os, config);
+
+``LLVM_VERSION`` is the version of the LLVM the compiler is built with, as
+LLVM's CMake package gives it (``LLVM_PACKAGE_VERSION``, ``22.1.8``): the
+source matches a cudaq-pulse built from the same dialect files with the same
+LLVM. The producer string is the compiler's own name, then
+``cudaq-pulse-dialects=`` and the source, set apart by spaces. The first
+``cudaq-pulse-dialects=`` in the string counts, and the source ends at the
+next space or at the string's end.
 
 A module given to ``load`` is another compiler's and is treated as untrusted
 input. Nested modules are refused; the entry and the functions it calls are

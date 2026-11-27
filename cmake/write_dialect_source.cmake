@@ -33,7 +33,6 @@
 cmake_policy(SET CMP0009 NEW)
 
 set(_patterns "")
-set(_patterns "")
 foreach(_folder IN ITEMS include/cudaq-pulse/Dialect dialects)
   foreach(_dialect IN ITEMS Pulse Classical)
     foreach(_kind IN ITEMS td h cpp)
