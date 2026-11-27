@@ -147,7 +147,7 @@ failure matters and how soon the test has to run:
 
 | When | Levels |
 |---|---|
-| A pull request | 0 in each `test (...)` job of `ci.yml` |
+| A pull request | 0 in each `test (...)` job of `ci.yml`, and the test files the pull request adds or changes, up to level 2 |
 | A push to `main`, a manual run of `ci.yml` | 0 to 2 in each `test (...)` job |
 | Every night | all four, and the suite twice more under logged hash seeds, and under coverage |
 
@@ -156,12 +156,58 @@ run what they ran: `test-docs` (the tests that read the pages, for a change
 of the pages alone), the docs build, the sanitizers and the wheels' install
 tests.
 
+A pull request also runs the test files it touches, so that a test it adds
+or edits at level 1 or 2 runs on every platform and Python version before
+the merge, not first on `main`. In each `test (...)` job, beside level 0:
+
+- Every test file (`tests/**/test_*.py`) that the pull request adds or
+  edits runs up to level 2. A renamed file runs under its new name; a
+  removed one has nothing to run.
+- The tests of the workflows and of the scripts in `tools/` run when those
+  change: a change under `.github/` or of `tools/ci-changes.py` runs
+  `tests/test_ci_changes.py`, a change of `tools/perf-gate.py` runs
+  `tests/test_perf_gate.py`, and `WATCHES` in `tools/ci-changed-tests.py`
+  lists the others. A new test of a tool gets a line there.
+- These files add at most 1000 cases to the job. Level 1 of each file is
+  taken first, the smallest file first, then level 2; a file whose cases no
+  longer fit, a sweep of thousands of cases for one, stays at the level it
+  reached, and the rest of it runs on the push to `main`. Level 3 stays with
+  the nightly run.
+- A change to a file that many tests share (a helper, a `conftest.py`, a
+  data file, `tests/levels.toml`) does not select the tests that use it:
+  they run at level 0 on the pull request and at levels 0 to 2 on `main`.
+  Only the test files that watch it run: for `tests/conftest.py`,
+  `tests/_levels.py` and `tests/levels.toml`, the tests of the levels
+  themselves.
+
+The end of the pytest log, and its start, list each of these files with the
+cases that ran above level 0 and the ones that were left, and why:
+
+```
+test files of this change, run above level 0: to level 2, at most 1000 cases (tools/ci-changed-tests.py)
+  tests/classical/test_schedule_matrix.py  (changed) runs nothing above level 0; over 1000 cases, left for the push to main: 3667 of level 2
+  tests/test_controller.py                 (changed) runs 80 of level 1, 3 of level 2
+  changed, and shared by many tests, which run at their own level: tests/_handles.py
+```
+
+The job passes the paths the pull request changes to pytest, which reads
+them as data: `pytest tests --level 0 --changed-paths <file>`, the file
+holding one path per line. The same selection for a branch, before it is
+pushed:
+
+```bash
+git diff --name-only --no-renames origin/main... > /tmp/changed-paths.txt
+python tools/ci-changed-tests.py /tmp/changed-paths.txt                        # the files it selects
+pytest tests --level 0 --changed-paths /tmp/changed-paths.txt -m "not gpu"     # what the pull request runs
+```
+
 A nightly run that fails opens the issue "The nightly run fails", or
 comments on it while it is open, and the next one that passes closes it. A
 failure of level 0 to 2, found on the push to `main` or at night, is fixed
 before other work; a failure of level 3 alone does not block a merge. A
-change that touches what a level 1 or 2 test checks runs that test before
-it is pushed: `pytest <its file> --level 2`.
+change that touches what a level 1 or 2 test checks, without touching the
+test's file, runs that test before it is pushed:
+`pytest <its file> --level 2`.
 
 The levels are for the pytest suite only. The lit suite in `test/`, the C++
 runtime host tests and the perf gate have no level and are not selected by
@@ -222,6 +268,7 @@ pytest tests --level-report -m "not gpu"   # cases per level and per file; runs 
 
 `--level N` runs level N and every level below it, and holds together with
 `-m` and `-k`: `-m gpu --level 1` runs the GPU tests of levels 0 and 1.
+`--changed-paths` adds to `--level` and does nothing without it.
 Without `--level` every level runs. Select with `--level`, not with
 `-m level2`: `-m` sees only markers, not the table, and matches a marker on
 a file even for a test in it that is marked otherwise.
@@ -646,7 +693,9 @@ after its release. [zizmor](https://docs.zizmor.sh/) audits the workflows
 - `ci.yml`: ruff and pre-commit; build, lit, pytest, mypy, and the benchmark
   baseline on Linux x86_64 (Python 3.12 to 3.15), Linux aarch64 (3.12 and
   3.15), and macOS (3.12 to 3.14), and the lit and pytest suites on
-  free-threaded CPython 3.14t with the GIL off (configured with
+  free-threaded CPython 3.14t with the GIL off (level 0 holds three tests
+  of `tests/test_threads.py`, so every pull request runs threads there;
+  configured with
   `-DCUDAQ_PULSE_FREE_THREADED=ON`, which declares the extension safe
   without the GIL, as the free-threaded wheels do). `old-compilers` builds
   and runs lit with GCC 11 and Clang 14 on Ubuntu 22.04. The `gpu` job
