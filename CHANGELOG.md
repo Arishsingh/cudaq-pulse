@@ -13,6 +13,20 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Added
 
+- **Readout crosstalk.** `qs.replace(readout_crosstalk=[ReadoutCrosstalk(
+  resonator_of=14, qudit=4, chi_hz=-20e3)])` states that a readout of qudit
+  14 shifts qudit 4 by `chi_hz` per photon in qudit 14's resonator (level j
+  of qudit 4 by j times that); a tuple gives the shift by qudit 14's level.
+  `pulse.simulate` adds the shift while the readout plays and as its
+  resonator rings down, with the photons the resonator's equation gives for
+  each level of the qudit read out at the tone and amplitude played. A
+  resonator without a stated `frequency_hz` sits at the tone its readout
+  line starts the program at. An entry whose qudit read out has no
+  `DispersiveReadout` with its `dispersive_shift_hz` and `linewidth_hz` is
+  refused when the program reads that qudit out, and lowers nothing when it
+  does not. The entries are checked, are part of the fingerprint, pickle and
+  go in the system file. A system without any lowers and simulates as
+  before.
 - **`pulse.call`, a placed call of a function scheduled on its own.** In MLIR,
   `pulse.call @f(args) <{start_cycles = s, duration_cycles = d}>` runs `@f`
   at one start time, every timed op of `@f` keeping its start relative to
@@ -345,6 +359,18 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Changed
 
+- **A readout resonator without a stated frequency sits at the tone its
+  line starts at.** The IQ points of a readout whose `DispersiveReadout`
+  gives no `frequency_hz` were drawn with the resonator at whatever tone the
+  readout played, so a `shift_frequency` of the readout line's tone never
+  detuned it. The resonator now sits at the tone the line starts the
+  program at (on a system whose qudits give no frequencies, its carrier),
+  and a later frequency change detunes the readout as it does one with a
+  stated frequency. A program that never changes its readout tone's
+  frequency draws the same points. A readout whose tone the readout model
+  cannot compute, on a line whose starting tone it can, or the other way
+  round, is now an error, as an unknown tone is for a resonator with a
+  stated frequency.
 - **A run-time expression of the controller export names a term that
   several terms use, and no expression is too deep to export.** A value the
   program computes at run time from a term it uses twice, forty times over,
