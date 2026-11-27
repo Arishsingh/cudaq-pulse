@@ -147,6 +147,7 @@ def test_a_path_is_selected_only_as_the_plain_name_of_a_test_file():
             ["test_ci_changed_tests", "test_ci_changes", "test_perf_gate", "test_release_tools"],
         ),
         ("tools/ci-changes.py", ["test_ci_changes", "test_release_tools"]),
+        ("tools/ci-ok.py", ["test_ci_changes", "test_release_tools"]),
         ("tools/ci-changed-tests.py", ["test_ci_changed_tests", "test_release_tools"]),
         ("tools/perf-gate.py", ["test_perf_gate", "test_release_tools"]),
         ("benchmarks/perf_gate/cases.py", ["test_perf_gate"]),

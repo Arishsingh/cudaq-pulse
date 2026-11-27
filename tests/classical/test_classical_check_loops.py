@@ -215,12 +215,11 @@ def _nested(trips: tuple[int, ...]) -> Any:
     return two if len(trips) == 2 else three
 
 
-# The loop kept as one run is the outermost of 64 or more trips unless
-# walking it and keeping a longer loop inside it is much less work: the
-# longest loop outside, inside and in the middle, loops of equal trips, an
-# outer loop of 64 or more around one long enough to be kept in its place
-# (the nests with a loop of 800 or more) and around one that is not, and
-# none of 64 or more. Each level but the innermost has a call of its own.
+# Every loop of 64 or more trips is kept, a call in several a run over all
+# of them, and a shorter loop is walked: the longest loop outside, inside
+# and in the middle, loops of equal trips, an outer loop of 64 or more
+# around a much longer one and around a shorter one, and none of 64 or
+# more. Each level but the innermost has a call of its own.
 _NESTS = [
     (130, 3),
     (3, 130),
