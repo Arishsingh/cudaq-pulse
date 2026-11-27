@@ -66,7 +66,9 @@ def load(
     (``CompilationError``): give the module as assembly, which holds
     properties by name. Two sources are the same when their digests and the
     major and minor of their LLVM versions are: a writer built with another
-    patch release of the same LLVM minor writes bytecode this build reads.
+    patch release of the same LLVM minor writes bytecode this build reads. A
+    stated source that is not such a version, a hyphen and a digest is
+    refused.
     Assembly states no source, and bytecode that states none is read as it
     is given.
 
@@ -379,18 +381,26 @@ def _check_dialect_source(module: bytes) -> None:
     shown = stated[:64]
     if not shown.isprintable():
         shown = repr(shown)
+    # This build's own source is an LLVM version and a digest: the script
+    # that writes it refuses another.
+    here = _COMPARED_HERE or ("", "", "")
     if compared is None:
         differs = "the stated source is not an LLVM version, a hyphen and a digest"
-    elif _COMPARED_HERE is not None and compared[2] == _COMPARED_HERE[2]:
+    elif compared[2] == here[2]:
         differs = "the LLVM versions differ in their major.minor"
-    else:
+    elif compared[:2] == here[:2]:
         differs = "the digests of the dialects' definition files differ"
+    else:
+        differs = (
+            "the digests of the dialects' definition files and the LLVM versions' "
+            "major.minor differ"
+        )
     raise CompilationError(
         f"load: this bytecode states the dialect source {shown or 'with no value'} "
         f"(its producer is {producer!r}), and this cudaq-pulse's is {DIALECT_SOURCE}: "
         f"{differs}; bytecode holds an operation's properties by position and is read "
-        "only with the dialects that wrote it: give the module as assembly, or write "
-        "its bytecode with this build's dialects",
+        "only with the dialect source that wrote it: give the module as assembly, or "
+        "write its bytecode with this source",
         code="wrong_argument",
     )
 

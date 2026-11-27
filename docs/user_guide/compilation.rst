@@ -585,13 +585,13 @@ as a C++ string literal:
 ``LLVM_VERSION`` is the version of the LLVM the compiler is built with, in
 full, as LLVM's CMake package gives it (``LLVM_PACKAGE_VERSION``,
 ``22.1.8``). ``load`` compares the digest, which is what follows the last
-hyphen of the source, and the version's first two numbers; what follows
-the second dot (a patch number, a suffix such as ``22.1.8git``) is not
-compared. A stated source that is not two numbers with a dot between them, a
-hyphen and a digest is refused. The producer string is the compiler's own name, then
-``cudaq-pulse-dialects=`` and the source, set apart by spaces. The first
-``cudaq-pulse-dialects=`` in the string counts, and the source ends at the
-next space or at the string's end.
+hyphen of the source, and the version's first two numbers; what follows the
+second dot (a patch number, a suffix such as ``22.1.8git``) is not compared.
+A stated source that has no hyphen, or whose version does not start with two
+numbers and a dot between them, is refused. The producer string is the
+compiler's own name, then ``cudaq-pulse-dialects=`` and the source, set apart
+by spaces. The first ``cudaq-pulse-dialects=`` in the string counts, and the
+source ends at the next space or at the string's end.
 
 Two attributes that are neither an operation's own nor named ``pulse.`` are
 kept, on a ``pulse.drive`` and as a finite ``f64``: ``frame_phase_offset``, a

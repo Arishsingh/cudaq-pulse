@@ -392,6 +392,7 @@ def _llvm_and_digest():
         "{major}.{minor}.x.y-{digest}",
         "{major}.{minor}-{digest}",
         "{major}.{minor}.-{digest}",
+        "{major}.{minor}.8-{major}.{minor}.8-{digest}",
     ],
 )
 def test_what_follows_the_llvm_minor_is_not_compared(system, form):
@@ -413,27 +414,47 @@ def test_what_follows_the_llvm_minor_is_not_compared(system, form):
         "{major}.{minor}-rc1-{digest}",
         "{major}.x.8-{digest}",
         "v{major}.{minor}.8-{digest}",
-        "0{major}.{minor}.8-{digest}",
-        "{major}.0{minor}.8-{digest}",
+        "+{major}.{minor}.8-{digest}",
+        "{major}.\u0661.8-{digest}",
+        "{major}..{minor}-{digest}",
         "{major}.{minor}.8",
-        "{major}.{minor}.8-",
-        "{major}.{minor}.8-{digest}-",
         "{major}.{minor}.8_{digest}",
         "{digest}",
         "-{digest}",
-        "{major}.{minor}.8-{digest}0",
-        "{major}.{minor}.8-{upper}",
     ],
 )
-def test_a_source_that_is_not_a_version_and_this_digest_is_refused(system, form):
+def test_a_stated_source_that_is_not_a_version_and_a_digest_is_refused(system, form):
     """A statement that cannot be read as an LLVM major and minor and a
     digest is a statement of another source, not of none: what is stated
     and cannot be held to this build's is not read."""
     major, minor, digest = _llvm_and_digest()
-    upper = digest.upper() if digest.upper() != digest else digest[::-1]
-    stated = form.format(major=major, minor=minor, digest=digest, upper=upper)
-    with pytest.raises(pulse.CompilationError, match="states the dialect source"):
+    stated = form.format(major=major, minor=minor, digest=digest)
+    with pytest.raises(pulse.CompilationError, match="states the dialect source") as refused:
         pulse.load(_stating(_bytecode(MODULE), stated), entry="round", qudits=system.qudits[:2])
+    assert "is not an LLVM version, a hyphen and a digest" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("form", "differs"),
+    [
+        ("0{major}.{minor}.8-{digest}", "LLVM versions differ in their major.minor"),
+        ("{major}.0{minor}.8-{digest}", "LLVM versions differ in their major.minor"),
+        ("{major}.{minor}0.8-{digest}", "LLVM versions differ in their major.minor"),
+        ("{major}0.{minor}.8-{digest}", "LLVM versions differ in their major.minor"),
+        ("{major}.{minor}.8-", "digests of the dialects' definition files differ"),
+        ("{major}.{minor}.8-{digest}-", "digests of the dialects' definition files differ"),
+        ("{major}.{minor}.8-{digest}0", "digests of the dialects' definition files differ"),
+        ("{major}.{minor}.8-{other}", "digests of the dialects' definition files differ"),
+        ("{major}0.{minor}.8-{other}", "digests of the dialects' definition files and"),
+    ],
+)
+def test_a_version_or_a_digest_that_differs_as_written_is_refused(system, form, differs):
+    major, minor, digest = _llvm_and_digest()
+    other = digest.upper() if digest.upper() != digest else "x" + digest[1:]
+    stated = form.format(major=major, minor=minor, digest=digest, other=other)
+    with pytest.raises(pulse.CompilationError, match="states the dialect source") as refused:
+        pulse.load(_stating(_bytecode(MODULE), stated), entry="round", qudits=system.qudits[:2])
+    assert f": the {differs}" in str(refused.value)
 
 
 @pytest.mark.level0
@@ -490,12 +511,13 @@ def test_a_refusal_names_both_dialect_sources_and_what_to_do(system):
         f"load: this bytecode states the dialect source {other} (its producer is "
         f"'elsewhere 0.3 cudaq-pulse-dialects={other}'), and this cudaq-pulse's is "
         f"{_source()}: the digests of the dialects' definition files differ; bytecode "
-        "holds an operation's properties by position and is read only with the dialects "
-        "that wrote it: give the module as assembly, or write its bytecode with this "
-        "build's dialects"
+        "holds an operation's properties by position and is read only with the dialect "
+        "source that wrote it: give the module as assembly, or write its bytecode with "
+        "this source"
     )
     for part, differs in (
         ("minor", "the LLVM versions differ in their major.minor"),
+        ("major", "the LLVM versions differ in their major.minor"),
         ("none", "the stated source is not an LLVM version, a hyphen and a digest"),
     ):
         with pytest.raises(pulse.CompilationError, match="states the dialect source") as refused:
@@ -509,7 +531,7 @@ def test_a_refusal_names_both_dialect_sources_and_what_to_do(system):
 
 @pytest.mark.level3
 @pytest.mark.parametrize("part", ["longer", "shorter", "none"])
-def test_a_stated_dialect_source_is_held_to_every_character(system, part):
+def test_a_digest_that_is_longer_shorter_or_missing_is_refused(system, part):
     other = _another(part)
     bytecode = _stating(_bytecode(MODULE), other, "a tool")
     with pytest.raises(pulse.CompilationError, match="states the dialect source") as refused:

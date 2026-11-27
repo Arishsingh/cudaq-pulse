@@ -35,6 +35,12 @@
 # A folder that is a symbolic link is not followed, under every CMake.
 cmake_policy(SET CMP0009 NEW)
 
+# The source is read as a version that starts with a major and a minor.
+if(NOT LLVM_VERSION MATCHES "^[0-9]+\\.[0-9]+(\\.|$)")
+  message(FATAL_ERROR
+    "LLVM_VERSION is '${LLVM_VERSION}', not a version such as 22.1.8")
+endif()
+
 set(_patterns "")
 foreach(_folder IN ITEMS include/cudaq-pulse/Dialect dialects)
   foreach(_dialect IN ITEMS Pulse Classical)
