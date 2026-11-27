@@ -318,8 +318,12 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   version and a digest of the two dialects' definition files. `pulse.load`
   reads the producer string before anything else of the module and refuses
   bytecode that states another source than its own, naming both: give that
-  module as assembly, which holds properties by name. Assembly states no
-  source, and bytecode that states none is read as before. A writer outside
+  module as assembly, which holds properties by name. Two sources are the
+  same when their digests are equal and their LLVM versions have the same
+  major and minor: bytecode from a writer built with another patch release
+  of the same LLVM minor and the same dialect files is read, and a stated
+  source that cannot be read as a version and a digest is refused. Assembly
+  states no source, and bytecode that states none is read as before. A writer outside
   this repository states the source the same way: it runs
   `cmake -DROOT=<checkout> -DLLVM_VERSION=<version> -DOUTPUT=<file> -P
   cmake/write_dialect_source.cmake` on the checkout it is built from, with

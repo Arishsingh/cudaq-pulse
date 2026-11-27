@@ -64,8 +64,11 @@ def load(
     and ``cudaq-pulse-opt`` do, and bytecode that
     states another source than this build's is refused
     (``CompilationError``): give the module as assembly, which holds
-    properties by name. Assembly states no source, and bytecode that states
-    none is read as it is given.
+    properties by name. Two sources are the same when their digests and the
+    major and minor of their LLVM versions are: a writer built with another
+    patch release of the same LLVM minor writes bytecode this build reads.
+    Assembly states no source, and bytecode that states none is read as it
+    is given.
 
     *qudits* gives, for each argument in order, the qudit of the quantum
     system it plays on; their quantum system is the program's. The lines get
@@ -280,6 +283,29 @@ _STATED_HERE = _DIALECT_SOURCE_KEY + DIALECT_SOURCE.encode()
 _OWN_PRODUCER = b"cudaq-pulse " + _STATED_HERE + b"\0"
 
 
+def _compared(source: str) -> tuple[str, str, str] | None:
+    """What two dialect sources are compared by: the major and the minor of
+    the LLVM version and the digest, or None for a source that is not an
+    LLVM version, a hyphen and a digest. The digest is what follows the
+    last hyphen (``23.0.0-rc1-0123456789abcdef``). The major and the minor
+    are the version's first two components, each ASCII digits and compared
+    as written; what follows the second dot is not compared
+    (``22.1.4``, ``22.1.8git`` and ``22.1`` are the same ``22.1``). Patch
+    releases of one LLVM minor write the same bytecode for the same dialect
+    files; a writer knows only its own LLVM, so the rule is the reader's."""
+    llvm, hyphen, digest = source.rpartition("-")
+    parts = llvm.split(".")
+    if not hyphen or len(parts) < 2:
+        return None
+    major, minor = parts[0], parts[1]
+    if not (major.isascii() and major.isdigit() and minor.isascii() and minor.isdigit()):
+        return None
+    return major, minor, digest
+
+
+_COMPARED_HERE = _compared(DIALECT_SOURCE)
+
+
 def _stated_dialect_source(module: bytes) -> tuple[str, str] | None:
     """The dialect source the bytecode *module* states and its producer
     string, or None for a module that states none: assembly, or bytecode
@@ -305,7 +331,9 @@ def _check_dialect_source(module: bytes) -> None:
     build's (cmake/write_dialect_source.cmake), before anything after its
     producer string is read: bytecode holds an operation's properties by
     position, in the shape of the writer's dialects, and read with dialects
-    of another shape a value lands in another property without an error."""
+    of another shape a value lands in another property without an error.
+    Two sources are the same when their digests and the major and minor of
+    their LLVM versions are (``_compared``)."""
     # The producer string starts within 13 bytes of the module's start and a
     # zero byte ends it: a module without the key there states no source.
     at = module.find(_DIALECT_SOURCE_KEY, 5, module.find(b"\0", 13))
@@ -328,20 +356,28 @@ def _check_dialect_source(module: bytes) -> None:
     from ._errors import CompilationError
 
     stated, producer = found
-    if stated != DIALECT_SOURCE:
-        # The module is another compiler's: what the message shows of it is
-        # bounded and printable.
-        shown = stated[:64]
-        if not shown.isprintable():
-            shown = repr(shown)
-        raise CompilationError(
-            f"load: this bytecode states the dialect source {shown or 'with no value'} "
-            f"(its producer is {producer!r}), and this cudaq-pulse's is {DIALECT_SOURCE}; "
-            "bytecode holds an operation's properties by position and is read only with "
-            "the dialect source that wrote it: give the module as assembly, or write its "
-            "bytecode with this source",
-            code="wrong_argument",
-        )
+    compared = _compared(stated)
+    if stated == DIALECT_SOURCE or (compared is not None and compared == _COMPARED_HERE):
+        return
+    # The module is another compiler's: what the message shows of it is
+    # bounded and printable.
+    shown = stated[:64]
+    if not shown.isprintable():
+        shown = repr(shown)
+    if compared is None:
+        differs = "the stated source is not an LLVM version, a hyphen and a digest"
+    elif _COMPARED_HERE is not None and compared[2] == _COMPARED_HERE[2]:
+        differs = "the LLVM versions differ in their major.minor"
+    else:
+        differs = "the digests of the dialects' definition files differ"
+    raise CompilationError(
+        f"load: this bytecode states the dialect source {shown or 'with no value'} "
+        f"(its producer is {producer!r}), and this cudaq-pulse's is {DIALECT_SOURCE}: "
+        f"{differs}; bytecode holds an operation's properties by position and is read "
+        "only with the dialects that wrote it: give the module as assembly, or write "
+        "its bytecode with this build's dialects",
+        code="wrong_argument",
+    )
 
 
 def _target_links(

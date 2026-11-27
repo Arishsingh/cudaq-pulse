@@ -17,7 +17,10 @@
 #   core/mlir/dialects/Classical/
 # with paths relative to ROOT, in byte order, and the files' bytes as they
 # are checked in (line endings included). It changes with those files and
-# with the LLVM version, and with nothing else of the checkout.
+# with the LLVM version, and with nothing else of the checkout. LLVM_VERSION
+# is the writer's own, in full; pulse.load compares the digest and the
+# version's major and minor, so that patch releases of one LLVM minor read
+# each other's bytecode.
 #
 # OUTPUT named *.py is the package's _dialect_source.py; any other name gets
 # the source as a C++ string literal, for a writer to state in its bytecode:

@@ -556,7 +556,11 @@ digest of the definition files of the Pulse and Classical dialects
 (``22.1.8-cf2faa24b237fcb9``). The bytecode of a pickled program and of
 ``cudaq-pulse-opt --emit-bytecode`` states it. ``load`` refuses bytecode that
 states another source than its own, naming both, before it reads anything
-else of the module. Bytecode that states no source is read as it is given.
+else of the module. Two sources are the same when their digests are equal
+and their LLVM versions have the same major and minor: bytecode written with
+LLVM 22.1.4 and the same dialect files is read by a build with LLVM 22.1.8,
+and bytecode written with 22.2.0 or 23.1.8 is refused. Bytecode that states
+no source is read as it is given.
 
 A compiler built from a checkout of this repository states the source of
 that checkout. ``cmake/write_dialect_source.cmake`` computes it and writes it
@@ -574,10 +578,13 @@ as a C++ string literal:
    );
    mlir::writeBytecodeToFile(module, os, config);
 
-``LLVM_VERSION`` is the version of the LLVM the compiler is built with, as
-LLVM's CMake package gives it (``LLVM_PACKAGE_VERSION``, ``22.1.8``): the
-source matches a cudaq-pulse built from the same dialect files with the same
-LLVM. The producer string is the compiler's own name, then
+``LLVM_VERSION`` is the version of the LLVM the compiler is built with, in
+full, as LLVM's CMake package gives it (``LLVM_PACKAGE_VERSION``,
+``22.1.8``). ``load`` compares the digest, which is what follows the last
+hyphen of the source, and the version's first two numbers; what follows
+the second dot (a patch number, a suffix such as ``22.1.8git``) is not
+compared. A stated source that is not two numbers with a dot between them, a
+hyphen and a digest is refused. The producer string is the compiler's own name, then
 ``cudaq-pulse-dialects=`` and the source, set apart by spaces. The first
 ``cudaq-pulse-dialects=`` in the string counts, and the source ends at the
 next space or at the string's end.

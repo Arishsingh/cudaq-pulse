@@ -189,16 +189,99 @@ def test_bytecode_that_states_this_builds_dialect_source_loads(system, tool):
 
 
 def _another(part):
-    llvm, _, digest = _source().partition("-")
+    """This build's source with one part changed and its length kept: the
+    digest, or the major, the minor or the patch of the LLVM version."""
+    llvm, _, digest = _source().rpartition("-")
     if part == "digest":
         return llvm + "-" + ("0" if digest[0] != "0" else "1") + digest[1:]
-    if part == "llvm":
-        return ("9" if llvm[0] != "9" else "8") + llvm[1:] + "-" + digest
+    if part in ("major", "minor", "patch"):
+        numbers = llvm.split(".")
+        at = ("major", "minor", "patch").index(part)
+        # Its last digit changed; what follows the patch's digits is kept.
+        digits = len(numbers[at]) - len(numbers[at].lstrip("0123456789"))
+        last = numbers[at][digits - 1]
+        numbers[at] = (
+            numbers[at][: digits - 1] + ("8" if last == "9" else "9") + numbers[at][digits:]
+        )
+        return ".".join(numbers) + "-" + digest
     return {"longer": _source() + "0", "shorter": _source()[:-1], "none": ""}[part]
 
 
 @pytest.mark.level0
-@pytest.mark.parametrize("part", ["digest", "llvm"])
+def test_bytecode_of_another_patch_release_of_the_same_llvm_minor_loads(system):
+    """A writer built with another patch release of this build's LLVM minor,
+    from the same dialect files, writes bytecode this build reads: the
+    package's own bytecode with that source in its header loads as it
+    does."""
+    other = _another("patch")
+    assert other != _source() and other.rpartition(".")[0] == _source().rpartition(".")[0]
+    bytecode = _restated(_bytecode(MODULE), other)
+    program = pulse.load(bytecode, entry="round", qudits=system.qudits[:2])
+    assert events(program) == events(pulse.load(MODULE, entry="round", qudits=system.qudits[:2]))
+
+
+def _llvm_and_digest():
+    llvm, _, digest = _source().rpartition("-")
+    major, minor = llvm.split(".")[:2]
+    return major, minor, digest
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "{major}.{minor}.4-{digest}",
+        "{major}.{minor}.123-{digest}",
+        "{major}.{minor}.8git-{digest}",
+        "{major}.{minor}.0-rc1-{digest}",
+        "{major}.{minor}.x.y-{digest}",
+        "{major}.{minor}-{digest}",
+        "{major}.{minor}.-{digest}",
+    ],
+)
+def test_what_follows_the_llvm_minor_is_not_compared(system, form):
+    major, minor, digest = _llvm_and_digest()
+    stated = form.format(major=major, minor=minor, digest=digest)
+    program = pulse.load(
+        _stating(_bytecode(MODULE), stated), entry="round", qudits=system.qudits[:2]
+    )
+    assert len(events(program)) == 3
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "{major}-{digest}",
+        "{major}.-{digest}",
+        ".{minor}.8-{digest}",
+        "{major}.{minor}git-{digest}",
+        "{major}.{minor}-rc1-{digest}",
+        "{major}.x.8-{digest}",
+        "v{major}.{minor}.8-{digest}",
+        "0{major}.{minor}.8-{digest}",
+        "{major}.0{minor}.8-{digest}",
+        "{major}.{minor}.8",
+        "{major}.{minor}.8-",
+        "{major}.{minor}.8-{digest}-",
+        "{major}.{minor}.8_{digest}",
+        "{digest}",
+        "-{digest}",
+        "{major}.{minor}.8-{digest}0",
+        "{major}.{minor}.8-{upper}",
+    ],
+)
+def test_a_source_that_is_not_a_version_and_this_digest_is_refused(system, form):
+    """A statement that cannot be read as an LLVM major and minor and a
+    digest is a statement of another source, not of none: what is stated
+    and cannot be held to this build's is not read."""
+    major, minor, digest = _llvm_and_digest()
+    upper = digest.upper() if digest.upper() != digest else digest[::-1]
+    stated = form.format(major=major, minor=minor, digest=digest, upper=upper)
+    with pytest.raises(pulse.CompilationError, match="states the dialect source"):
+        pulse.load(_stating(_bytecode(MODULE), stated), entry="round", qudits=system.qudits[:2])
+
+
+@pytest.mark.level0
+@pytest.mark.parametrize("part", ["digest", "major", "minor"])
 def test_bytecode_of_another_dialect_source_is_refused(system, part):
     """The package's own bytecode, with another source in its header and
     every other byte as written."""
@@ -250,10 +333,22 @@ def test_a_refusal_names_both_dialect_sources_and_what_to_do(system):
     assert str(refused.value) == (
         f"load: this bytecode states the dialect source {other} (its producer is "
         f"'elsewhere 0.3 cudaq-pulse-dialects={other}'), and this cudaq-pulse's is "
-        f"{_source()}; bytecode holds an operation's properties by position and is read "
-        "only with the dialect source that wrote it: give the module as assembly, or "
-        "write its bytecode with this source"
+        f"{_source()}: the digests of the dialects' definition files differ; bytecode "
+        "holds an operation's properties by position and is read only with the dialects "
+        "that wrote it: give the module as assembly, or write its bytecode with this "
+        "build's dialects"
     )
+    for part, differs in (
+        ("minor", "the LLVM versions differ in their major.minor"),
+        ("none", "the stated source is not an LLVM version, a hyphen and a digest"),
+    ):
+        with pytest.raises(pulse.CompilationError, match="states the dialect source") as refused:
+            pulse.load(
+                _stating(_bytecode(MODULE), _another(part)),
+                entry="round",
+                qudits=system.qudits[:2],
+            )
+        assert f": {differs}; bytecode holds" in str(refused.value)
 
 
 @pytest.mark.level3
