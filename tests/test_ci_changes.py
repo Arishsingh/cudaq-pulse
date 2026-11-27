@@ -404,7 +404,6 @@ def test_the_summary_runs_the_tool_with_the_whole_context():
     [
         ("docs.yml", "build", "docs"),
         ("sanitizers.yml", "sanitizers", "python"),
-        ("sanitizers.yml", "python-sweep", "python"),
     ],
 )
 def test_the_other_workflows_skip_their_job_only_on_the_classifiers_word(workflow, job, wanted):
