@@ -541,7 +541,11 @@ get that system's frequencies.
 check it: on its qudits and control system the function is verified as every
 scheduled program is, and checked against what the controllers can play. A
 module that states its clock must state the quantum system's. Attributes
-another compiler put on the function or its operations are dropped. The
+another compiler put on the function or its operations are dropped. A phase
+or frequency change keeps the start the module gives it; which changes no
+later drive or readout takes, and so are frame updates in the export
+(:doc:`controller_backends`), ``load`` finds from the function's operations
+as ``compile`` does, and a module does not say. The
 function plays on the qudits it takes and allocates none. A control system
 with line delays, or a controller with ``max_instructions`` or
 ``max_program_duration``, is refused: ``load`` does not apply or check those

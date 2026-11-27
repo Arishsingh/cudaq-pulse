@@ -1769,3 +1769,366 @@ def test_a_load_beside_a_failing_load_on_another_thread_keeps_each_ones_reasons(
         for worker in workers:
             worker.join()
     assert failures == []
+
+
+# A drive, a wait, then a frame change that nothing takes: the tone is not
+# played again. Written as another compiler writes it: nothing says that the
+# change is left over.
+TRAILING = """
+module {
+  func.func @trailing(%q: !pulse.qudit) attributes {pulse.schedule_state =
+        #pulse.schedule_state<timed>} {
+    %d, %t = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+    %n = arith.constant 16 : i64
+    %amp = arith.constant 0.1 : f64
+    %zero = arith.constant 0.0 : f64
+    %w = pulse.square %n, %amp, %zero : i64, f64, f64 -> !pulse.waveform
+    %d1, %t1 = pulse.drive %d, %w, %t <{duration_cycles = 16 : i64, start_cycles = 0 : i64}> :
+          !pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone
+    %m = arith.constant 40 : i64
+    %length = pulse.duration_from_int %m : (i64) -> !pulse.duration
+    %d2 = pulse.wait %d1, %length <{duration_cycles = 40 : i64, start_cycles = 16 : i64}> :
+          (!pulse.drive_line, !pulse.duration) -> !pulse.drive_line
+    %value = arith.constant VALUE : f64
+    %t2 = pulse.CHANGE %t1, %value <{duration_cycles = 0 : i64, start_cycles = 56 : i64}> MARK:
+          !pulse.tone, f64 -> !pulse.tone
+    return
+  }
+}
+"""
+
+
+@pulse.kernel
+def _then_shift_phase(q):
+    d = get_drive_line(q)
+    drive(d, square(16, 0.1))
+    wait(d, 40)
+    shift_phase(d.tone, 0.4)
+
+
+@pulse.kernel
+def _then_set_phase(q):
+    d = get_drive_line(q)
+    drive(d, square(16, 0.1))
+    wait(d, 40)
+    set_phase(d.tone, 0.4)
+
+
+@pulse.kernel
+def _then_shift_frequency(q):
+    d = get_drive_line(q)
+    drive(d, square(16, 0.1))
+    wait(d, 40)
+    shift_frequency(d.tone, 3.0e6)
+
+
+@pulse.kernel
+def _then_set_frequency(q):
+    d = get_drive_line(q)
+    drive(d, square(16, 0.1))
+    wait(d, 40)
+    set_frequency(d.tone, 5.002e9)
+
+
+def _trailing(change, value, mark=""):
+    return TRAILING.replace("CHANGE", change).replace("VALUE", value).replace("MARK", mark)
+
+
+def _exports(program):
+    """The events of both controller formats and the frames the tones end
+    in, when the format gives them."""
+    return [
+        (exported["events"], exported.get("frame_state"))
+        for exported in (
+            program.export_to_controller(),
+            program.export_to_controller(version=2),
+        )
+    ]
+
+
+def _frame_updates(program):
+    return [e for e in program.export_to_controller()["events"] if e["kind"] == "frame_update"]
+
+
+@pytest.mark.level0
+@pytest.mark.parametrize(
+    ("kernel", "change", "value"),
+    [
+        (_then_shift_phase, "shift_phase", "0.4"),
+        (_then_set_phase, "set_phase", "0.4"),
+        (_then_shift_frequency, "shift_frequency", "3.0e6"),
+        (_then_set_frequency, "set_frequency", "5.002e9"),
+    ],
+)
+def test_a_frame_change_nothing_takes_is_a_frame_update_as_in_the_compiled_kernel(
+    system, kernel, change, value
+):
+    compiled = pulse.compile(kernel, quantum_system=system).lower(system.qudits[0])
+    program = pulse.load(_trailing(change, value), entry="trailing", qudits=[system.qudits[0]])
+    [update] = _frame_updates(program)
+    assert (update["op"], update["value"]) == (change, float(value))
+    assert (update["start_cycles"], update["duration_cycles"]) == (56, 0)
+    assert _exports(program) == _exports(compiled)
+    assert program.metrics.op_count == len(program.schedule)
+    # The module may say so itself, as the compiler's own text does: the same.
+    marked = _trailing(change, value, "{pulse.unconsumed} ")
+    again = pulse.load(marked, entry="trailing", qudits=[system.qudits[0]])
+    assert _exports(again) == _exports(compiled)
+
+
+def test_a_loaded_frame_change_stays_where_the_module_places_it(system):
+    text = _trailing("shift_frequency", "3.0e6").replace(
+        "start_cycles = 56 : i64", "start_cycles = 30 : i64"
+    )
+    program = pulse.load(text, entry="trailing", qudits=[system.qudits[0]])
+    [update] = _frame_updates(program)
+    assert (update["start_cycles"], update["duration_cycles"]) == (30, 0)
+    assert "start_cycles = 30 : i64" in program.mlir()
+
+
+def test_what_a_module_says_of_a_frame_change_nothing_takes_is_not_read(system):
+    # The change is taken by the drive after it: marked or not, no frame update.
+    text = MODULE.replace(
+        "%da1, %ta1 = pulse.drive %da, %w, %ta <",
+        "%shift = arith.constant 0.25 : f64\n"
+        "    %tas = pulse.set_phase %ta, %shift <{duration_cycles = 0 : i64, start_cycles = 0 : "
+        "i64}> MARK: !pulse.tone, f64 -> !pulse.tone\n"
+        "    %da1, %ta1 = pulse.drive %da, %w, %tas <",
+    )
+    assert text != MODULE
+    plain = pulse.load(text.replace("MARK", ""), entry="round", qudits=system.qudits[:2])
+    for mark in ("{pulse.unconsumed} ", "{pulse.carried = 7 : i64} "):
+        marked = pulse.load(text.replace("MARK", mark), entry="round", qudits=system.qudits[:2])
+        assert _frame_updates(marked) == []
+        assert _exports(marked) == _exports(plain)
+        assert "pulse.unconsumed" not in marked.mlir() and "pulse.carried" not in marked.mlir()
+    [drive, *_] = plain.export_to_controller()["events"]
+    assert drive["phase_rad"] == 0.25
+
+
+@pulse.kernel
+def _in_a_loop(q):
+    d = get_drive_line(q)
+    shift_frequency(d.tone, 1.0e6)
+    for _ in range(6):
+        drive(d, square(16, 0.1))
+        set_phase(d.tone, 0.25)
+        wait(d, 8)
+
+
+@pulse.kernel
+def _in_nested_loops(q):
+    d = get_drive_line(q)
+    for _ in range(3):
+        for _ in range(4):
+            drive(d, square(16, 0.1))
+            shift_frequency(d.tone, 1.0e6)
+        wait(d, 24)
+
+
+@pulse.kernel
+def _in_a_loop_that_does_not_drive_its_tone(q, r):
+    d = get_drive_line(q)
+    e = get_drive_line(r)
+    drive(d, square(16, 0.1))
+    for _ in range(4):
+        drive(e, square(16, 0.1))
+        shift_frequency(d.tone, 0.5e6)
+
+
+@pulse.kernel
+def _in_an_arm(q):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    m = readout(ro, square(100, 0.05))
+    sync(d, ro)
+    if m:
+        drive(d, square(16, 0.1))
+        set_phase(d.tone, 0.5)
+
+
+@pulse.kernel
+def _before_a_branch_whose_then_drives(q):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    drive(d, square(16, 0.1))
+    shift_frequency(d.tone, 2.0e6)
+    m = readout(ro, square(100, 0.05))
+    sync(d, ro)
+    if m:
+        drive(d, square(16, 0.1))
+
+
+@pulse.kernel
+def _before_a_branch_whose_else_drives(q):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    shift_frequency(d.tone, 2.0e6)
+    m = readout(ro, square(100, 0.05))
+    sync(d, ro)
+    if m:
+        wait(d, 8)
+    else:
+        drive(d, square(16, 0.1))
+
+
+@pulse.kernel
+def _through_a_branch_in_a_loop(q):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    for _ in range(3):
+        shift_frequency(d.tone, 1.0e6)
+        m = readout(ro, square(100, 0.05))
+        sync(d, ro)
+        if m:
+            drive(d, square(16, 0.1))
+
+
+@pulse.kernel
+def _on_a_tone_nothing_drives(q, r):
+    d = get_drive_line(q)
+    e = get_drive_line(r)
+    drive(e, square(16, 0.1))
+    set_frequency(d.tone, 5.002e9)
+
+
+@pulse.kernel
+def _on_a_readout_tone(q):
+    ro = get_readout_line(q)
+    readout(ro, square(100, 0.05))
+    shift_frequency(ro.tone, 1.0e6)
+
+
+@pulse.kernel
+def _all_taken(q):
+    d = get_drive_line(q)
+    shift_frequency(d.tone, 3.0e6)
+    drive(d, square(16, 0.1))
+    set_phase(d.tone, 0.3)
+    drive(d, square(16, 0.1))
+
+
+_MARK = (
+    r"pulse\.(?:unconsumed|carried_in|carried|exit_updates|then_updates|else_updates)"
+    r"(?: = (?:array<[^>]*>|\d+ : i64))?"
+)
+
+
+def _as_written_elsewhere(lowered):
+    """The scheduled assembly of a lowered kernel as a function of its
+    qudits, without what the compiler marked on its frame changes, loops
+    and branches: what another compiler would write for the same program.
+    With it, the qudits in argument order."""
+    text = lowered.mlir()
+    allocated = re.findall(r"(%\w+) = pulse\.qudit_alloc \{qudit = (\d+) : i64\}", text)
+    assert allocated
+    text = re.sub(r"^ *%\w+ = pulse\.qudit_alloc .*\n", "", text, flags=re.M)
+    for name, index in allocated:
+        text, found = re.subn(
+            rf"(pulse\.get_\w+_line) {re.escape(name)} \{{frequency_hz = [^}}]*\}}",
+            rf"\1 %q{index}",
+            text,
+        )
+        assert found
+    arguments = ", ".join(f"%q{index}: !pulse.qudit" for _, index in allocated)
+    assert "func.func @main()" in text
+    text = text.replace("func.func @main()", f"func.func @main({arguments})")
+    text = re.sub(r"^module @\w+ attributes \{.*\} \{$", "module {", text, count=1, flags=re.M)
+    marked = len(re.findall(_MARK, text))
+    for one in (rf"{_MARK}, ", rf", {_MARK}", rf" \{{{_MARK}\}}"):
+        text = re.sub(one, "", text)
+    assert not re.search(_MARK, text) and "pulse.qudit_alloc" not in text
+    return text, [int(index) for _, index in allocated], marked
+
+
+@pytest.mark.level0
+@pytest.mark.parametrize(
+    ("kernel", "count", "options", "updates"),
+    [
+        (_in_a_loop, 1, {"unroll_threshold": 0}, 1),
+        (_in_a_loop, 1, {}, 1),
+        (_in_nested_loops, 1, {"unroll_threshold": 0}, 1),
+        (_in_a_loop_that_does_not_drive_its_tone, 2, {"unroll_threshold": 0}, 4),
+        (_in_an_arm, 1, {}, 1),
+        (_before_a_branch_whose_then_drives, 1, {}, 1),
+        (_before_a_branch_whose_else_drives, 1, {}, 1),
+        (_through_a_branch_in_a_loop, 1, {"unroll_threshold": 0}, 3),
+        (_on_a_tone_nothing_drives, 2, {}, 1),
+        (_on_a_readout_tone, 1, {}, 1),
+        (_all_taken, 1, {}, 0),
+    ],
+)
+def test_a_loaded_module_has_the_frame_updates_of_the_compiled_kernel_it_is_the_text_of(
+    system, kernel, count, options, updates
+):
+    lowered = pulse.compile(kernel, quantum_system=system, **options).lower(*system.qudits[:count])
+    assert len(_frame_updates(lowered)) == updates
+    text, qudits, marked = _as_written_elsewhere(lowered)
+    # The compiler marked what it found, and none of it is in the text.
+    assert bool(marked) == bool(updates)
+    program = pulse.load(text, entry="main", qudits=[system.qudits[i] for i in qudits])
+    assert _exports(program) == _exports(lowered)
+    assert program.metrics.op_count == len(program.schedule) == len(lowered.schedule)
+    # The marks are the compiler's: the loaded program reads as the kernel's.
+    assert re.findall(_MARK, program.mlir()) == re.findall(_MARK, lowered.mlir())
+
+
+@pytest.mark.level2
+def test_a_loop_that_leaves_very_many_frame_changes_behind_loads(system):
+    # One drive and 200,000 changes in a row per iteration, and nothing after
+    # the loop: the loop lists them all.
+    lines, tone = [], "%t1"
+    for k in range(200_000):
+        lines.append(
+            f"      %c{k} = pulse.shift_phase {tone}, %amp <{{duration_cycles = 0 : i64, "
+            "period_cycles = array<i64: 16>, start_cycles = 16 : i64}> : "
+            "!pulse.tone, f64 -> !pulse.tone"
+        )
+        tone = f"%c{k}"
+    text = (
+        """
+module {
+  func.func @rounds(%q: !pulse.qudit) attributes {pulse.schedule_state =
+        #pulse.schedule_state<timed>} {
+    %d, %t = pulse.get_drive_line %q : (!pulse.qudit) -> (!pulse.drive_line, !pulse.tone)
+    %n = arith.constant 16 : i64
+    %amp = arith.constant 0.1 : f64
+    %zero = arith.constant 0.0 : f64
+    %w = pulse.square %n, %amp, %zero : i64, f64, f64 -> !pulse.waveform
+    %c0_index = arith.constant 0 : index
+    %c2_index = arith.constant 2 : index
+    %c1_index = arith.constant 1 : index
+    %de, %te = scf.for %i = %c0_index to %c2_index step %c1_index
+          iter_args(%d0 = %d, %t0 = %t) -> (!pulse.drive_line, !pulse.tone) {
+      %d1, %t1 = pulse.drive %d0, %w, %t0 <{duration_cycles = 16 : i64, period_cycles =
+            array<i64: 16>, start_cycles = 0 : i64}> : !pulse.drive_line, !pulse.waveform,
+            !pulse.tone -> !pulse.drive_line, !pulse.tone
+"""
+        + "\n".join(lines)
+        + f"""
+      scf.yield %d1, {tone} : !pulse.drive_line, !pulse.tone
+    }}
+    return
+  }}
+}}
+"""
+    )
+    program = pulse.load(text, entry="rounds", qudits=[system.qudits[0]])
+    assert len(_frame_updates(program)) == 200_000
+
+
+def test_a_loaded_module_for_frames_that_persist_gives_the_frame_each_tone_ends_in(system):
+    from cudaq_pulse import Controller, ControlSystem
+
+    persistent = ControlSystem(controllers=[Controller(persistent_frames=True)])
+    lowered = pulse.compile(
+        _then_set_frequency, quantum_system=system, control_system=persistent
+    ).lower(system.qudits[0])
+    text = _trailing("set_frequency", "5.002e9", "{pulse.unconsumed} ")
+    program = pulse.load(
+        text, entry="trailing", qudits=[system.qudits[0]], control_system=persistent
+    )
+    assert _frame_updates(program) == []
+    [state] = program.export_to_controller()["frame_state"]
+    assert state["frequency_hz"] == 5.002e9
+    assert _exports(program) == _exports(lowered)
