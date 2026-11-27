@@ -684,6 +684,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **Compiling rounds around many repeats of a classical call no longer
+  slows with the square of the repeats.** Of the loops around a call, the
+  classical check keeps at most one as a single run and walks the others
+  iteration by iteration. It kept the outermost loop of 64 or more trips,
+  so in 100 rounds around 100,000 repeats every repeat became an entry
+  compared with every other, and twice the repeats took four times as
+  long. It now keeps that loop unless walking it and keeping a longer
+  loop inside it is much less work, counted in the operations the walk
+  visits and the entries it compares: the repeats here, and still the
+  rounds when they are the longer loop, or when their body or their own
+  calls outweigh what the repeats would save. The check's verdicts are
+  the same, and so are its messages for times within what the check
+  counts in.
 - **Compiling a loop with very many classical calls in its body no longer
   slows with the square of the calls.** To count the requests a link
   holds at once, the classical check compared each call of the loop with
