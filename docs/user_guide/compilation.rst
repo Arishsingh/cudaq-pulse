@@ -547,6 +547,15 @@ with line delays, or a controller with ``max_instructions`` or
 ``max_program_duration``, is refused: ``load`` does not apply or check those
 yet.
 
+Two attributes that are neither an operation's own nor named ``pulse.`` are
+kept, on a ``pulse.drive`` and as a finite ``f64``: ``frame_phase_offset``, a
+constant phase shift that ``compile`` folds into the drive after it (the tone
+keeps it from that drive on), and ``phase_offset``, the phase of that drive
+alone, which ``compile`` does not write. With the first, the scheduled module
+of a compiled kernel loads to the program it was compiled to. On another
+operation, or of another type, they are dropped like any attribute of another
+compiler.
+
 A module given to ``load`` is another compiler's and is treated as untrusted
 input. Nested modules are refused; the entry and the functions it calls are
 those of the module's own symbol table; what its calls would write in place

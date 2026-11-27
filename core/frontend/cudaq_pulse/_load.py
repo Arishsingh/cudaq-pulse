@@ -86,7 +86,11 @@ def load(
     none. What the function returns is dropped: read a record from its
     readout in the export. Attributes another compiler put on the function
     or on its operations are not part of the program: an operation keeps its
-    own attributes and those named ``pulse.``.
+    own attributes and those named ``pulse.``, and a ``pulse.drive`` its two
+    phases, each a finite ``f64``: ``frame_phase_offset``, a phase shift
+    folded into the drive, as ``compile`` writes it, and ``phase_offset``,
+    the phase of that drive alone, which ``compile`` does not write and
+    the export and the simulator read.
 
     The result is what ``kernel.lower(...)`` returns: ``schedule``,
     ``timeline()``, ``export_to_controller()`` and the backends take it.

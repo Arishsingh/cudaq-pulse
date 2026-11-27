@@ -71,6 +71,162 @@ def test_foreign_attributes_and_results_are_dropped(system):
     assert "3 ops" in repr(program)
 
 
+@pulse.kernel
+def _phase_folded_into_a_drive(q):
+    d = get_drive_line(q)
+    shift_frequency(d.tone, 3.0e6)
+    drive(d, square(16, 0.1))
+    shift_phase(d.tone, 0.3)
+    drive(d, square(16, 0.1))
+
+
+@pulse.kernel
+def _phase_folded_into_fused_drives(q):
+    d = get_drive_line(q)
+    shift_phase(d.tone, 0.3)
+    drive(d, square(16, 0.1))
+    drive(d, square(16, 0.1))
+    wait(d, 8)
+    drive(d, gaussian(16, 0.1, 4.0))
+
+
+@pulse.kernel
+def _phase_folded_in_a_loop(q):
+    d = get_drive_line(q)
+    for _ in range(6):
+        shift_phase(d.tone, 0.25)
+        drive(d, square(16, 0.1))
+        wait(d, 8)
+
+
+@pulse.kernel
+def _phase_folded_in_an_arm(q):
+    d = get_drive_line(q)
+    ro = get_readout_line(q)
+    m = readout(ro, square(100, 0.05))
+    sync(d, ro)
+    if m:
+        shift_phase(d.tone, 0.5)
+        drive(d, square(16, 0.1))
+    drive(d, square(16, 0.1))
+
+
+def _scheduled_text(lowered):
+    """The scheduled assembly of a lowered kernel as a function of its
+    qudits, which ``load`` takes, and the qudits in argument order."""
+    text = lowered.mlir()
+    allocated = re.findall(r"(%\w+) = pulse\.qudit_alloc \{qudit = (\d+) : i64\}", text)
+    assert allocated
+    text = re.sub(r"^ *%\w+ = pulse\.qudit_alloc .*\n", "", text, flags=re.M)
+    for name, index in allocated:
+        text, found = re.subn(
+            rf"(pulse\.get_\w+_line) {re.escape(name)} \{{frequency_hz = [^}}]*\}}",
+            rf"\1 %q{index}",
+            text,
+        )
+        assert found
+    arguments = ", ".join(f"%q{index}: !pulse.qudit" for _, index in allocated)
+    assert "func.func @main()" in text and "pulse.qudit_alloc" not in text
+    text = text.replace("func.func @main()", f"func.func @main({arguments})")
+    text = re.sub(r"^module @\w+ attributes \{.*\} \{$", "module {", text, count=1, flags=re.M)
+    return text, [int(index) for _, index in allocated]
+
+
+def _both_exports(program):
+    return [
+        program.export_to_controller()["events"],
+        program.export_to_controller(version=2)["events"],
+    ]
+
+
+@pytest.mark.level0
+@pytest.mark.parametrize(
+    ("kernel", "options"),
+    [
+        (_phase_folded_into_a_drive, {}),
+        (_phase_folded_into_fused_drives, {}),
+        (_phase_folded_in_a_loop, {}),
+        (_phase_folded_in_an_arm, {}),
+    ],
+)
+def test_a_phase_folded_into_a_drive_is_kept_as_in_the_compiled_kernel(system, kernel, options):
+    lowered = pulse.compile(kernel, quantum_system=system, **options).lower(system.qudits[0])
+    text, qudits = _scheduled_text(lowered)
+    # The compiler folded the shift into the drive after it.
+    assert "frame_phase_offset = " in text and "pulse.shift_phase" not in text
+    program = pulse.load(text, entry="main", qudits=[system.qudits[i] for i in qudits])
+    assert _both_exports(program) == _both_exports(lowered)
+    folded = re.findall(r"frame_phase_offset = [^ ]+ : f64", lowered.mlir())
+    assert re.findall(r"frame_phase_offset = [^ ]+ : f64", program.mlir()) == folded
+
+
+_DRIVE = (
+    "%da1, %ta1 = pulse.drive %da, %w, %ta <{duration_cycles = 16 : i64, start_cycles = 0 : i64}>"
+)
+
+
+def _with_on_the_first_drive(attributes):
+    text = MODULE.replace(_DRIVE + " :", _DRIVE + " {" + attributes + "} :")
+    assert text != MODULE
+    return text
+
+
+def _first_drive(program):
+    [first, *_] = program.export_to_controller()["events"]
+    assert first["kind"] == "drive"
+    return first
+
+
+def test_the_two_phases_of_a_drive_are_kept_and_exported(system):
+    plain = _first_drive(pulse.load(MODULE, entry="round", qudits=system.qudits[:2]))
+    assert plain["phase_rad"] == 0.0
+    # A shift folded into the drive stays in the tone's frame; the drive's
+    # own phase does not.
+    text = _with_on_the_first_drive("frame_phase_offset = 0.25 : f64, phase_offset = 0.5 : f64")
+    program = pulse.load(text, entry="round", qudits=system.qudits[:2])
+    assert "frame_phase_offset = 2.500000e-01 : f64, phase_offset = 5.000000e-01 : f64" in (
+        program.mlir()
+    )
+    assert _first_drive(program)["phase_rad"] == 0.75
+    only_own = _with_on_the_first_drive("phase_offset = 0.5 : f64")
+    assert (
+        _first_drive(pulse.load(only_own, entry="round", qudits=system.qudits[:2]))["phase_rad"]
+        == 0.5
+    )
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        'frame_phase_offset = "0.25"',
+        "frame_phase_offset = 1 : i64",
+        "frame_phase_offset = 0.25 : f32",
+        "frame_phase_offset = 0x7FF8000000000000 : f64",
+        "phase_offset = 0x7FF0000000000000 : f64",
+        "phase_offsets = 0.25 : f64",
+        "frame_offset = 0.25 : f64",
+    ],
+)
+def test_a_phase_that_is_not_a_finite_f64_on_a_drive_is_another_compilers(system, attributes):
+    text = _with_on_the_first_drive(attributes)
+    program = pulse.load(text, entry="round", qudits=system.qudits[:2])
+    assert "phase_offset" not in program.mlir() and "frame_offset" not in program.mlir()
+    plain = pulse.load(MODULE, entry="round", qudits=system.qudits[:2])
+    assert _both_exports(program) == _both_exports(plain)
+
+
+def test_a_drives_phases_are_kept_on_a_drive_only(system):
+    text = MODULE.replace(
+        "start_cycles =\n          32 : i64}> :", "start_cycles =\n          32 : i64}> {PHASE} :"
+    ).replace("%w = pulse.square %n, %amp, %zero :", "%w = pulse.square %n, %amp, %zero {PHASE} :")
+    assert text.count("{PHASE}") == 2
+    text = text.replace("{PHASE}", "{frame_phase_offset = 0.25 : f64, phase_offset = 0.5 : f64}")
+    program = pulse.load(text, entry="round", qudits=system.qudits[:2])
+    assert "phase_offset" not in program.mlir()
+    plain = pulse.load(MODULE, entry="round", qudits=system.qudits[:2])
+    assert _both_exports(program) == _both_exports(plain)
+
+
 def test_lines_get_the_frequencies_of_their_qudits(system):
     program = pulse.load(MODULE, entry="round", qudits=[system.qudits[1], system.qudits[2]])
     exported = program.export_to_controller()
