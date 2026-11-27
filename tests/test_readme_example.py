@@ -97,5 +97,7 @@ def test_the_hello_world_blocks_run_and_print_their_comments(capsys):
     out = capsys.readouterr().out
     # The numbers come from the simulate block's own comments, so the test
     # follows the page when a number is updated on purpose.
-    for line in expected_output(blocks[1]):
+    expected = expected_output(blocks[1])
+    assert len(expected) == 2, f"the simulate block states {len(expected)} outputs, expected 2"
+    for line in expected:
         assert line in out, f"the Hello World output has no {line!r}"
