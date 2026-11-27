@@ -972,7 +972,12 @@ def _simulate_compiled(
     mode = {q: i for i, q in enumerate(qudits)}
     dims, level_fields = _level_attributes(target, qudits, levels)
     base = _target_attributes(
-        target, qudits, integrator=integrator, dephasing=dephasing, levels=level_fields
+        target,
+        qudits,
+        integrator=integrator,
+        dephasing=dephasing,
+        levels=level_fields,
+        module=module,
     )
 
     path_end = t_end is None and bool(functions)

@@ -13,7 +13,7 @@ import cudaq_pulse as pulse
 import numpy as np
 import pytest
 from cudaq_pulse.quantum_systems import ReadoutCrosstalk
-from cudaq_pulse.runtime._attributes import _target_attributes
+from cudaq_pulse.runtime._attributes import _read_out, _target_attributes
 
 D5, Z2 = 4, 14
 # Shifts per photon by Z2's level.
@@ -236,3 +236,121 @@ def test_a_calls_window_keeps_the_readouts_ring_down(shape):
     across = math.remainder(_call_phase(crossed, shape) - _call_phase(plain, shape), 2 * math.pi)
     assert abs(math.degrees(without)) > 3.0
     assert math.degrees(across) == pytest.approx(math.degrees(without), abs=1e-3)
+
+
+@pytest.mark.parametrize("level", [0, 1])
+def test_an_unstated_resonator_sits_at_the_tone_its_line_starts_at(level):
+    # Z2's readout without a frequency: its line starts at Z2's own tone,
+    # and the kernel's +2.9 MHz detunes the readout from that resonator as
+    # it does from a stated one.
+    stated = _quiet()
+    z = stated.physical_qudits[Z2]
+    unstated = stated.replace(
+        qudits={
+            **stated.physical_qudits,
+            Z2: z.replace(readout=z.readout.replace(frequency_hz=None)),
+        }
+    )
+    entry = [ReadoutCrosstalk(resonator_of=Z2, qudit=D5, chi_hz=CHI)]
+    shift = {}
+    for label, qs in (("stated", stated), ("unstated", unstated)):
+        crossed = qs.replace(readout_crosstalk=entry)
+        shift[label] = math.remainder(_phase(crossed, level) - _phase(qs, level), 2 * math.pi)
+    assert math.degrees(shift["unstated"]) == pytest.approx(math.degrees(shift["stated"]), abs=0.02)
+
+
+def test_the_iq_model_puts_an_unstated_resonator_at_the_lines_starting_tone():
+    from cudaq_pulse.runtime._calls import IQModel
+
+    qs = _quiet()
+    z = qs.physical_qudits[Z2]
+    unstated = qs.replace(
+        qudits={**qs.physical_qudits, Z2: z.replace(readout=z.readout.replace(frequency_hz=None))}
+    )
+    stated_model = IQModel(qs._description, (Z2,), False)
+    unstated_model = IQModel(unstated._description, (Z2,), False)
+    f_r = z.readout.frequency_hz
+    for level in (0, 1):
+        # A tone 2.9 MHz above where the line started: detuned from the
+        # resonator either way.
+        expected = stated_model.center(Z2, level, f_r + TONE_SHIFT_HZ, 1.0, 200.0)
+        got = unstated_model.center(Z2, level, f_r + TONE_SHIFT_HZ, 1.0, 200.0, f_r)
+        assert got == pytest.approx(expected)
+    # Without the start, the resonator follows the tone, as before.
+    assert unstated_model.center(Z2, 0, f_r + TONE_SHIFT_HZ, 1.0, 200.0) == pytest.approx(
+        stated_model.center(Z2, 0, f_r, 1.0, 200.0)
+    )
+    # A tone or a start that is not a number leaves the detuning unknown.
+    with pytest.raises(pulse.UnsupportedError, match="its resonator sits at the tone its line"):
+        unstated_model.center(Z2, 0, math.nan, 1.0, 200.0, f_r)
+    with pytest.raises(pulse.UnsupportedError, match="the frequency its line's tone starts"):
+        unstated_model.center(Z2, 0, f_r, 1.0, 200.0, math.nan)
+
+
+@pulse.kernel
+def lines_only(d, z):
+    # Z2's readout line, synced and waited on, never read out.
+    dl = get_drive_line(d)  # noqa: F821
+    zr = get_readout_line(z)  # noqa: F821
+    drive(dl, dl.get_calibration(pulse.gates.X90))  # noqa: F821
+    sync(dl, zr)  # noqa: F821
+    wait(zr, 100)  # noqa: F821
+    sync(dl, zr)  # noqa: F821
+    drive(dl, dl.get_calibration(pulse.gates.X90))  # noqa: F821
+
+
+@pulse.kernel
+def looped_readout(d, z):
+    dl = get_drive_line(d)  # noqa: F821
+    zr = get_readout_line(z)  # noqa: F821
+    drive(dl, dl.get_calibration(pulse.gates.X90))  # noqa: F821
+    for _ in range(2):
+        readout(zr, zr.get_calibration(pulse.gates.READOUT))  # noqa: F821
+
+
+def test_a_qudit_without_a_readout_model_is_refused_only_when_read_out():
+    qs = _quiet()
+    z = qs.physical_qudits[Z2]
+    bare = qs.replace(qudits={**qs.physical_qudits, Z2: z.replace(readout=None)})
+    crossed = bare.replace(readout_crosstalk=[ReadoutCrosstalk(Z2, D5, CHI)])
+
+    def run(kernel, system, *args):
+        program = pulse.compile(kernel, quantum_system=system).lower(
+            system.qudits[D5], system.qudits[Z2], *args
+        )
+        result = pulse.simulate(program, quantum_system=system, dt_ns=0.02, levels=2)
+        return result.level_population(1, qudit=D5)
+
+    # A readout line the program only syncs and waits on: the entry lowers
+    # nothing.
+    assert run(lines_only, crossed) == pytest.approx(run(lines_only, bare), abs=1e-12)
+    # Read out, in the program or in a loop: refused, with what it lacks.
+    for kernel, args in ((ramsey, (0, 0)), (looped_readout, ())):
+        with pytest.raises(pulse.UnsupportedError, match="qudit 14 has no readout"):
+            run(kernel, crossed, *args)
+
+
+class _Tree:
+    """A module whose site_tree() is *lines* and *nodes*."""
+
+    def __init__(self, lines, nodes):
+        self.tree = (lines, nodes)
+
+    def site_tree(self):
+        return self.tree
+
+
+def test_the_qudits_read_out_are_found_in_loops_and_branches():
+    # Qudit 3 has a drive line only: no readout reads it out.
+    lines = [("drive", 3), ("readout", D5), ("readout", Z2), ("readout", 7)]
+
+    def readout(line):
+        return ("readout", None, line, line, 0, 10, (), False)
+
+    wait = ("wait", None, 0, -1, 0, 10, (), False)
+    assert _read_out(_Tree(lines, [wait, ("sync", None, [0, 2])])) == set()
+    assert _read_out(_Tree(lines, [("for", 2, [wait, readout(2)])])) == {Z2}
+    assert _read_out(_Tree(lines, [("if", [wait], [("for", 0, [readout(1)])])])) == {D5}
+    assert _read_out(_Tree(lines, [("if", [readout(3)], [])])) == {7}
+    # A readout whose line is not known may read out any readout line.
+    assert _read_out(_Tree(lines, [("answer",), readout(-1)])) == {D5, Z2, 7}

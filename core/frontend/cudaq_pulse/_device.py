@@ -42,7 +42,6 @@ from .quantum_systems._registry import (
 )
 from .quantum_systems.base import (
     _DESCRIPTION_FIELDS,
-    _DESCRIPTIONS,
     _DRIVE_FRAMES,
     _TRANSMON,
     _Description,
@@ -1148,7 +1147,7 @@ def _checked(config: Mapping[str, Any], source: str, problems: list[Problem]) ->
             )
         )
     spec = config.get("name")
-    described = spec if spec.__class__ in _DESCRIPTIONS else None
+    described = spec if isinstance(spec, _Description) else None
     built = described is not None or "qudits" in config
     if not built and config.keys() & _BUILT_KEYS:
         for key in sorted(config.keys() & _BUILT_KEYS):

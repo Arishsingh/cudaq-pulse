@@ -663,7 +663,20 @@ appendReadoutCrosstalk(ModuleOp module, func::FuncOp mainFunc,
       drive.push_back(*value);
       peak = std::max(peak, std::abs(*value));
     }
-    const auto &[resonator, reference] = byQudit[readOut];
+    auto [resonator, reference] = byQudit[readOut];
+    // A resonator without a stated frequency sits at the tone its line
+    // started the program at, so that a later frequency change detunes it.
+    if (resonator.atTone) {
+      if (!occurrence.tone.frameFrequencyHz.isConstant()) {
+        readout->emitError(
+            "readout crosstalk needs the frequency this readout's line starts "
+            "the program at, where a resonator without a stated frequency_hz "
+            "sits, as a number; it depends on the program's float arguments");
+        return failure();
+      }
+      resonator.frequencyHz = occurrence.tone.frameFrequencyHz.constant;
+      resonator.atTone = false;
+    }
     const double scale = reference > 0.0 ? reference : peak;
     if (scale > 0.0)
       for (auto &u : drive)

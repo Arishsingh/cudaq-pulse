@@ -1262,7 +1262,8 @@ class ReadoutCrosstalk:
     ``chi_hz`` is the shift in Hz per photon: while the resonator holds n
     photons, level j of ``qudit`` moves by j times ``chi_hz`` times n. A
     tuple gives it by the level of ``resonator_of``, a higher level taking
-    the last value, as ``(-20e3, -26e3)`` for its levels 0 and 1. The
+    the last value, as ``(-20e3, -26e3)`` for its levels 0 and 1; values for
+    levels a simulation does not keep are not used. The
     photons follow the readout as played, its tone, amplitude, ring-up
     and ring-down, from the qudit's ``DispersiveReadout``.
     """
@@ -2305,15 +2306,6 @@ def _description_class(frame: str, bare: bool, crosstalk: bool) -> type[_Descrip
         found = _CLASSES.setdefault((frame, bare, crosstalk), made)
     return found
 
-
-# The classes a description has.
-_DESCRIPTIONS = (
-    _Description,
-    _OwnCarrierDescription,
-    _SharedReferenceDescription,
-    _BareDescription,
-    _BareSharedReferenceDescription,
-)
 
 # What the checks read of every qudit at once.
 _QUDIT_VALUES = attrgetter(

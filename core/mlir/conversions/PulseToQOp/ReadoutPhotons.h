@@ -15,7 +15,9 @@ namespace cudaq_pulse {
 /// A dispersive readout resonator, as the quantum system describes it.
 struct ReadoutResonator {
   /// Its frequency in Hz, unless it is at the readout tone (`atTone`),
-  /// which then sits midway between the pulled frequencies.
+  /// which then sits midway between the pulled frequencies. The lowering
+  /// places a resonator without a stated frequency at the tone its readout
+  /// line started the program at.
   double frequencyHz = 0.0;
   bool atTone = true;
   /// The dispersive shift chi / 2 pi in Hz: level k pulls it by (2k - 1) chi.

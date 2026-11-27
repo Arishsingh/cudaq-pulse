@@ -4959,10 +4959,11 @@ public:
   }
 
   using ReadoutDrive =
-      std::tuple<int64_t, std::vector<int64_t>, double, double>;
+      std::tuple<int64_t, std::vector<int64_t>, double, double, double>;
 
   /// Every readout on `path` as (readout index, iteration, tone frequency in
-  /// Hz, peak amplitude of its pulse); NaN where a value is not a number.
+  /// Hz, peak amplitude of its pulse, the frequency in Hz its line's tone
+  /// started the program at); NaN where a value is not a number.
   std::vector<ReadoutDrive>
   readout_drives(const std::vector<std::vector<int64_t>> &path) {
     std::lock_guard<std::recursive_mutex> guard(*lock_);
@@ -4975,12 +4976,14 @@ public:
                            const pulse::MeasurementKey &key) {
       int64_t index =
           std::distance(readouts.begin(), llvm::find(readouts, occurrence.op));
-      const pulse::Affine &frequency = occurrence.tone.frequencyHz;
-      double hz = frequency.isConstant()
-                      ? frequency.evaluate({})
-                      : std::numeric_limits<double>::quiet_NaN();
-      result.emplace_back(index, key.iteration, hz,
-                          peakAmplitude(occurrence.op->getOperand(1)));
+      auto number = [](const pulse::Affine &value) {
+        return value.isConstant() ? value.evaluate({})
+                                  : std::numeric_limits<double>::quiet_NaN();
+      };
+      result.emplace_back(index, key.iteration,
+                          number(occurrence.tone.frequencyHz),
+                          peakAmplitude(occurrence.op->getOperand(1)),
+                          number(occurrence.tone.frameFrequencyHz));
       return false;
     };
     auto function = getFuncOp();
@@ -8519,7 +8522,7 @@ NB_MODULE(_cudaq_pulse_native, m) {
       .def("readout_drives", &PulseModule::readout_drives, nb::arg("path"),
            nb::call_guard<nb::gil_scoped_release>(),
            "Every readout on a path: (index, iteration, frequency Hz, "
-           "amplitude)")
+           "amplitude, the frequency Hz its line's tone started at)")
       .def("drive_frames", &PulseModule::drive_frames, nb::arg("path"),
            nb::arg("outcome") = -1, nb::call_guard<nb::gil_scoped_release>(),
            "Every drive on a path with the frame it plays with, and the "

@@ -218,3 +218,12 @@ def test_readout_crosstalk_that_is_no_list_is_refused(given):
 def test_a_shift_that_is_no_plain_number_is_refused(chi):
     with pytest.raises(pulse.QuantumSystemDefinitionError, match="chi_hz"):
         _surface().replace(readout_crosstalk=[ReadoutCrosstalk(14, 4, chi)])
+
+
+def test_a_registered_factory_may_give_a_system_with_readout_crosstalk():
+    from cudaq_pulse.quantum_systems import register_quantum_system
+
+    crossed = _surface().replace(readout_crosstalk=[Z2_ON_D5])
+    register_quantum_system("crosstalk-factory-test", lambda arg: crossed._description)
+    made = pulse.quantum_system("crosstalk-factory-test")
+    assert made.readout_crosstalk == (Z2_ON_D5,)

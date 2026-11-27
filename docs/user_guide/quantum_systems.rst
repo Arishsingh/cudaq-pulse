@@ -139,8 +139,13 @@ qudit's ``DispersiveReadout`` (its ``dispersive_shift_hz`` and
 ``linewidth_hz``) and ``READOUT`` calibration: they ring up while the
 readout plays at its tone and ring down after it, and depend on the level
 of the qudit read out wherever the tone is not midway between the
-frequencies its levels pull the resonator to. A system file holds the
-entries under ``readout_crosstalk``.
+frequencies its levels pull the resonator to. A resonator without a
+stated ``frequency_hz`` sits at the tone its readout line starts the
+program at, so a ``shift_frequency`` of that tone detunes the readout. A
+qudit read out without such a ``DispersiveReadout`` is refused when the
+program reads it out; its entries lower nothing when the program does not.
+Values of a ``chi_hz`` tuple for levels a simulation does not keep are not
+used. A system file holds the entries under ``readout_crosstalk``.
 
 ``qs.replace(...)`` makes a variant of a quantum system, as
 ``dataclasses.replace`` does: the same build keywords, each defaulting to
