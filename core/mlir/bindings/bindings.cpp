@@ -3515,6 +3515,7 @@ public:
     pm.addNestedPass<mlir::func::FuncOp>(
         pulse::createPulseLowerSelectsPass(runtime));
     programs_.clear();
+    calls_ = {};
     runPipeline(pm, *module_, "lowering selects failed");
     return keepsSelects();
   }
@@ -3789,6 +3790,90 @@ public:
     nb::list root;
     build(*module_->getBody(), root);
     return nb::make_tuple(root);
+  }
+
+  /// The events the exposure of the module's classical calls asks about:
+  /// event_tree(limit), `limit` the larger of `listed` and `perCall` events
+  /// per call. Only a call with a first use asks about an event. Where
+  /// classical_calls() found none, after event_tree(limit) has refused what
+  /// it refuses, the list holds one readout, ("readout", -1, qudit, 0, 0),
+  /// for each qudit read out in the events event_tree(limit) gives, in
+  /// their order: all the exposure takes from events nothing asks about is
+  /// the depletion time of each qudit read out.
+  ///
+  /// How many calls there are, and whether an op uses an answer, is what
+  /// classical_calls() noted of the module as it is now (calls_); a module
+  /// changed since, or never asked, is asked here.
+  nb::object call_events(int64_t listed, int64_t perCall) {
+    std::lock_guard<std::recursive_mutex> guard(*lock_);
+    if (calls_.version != version_.load()) {
+      classical_calls();
+      // A module that declares no call notes nothing: it has none.
+      if (calls_.version != version_.load())
+        calls_ = {version_.load(), 0, false};
+    }
+    int64_t limit =
+        std::max(listed, checkedMul(perCall, calls_.count).value_or(INT64_MAX));
+    if (calls_.used)
+      return event_tree(limit);
+    // event_tree() refuses only a readout whose mode the exports do not
+    // support.
+    bool refuses =
+        module_
+            ->walk([](mlir::Operation *op) {
+              auto readout = mlir::dyn_cast<pulse::ReadoutOp>(op);
+              return readout && readout.getMode() != pulse::ReadoutMode::IQ
+                         ? mlir::WalkResult::interrupt()
+                         : mlir::WalkResult::advance();
+            })
+            .wasInterrupted();
+    if (refuses)
+      event_tree(limit);
+    // The readouts with a start and a length, each with whether events()
+    // lists it (it lists no op of a loop that runs no iteration; the tree
+    // holds every op), and how many events there are.
+    llvm::SmallVector<std::pair<mlir::Operation *, bool>> readouts;
+    auto add = [](uint64_t a, uint64_t b) {
+      return checkedAdd(a, b).value_or(UINT64_MAX);
+    };
+    std::function<uint64_t(mlir::Block &, bool)> count =
+        [&](mlir::Block &block, bool runs) -> uint64_t {
+      uint64_t n = 0;
+      for (mlir::Operation &op : block) {
+        if (mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp,
+                      classical::SubmitOp, classical::WaitOp>(op)) {
+          if (mlir::isa<pulse::ReadoutOp>(op) && pulse::hasStart(&op) &&
+              pulse::scheduledDuration(&op))
+            readouts.emplace_back(&op, runs);
+          n = add(n, 1);
+        } else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+          uint64_t trips = static_cast<uint64_t>(
+              std::max<int64_t>(0, pulse::constantTripCount(loop).value_or(0)));
+          uint64_t body = count(*loop.getBody(), runs && trips > 0);
+          n = add(n, checkedMul(trips, body).value_or(UINT64_MAX));
+        } else {
+          for (mlir::Region &region : op.getRegions())
+            for (mlir::Block &nested : region)
+              n = add(n, count(nested, runs));
+        }
+      }
+      return n;
+    };
+    uint64_t events = count(*module_->getBody(), true);
+    bool everyEvent =
+        limit >= 0 && (!loops_ || events <= static_cast<uint64_t>(limit));
+    nb::list result;
+    llvm::SmallDenseSet<int64_t, 8> seen;
+    pulse::AllocationTracer trace;
+    for (auto [op, runs] : readouts) {
+      if (everyEvent && !runs)
+        continue;
+      mlir::Operation *allocation = trace(op->getOperand(0));
+      int64_t qudit = allocation ? pulse::quditOf(allocation) : -1;
+      if (seen.insert(qudit).second)
+        result.append(nb::make_tuple("readout", -1, qudit, 0, 0));
+    }
+    return result;
   }
 
   // ── Sites: the traced ops of a program, for idle replacement ────────
@@ -4650,6 +4735,12 @@ public:
       }
     };
     collect(*module_->getBody());
+    // A call has a first use only if an op is computed from its answer: the
+    // ops found for the waits of the calls listed. Without any, no call has.
+    calls_ = {version_.load(), static_cast<int64_t>(calls.size()),
+              llvm::any_of(consumers, [](const auto &found) {
+                return !found.second.empty();
+              })};
     return calls;
   }
 
@@ -6412,6 +6503,21 @@ private:
   // Lowered operator programs by module attribute dictionary.
   std::map<const void *, ProgramTemplate> programs_;
   Version version_;
+  // What classical_calls() last found in a module that declares calls, for
+  // call_events(): the version_ it was found at, how many calls it listed,
+  // and whether an op is computed from an answer of one. There is none
+  // (UINT64_MAX) before the calls are first listed, and after
+  // lower_selects(), which rewrites the ops in place without a new
+  // version. strip_sites() rewrites without one too, but only locations
+  // and `pulse.written`, which the calls do not depend on. It is of this
+  // module alone: a module made from it (a copy, a binding, a
+  // specialization) starts without one.
+  struct Calls {
+    uint64_t version = UINT64_MAX;
+    int64_t count = 0;
+    bool used = false;
+  };
+  Calls calls_;
   // Its specialized modules by their arguments (specialize_shared).
   SpecializedCache specialized_;
   // Made by simulation_module(): bind_call() along a path cuts windows of
@@ -8480,6 +8586,10 @@ NB_MODULE(_cudaq_pulse_native, m) {
       .def("event_tree", &PulseModule::event_tree, nb::arg("limit"),
            "events(), or past `limit` events the ops once each with the "
            "loops they repeat in")
+      .def("call_events", &PulseModule::call_events, nb::arg("listed"),
+           nb::arg("per_call"),
+           "event_tree() for the exposure of the module's classical calls: "
+           "one readout per qudit read out when no op uses an answer")
       .def("strip_sites", &PulseModule::strip_sites,
            "Remove the site numbers the packed site records gave")
       .def("site_tree", &PulseModule::site_tree,

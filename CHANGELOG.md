@@ -756,6 +756,19 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   NVIDIA RTX A6000, driver 570.211.01, CUDA runtime 12.9.79, cuDensityMat
   0.7.1). Results are the same bit for bit, for one state and for a batch;
   the other integrators run as before.
+- **A report of classical calls whose answers are unused makes none of
+  the program's events.** `classical_report()`, which every controller and
+  emulator export of a program with calls runs, lists the program's events
+  (up to the larger of 10,000 and 1,000 per call) to find how long the
+  first use of each answer waits (`exposed_cycles`). Only a call whose
+  answer is used asks that, and a program that only submits (a readout
+  sent to a decoder whose answer no pulse waits for) listed every event
+  all the same. For a loop of 8,192 rounds that each submit one call
+  (24,576 events), the Python work of the report goes from about 1,590,000
+  bytecodes to 492,000 and its peak traced allocation from 12.7 MB to
+  5.4 MB. Every report, every exported program in format /1 and /2, and
+  every error are as before, and a program in which any answer is used
+  is read as it was.
 
 ### Fixed
 
