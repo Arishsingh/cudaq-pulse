@@ -216,9 +216,10 @@ jobs:
   # an Ubuntu archive snapshot, uv and Python by version. Changing a pin
   # changes the counts, and the gate fails on counts from another
   # environment than the baseline's until a new baseline is taken on the
-  # change's branch. While the baseline says "bootstrap": true and has no counts,
-  # the counts are reported, not gated (CONTRIBUTING.md, The perf gate). A
-  # manual run with perf_baseline runs this job alone, to take a baseline.
+  # change's branch. A baseline that says "bootstrap": true and has no counts
+  # fails every run but the manual one with perf_baseline, which runs this
+  # job alone, to take a baseline, and fails that one too on main
+  # (CONTRIBUTING.md, The perf gate).
   # Every change that can move it runs it: the compiler, the runtime and the
   # Python package (needs.changes.outputs.python covers all three).
   perf-gate:
@@ -286,6 +287,12 @@ jobs:
       # base is the previous tip; a run dispatched on a branch other than
       # main has the branch's merge base with main (none when it takes a
       # baseline).
+      #
+      # Every run but the one that takes a baseline is strict: it fails
+      # unless the counts were measured, with address randomization off,
+      # against a measured baseline. Without Valgrind or `setarch -R`, or
+      # with a baseline in bootstrap mode, the gate would pass having gated
+      # nothing (perf-gate.py --help).
       - name: Perf gate
         env:
           PROCESSES: ${{ inputs.perf_baseline && 5 || 2 }}
@@ -298,8 +305,10 @@ jobs:
             && [ "$PERF_BASELINE" != true ]; then
             base="$(git merge-base HEAD origin/main)"
           fi
+          strict=yes
+          if [ "$PERF_BASELINE" = true ]; then strict=; fi
           uv run --no-sync python tools/perf-gate.py --processes "$PROCESSES" \
-            ${base:+--base-commit "$base"} \
+            ${strict:+--strict} ${base:+--base-commit "$base"} \
             --out perf-gate/perf_gate.json --dumps perf-gate/callgrind \
             --summary "$GITHUB_STEP_SUMMARY"
 

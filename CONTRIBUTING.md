@@ -332,7 +332,13 @@ PYTHONPATH=build/dev/python python tools/perf-gate.py --update
 ```
 
 Without Valgrind (macOS, or Linux on another architecture), the tool
-compares and updates only the program sizes. The instruction counts depend
+compares and updates only the program sizes, and where `setarch -R` is
+refused it measures with address randomization on. Both pass at a desk. In
+CI the job passes `--strict` on every run but the one that takes a baseline:
+a strict run fails unless it measured instruction counts, with address
+randomization off, against a measured baseline (one with a count for every
+case, its environment and the CI run it came from, and no `bootstrap`
+field), so the job can't pass having gated nothing. The instruction counts depend
 on the toolchain, so they are taken in CI's environment, where the image,
 its packages, uv and Python are pinned. Once a change that moves them on
 purpose is on its pull request's branch in this repository, a manual run of
@@ -352,10 +358,12 @@ the branch, which must still be the commit the run measured (the file's
 `python tools/perf-gate.py --help` lists the same steps.
 
 **Bootstrap mode.** A baseline that says `"bootstrap": true` and holds no
-instruction counts is in bootstrap mode. The job still measures every case
+instruction counts is in bootstrap mode. The tool still measures every case
 twice and reports the counts and their spread, but they don't fail the run;
 program sizes block as always. The summary says so in a banner, together
-with the `gh run download` command for that run. Taking a run's
+with the `gh run download` command for that run. That holds for a run at a
+desk and for the manual `perf_baseline` run; a pull request's run is strict
+and fails on such a baseline until a measured one is committed. Taking a run's
 measurements as the baseline removes the field, and `"bootstrap": true`
 next to any instruction count is an
 error (in the job and in `tests/test_perf_gate.py`), so the gate can't stay
