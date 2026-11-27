@@ -98,7 +98,7 @@ if TYPE_CHECKING:
     from ._op_classes import OpClass as OpClass
     from ._op_tables import OpCounts as OpCounts
     from ._op_tables import OpCycles as OpCycles
-    from ._system import Controller, ControlSystem
+    from ._system import Controller, ControlSystem, _Scanned
     from ._system import DriveLine as DriveLine
     from ._system import ReadoutLine as ReadoutLine
     from ._system import UpdateBus as UpdateBus
@@ -1857,7 +1857,7 @@ def _part(
     assert system is not None
     lines, events, frames, _, _ = _walk(lowered, slots=None)
     owners, _ = system._owners(lines)
-    parts = system._parts(events, owners)
+    parts, _ = system._parts(events, owners)
     index = _part_index(
         controller,
         len(system.controllers),
@@ -1919,6 +1919,7 @@ class _Parts:
         "frames",
         "owners",
         "parts",
+        "scanned",
         "used",
         "calling",
         "violations",
@@ -1937,7 +1938,9 @@ class _Parts:
         self.key = _parts_key(lowered)
         self.lines, self.events, self.frames, _, _ = _walk(lowered, slots=None)
         self.owners, _ = system._owners(self.lines)
-        self.parts: list[list[int]] | None = system._parts(self.events, self.owners)
+        self.parts: list[list[int]] | None
+        self.scanned: _Scanned | None
+        self.parts, self.scanned = system._parts(self.events, self.owners)
         self.used = _known_owners(self.owners)
         self.calling: list[int] | None = None
         self.violations: list[str] | None = None
@@ -1991,9 +1994,14 @@ class _Parts:
                 {**e, **{k: copy.deepcopy(e[k], memo) for k in _CONVERTED if k in e}}
                 for e in events
             ]
+        # The parts were made from a scan of the events for the controllers
+        # that take each answer: the check reads it instead of scanning them
+        # again, where it is given those events and not copies of them. It
+        # is not kept past the check: a check made again scans.
         violations: list[str] = system._violations(
-            lowered, self.lines, checked, clocks, (), (), True, None, None
+            lowered, self.lines, checked, clocks, (), (), True, None, None, self.scanned
         )
+        self.scanned = None
         if violations:
             self.calls()
             self.lines, self.events, self.frames, self.owners, self.parts = [], [], {}, [], []
