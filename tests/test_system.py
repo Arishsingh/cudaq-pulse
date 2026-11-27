@@ -807,6 +807,65 @@ def _controller_events(kernel, qpu, schedule):
     ]
 
 
+def test_the_exports_of_a_programs_parts_scan_for_the_takers_of_its_answers_once(monkeypatch):
+    """Which controllers take each answer is found by a scan of the program's
+    events. The parts of a program on several controllers are made from one,
+    and the check of the whole system, which needs the same of the same
+    events, reads that one. A check of events the scan was not made from,
+    such as copies of them, scans those."""
+    from cudaq_pulse import _system, controller
+
+    scanned_lists: list[object] = []
+    scan = _system._takers
+
+    def counting(events, owners):
+        scanned_lists.append(events)
+        return scan(events, owners)
+
+    monkeypatch.setattr(_system, "_takers", counting)
+    every = list(pulse.Capability)
+    link = {"feedback": Link(slot_bytes=4096)}
+
+    def exported(*boxes):
+        qpu = _qpu(*boxes, links=link)
+        lowered = pulse.compile(answered_in_each_iteration, quantum_system=qpu).lower(
+            qpu.qudits[0], qpu.qudits[2]
+        )
+        del scanned_lists[:]
+        programs = [lowered.export_to_controller(controller=c) for c in (0, 1)]
+        assert any(e["kind"] == "answer" for e in programs[1]["events"])
+        return lowered, programs, len(scanned_lists)
+
+    # Nothing in this system's check asks who takes an answer.
+    _, plain, scans = exported(*_two_boxes(peer_latency_cycles={0: 12}))
+    assert scans == 1
+    # A controller that states what it supports is checked for "answer".
+    lowered, checked, scans = exported(*_two_boxes(peer_latency_cycles={0: 12}, supports=every))
+    assert scans == 1
+    assert [p["events"] for p in checked] == [p["events"] for p in plain]
+
+    # The scan serves a check of the list it was made from, and no other.
+    system = lowered.options.machine._system
+    lines, events, *_ = controller._walk(lowered, slots=None)
+    owners, _ = system._owners(lines)
+    _, found = system._parts(events, owners)
+    assert found[0] is events and found[1] == owners and found[2] == scan(events, owners)
+    del scanned_lists[:]
+    args = (None, (), (), True, None, None)
+    assert system._violations(lowered, lines, events, *args, found) == []
+    assert scanned_lists == []
+    copies = [dict(event) for event in events]
+    assert system._violations(lowered, lines, copies, *args, found) == []
+    assert len(scanned_lists) == 1 and scanned_lists[0] is copies
+    # Nor the same events with another controller for a line.
+    moved = (events, [1 - owner for owner in owners], found[2])
+    assert moved[1] != owners
+    system._violations(lowered, lines, events, *args, moved)
+    assert len(scanned_lists) == 2 and scanned_lists[1] is events
+    assert system._violations(lowered, lines, events, *args) == []
+    assert len(scanned_lists) == 3 and scanned_lists[2] is events
+
+
 @pytest.mark.parametrize("schedule", ["asap", "alap", "rcp", "alap_rcp"])
 @pytest.mark.parametrize("kernel", [answered_before_a_loop, answered_in_each_iteration])
 def test_a_rolled_loop_on_two_controllers_that_branches_on_an_answer_schedules_as_unrolled(
@@ -889,6 +948,28 @@ def test_a_qudit_s_drive_and_readout_round_trip_through_the_system_file():
     assert moved.fingerprint != dev.fingerprint
 
 
+def test_a_system_file_holds_a_drive_of_no_stated_modality():
+    drive = pulse.quantum_systems.Drive(amplitude_scale_rad_per_ns=0.3)
+    qudits = {0: PhysicalQudit(0, 5.0e9, 50.0, 30.0, anharmonicity_hz=-2e8, drive=drive)}
+    dev = pulse.quantum_system(name="plain", qudits=qudits)
+    written = dev.as_dict()["qudits"][0]["drive"]
+    assert written == {"kind": "drive", "amplitude_scale_rad_per_ns": 0.3}
+    back = pulse.QuantumSystem.from_dict(json.loads(json.dumps(dev.as_dict())))
+    assert back.physical_qudits[0].drive == drive and back.fingerprint == dev.fingerprint
+    microwave = qudits[0].replace(drive=MicrowaveDrive(amplitude_scale_rad_per_ns=0.3))
+    other = pulse.quantum_system(name="plain", qudits={0: microwave})
+    assert other.fingerprint != dev.fingerprint
+    # Each kind reads back as its own class, from the same scale.
+    for system, kind, made in (
+        (dev, "drive", pulse.quantum_systems.Drive),
+        (other, "microwave", MicrowaveDrive),
+    ):
+        data = json.loads(json.dumps(system.as_dict()))
+        assert data["qudits"][0]["drive"]["kind"] == kind
+        read = pulse.QuantumSystem.from_dict(data).physical_qudits[0].drive
+        assert type(read) is made and read.amplitude_scale_rad_per_ns == 0.3
+
+
 def test_a_system_file_refuses_an_unknown_component_kind_or_field():
     data = pulse.quantum_system(
         name="ro", qudits={0: PhysicalQudit(0, 5.0e9, 50.0, 30.0, anharmonicity_hz=-2e8)}
@@ -900,6 +981,9 @@ def test_a_system_file_refuses_an_unknown_component_kind_or_field():
         pulse.QuantumSystem.from_dict(data)
     message = str(found.value)
     assert "qudits[0].readout.kind" in message and "the kinds are dispersive" in message
+    qudit["drive"] = {"kind": "optical"}
+    with pytest.raises(QuantumSystemDefinitionError, match="the kinds are microwave, drive"):
+        pulse.QuantumSystem.from_dict(data)
     assert "qudits[0].drive.amplitude_scale" in message
     assert "did you mean 'amplitude_scale_rad_per_ns'" in message
 

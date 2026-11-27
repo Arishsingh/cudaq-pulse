@@ -58,11 +58,48 @@
 #include <optional>
 #include <vector>
 
+namespace pulse {
+/// What the waits of run-time length of a scheduled `module` add under its
+/// controllers' longest programs, if it lists any (PulseProgramLimits.cpp).
+mlir::LogicalResult checkWaitLimits(mlir::ModuleOp module);
+} // namespace pulse
+
 namespace {
 
 /// Loops of at least this many trips are checked from one copy of their
 /// body.
 constexpr int64_t kSummarizedTrips = 64;
+
+/// The times the calls of a function are counted and ordered at: starts,
+/// and the lengths added to them, of at most this many cycles either way,
+/// so that the sums and differences of a few of them fit 64 bits. A call
+/// with a time outside it is reported, not computed with. (A loaded
+/// module's times are within 2^50.)
+constexpr int64_t kMostCycles = int64_t(1) << 61;
+
+static bool withinCycles(int64_t cycles) {
+  return cycles >= -kMostCycles && cycles <= kMostCycles;
+}
+
+/// pulse::scheduledStart within kMostCycles: none when `op` has no start,
+/// or its start in `iteration` is outside it or does not fit 64 bits. An
+/// op outside loops needs no periods.
+static std::optional<int64_t> startWithin(mlir::Operation *op,
+                                          llvm::ArrayRef<int64_t> iteration) {
+  std::optional<int64_t> start = pulse::startCycles(op);
+  if (!start)
+    return std::nullopt;
+  int64_t time = *start;
+  if (!iteration.empty())
+    for (auto [k, period] : llvm::zip(iteration, pulse::periodCycles(op))) {
+      int64_t moved;
+      if (__builtin_mul_overflow(k, period, &moved))
+        return std::nullopt;
+      if (__builtin_add_overflow(time, moved, &time))
+        return std::nullopt;
+    }
+  return withinCycles(time) ? std::optional<int64_t>(time) : std::nullopt;
+}
 
 /// The executions of a submission over the iterations of one loop, or its
 /// one execution: in iteration k of `count` it starts at start + k *
@@ -121,9 +158,18 @@ static void sentValues(mlir::ValueRange values,
 
 /// Every execution of every submission, per link, in program order. Both
 /// arms of a branch are listed, so capacity is checked for the worst case.
-/// The first loop around a submission with at least `summarizeFrom` trips
-/// (none when 0) is kept as runs; every other loop is walked iteration by
-/// iteration.
+/// Of the loops around a submission at most one is kept as runs, and the
+/// others are walked iteration by iteration. The outermost loop with at
+/// least `summarizeFrom` trips (none when 0) is walked as the one kept.
+/// Where that walk first meets a loop inside it, the two are weighed
+/// (keptAs): if walking the loop would be much less work, its walk as the
+/// loop kept is given up and it is walked, the loops inside it taken the
+/// same way in turn. Of rounds around many more repeats the repeats are
+/// then the loop kept; of loops of equal trips, the outer; and a loop with
+/// a large body or submissions of its own stays the one kept until a loop
+/// inside it is long enough to pay for walking it. A loop with no loop
+/// inside it is kept as it is walked; it is weighed only as part of a
+/// loop around it.
 ///
 /// With `Ordering` (a function with a branch), the walk also checks the
 /// order of the calls a branch on an answer relies on: the scheduler bounds
@@ -153,21 +199,29 @@ struct Submissions {
                bool inBranch) {
     for (mlir::Operation &op : block) {
       if (auto submit = mlir::dyn_cast<classical::SubmitOp>(op)) {
-        auto start = pulse::scheduledStart(&op, iteration);
-        if (!start)
+        auto start = startWithin(&op, iteration);
+        int64_t duration = pulse::scheduledDuration(&op).value_or(1);
+        int64_t budget = classical::intAttr(&op, "classical.budget_cycles");
+        if (!start || !withinCycles(duration) || !withinCycles(budget)) {
+          if (pulse::hasStart(&op))
+            past(submit);
           continue;
+        }
         LinkKey device{classical::intAttr(&op, "classical.device"),
                        classical::intAttr(&op, classical::kInstanceAttr, -1),
                        classical::intAttr(&op, classical::kTimelineAttr, -1)};
-        int64_t duration = pulse::scheduledDuration(&op).value_or(1);
         if (!Ordering || recording) {
           int64_t period = 0;
           if (level) {
             iteration[*level] = 1;
-            period = *pulse::scheduledStart(&op, iteration) - *start;
+            auto next = startWithin(&op, iteration);
             iteration[*level] = 0;
+            if (!next) {
+              past(submit);
+              continue;
+            }
+            period = *next - *start;
           }
-          int64_t budget = classical::intAttr(&op, "classical.budget_cycles");
           Run run{
               *start, period, level ? trips : 1, duration, duration + budget,
               group,  &op};
@@ -178,41 +232,7 @@ struct Submissions {
         if (Ordering && !skipped)
           orderSubmit(submit, *start, duration, device, inBranch, iteration);
       } else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
-        int64_t count = pulse::constantTripCount(loop).value_or(0);
-        iteration.push_back(0);
-        if ((!Ordering || recording) && !level && summarizeFrom > 0 &&
-            count >= summarizeFrom) {
-          level = iteration.size() - 1;
-          group = groups++;
-          trips = count;
-          collect<Ordering>(*loop.getBody(), iteration, inBranch);
-          level.reset();
-          group = -1;
-          if (Ordering && !skipped) {
-            recording = false;
-            for (int64_t k : {int64_t{1}, count - 1}) {
-              iteration.back() = k;
-              collect<Ordering>(*loop.getBody(), iteration, inBranch);
-            }
-            recording = true;
-          }
-        } else if (!Ordering) {
-          for (int64_t k = 0; k < count; ++k) {
-            iteration.back() = k;
-            collect<Ordering>(*loop.getBody(), iteration, inBranch);
-          }
-        } else {
-          for (int64_t k = 0; k < count; ++k) {
-            if (!recording && k == 2 && count > 3)
-              k = count - 1;
-            iteration.back() = k;
-            bool skip = k >= 2 && k != count - 1;
-            skipped += skip;
-            collect<Ordering>(*loop.getBody(), iteration, inBranch);
-            skipped -= skip;
-          }
-        }
-        iteration.pop_back();
+        collectLoop<Ordering>(loop, iteration, inBranch);
       } else if constexpr (!Ordering) {
         bool branch = inBranch || mlir::isa<mlir::scf::IfOp>(op);
         for (mlir::Region &region : op.getRegions())
@@ -254,18 +274,211 @@ private:
                     llvm::Twine(answered));
   }
 
-  /// pulse::scheduledStart, which an op outside loops needs no periods for.
-  static std::optional<int64_t> startIn(mlir::Operation *op,
-                                        llvm::ArrayRef<int64_t> iteration) {
-    if (!iteration.empty())
-      return pulse::scheduledStart(op, iteration);
-    return pulse::startCycles(op);
+  /// What one iteration of a loop's body costs the walk: the executions of
+  /// its submissions and the operations it holds, every loop in it written
+  /// out; and the runs recorded and the operations visited when each loop
+  /// in it is kept or walked by the rule below. Counts that do not fit 64
+  /// bits are held at the most they hold.
+  struct Listed {
+    int64_t executions = 0, operations = 0, runs = 0, visits = 0;
+  };
+
+  /// How many times less work walking a loop must be to walk it.
+  static constexpr int64_t kWalkPays = 16;
+
+  static int64_t plus(int64_t a, int64_t b) {
+    int64_t sum;
+    if (__builtin_add_overflow(a, b, &sum))
+      return std::numeric_limits<int64_t>::max();
+    return sum;
+  }
+
+  static int64_t times(int64_t a, int64_t b) {
+    int64_t product;
+    if (__builtin_mul_overflow(a, b, &product))
+      return std::numeric_limits<int64_t>::max();
+    return product;
+  }
+
+  Listed listed(mlir::Block &block) {
+    Listed total;
+    // The operations and submissions of the block itself: as many as it
+    // has, so plain counts.
+    int64_t operations = 0, submissions = 0;
+    for (mlir::Operation &op : block) {
+      ++operations;
+      if (op.getNumRegions() == 0) {
+        submissions += mlir::isa<classical::SubmitOp>(op);
+        continue;
+      }
+      if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+        auto [body, keep] = keptAs(loop);
+        int64_t count = pulse::constantTripCount(loop).value_or(0);
+        total.executions =
+            plus(total.executions, times(count, body.executions));
+        total.operations =
+            plus(total.operations, times(count, body.operations));
+        total.runs =
+            plus(total.runs, keep ? body.executions : times(count, body.runs));
+        total.visits = plus(total.visits,
+                            keep ? body.operations : times(count, body.visits));
+        continue;
+      }
+      for (mlir::Region &region : op.getRegions())
+        for (mlir::Block &nested : region) {
+          Listed inner = listed(nested);
+          total.executions = plus(total.executions, inner.executions);
+          total.operations = plus(total.operations, inner.operations);
+          total.runs = plus(total.runs, inner.runs);
+          total.visits = plus(total.visits, inner.visits);
+        }
+    }
+    total.executions = plus(total.executions, submissions);
+    total.runs = plus(total.runs, submissions);
+    total.operations = plus(total.operations, operations);
+    total.visits = plus(total.visits, operations);
+    return total;
+  }
+
+  /// The submissions of `loop`: kept as runs, or walked iteration by
+  /// iteration (see the comment above). Apart from collect, so that the
+  /// walk over a block's operations stays small.
+  template <bool Ordering>
+  LLVM_ATTRIBUTE_NOINLINE void
+  collectLoop(mlir::scf::ForOp loop, llvm::SmallVectorImpl<int64_t> &iteration,
+              bool inBranch) {
+    if (level) {
+      // The first loop met inside the loop being kept: only now can there
+      // be a loop to keep in its place. If walking the loop kept is less
+      // work (keptAs), its walk as the loop kept is given up: the loops
+      // inside it are passed over, and it is walked again from the start.
+      if (!met) {
+        met = true;
+        givenUp = !keptAs(mlir::cast<mlir::scf::ForOp>(keeping)).second;
+        // What follows the loops passed over is not in order with what
+        // came before them: its order is left to the walk that follows.
+        skipped += givenUp;
+      }
+      if (givenUp)
+        return;
+    }
+    int64_t count = pulse::constantTripCount(loop).value_or(0);
+    iteration.push_back(0);
+    if ((!Ordering || recording) && !level && summarizeFrom > 0 &&
+        count >= summarizeFrom) {
+      level = iteration.size() - 1;
+      group = groups++;
+      trips = count;
+      keeping = loop;
+      met = false;
+      givenUp = false;
+      // The order's state, to walk the loop again from if its walk as the
+      // loop kept is given up.
+      decltype(linkEnds) ends;
+      if constexpr (Ordering)
+        ends = linkEnds;
+      collect<Ordering>(*loop.getBody(), iteration, inBranch);
+      level.reset();
+      int64_t kept = group;
+      group = -1;
+      if (LLVM_UNLIKELY(givenUp)) {
+        givenUp = false;
+        --skipped;
+        // What was recorded and ordered before the walk was given up is
+        // recorded and ordered again by the walk that follows, from the
+        // same state: an error it found is one of that walk's, and
+        // reported once.
+        for (auto *recorded : {&perLink, &ordered})
+          for (auto &[key, runs] : *recorded)
+            while (!runs.empty() && runs.back().group == kept)
+              runs.pop_back();
+        if constexpr (Ordering)
+          linkEnds = std::move(ends);
+        walk<Ordering>(loop, count, iteration, inBranch);
+      } else if (Ordering && !skipped) {
+        recording = false;
+        for (int64_t k : {int64_t{1}, count - 1}) {
+          iteration.back() = k;
+          collect<Ordering>(*loop.getBody(), iteration, inBranch);
+        }
+        recording = true;
+      }
+    } else {
+      walk<Ordering>(loop, count, iteration, inBranch);
+    }
+    iteration.pop_back();
+  }
+
+  /// Walks `loop`, of `count` trips, iteration by iteration.
+  template <bool Ordering>
+  void walk(mlir::scf::ForOp loop, int64_t count,
+            llvm::SmallVectorImpl<int64_t> &iteration, bool inBranch) {
+    for (int64_t k = 0; k < count; ++k) {
+      if (Ordering && !recording && k == 2 && count > 3)
+        k = count - 1;
+      iteration.back() = k;
+      bool skip = Ordering && k >= 2 && k != count - 1;
+      skipped += skip;
+      collect<Ordering>(*loop.getBody(), iteration, inBranch);
+      skipped -= skip;
+    }
+  }
+
+  /// What an iteration of `loop` costs, and whether the loop is kept as
+  /// runs when no loop around it is. Kept, every loop inside it is walked:
+  /// the walk visits the operations of one iteration written out and
+  /// records a run per execution in it. Walked, the walk visits its trips
+  /// times what an iteration takes with the loops inside kept or walked in
+  /// turn, and records as many times its runs. The runs of a link are then
+  /// compared with one another, so the work is taken as the operations
+  /// visited plus the square of the runs. The measure is rough (it does
+  /// not tell links apart, nor a count that falls back to every
+  /// execution), so a loop of at least `summarizeFrom` trips is kept, as
+  /// every such loop was before, unless walking it is less work by
+  /// kWalkPays times.
+  std::pair<Listed, bool> keptAs(mlir::scf::ForOp loop) {
+    auto found = kept.find(loop.getOperation());
+    if (found != kept.end())
+      return found->second;
+    Listed body = listed(*loop.getBody());
+    int64_t count = pulse::constantTripCount(loop).value_or(0);
+    int64_t walkedRuns = times(count, body.runs);
+    int64_t asKept =
+        plus(body.operations, times(body.executions, body.executions));
+    int64_t asWalked =
+        plus(times(count, body.visits), times(walkedRuns, walkedRuns));
+    bool keep = summarizeFrom > 0 && count >= summarizeFrom &&
+                asKept <= times(kWalkPays, asWalked);
+    return kept[loop.getOperation()] = {body, keep};
+  }
+
+  /// A call with a time the check does not compute with.
+  void past(classical::SubmitOp submit) {
+    error(submit, "the call of '" + submit.getCallee() +
+                      "' starts, or lasts, past the cycles a schedule counts "
+                      "in");
+  }
+
+  /// The start of `op`, an operation the order of calls depends on, in the
+  /// iteration walked; one with a time the check does not compute with is
+  /// reported, not passed over.
+  std::optional<int64_t> startIn(mlir::Operation *op,
+                                 llvm::ArrayRef<int64_t> iteration) {
+    std::optional<int64_t> start = startWithin(op, iteration);
+    if (!start && pulse::hasStart(op))
+      pastOperation(op);
+    return start;
+  }
+
+  void pastOperation(mlir::Operation *op) {
+    error(op, "an operation the order of calls depends on starts, or lasts, "
+              "past the cycles a schedule counts in");
   }
 
   /// When `op`, a readout or an answer the op walked depends on, ends in the
   /// iteration walked: the loops around it are among those around the op.
-  static std::optional<int64_t> endOf(mlir::Operation *op,
-                                      llvm::ArrayRef<int64_t> iteration) {
+  std::optional<int64_t> endOf(mlir::Operation *op,
+                               llvm::ArrayRef<int64_t> iteration) {
     size_t depth = 0;
     for (mlir::Operation *parent = op->getParentOp(); parent;
          parent = parent->getParentOp())
@@ -275,7 +488,12 @@ private:
     std::optional<int64_t> start = startIn(op, iteration.take_front(depth));
     if (!start)
       return std::nullopt;
-    return *start + pulse::scheduledDuration(op).value_or(0);
+    int64_t duration = pulse::scheduledDuration(op).value_or(0);
+    if (!withinCycles(duration)) {
+      pastOperation(op);
+      return std::nullopt;
+    }
+    return *start + duration;
   }
 
   void orderSubmit(classical::SubmitOp submit, int64_t start, int64_t duration,
@@ -360,6 +578,12 @@ private:
   /// The latest answer a branch around the op walked is on.
   int64_t answered = kNone;
   llvm::DenseSet<mlir::Operation *> reported;
+  /// The loop being kept as runs; whether its walk has met a loop inside
+  /// it, and has been given up for a walk iteration by iteration.
+  mlir::Operation *keeping = nullptr;
+  bool met = false, givenUp = false;
+  /// keptAs of the loops asked so far.
+  llvm::DenseMap<mlir::Operation *, std::pair<Listed, bool>> kept;
 };
 
 static int64_t floorDiv(int64_t a, int64_t b) {
@@ -369,33 +593,44 @@ static int64_t floorDiv(int64_t a, int64_t b) {
 
 static int64_t ceilDiv(int64_t a, int64_t b) { return -floorDiv(-a, b); }
 
-/// Whether a run's last execution ends without overflow.
+/// Whether a run's last execution starts within kMostCycles, as its first
+/// does: every execution then starts within it, and ends within three
+/// times it.
 static bool fits(const Run &run) {
-  int64_t span, last, end;
+  int64_t span, last;
   if (__builtin_mul_overflow(run.count - 1, run.period, &span))
     return false;
   if (__builtin_add_overflow(run.start, span, &last))
     return false;
-  if (__builtin_add_overflow(last, run.busy, &end))
-    return false;
-  return true;
+  return withinCycles(last);
 }
 
 /// The most requests `runs` hold at once and the earliest time they do (0
 /// when none is ever held), from every execution: a sweep over interval
-/// ends, each half-open (a slot freed at t can be reused at t).
+/// ends, each half-open (a slot freed at t can be reused at t). The
+/// executions of a run that does not move from one iteration to the next
+/// are all at one time, and counted there together.
 static std::pair<int64_t, int64_t> sweepInFlight(llvm::ArrayRef<Run> runs) {
-  std::vector<std::pair<int64_t, int>> events;
-  for (const Run &run : runs)
+  std::vector<std::pair<int64_t, int64_t>> events;
+  for (const Run &run : runs) {
+    if (run.period == 0) {
+      events.push_back({run.start, +run.count});
+      events.push_back({run.start + run.busy, -run.count});
+      continue;
+    }
     for (int64_t k = 0; k < run.count; ++k) {
       int64_t start = run.start + k * run.period;
       events.push_back({start, +1});
       events.push_back({start + run.busy, -1});
     }
+  }
   std::sort(events.begin(), events.end());
   int64_t inFlight = 0, worst = 0, when = 0;
   for (auto [time, delta] : events) {
-    inFlight += delta;
+    // The counts of runs that do not move can add up past 64 bits.
+    if (__builtin_add_overflow(inFlight, delta, &inFlight))
+      inFlight = delta > 0 ? std::numeric_limits<int64_t>::max()
+                           : std::numeric_limits<int64_t>::min();
     if (inFlight > worst) {
       worst = inFlight;
       when = time;
@@ -403,6 +638,117 @@ static std::pair<int64_t, int64_t> sweepInFlight(llvm::ArrayRef<Run> runs) {
   }
   return {worst, when};
 }
+
+/// How many runs a loop has for them to be put in order (GroupInFlight).
+constexpr size_t kSortedFrom = 8;
+
+/// The runs of one loop, which share its period and count, as the count of
+/// requests in flight asks of them. A loop of very many submissions makes
+/// as many runs, so neither question compares each run with every other.
+struct GroupInFlight {
+  /// Times of the runs' iteration 0 (their starts, or their ends), in
+  /// order, and where each whole period after the first of them begins
+  /// among them: (periods after the first, index of its first time).
+  struct Times {
+    std::vector<int64_t> at;
+    std::vector<std::pair<int64_t, size_t>> periods;
+
+    void order(int64_t period) {
+      std::sort(at.begin(), at.end());
+      for (size_t i = 0; i < at.size(); ++i) {
+        int64_t after = (at[i] - at.front()) / period;
+        if (periods.empty() || periods.back().first != after)
+          periods.push_back({after, i});
+      }
+    }
+
+    /// How many of the times have come by `time`, over `trips` iterations
+    /// a `period` apart. Of the times within one period of each other,
+    /// those no later in it than `time` is have come once more.
+    int64_t come(int64_t time, int64_t period, int64_t trips) const {
+      int64_t since = time - at.front();
+      int64_t whole = floorDiv(since, period);
+      int64_t within = since - whole * period;
+      int64_t total = 0;
+      for (size_t i = 0; i < periods.size(); ++i) {
+        auto [after, begin] = periods[i];
+        size_t end = i + 1 < periods.size() ? periods[i + 1].second : at.size();
+        auto sooner = static_cast<int64_t>(
+            std::upper_bound(at.begin() + begin, at.begin() + end,
+                             at.front() + after * period + within) -
+            (at.begin() + begin));
+        auto later = static_cast<int64_t>(end - begin) - sooner;
+        total += sooner * std::clamp<int64_t>(whole - after + 1, 0, trips) +
+                 later * std::clamp<int64_t>(whole - after, 0, trips);
+      }
+      return total;
+    }
+  };
+
+  /// Where a request of iteration 0 is in flight: the runs' [start, start
+  /// + busy), those that overlap or touch joined, in order.
+  std::vector<std::pair<int64_t, int64_t>> held;
+  Times starts, ends;
+  /// Whether the count at a time is taken from the starts and the ends in
+  /// order: every run holds its slot for a time that is not negative, and
+  /// the starts and the ends lie in few enough periods for that to be less
+  /// work than a look at every run.
+  bool ordered = true;
+  int64_t period = 0, trips = 0;
+
+  explicit GroupInFlight(llvm::ArrayRef<const Run *> group)
+      : period(group.front()->period), trips(group.front()->count) {
+    std::vector<std::pair<int64_t, int64_t>> each;
+    starts.at.reserve(group.size());
+    ends.at.reserve(group.size());
+    each.reserve(group.size());
+    for (const Run *run : group) {
+      starts.at.push_back(run->start);
+      ends.at.push_back(run->start + run->busy);
+      ordered &= run->busy >= 0;
+      if (run->busy > 0)
+        each.push_back({run->start, run->start + run->busy});
+    }
+    starts.order(period);
+    ends.order(period);
+    // A look per period the times lie in, each a search, against one per
+    // run.
+    ordered &= 8 * (starts.periods.size() + ends.periods.size()) <=
+               std::max<size_t>(group.size(), 16);
+    std::sort(each.begin(), each.end());
+    for (auto [begin, end] : each) {
+      if (!held.empty() && begin <= held.back().second)
+        held.back().second = std::max(held.back().second, end);
+      else
+        held.push_back({begin, end});
+    }
+  }
+
+  /// The iteration from which the requests of the loop in flight at a
+  /// start of a run that starts at `start` are those at the start a period
+  /// before, moved by a period: the most periods after `start` at which a
+  /// request of iteration 0 is still in flight, and no more than the
+  /// trips. (For each run that is in flight at start + m periods for some
+  /// m, the largest such m; the most over the runs.)
+  int64_t steadyFrom(int64_t start) const {
+    // Only what is held past a period after `start` gives one or more.
+    for (size_t i = held.size(); i-- > 0;) {
+      auto [begin, end] = held[i];
+      if (end - 1 < start + period)
+        break;
+      int64_t periods = floorDiv(end - 1 - start, period);
+      if (start + periods * period >= begin)
+        return std::min(periods, trips);
+    }
+    return 0;
+  }
+
+  /// The requests of the loop in flight at `time`: those started less
+  /// those ended.
+  int64_t inFlight(int64_t time) const {
+    return starts.come(time, period, trips) - ends.come(time, period, trips);
+  }
+};
 
 /// sweepInFlight from each loop's runs rather than every execution, or none
 /// when that would not be cheaper. The count only rises where a request
@@ -458,20 +804,34 @@ summarizedInFlight(llvm::ArrayRef<Run> runs) {
   int64_t loopRuns = static_cast<int64_t>(runs.size() - singleStarts.size());
   int64_t budget = 4 * executions / (loopRuns + 1) + 64;
   std::vector<int64_t> starts(singleStarts);
+  // The runs of a loop of many submissions are taken in order; those of a
+  // loop of a few, one against the other, which is less work than putting
+  // them in order.
+  std::map<int64_t, GroupInFlight> sorted;
+  for (auto &[id, group] : groups)
+    if (group.size() >= kSortedFrom)
+      sorted.try_emplace(id, group);
   for (auto &[id, group] : groups) {
     int64_t period = group.front()->period, trips = group.front()->count;
+    auto found = sorted.find(id);
+    const GroupInFlight *loop =
+        found == sorted.end() ? nullptr : &found->second;
     for (const Run *run : group) {
       // From `first` on, the loop's requests in flight at each start of the
       // run are those at the start before, moved by a period, but those of
       // iterations past the last.
       int64_t first = 0;
-      for (const Run *other : group) {
-        int64_t lo =
-            floorDiv(run->start - other->start - other->busy, period) + 1;
-        if (lo <= floorDiv(run->start - other->start, period))
-          first = std::max(first, -lo);
+      if (loop) {
+        first = loop->steadyFrom(run->start);
+      } else {
+        for (const Run *other : group) {
+          int64_t lo =
+              floorDiv(run->start - other->start - other->busy, period) + 1;
+          if (lo <= floorDiv(run->start - other->start, period))
+            first = std::max(first, -lo);
+        }
+        first = std::min(first, trips);
       }
-      first = std::min(first, trips);
       std::vector<std::pair<int64_t, int64_t>> ranges;
       if (first > 0)
         ranges.push_back({0, first - 1});
@@ -514,7 +874,14 @@ summarizedInFlight(llvm::ArrayRef<Run> runs) {
          singleStarts.begin()) -
         (std::upper_bound(singleEnds.begin(), singleEnds.end(), t) -
          singleEnds.begin());
-    for (auto &[id, group] : groups)
+    for (auto &[id, group] : groups) {
+      if (group.size() >= kSortedFrom) {
+        const GroupInFlight &loop = sorted.at(id);
+        if (loop.ordered) {
+          count += loop.inFlight(t);
+          continue;
+        }
+      }
       for (const Run *run : group) {
         int64_t hi =
             std::min(floorDiv(t - run->start, run->period), run->count - 1);
@@ -522,6 +889,7 @@ summarizedInFlight(llvm::ArrayRef<Run> runs) {
             floorDiv(t - run->start - run->busy, run->period) + 1, 0);
         count += std::max<int64_t>(0, hi - lo + 1);
       }
+    }
     if (count > worst || (count == worst && count > 0 && t < when)) {
       worst = count;
       when = t;
@@ -684,13 +1052,63 @@ struct Stretches {
   llvm::SmallVector<std::pair<mlir::Operation *, int64_t>> ops;
 };
 
+/// A time in any iteration of the loops around an operation: a start, a
+/// period times an iteration, and sums of them over the loops. Starts,
+/// periods and trip counts are 64-bit numbers a module may state freely, so
+/// the sums are kept wider, and held at the widest number either way where
+/// even that would overflow.
+using Wide = __int128;
+
+static Wide wideAdd(Wide a, Wide b) {
+  Wide sum;
+  if (__builtin_add_overflow(a, b, &sum)) {
+    Wide most = static_cast<Wide>(~static_cast<unsigned __int128>(0) >> 1);
+    return b < 0 ? -most - 1 : most;
+  }
+  return sum;
+}
+
+static Wide wideMul(Wide a, Wide b) {
+  Wide product;
+  if (__builtin_mul_overflow(a, b, &product)) {
+    Wide most = static_cast<Wide>(~static_cast<unsigned __int128>(0) >> 1);
+    return (a < 0) != (b < 0) ? -most - 1 : most;
+  }
+  return product;
+}
+
+static std::string wideText(Wide value) {
+  if (value >= std::numeric_limits<int64_t>::min() &&
+      value <= std::numeric_limits<int64_t>::max())
+    return std::to_string(static_cast<int64_t>(value));
+  bool negative = value < 0;
+  auto left = negative ? -static_cast<unsigned __int128>(value)
+                       : static_cast<unsigned __int128>(value);
+  std::string digits;
+  for (; left; left /= 10)
+    digits.push_back(static_cast<char>('0' + static_cast<int>(left % 10)));
+  if (negative)
+    digits.push_back('-');
+  return std::string(digits.rbegin(), digits.rend());
+}
+
+/// The period of a timed operation in the loop at `level` around it,
+/// outermost first; none stated counts as none, as in scheduledStart.
+/// (Outside every loop the periods are not read at all.)
+static Wide periodAt(llvm::ArrayRef<int64_t> periods, size_t level) {
+  return level < periods.size() ? Wide(periods[level]) : Wide(0);
+}
+
 /// Check that every execution of `submit`, a call to `callable` with
 /// `reaction_deadline_ns`, has its answer due within it of the end of the
 /// latest readout it carries, or of its own start. The submission and each
-/// readout start affinely in the iteration, so each difference is checked
-/// at the corners of the submission's iteration box; the latest readout is
-/// at least as late as each, so the smallest of their worst cases bounds
-/// the reaction. A wait between a readout and the submission whose length
+/// readout start affinely in the iteration, so each difference is largest
+/// at a corner of the submission's iteration box: per loop, at its last
+/// iteration where the difference grows with it and at its first
+/// otherwise, which is the first such corner when the loops are counted
+/// with the outermost changing fastest. The latest readout is at least as
+/// late as each, so the smallest of their worst cases bounds the
+/// reaction. A wait between a readout and the submission whose length
 /// is known only when the program runs counts at its highest length. A
 /// request that leaves within `latency` (the feedback latency the schedule
 /// waits) of its readouts' end could not leave sooner, and the error says
@@ -729,9 +1147,12 @@ static bool checkReaction(classical::SubmitOp submit,
                                                   readouts.end());
   if (references.empty())
     references.push_back(submit);
-  std::optional<int64_t> bound;
+  std::optional<Wide> bound;
   llvm::SmallVector<int64_t, 2> worstAt;
-  llvm::SmallVector<int64_t, 2> iteration(depth, 0);
+  llvm::ArrayRef<int64_t> sent =
+      depth ? pulse::periodCycles(submit) : llvm::ArrayRef<int64_t>();
+  Wide due = wideAdd(Wide(*pulse::startCycles(submit)),
+                     wideAdd(Wide(duration), Wide(budget)));
   for (mlir::Operation *reference : references) {
     size_t own = pulse::enclosingLoops(reference, function).size();
     if (!pulse::hasStart(reference) || own > depth)
@@ -750,20 +1171,21 @@ static bool checkReaction(classical::SubmitOp submit,
              "drop reaction_deadline_ns";
       return false;
     }
-    std::optional<int64_t> worst;
-    llvm::SmallVector<int64_t, 2> at;
-    for (uint64_t corner = 0; corner < (uint64_t{1} << depth); ++corner) {
-      for (size_t level = 0; level < depth; ++level)
-        iteration[level] = (corner >> level) & 1 ? trips[level] - 1 : 0;
-      int64_t due =
-          *pulse::scheduledStart(submit, iteration) + duration + budget;
-      llvm::ArrayRef<int64_t> prefix(iteration.data(), own);
-      int64_t from = *pulse::scheduledStart(reference, prefix);
-      if (reference != submit.getOperation())
-        from += pulse::scheduledDuration(reference).value_or(0);
-      if (!worst || due + stretch - from > *worst) {
-        worst = due + stretch - from;
-        at.assign(iteration.begin(), iteration.end());
+    llvm::ArrayRef<int64_t> read =
+        depth ? pulse::periodCycles(reference) : llvm::ArrayRef<int64_t>();
+    Wide from = *pulse::startCycles(reference);
+    if (reference != submit.getOperation())
+      from =
+          wideAdd(from, Wide(pulse::scheduledDuration(reference).value_or(0)));
+    std::optional<Wide> worst = wideAdd(wideAdd(due, Wide(stretch)), -from);
+    llvm::SmallVector<int64_t, 2> at(depth, 0);
+    for (size_t level = 0; level < depth; ++level) {
+      Wide moves = wideAdd(periodAt(sent, level),
+                           -(level < own ? periodAt(read, level) : Wide(0)));
+      Wide grows = wideMul(moves, Wide(trips[level] - 1));
+      if (grows > 0) {
+        worst = wideAdd(*worst, grows);
+        at[level] = trips[level] - 1;
       }
     }
     if (worst && (!bound || *worst < *bound)) {
@@ -782,8 +1204,9 @@ static bool checkReaction(classical::SubmitOp submit,
   }
   // The request left as soon as the outcomes it carries were usable.
   bool waited =
-      !readouts.empty() && latency > 0 && *bound - duration - budget <= latency;
-  diagnostic << "its answer is due " << *bound << " cycles after "
+      !readouts.empty() && latency > 0 &&
+      wideAdd(*bound, -wideAdd(Wide(duration), Wide(budget))) <= latency;
+  diagnostic << "its answer is due " << wideText(*bound) << " cycles after "
              << (readouts.empty() ? "the submission starts"
                                   : "the readouts it carries end");
   if (waited)
@@ -791,7 +1214,8 @@ static bool checkReaction(classical::SubmitOp submit,
                << " of them the feedback latency before the request can "
                   "leave)";
   diagnostic << ", but reaction_deadline_ns allows " << limit << " (slack "
-             << limit - *bound << "); " << (waited ? "" : "submit it sooner, ")
+             << wideText(wideAdd(Wide(limit), -*bound)) << "); "
+             << (waited ? "" : "submit it sooner, ")
              << "lower max_latency_ns, use a faster link or raise "
                 "reaction_deadline_ns";
   return false;
@@ -814,8 +1238,10 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
   llvm::StringMap<std::optional<double>> uncertainty;
   if (controllers.enabled()) {
     pulse::AllocationTracer trace;
+    classical::TakersByValue takers;
     module.walk([&](classical::SubmitOp submit) {
-      auto found = classical::callUncertaintyNs(submit, controllers, trace);
+      auto found =
+          classical::callUncertaintyNs(submit, controllers, trace, takers);
       auto [it, inserted] = uncertainty.try_emplace(submit.getCallee(), found);
       if (!inserted && it->second)
         it->second = found
@@ -883,9 +1309,14 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
       });
     }
     // S7: each answer is taken no earlier than it is due. Start times are
-    // affine in the iteration, so checking the corners of the iteration
-    // box covers every iteration. The walk also finds whether the function
-    // has a branch.
+    // affine in the iteration, so the time between the two is least at a
+    // corner of the iteration box: per loop, at its last iteration where
+    // the time shrinks with it. Only when that least is negative is a
+    // corner named: the first one that fails with the outermost loop
+    // changing fastest, found a loop at a time from the innermost, each
+    // kept at its first iteration while the loops outside it can still
+    // make the time negative. The walk also finds whether the function has
+    // a branch.
     bool branches = false;
     function.walk([&](mlir::Operation *op) {
       if (mlir::isa<mlir::scf::IfOp>(op)) {
@@ -922,27 +1353,47 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
       int64_t duration = pulse::scheduledDuration(submit).value_or(1);
       int64_t budget = classical::intAttr(submit, "classical.budget_cycles");
       size_t depth = loops.size();
-      llvm::SmallVector<int64_t, 2> iteration(depth, 0);
-      for (uint64_t corner = 0; corner < (uint64_t{1} << depth); ++corner) {
-        bool empty = false;
-        for (size_t level = 0; level < depth; ++level) {
-          int64_t trips = pulse::constantTripCount(loops[level]).value_or(0);
-          empty |= trips == 0;
-          iteration[level] = (corner >> level) & 1 ? trips - 1 : 0;
-        }
-        if (empty)
+      llvm::SmallVector<int64_t, 4> last(depth);
+      for (size_t level = 0; level < depth; ++level) {
+        int64_t trips = pulse::constantTripCount(loops[level]).value_or(0);
+        if (trips == 0)
           return;
-        int64_t due =
-            *pulse::scheduledStart(submit, iteration) + duration + budget;
-        int64_t taken = *pulse::scheduledStart(wait, iteration);
-        if (taken < due) {
-          wait.emitError("the answer of '")
-              << wait.getCallee() << "' is taken at " << taken
-              << ", before it is due at " << due;
-          failed = true;
-          return;
-        }
+        last[level] = trips - 1;
       }
+      llvm::ArrayRef<int64_t> sent =
+          depth ? pulse::periodCycles(submit) : llvm::ArrayRef<int64_t>();
+      llvm::ArrayRef<int64_t> took =
+          depth ? pulse::periodCycles(wait) : llvm::ArrayRef<int64_t>();
+      Wide due = wideAdd(Wide(*pulse::startCycles(submit)),
+                         wideAdd(Wide(duration), Wide(budget)));
+      Wide taken = *pulse::startCycles(wait);
+      // What the last iteration of each loop adds to the time between,
+      // and the least the loops outside a level can add together.
+      llvm::SmallVector<Wide, 4> adds(depth), outside(depth);
+      Wide least = 0;
+      for (size_t level = 0; level < depth; ++level) {
+        outside[level] = least;
+        adds[level] =
+            wideMul(wideAdd(periodAt(took, level), -periodAt(sent, level)),
+                    Wide(last[level]));
+        if (adds[level] < 0)
+          least = wideAdd(least, adds[level]);
+      }
+      Wide between = wideAdd(taken, -due);
+      if (wideAdd(between, least) >= 0)
+        return;
+      for (size_t level = depth; level-- > 0;) {
+        if (wideAdd(between, outside[level]) < 0)
+          continue;
+        between = wideAdd(between, adds[level]);
+        taken =
+            wideAdd(taken, wideMul(periodAt(took, level), Wide(last[level])));
+        due = wideAdd(due, wideMul(periodAt(sent, level), Wide(last[level])));
+      }
+      wait.emitError("the answer of '")
+          << wait.getCallee() << "' is taken at " << wideText(taken)
+          << ", before it is due at " << wideText(due);
+      failed = true;
     });
 
     Submissions submissions{summarizeFrom};
@@ -953,10 +1404,25 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
     else
       submissions.collect<false>(body, iteration, false);
     failed |= submissions.failed;
+    // A call whose last execution in a loop would start or end past what
+    // 64 bits count is no schedule: it is reported, and its link's calls
+    // are not counted or ordered from times that do not exist.
+    for (auto &[key, runs] : submissions.perLink)
+      for (const Run &run : runs)
+        if (!fits(run)) {
+          run.op->emitError("the call of '")
+              << mlir::cast<classical::SubmitOp>(run.op).getCallee()
+              << "' starts at " << run.start << " and " << run.period
+              << " cycles later in each of " << run.count
+              << " iterations: the last is past the cycles a schedule counts "
+                 "in";
+          failed = true;
+          break;
+        }
     // S8: requests in flight at once.
     for (auto &[key, runs] : submissions.perLink) {
       auto [device, instance, timeline] = key;
-      if (runs.empty())
+      if (runs.empty() || !llvm::all_of(runs, fits))
         continue;
       int64_t capacity =
           classical::intAttr(runs.front().op, "classical.slots", 64);
@@ -980,17 +1446,9 @@ static mlir::LogicalResult checkClassicalCalls(mlir::ModuleOp module,
     }
     // S9: one submission at a time on a link, in program order.
     for (auto &[key, runs] : submissions.ordered) {
-      std::optional<OutOfOrder> found;
-      if (llvm::all_of(runs, fits)) {
-        found = firstOutOfOrder(runs);
-      } else {
-        std::vector<Run> each;
-        for (const Run &run : runs)
-          for (int64_t k = 0; k < run.count; ++k)
-            each.push_back({run.start + k * run.period, 0, 1, run.duration,
-                            run.busy, -1, run.op});
-        found = firstOutOfOrder(each);
-      }
+      if (!llvm::all_of(runs, fits))
+        continue;
+      std::optional<OutOfOrder> found = firstOutOfOrder(runs);
       if (found) {
         found->op->emitError("submission on link ")
             << std::get<0>(key) << " starts at " << found->start
@@ -1022,7 +1480,8 @@ struct PulseClassicalCheckPass
 
   void runOnOperation() override {
     if (mlir::failed(checkClassicalCalls(getOperation(), kSummarizedTrips,
-                                         readoutLatency)))
+                                         readoutLatency)) ||
+        mlir::failed(pulse::checkWaitLimits(getOperation())))
       signalPassFailure();
   }
 
@@ -1051,7 +1510,8 @@ struct PulseClassicalCheckOptionsPass
   }
   void runOnOperation() override {
     if (mlir::failed(checkClassicalCalls(getOperation(), summarizeTrips,
-                                         readoutLatency)))
+                                         readoutLatency)) ||
+        mlir::failed(pulse::checkWaitLimits(getOperation())))
       signalPassFailure();
   }
 

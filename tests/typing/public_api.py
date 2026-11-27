@@ -9,6 +9,7 @@ mypy must report, and --warn-unused-ignores fails if it stops reporting it.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, assert_type
 
 import cudaq_pulse as pulse
@@ -30,10 +31,12 @@ from cudaq_pulse.quantum_systems import (
     Coupling,
     DispersiveReadout,
     DragPulse,
+    Drive,
     FluxCZ,
     MicrowaveDrive,
     PhysicalQudit,
     Readout,
+    ReadoutCrosstalk,
     ReadoutPulse,
     ResidualZZ,
     VirtualZ,
@@ -99,6 +102,8 @@ assert_type(lowered.mlir("llvm"), str)
 assert_type(lowered.metrics, CompileMetrics)
 assert_type(lowered.schedule, Sequence[ScheduledEvent])
 assert_type(lowered.arguments, tuple[float, ...])
+pulse.viz.save_schedule(lowered, Path("schedule.png"))
+pulse.viz.save_schedule(lowered, "schedule.png", dpi=300)  # type: ignore[call-arg]
 
 compiled = pulse.compile(rabi, schedule="asap", quantum_system=dev)
 compiled_kernels: list[pulse.CompiledKernel[...]] = [compiled]
@@ -213,6 +218,8 @@ assert_type(
 )
 assert_type(pulse.controller.sample_waveform({}, 40).real, npt.NDArray[np.float64])
 assert_type(pulse.controller.export(lowered, version=2), dict[str, Any])
+assert_type(pulse.controller.shape_known({}), bool)
+assert_type(pulse.controller.shape_known(None), bool)
 assert_type(pulse.controller.WaveformMemoryScope("program"), WaveformMemoryScope)
 pulse.controller.sample_waveform({}, 40, samples_per_cycles=2)  # type: ignore[call-arg]
 # The module is what checkers take pulse.controller to be, but for the call.
@@ -261,6 +268,9 @@ DispersiveReadout(7.0e9)  # type: ignore[call-arg]
 DispersiveReadout(photon_number=4.0)  # type: ignore[call-arg]
 readout.linewidth_hz = 2.0e6  # type: ignore[misc]
 MicrowaveDrive(x_amplitude=0.2)  # type: ignore[call-arg]
+assert_type(Drive(amplitude_scale_rad_per_ns=0.2).amplitude_scale_rad_per_ns, float | None)
+assert_type(MicrowaveDrive().replace(amplitude_scale_rad_per_ns=0.2), MicrowaveDrive)
+Drive(0.2)  # type: ignore[call-arg]
 
 # A qudit's tuned pulses are its calibrations, by gate; get_calibration gives
 # each as the type of its gate, on the qudit, a handle or a kernel's line.
@@ -292,6 +302,12 @@ assert_type(t.phase_rad, float)
 assert_type(t.replace(phase_rad=-t.phase_rad), VirtualZ)
 VirtualZ()  # type: ignore[call-arg]
 assert_type(qudit.replace(label="Q0"), PhysicalQudit)
+assert_type(qudit.frequency_hz + 1.0e6, float)
+PhysicalQudit(0, None, 50.0, 30.0)
+assert_type(pulse.quantum_systems.Offset(1.5e8) + 1.0, float)
+assert_type(pulse.quantum_systems.Offset(1.5e8) < pulse.quantum_systems.Offset(2.0e8), bool)
+PhysicalQudit(1, pulse.quantum_systems.Offset(1.5e8), 50.0, 30.0)
+assert_type(qpu.frequency_frame, str)
 assert_type(qpu.qudits[0].get_calibration(pulse.gates.X90), DragPulse)
 gate: pulse.gates.Gate = pulse.gates.CZ
 
@@ -319,6 +335,9 @@ Coupling((0, 1), 5.7e6, gate=cz)  # type: ignore[call-arg]
 zz = ResidualZZ((0, 1), 1.5e4)
 assert_type(zz.rate_hz, float)
 ResidualZZ((0, 1), 1.5e4, zz_coupling=0.5)  # type: ignore[call-arg]
+crosstalk = ReadoutCrosstalk(resonator_of=14, qudit=4, chi_hz=-20e3)
+assert_type(crosstalk.chi_hz, float | tuple[float, ...])
+ReadoutCrosstalk(14, 4, (-20e3, -26e3))
 pair = pulse.quantum_system(
     name="pair",
     qudits={0: PhysicalQudit(0, 5.0e9, 50.0, 30.0, anharmonicity_hz=-2.5e8)},
