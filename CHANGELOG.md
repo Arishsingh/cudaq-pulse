@@ -838,6 +838,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- Scheduling a program on a control system of which several controllers
+  declare `max_program_duration` walks the program once for all of them,
+  where it walked it once per controller with a limit. The lengths compared
+  and the errors are the same, and the first controller in the control
+  system's order whose limit the program exceeds is still the one named.
 - **`pulse.load` no longer takes answers, or a length that is not an
   answer's, from a module's attributes.** `load` kept two attributes the
   compiler uses for its own programs wherever a module wrote them.
