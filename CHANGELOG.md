@@ -793,6 +793,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   in a mode the exports do not take yet is still refused at `load` in a
   program of up to 10,000 events, where the list refused it, and a longer
   program loads as it did.
+- **A readout in a program with classical calls or a readout model weighs
+  each outcome once.** `pulse.simulate` took the weight of each state a readout projects
+  on, then took it again for the probability of each outcome and for the
+  outcome a sampled shot follows. It keeps the first. Results are
+  unchanged.
 - **RK4 on the GPU uploads its step factors once per interval.** With
   `backend="gpu"` and the default `integrator="rk4"`, each step adds states
   into one another eleven times, each time scaled by a factor that the

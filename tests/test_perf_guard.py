@@ -1320,6 +1320,45 @@ def test_a_call_adds_little_to_simulation_on_the_same_timeline():
 
 
 @pytest.mark.scaling
+def test_a_readout_beside_calls_weighs_each_outcome_once(monkeypatch):
+    from cudaq_pulse.runtime import simulate as simulation
+
+    @pulse.classical(max_latency_ns=200, name="perf_weighed_gain")
+    def gain(bits: pulse.Bits) -> float:
+        return 0.1 * bits[0]
+
+    def program(n: int):
+        source = "def kernel(q):\n    line = get_drive_line(q)\n    probe = get_readout_line(q)\n"
+        source += (
+            "    drive(line, square(8, 0.07))\n"
+            "    sync(line, probe)\n"
+            "    m = readout(probe, square(16, 0.05))\n"
+            "    sync(probe, line)\n"
+            "    drive(line, square(8, gain.submit([m]).result()))\n"
+        ) * n
+        scope = dict(vars(pulse), gain=gain)
+        exec(compile(source, f"<{n} readouts>", "exec"), scope)
+        return pulse.compile(pulse.kernel(scope["kernel"])).lower(Q[0])
+
+    weight = simulation._Backend.weight
+    weighed = dict.fromkeys((1, 4), 0)
+    for n in weighed:
+        lowered = program(n)
+
+        def counted(state: object, n: int = n) -> float:
+            weighed[n] += 1
+            return weight(state)
+
+        monkeypatch.setattr(simulation._Backend, "weight", staticmethod(counted))
+        pulse.simulate(lowered, levels=2, dt_ns=0.5, shots_count=1, seed=3, branches="sampled")
+        monkeypatch.undo()
+    # One shot follows one path: each further readout projects the state on
+    # its two levels and takes the weight of each once. Taking them again
+    # for the probabilities and for the outcome followed made it five.
+    assert weighed[4] - weighed[1] == 3 * 2, weighed
+
+
+@pytest.mark.scaling
 def test_compiling_calls_takes_little_memory_per_call():
     import tracemalloc
 
