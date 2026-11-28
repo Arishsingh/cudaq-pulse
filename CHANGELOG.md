@@ -517,6 +517,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 - **Faster compiles of branches beside long lists of lines.** Tracing a
   measurement-conditioned `if` in a kernel that keeps many lines or tones
   in a list costs less; the programs compiled are unchanged.
+- **A kernel of many comprehensions and no `try` or `with` block is
+  decoded in linear time.** Reading a kernel's bytecode looked, for the
+  exception-table entry of each inlined comprehension, through every entry
+  of the kernel, so a kernel with a thousand comprehensions ran 16 million
+  bytecodes there the first time it was compiled, most of that compile's
+  Python work. A kernel without a `try` or `with` block no longer looks:
+  it has no handler to find. One with such a block is read as before. The
+  programs compiled are unchanged.
 - **A list of lines held under several names costs a branch once.** A
   measurement-conditioned `if` kept a record of a list of lines or tones for
   every local name that held it (a further variable, or a called kernel
@@ -710,6 +718,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   `**kwargs` on to it. Calls that worked still work; a type checker now
   accepts a `Path` and rejects another keyword, such as `dpi=300`, which
   type-checked and then raised `TypeError` inside `plot_schedule`.
+- **The exports list a segment without `dataclasses.asdict`.**
+  `export_to_emulator` and the controller exports, which carry the
+  program's segments, made each segment's entry with `dataclasses.asdict`,
+  which took about 30 calls a segment; an entry is now written directly,
+  in one call. The exports are unchanged.
 - **The emulator export of one controller builds the schedule once.** On a
   control system of several controllers, `export_to_emulator` built the
   program's schedule twice, once to check it against the controller's part
@@ -793,6 +806,11 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   in a mode the exports do not take yet is still refused at `load` in a
   program of up to 10,000 events, where the list refused it, and a longer
   program loads as it did.
+- **A readout in a program with classical calls or a readout model weighs
+  each outcome once.** `pulse.simulate` took the weight of each state a readout projects
+  on, then took it again for the probability of each outcome and for the
+  outcome a sampled shot follows. It keeps the first. Results are
+  unchanged.
 - **RK4 on the GPU uploads its step factors once per interval.** With
   `backend="gpu"` and the default `integrator="rk4"`, each step adds states
   into one another eleven times, each time scaled by a factor that the
