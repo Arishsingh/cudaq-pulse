@@ -1219,6 +1219,169 @@ def test_every_submission_is_seen_by_the_check(system):
         _check_submissions([("decide", 100, 100, [], False), ("decide", 99, 100, [], False)])
 
 
+# What a module may not state for the program: answers, and a length that is
+# not an answer's.
+
+_LENGTH = (
+    '  classical.callable @length__1 {args = ["bits:1"], device = 0 : i64, dispatch_key = '
+    "3867861094 : i64, latency_max_ns = 5.0e+01 : f64, latency_min_ns = 0.0 : f64, "
+    'latency_nominal_ns = 5.0e+01 : f64, mode = "bounded", results = ["f64"], submit = "eager"}'
+)
+_PLAYED = "!pulse.drive_line, !pulse.waveform, !pulse.tone -> !pulse.drive_line, !pulse.tone"
+
+
+def _after_an_answer(body, marks=""):
+    """A function of one qudit that reads it out at cycles 0 to 100, sends
+    the result to a classical function at 100 and takes its answer, an f64
+    %ans, at 500 (the wait for it carrying *marks*); *body* follows, on the
+    drive line %d and its tone %t, with a 16-cycle waveform %w."""
+    return f"""
+module attributes {{classical.links = {{"0" = {{name = "host"}}}}}} {{
+{_LENGTH}
+  func.func @main(%q: !pulse.qudit) {TIMED} {{
+    %d, %t = pulse.get_drive_line %q : (!pulse.qudit) -> ({T})
+    %r, %rt = pulse.get_readout_line %q : (!pulse.qudit) -> (!pulse.readout_line, !pulse.tone)
+    %n = arith.constant 16 : i64
+    %long = arith.constant 100 : i64
+    %amp = arith.constant 0.5 : f64
+    %zero = arith.constant 0.0 : f64
+    %w = pulse.square %n, %amp, %zero : i64, f64, f64 -> !pulse.waveform
+    %rw = pulse.square %long, %amp, %zero : i64, f64, f64 -> !pulse.waveform
+    %r1, %rt1, %m = pulse.readout %r, %rw, %rt, iq {_at(0, 100)}
+        : !pulse.readout_line, !pulse.waveform, !pulse.tone
+          -> !pulse.readout_line, !pulse.tone, !pulse.measurement
+    %l0 = classical.get_link {{device = 0 : i64}} : !classical.link
+    %l1, %f = classical.submit %l0, @length__1(%m) {_at(100, 100)}
+        : (!pulse.measurement) -> (!classical.link, !classical.future)
+    %ans = classical.wait %f, @length__1 {_at(500, 0)}{marks} : f64
+{body}
+    return
+  }}
+}}
+"""
+
+
+@pytest.mark.level0
+def test_answers_a_module_states_for_a_call_are_not_the_programs(system):
+    body = f"""
+    %wa = pulse.square %n, %ans, %zero : i64, f64, f64 -> !pulse.waveform
+    %d1, %t1 = pulse.drive %d, %wa, %t {_at(500, 16)} : {_PLAYED}"""
+    machine, qudits = _links(), system.qudits[:1]
+    plain = pulse.load(_after_an_answer(body), entry="main", qudits=qudits, control_system=machine)
+    drive = plain.export_to_controller()["events"][-1]
+    # The amplitude is the answer's: the controller computes it as it runs.
+    assert drive["kind"] == "drive" and drive["amplitude"] is None
+    stated = _after_an_answer(body, " {classical.answers = array<f64: 9.0e-01>}")
+    program = pulse.load(stated, entry="main", qudits=qudits, control_system=machine)
+    assert "classical.answers" not in program.mlir()
+    for version in (1, 2):
+        assert program.export_to_controller(version=version) == plain.export_to_controller(
+            version=version
+        )
+
+
+def _run_time_wait(length="%cycles", reserved=16, marks=None, then=None):
+    """A wait of *length* cycles on the drive line, which states *reserved*
+    cycles and carries *marks*, and a drive after it."""
+    if marks is None:
+        marks = (
+            "classical.variable, pulse.max_cycles = 4000 : i64, pulse.min_cycles = 16 : i64, "
+            "pulse.variable_wait"
+        )
+    return _after_an_answer(f"""
+    %half = arith.constant 0.5 : f64
+    %sum = arith.addf %ans, %half : f64
+    %cycles = arith.fptosi %sum : f64 to i64
+    %len = pulse.duration_from_int {length} : (i64) -> !pulse.duration
+    %d0 = pulse.wait %d, %len {_at(500, reserved)} {{{marks}}}
+        : (!pulse.drive_line, !pulse.duration) -> !pulse.drive_line
+    %d1, %t1 = pulse.drive %d0, %w, %t {_at(500 + reserved if then is None else then, 16)}
+        : {_PLAYED}""")
+
+
+@pulse.classical(max_latency_ns=50, link="host")
+def _cycles(bits: pulse.Bits) -> float:
+    return 100.0 + 50.0 * bits[0]
+
+
+@pulse.kernel
+def _waits_for_an_answer(a, c):
+    ro = get_readout_line(a)  # noqa: F821
+    dc = get_drive_line(c)  # noqa: F821
+    m = readout(ro, square(100, 0.05))  # noqa: F821
+    wait(dc, _cycles.submit([m]).result(), bounds=(16, None))  # noqa: F821
+    drive(dc, square(16, 0.5))  # noqa: F821
+
+
+def test_a_compiled_wait_whose_length_is_an_answer_loads_with_its_mark(system):
+    machine = _links()
+    lowered, text = _as_written(system, machine, _waits_for_an_answer)
+    assert "classical.variable" in text and "pulse.max_cycles" not in text
+    program = pulse.load(
+        text, entry="main", qudits=[system.qudits[0], system.qudits[2]], control_system=machine
+    )
+    assert "classical.variable" in program.mlir()
+    for version in (1, 2):
+        assert (
+            program.export_to_controller(version=version)["events"]
+            == lowered.export_to_controller(version=version)["events"]
+        )
+
+
+def test_a_wait_whose_length_is_an_answer_reserves_its_lowest_length(system):
+    machine, qudits = _links(), system.qudits[:1]
+
+    def load(text):
+        return pulse.load(text, entry="main", qudits=qudits, control_system=machine)
+
+    program = load(_run_time_wait())
+    assert "classical.variable" in program.mlir()
+    assert events(program)[-2:] == [("wait", 0, 500, 16), ("drive", 0, 516, 16)]
+    # Less than its lowest length would start the drive inside the wait;
+    # more is not how the scheduler places it.
+    for reserved in (1, 400):
+        with pytest.raises(pulse.CompilationError, match="reserves its lowest length") as refused:
+            load(_run_time_wait(reserved=reserved))
+        assert f"duration_cycles = {reserved} and pulse.min_cycles = 16" in str(refused.value)
+        assert refused.value.code == "wrong_argument"
+    # The mark alone states no lowest length to reserve.
+    with pytest.raises(pulse.CompilationError, match="without a lowest length"):
+        load(_run_time_wait(marks="classical.variable"))
+    # Nor does a lowest length that is not a 64-bit integer.
+    wide = "classical.variable, pulse.min_cycles = 16 : i32, pulse.variable_wait"
+    with pytest.raises(pulse.CompilationError, match="without a lowest length"):
+        load(_run_time_wait(marks=wide))
+
+
+@pytest.mark.level0
+def test_the_mark_of_a_run_time_wait_is_kept_on_such_a_wait_only(system):
+    machine, qudits = _links(), system.qudits[:1]
+
+    def load(text):
+        return pulse.load(text, entry="main", qudits=qudits, control_system=machine)
+
+    def drives(first, mark):
+        return _after_an_answer(f"""
+    %d1, %t1 = pulse.drive %d, %w, %t {_at(500, first)}{mark} : {_PLAYED}
+    %d2, %t2 = pulse.drive %d1, %w, %t1 {_at(500 + first, 16)} : {_PLAYED}""")
+
+    assert "classical.variable" in load(_run_time_wait()).mlir()
+    # On a drive the mark is another compiler's attribute: the drive is held
+    # to the 16 cycles its waveform takes.
+    program = load(drives(16, " {classical.variable}"))
+    assert "classical.variable" not in program.mlir()
+    assert events(program)[-2:] == [("drive", 0, 500, 16), ("drive", 0, 516, 16)]
+    for mark in ("", " {classical.variable}"):
+        with pytest.raises(pulse.CompilationError, match="duration_cycles is 1, but the operation"):
+            load(drives(1, mark))
+    # So it is on a wait whose length no answer gives: a wait of 100 cycles.
+    program = load(_run_time_wait(length="%long", reserved=100))
+    assert "classical.variable" not in program.mlir()
+    assert events(program)[-2:] == [("wait", 0, 500, 100), ("drive", 0, 600, 16)]
+    with pytest.raises(pulse.CompilationError, match="duration_cycles is 16, but the operation"):
+        load(_run_time_wait(length="%long"))
+
+
 def test_a_given_bool_function_keeps_its_own_types(system):
     machine = _links()
     _, text = _as_written(system, machine)

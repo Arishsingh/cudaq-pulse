@@ -838,6 +838,24 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **`pulse.load` no longer takes answers, or a length that is not an
+  answer's, from a module's attributes.** `load` kept two attributes the
+  compiler uses for its own programs wherever a module wrote them.
+  `classical.answers` on a `classical.wait` is what a simulation binds to
+  a call on its own copy of a program: stated in a module, it made every
+  value computed from that answer a constant, so the export played an
+  amplitude the module chose where the program computes it from the answer
+  as it runs. `classical.variable` marks a wait whose length is an answer,
+  which the verifier therefore does not hold to the length it takes: on a
+  drive it let a 16-cycle waveform state one cycle and the next drive start
+  inside it. `load` now drops `classical.answers`, and keeps
+  `classical.variable` only on a `pulse.wait` whose length is computed from
+  an answer; anywhere else it is dropped like any attribute of another
+  compiler, and a drive, a readout or a wait of constant length is then
+  verified for the length it has. A wait that keeps the mark states its
+  lowest length (`pulse.min_cycles`) and reserves exactly that in
+  `duration_cycles`, as `compile` schedules it; another reservation raises
+  `CompilationError`. A module `compile` wrote loads as before.
 - **`pulse.load` refuses a function whose branches or loops switch a line.**
   A module could give the lines of two qudits as one result of an `scf.if`,
   carry one line into an `scf.for` and yield another in its place, or pick

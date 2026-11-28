@@ -108,8 +108,11 @@ def load(
     function returns is dropped: read a record from its
     readout in the export. Attributes another compiler put on the function
     or on its operations are not part of the program: an operation keeps its
-    own attributes and those named ``pulse.``, and a ``pulse.drive`` its two
-    phases, each a finite ``f64``: ``frame_phase_offset``, a phase shift
+    own attributes and those named ``pulse.``, a ``pulse.wait`` whose length
+    is computed from the answer of a classical call its
+    ``classical.variable`` (it then reserves its lowest length:
+    ``duration_cycles`` is its ``pulse.min_cycles``), and a ``pulse.drive``
+    its two phases, each a finite ``f64``: ``frame_phase_offset``, a phase shift
     folded into the drive, as ``compile`` writes it, and ``phase_offset``,
     the phase of that drive alone, which ``compile`` does not write and
     the export and the simulator read.
