@@ -99,6 +99,20 @@ def test_a_time_compared_with_a_bare_number_is_an_error(compare, number):
         _ = 20 * ns == Fraction(20)
 
 
+@pytest.mark.parametrize("number", [np.float64(4), np.int64(4), np.float32(4)])
+def test_a_numpy_number_on_the_left_follows_the_same_rules(number):
+    assert number * ns == 4 * ns
+    assert isinstance(number * ns, type(4 * ns))
+    with pytest.raises(TypeError, match="mixes a time with"):
+        _ = number + 20 * ns
+    with pytest.raises(TypeError, match="compares a time with a bare number"):
+        _ = number == 4 * ns
+    with pytest.raises(TypeError, match="multiply its elements"):
+        _ = np.array([number]) * ns
+    with pytest.raises(TypeError, match="multiply its elements"):
+        _ = ns * np.array([number])
+
+
 def test_a_time_never_hashes_like_a_number():
     times = [20 * ns, 0 * ns, -3 * us, 0.1 * us, 1 / 3 * ns]
     for t in times:

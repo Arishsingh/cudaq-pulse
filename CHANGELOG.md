@@ -1609,6 +1609,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   its object holds, and it compared each one it found with all it had
   found. It now keeps their identities in a set. The objects are gone
   through in the same order, and the program traced is the same.
+- **A NumPy number times a unit is a time.** `np.float64(4) * pulse.ns`,
+  which every value of an `np.linspace` sweep gives, was a bare
+  `np.float64(4.0)`: NumPy took the time as the float it subclasses, so a
+  swept `sigma` or DRAG `beta` was read as that many clock cycles, half the
+  width meant on a 2 GHz clock, with no error. NumPy numbers now follow the
+  same rules as Python's on either side of a time, and a NumPy array times
+  a unit is a `TypeError` that says to multiply its elements, rather than
+  an array that lost its unit.
 
 ## [0.1.0] - 2026-11-13
 
