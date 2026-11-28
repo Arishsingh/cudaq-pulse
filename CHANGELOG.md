@@ -838,6 +838,24 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **`pulse.load` refuses a function whose branches or loops switch a line.**
+  A module could give the lines of two qudits as one result of an `scf.if`,
+  carry one line into an `scf.for` and yield another in its place, or pick
+  a line, or the qudit a line is acquired from, with `arith.select`. What
+  reads a loaded program follows such a value to the line of the first arm,
+  or to the one the loop starts with, so the export gave every drive after
+  it to that one qudit while the function plays on the other in the other
+  arm or in the later trips. `load` now compares, at every `scf.if` and
+  `scf.for` that gives a line, a tone or a link, where the value starts on
+  each path (a line acquired from a qudit the function takes, a
+  `pulse.tone`, a `classical.get_link`), and raises `CompilationError` for
+  a branch whose arms give two as one result, for a loop that yields
+  another than it takes in, for a line, tone or link made by anything but
+  a Pulse or classical operation, `scf.if` or `scf.for`, and for a qudit
+  picked by another operation or passed through a branch or a loop. A
+  branch or a loop that passes one line on through both arms and every
+  trip loads as before, and so does every module `compile` writes: a
+  kernel cannot leave a name on two lines after an `if` on a measurement.
 - **A frame update in a measured branch of a rolled loop waits for its
   readout.** A phase or frequency change in an arm of an `if` on a
   measurement is made once the measurement is in. In a rolled loop that
