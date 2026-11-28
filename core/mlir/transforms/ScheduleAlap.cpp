@@ -133,15 +133,99 @@ static BlockShape shapeOf(pulse::ScheduleBlockOp block) {
   return shape;
 }
 
+/// The lengths found for waveform arithmetic while the schedule passes ask
+/// for them within a `Scope` (a round of a region's scheduling, the
+/// measuring of a schedule block's shape): each drive on a waveform
+/// computed from the one before it would otherwise follow the whole chain
+/// again, every time a pass asks how long it lasts. Kept only while no op
+/// is made or erased: the scope's `drop` before a loop is peeled or
+/// unrolled, and its end, forget them. Nothing is set up until an arithmetic
+/// waveform is asked for.
+class ArithmeticCycles {
+  using Lengths = llvm::DenseMap<mlir::Operation *, std::optional<int64_t>>;
+  struct State {
+    Lengths *kept = nullptr;
+    unsigned scopes = 0;
+
+    void drop() {
+      if (kept) {
+        delete kept;
+        kept = nullptr;
+      }
+    }
+  };
+  static thread_local State current;
+
+public:
+  struct Scope {
+    Scope() : state(&current) { ++state->scopes; }
+    ~Scope() {
+      state->drop();
+      --state->scopes;
+    }
+    Scope(const Scope &) = delete;
+    Scope &operator=(const Scope &) = delete;
+
+    /// Forget what is kept: ops are about to be made or erased.
+    void drop() { state->drop(); }
+
+  private:
+    // This thread's state, found once.
+    State *state;
+  };
+
+  /// The length of the waveform the arithmetic op `definition` gives: that
+  /// of the first operand, through every arithmetic op before it.
+  LLVM_ATTRIBUTE_NOINLINE static std::optional<int64_t>
+  of(mlir::Operation *definition) {
+    State &state = current;
+    if (state.scopes && !state.kept)
+      state.kept = new Lengths;
+    Lengths *lengths = state.scopes ? state.kept : nullptr;
+    llvm::SmallVector<mlir::Operation *, 8> chain;
+    std::optional<int64_t> cycles;
+    for (mlir::Operation *op = definition;;) {
+      if (lengths) {
+        auto found = lengths->find(op);
+        if (found != lengths->end()) {
+          cycles = found->second;
+          break;
+        }
+      }
+      chain.push_back(op);
+      mlir::Value waveform = op->getOperand(0);
+      op = waveform.getDefiningOp();
+      if (!op ||
+          !mlir::isa<pulse::PulseAddOp, pulse::PulseSubOp, pulse::PulseMulOp,
+                     pulse::PulseScaleOp, pulse::PulseNegOp>(op)) {
+        cycles = pulse::waveformCycles(waveform);
+        break;
+      }
+    }
+    if (lengths)
+      for (mlir::Operation *op : chain)
+        (*lengths)[op] = cycles;
+    return cycles;
+  }
+};
+
+thread_local ArithmeticCycles::State ArithmeticCycles::current;
+
+/// The length of a waveform in cycles (pulse::waveformCycles), keeping
+/// what waveform arithmetic gave within a scope of ArithmeticCycles.
+static std::optional<int64_t> keptCycles(mlir::Value waveform) {
+  return pulse::waveformCyclesWith<ArithmeticCycles>(waveform);
+}
+
 /// The cycles `op` takes. The forward pass checks (placedDuration) that
 /// every pulse and wait it places has a known length.
 static int64_t durationOf(mlir::Operation *op) {
   if (auto block = mlir::dyn_cast<pulse::ScheduleBlockOp>(op))
     return shapeOf(block).length;
   if (auto drive = mlir::dyn_cast<pulse::DriveOp>(op))
-    return pulse::waveformCycles(drive.getPulse()).value_or(0);
+    return keptCycles(drive.getPulse()).value_or(0);
   if (auto readout = mlir::dyn_cast<pulse::ReadoutOp>(op))
-    return pulse::waveformCycles(readout.getPulse()).value_or(0);
+    return keptCycles(readout.getPulse()).value_or(0);
   if (mlir::isa<classical::SubmitOp>(op))
     return classical::intAttr(op, "classical.submit_cycles", 1);
   if (mlir::isa<classical::WaitOp>(op))
@@ -175,7 +259,7 @@ static int64_t holdOf(mlir::Operation *op) {
 /// assumes some length.
 static mlir::FailureOr<int64_t> placedDuration(mlir::Operation *op) {
   auto checkPulse = [&](mlir::Value waveform) -> mlir::FailureOr<int64_t> {
-    std::optional<int64_t> cycles = pulse::waveformCycles(waveform);
+    std::optional<int64_t> cycles = keptCycles(waveform);
     if (!cycles)
       return op->emitError("cannot determine the duration of this pulse; "
                            "specialize the waveform to a constant duration "
@@ -6515,7 +6599,10 @@ static void writeShape(pulse::ScheduleBlockOp block, bool classical,
     in.push_back(first == kNever ? -1 : first);
   }
   Availability availability(block, in, classical, readiness);
-  availability.run();
+  {
+    ArithmeticCycles::Scope arithmeticCycles;
+    availability.run();
+  }
   llvm::SmallVector<int64_t> out, source;
   int64_t length = availability.length;
   for (mlir::Value value :
@@ -6879,6 +6966,8 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
   // Schedule the next round without the alap last end (see below).
   bool uncapped = false;
   while (true) {
+    // Dropped before the round peels or unrolls a loop, which erases ops.
+    ArithmeticCycles::Scope arithmeticCycles;
     Scheduler<Gridded> scheduler(region, resources, classical, grid,
                                  controllers, &timelines);
     scheduler.mayRegroup = regroups < kRegroupRounds;
@@ -6886,6 +6975,8 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
     scheduler.regroupedBy = regroupedBy;
     scheduler.uncapped = std::exchange(uncapped, false);
     auto regrouped = [&] {
+      if (scheduler.headPeel || scheduler.regroup)
+        arithmeticCycles.drop();
       if (scheduler.headPeel) {
         ++headPeels;
         for (int64_t i = 0; i < scheduler.headPeel->iterations; ++i)
@@ -6980,6 +7071,7 @@ scheduleRounds(mlir::Region &region, mlir::Operation *root, Resources resources,
       return problem.peelFront + problem.peelBack > 1;
     });
     bool narrow = wide && ++widePeels > kWidePeelRounds;
+    arithmeticCycles.drop();
     for (NotAffine &problem : problems) {
       if (narrow && problem.peelFront + problem.peelBack > 1)
         problem.peelFront = problem.peelBack = 0;
