@@ -147,15 +147,23 @@ def _require_context(op_name: str) -> NoReturn:
 # ── Channel access ───────────────────────────────────────────────────────
 
 
-def get_drive_line(qudit: Any) -> Line:
+def get_drive_line(qudit: Any, *others: Any) -> Line:
     """The drive line of a qudit.
 
     A qudit has one drive line for the whole program: later calls, also
     from called kernels, return it as it now is, so pulses on it play in
     sequence. Its tone is ``line.tone``.
 
+    On a control system that declares a broadcast drive line,
+    ``DriveLine([0, 1, 2], broadcast=True)``, the line of any of its qudits
+    is that one line, whose one tone reaches all of them, and a drive on it
+    drives every one. ``get_drive_line(a, b, c)``, with all the line's
+    qudits, gives the same line and says what it reaches.
+
     Args:
         qudit: The qudit whose drive line to use.
+        others: The other qudits of a broadcast drive line, when the line
+            is named by all its qudits.
     """
     return _require_context("get_drive_line")
 
@@ -256,6 +264,14 @@ def shift_phase(tone: Tone, phase: Numeric) -> Tone:
     Following McKay et al., PRA 96, 022330 (2017), a pulse played after it
     turns about an axis rotated by ``-phase``.
 
+    Example::
+
+        @pulse.kernel
+        def k(qudit):
+            drive_line = get_drive_line(qudit)
+            shift_phase(drive_line.tone, math.pi / 2)
+            drive(drive_line, gaussian(40, 0.3, 10))
+
     Args:
         tone: Tone handle, such as ``line.tone``.
         phase: Phase increment in radians.
@@ -265,6 +281,14 @@ def shift_phase(tone: Tone, phase: Numeric) -> Tone:
 
 def set_phase(tone: Tone, phase: Numeric) -> Tone:
     """Set the frame phase of a tone, with the sign of ``shift_phase``.
+
+    Example::
+
+        @pulse.kernel
+        def k(qudit):
+            drive_line = get_drive_line(qudit)
+            set_phase(drive_line.tone, math.pi / 2)
+            drive(drive_line, gaussian(40, 0.3, 10))
 
     Args:
         tone: Tone handle.
@@ -276,6 +300,14 @@ def set_phase(tone: Tone, phase: Numeric) -> Tone:
 def shift_frequency(tone: Tone, frequency: Numeric) -> Tone:
     """Add a relative frequency offset to a tone.
 
+    Example::
+
+        @pulse.kernel
+        def k(qudit):
+            drive_line = get_drive_line(qudit)
+            shift_frequency(drive_line.tone, 2e6)  # 2 MHz above
+            drive(drive_line, gaussian(40, 0.3, 10))
+
     Args:
         tone: Tone handle.
         frequency: Frequency offset in Hz.
@@ -285,6 +317,14 @@ def shift_frequency(tone: Tone, frequency: Numeric) -> Tone:
 
 def set_frequency(tone: Tone, frequency: Numeric) -> Tone:
     """Set the absolute frequency of a tone.
+
+    Example::
+
+        @pulse.kernel
+        def k(qudit):
+            drive_line = get_drive_line(qudit)
+            set_frequency(drive_line.tone, 5.0e9)  # 5 GHz, whatever the tone was at
+            drive(drive_line, gaussian(40, 0.3, 10))
 
     Args:
         tone: Tone handle.
@@ -358,6 +398,10 @@ def drag(duration: Numeric, amplitude: Numeric, sigma: Numeric, beta: Numeric) -
 def cosine(duration: Numeric, amplitude: Numeric) -> Waveform:
     """Create a raised-cosine envelope waveform.
 
+    The envelope is ``amplitude * (1 - cos(2 * pi * t / duration)) / 2``
+    at time ``t`` from the start of the pulse. It starts at 0, peaks at
+    *amplitude* in the middle, and returns to 0 at the end.
+
     Args:
         duration: Pulse duration: an int number of clock cycles, or a time
             (``20 * pulse.ns``).
@@ -372,6 +416,13 @@ def cosine(duration: Numeric, amplitude: Numeric) -> Waveform:
 
 def tanh_ramp(duration: Numeric, amplitude: Numeric, sigma: Numeric) -> Waveform:
     """Create a hyperbolic-tangent ramp waveform.
+
+    The envelope is ``amplitude * (1 + tanh((t - duration / 2) / sigma)) / 2``
+    at time ``t`` from the start of the pulse. It passes *amplitude* / 2 at
+    the midpoint ``t = duration / 2``, rising from
+    ``amplitude * (1 - tanh(duration / (2 * sigma))) / 2`` at the start to
+    ``amplitude * (1 + tanh(duration / (2 * sigma))) / 2`` at the end: with
+    ``duration = 4 * sigma``, about 2% and 98% of *amplitude*.
 
     Args:
         duration: Pulse duration: an int number of clock cycles, or a time
@@ -395,6 +446,14 @@ def gaussian_square(
     """Create a Gaussian-square (flat-top Gaussian) waveform.
 
     A square pulse with Gaussian rise and fall edges.
+
+    The envelope is a Gaussian rise, a flat top of *width*, and a Gaussian
+    fall. With ``edge = (duration - width) / 2`` the length of each edge,
+    it is ``amplitude * exp(-(t - edge)**2 / (2 * sigma**2))`` for
+    ``t < edge``, *amplitude* for ``edge <= t < duration - edge``, and
+    ``amplitude * exp(-(t - (duration - edge))**2 / (2 * sigma**2))``
+    after that. It starts and ends at
+    ``amplitude * exp(-edge**2 / (2 * sigma**2))``.
 
     Args:
         duration: Total pulse duration: an int number of clock cycles, or

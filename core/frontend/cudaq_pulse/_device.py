@@ -40,7 +40,14 @@ from .quantum_systems._registry import (
     _registry,
     make_quantum_system,
 )
-from .quantum_systems.base import _DESCRIPTION_FIELDS, _TRANSMON, _Description
+from .quantum_systems.base import (
+    _DESCRIPTION_FIELDS,
+    _DRIVE_FRAMES,
+    _TRANSMON,
+    _Description,
+    _DressedTones,
+    dressed_frequencies,
+)
 from .quantum_systems.models import SimulationModel
 
 try:
@@ -59,6 +66,7 @@ if TYPE_CHECKING:
         Coupling,
         DragPulse,
         PhysicalQudit,
+        ReadoutCrosstalk,
         ReadoutPulse,
         ResidualZZ,
         VirtualZ,
@@ -103,7 +111,11 @@ _CONFIG_KEYS = (
     "measurement_run",
     "control_system",
     "clock_ghz",
+    "frames",
+    "readout_crosstalk",
 )
+# What QuantumSystem.replace changes on the description besides its fields.
+_REPLACED_TOO = frozenset({"frames", "readout_crosstalk"})
 # The keys that build a quantum system rather than name a registered one.
 _BUILT_KEYS = ("qudits", "couplings", "residual_zz", "model", "attribution")
 # Reserved for a model of where carriers are and how they move.
@@ -147,6 +159,9 @@ def _fingerprint(target: _Description, layout: tuple[int, ...], calibration: Any
         residual_zz,
         layout,
     )
+    # Dressed frames and no readout crosstalk are the default and add
+    # nothing; bare frames and crosstalk entries do.
+    content += target._fingerprint_extra
     # Uncalibrated quantum systems keep their fingerprints.
     if calibration is not None:
         content += (calibration._identity,)
@@ -191,6 +206,25 @@ class Qudit:
     def __reduce__(self) -> tuple[Any, ...]:
         return (Qudit, (self.quantum_system, self.index, self.logical))
 
+    @property
+    def dressed_frequency_hz(self) -> float | None:
+        """The qudit's 0-1 frequency in Hz with its quantum system's
+        couplings included: the frequency its drive tone plays at. Without
+        couplings it is the qudit's ``frequency_hz``, which stays the bare
+        value the Hamiltonian uses. Where the qudits give their frequencies
+        as offsets from a shared reference it is an ``Offset`` from it, and
+        where they give none it is ``None``."""
+        system = self.quantum_system
+        frequency = float(system.frequencies[self.index])
+        frame = system._description._frame
+        if frame == "absolute":
+            return frequency
+        if frame == "shared_reference":
+            from .quantum_systems.base import Offset
+
+            return Offset(frequency)
+        return None
+
     def __repr__(self) -> str:
         return (
             f"<Qudit {self.logical} -> {self.carrier} {self.index} of {self.quantum_system.name}>"
@@ -228,7 +262,28 @@ class Qudit:
 
 
 class Register(Sequence[Qudit]):
-    """An ordered selection of qudit handles of one quantum system."""
+    """An ordered selection of qudit handles of one quantum system.
+
+    Make one from a system's qudits: ``qs.qudits[0:4]`` takes the first
+    four, ``qs.qudits[[0, 2]]`` takes qudits 0 and 2. A kernel parameter
+    annotated ``pulse.Register`` is a runtime value: the kernel compiles
+    once for each register length and then runs on any qudits of the
+    system. A register supports ``len()``, indexing, slicing and
+    iteration: indexing with an ``int`` gives a ``Qudit``, while a slice
+    or a list of indexes gives another ``Register``.
+
+    Example::
+
+        qs = pulse.quantum_system("transmon_surface17")
+        reg = qs.qudits[0:4]
+        len(reg)                    # 4
+        reg[1::2]                   # Register([1, 3])
+        [q.logical for q in reg]    # [0, 1, 2, 3]
+
+    See "Quantum systems" for how a system names its qudits, and
+    "Arguments" in "Calling and Compiling Kernels" for how a register
+    parameter is compiled.
+    """
 
     __slots__ = ("_qudits",)
 
@@ -342,10 +397,11 @@ class QuantumSystem:
     ``cudaq_pulse.controller``).
 
     ``qudit_freq[q]`` is the 0-1 transition frequency of qudit ``q`` (Hz) and
-    ``transition_freq[q, i, j]`` that of levels ``i`` and ``j``, over the
-    levels the system's model gives each qudit (NaN past a qudit's last
-    level); both are indexed by the user's qudit numbering and are read-only
-    arrays.
+    ``transition_freq[q, i, j]`` that of levels ``i`` and ``j`` (the upper
+    level's energy less the lower's, in either order of ``i`` and ``j``),
+    over the levels the system's model gives each qudit (NaN past a qudit's
+    last level); both are indexed by the user's qudit numbering and are
+    read-only arrays.
     ``control_system`` is the ``ControlSystem`` that plays it, if given;
     ``compile(kernel, quantum_system=dev)`` checks every program against it.
 
@@ -364,6 +420,9 @@ class QuantumSystem:
     # The registered name the quantum system was made from, as ``as_dict`` writes it.
     _spec: str | None = None
     _drift = False
+    # Each qudit's dressed 0-1 frequency, in a system whose couplings move
+    # some (dressed_frequencies); else None.
+    _dressed: dict[int, float] | None = None
     # What a kernel whose qudits are runtime parameters depends on, made by
     # the first such kernel (_programs._structure).
     _structure: str | None = None
@@ -424,13 +483,26 @@ class QuantumSystem:
         self._tables: tuple[int, Any, Any] = (-1, None, None)
         # A variant (replace) makes the rest when it is first read
         # (__getattr__): most are only simulated against, which reads none of it.
+        # One with couplings reads its line tones through the dressed method,
+        # which makes it first (a class attribute would not).
         if not _variant:
             self._finish()
+        elif target.couplings:
+            self._line_tones = self._dressed_line_tones  # type: ignore[method-assign]
 
     # The frequencies, fingerprint, identity and qudit handles.
     def _finish(self) -> None:
         target, layout, control_system = self._description, self.layout, self.control_system
+        # The tones' frequencies: each qudit's 0-1 frequency, dressed by the
+        # couplings in a system that has some (the Hamiltonian keeps the
+        # bare frequency_hz). A system without couplings does no more than
+        # test that it has none.
         self.frequencies: Mapping[int, float] = target.frequencies
+        if target.couplings:
+            dressed = dressed_frequencies(target)
+            if dressed is not None:
+                self.frequencies = self._dressed = dressed
+                self._line_tones = self._dressed_line_tones  # type: ignore[method-assign]
         self.fingerprint = _fingerprint(target, layout, self.calibration)
         # What equality compares: the fingerprint alone without a control
         # system, so comparing such quantum systems costs one string comparison.
@@ -447,11 +519,17 @@ class QuantumSystem:
             model = target.model if isinstance(target.model, SimulationModel) else SimulationModel()
             qudits = [target.qudits[p] for p in self.layout]
             levels = [model.levels_of(p) for p in self.layout]
-            f01 = np.array([q.frequency_hz for q in qudits], dtype=float)
+            f01 = np.array([q._frame_hz for q in qudits], dtype=float)
             energies = np.full((len(qudits), max(levels, default=model.levels)), np.nan)
             for row, qudit, n in zip(energies, qudits, levels, strict=False):
                 row[:n] = model.energies_hz(qudit, n)
-            transitions = np.abs(energies[:, None, :] - energies[:, :, None])
+            # A transition's frequency: its upper level's energy less its
+            # lower's, for [q, i, j] and [q, j, i] alike; 0.0 between levels
+            # of one energy, in either order (adding 0.0 makes a -0.0 one).
+            level = np.arange(energies.shape[1])
+            transitions = (energies[:, None, :] - energies[:, :, None]) * np.sign(
+                level - level[:, None]
+            ) + 0.0
             self._arrays = (_read_only(f01), _read_only(transitions))
         return self._arrays
 
@@ -460,7 +538,7 @@ class QuantumSystem:
     # drive line, only the default of a readout line.
     def _line_tones(
         self, index: int, readout: bool
-    ) -> tuple[tuple[int, int], dict[tuple[int, int], float]]:
+    ) -> tuple[tuple[int, int], Mapping[tuple[int, int], float]]:
         target = self._description
         model = target.model if isinstance(target.model, SimulationModel) else SimulationModel()
         default = model.default_transition
@@ -471,6 +549,20 @@ class QuantumSystem:
         if readout:
             return default, {default: self._frequency_tables(index + 1)[2][index]}
         return default, model.transitions_hz(qudit, model.levels_of(index))
+
+    # ``_line_tones`` of a system whose couplings dress its qudits: each tone
+    # of a drive line at the difference of the qudit's dressed levels, the
+    # 0-1 one its dressed frequency, a higher one worked out when a program
+    # first plays it (quantum_systems.base._DressedTones).
+    def _dressed_line_tones(
+        self, index: int, readout: bool
+    ) -> tuple[tuple[int, int], Mapping[tuple[int, int], float]]:
+        default, tones = QuantumSystem._line_tones(self, index, readout)
+        # The tone table: made first in a variant (__getattr__ finishes it).
+        self.frequencies  # noqa: B018
+        if self._dressed is None or readout or index < 0:
+            return default, tones
+        return default, _DressedTones(self._description, index, tones)
 
     # The 0-1 frequency of carriers 0 to *count* - 1 (or more), and the
     # tone of each one's readout line (its readout's ``frequency_hz``, else
@@ -514,6 +606,8 @@ class QuantumSystem:
             given = list(map(attrgetter("frequency_hz"), components))
         except AttributeError:
             given = [None if r is None else r.frequency_hz for r in components]
+        if not _ONLY_HZ(map(type, given)):
+            _offset_readouts(self, carriers, given)
         if len(given) == len(table) and None not in given:
             readouts = array("d", given)
         else:
@@ -631,6 +725,8 @@ class QuantumSystem:
         @property
         def residual_zz(self) -> Sequence[ResidualZZ]: ...
         @property
+        def readout_crosstalk(self) -> Sequence[ReadoutCrosstalk]: ...
+        @property
         def model(self) -> SimulationModel | type[SimulationModel] | None: ...
         @property
         def attribution(self) -> str: ...
@@ -648,6 +744,8 @@ class QuantumSystem:
         def coupling_map(self) -> list[tuple[int, ...]]: ...
         def connectivity_graph(self) -> dict[int, list[int]]: ...
         def drive_amplitude_scale(self, qudit_index: int) -> float: ...
+        @property
+        def frequency_frame(self) -> str: ...
 
         # Parameter drift: read by __getattr__ without drift, and set by the
         # drifting subclass (quantum_systems.drift).
@@ -663,8 +761,8 @@ class QuantumSystem:
         """The description's fields, properties and methods, read from the
         description the quantum system was built from when asked for:
         ``physical_qudits`` (its ``qudits``; ``qudits`` are the handles),
-        ``couplings``, ``residual_zz``, ``model``, ``attribution``,
-        ``anharmonicities``, ``t1_times``, ``t2_times``, ``t2_echo_times``,
+        ``couplings``, ``residual_zz``, ``readout_crosstalk``, ``model``,
+        ``attribution``, ``anharmonicities``, ``t1_times``, ``t2_times``, ``t2_echo_times``,
         ``thermal_populations``, ``coupling_map``, ``connectivity_graph()`` and
         ``drive_amplitude_scale(i)``."""
         if name == "physical_qudits":
@@ -678,6 +776,7 @@ class QuantumSystem:
         if name in {
             "couplings",
             "residual_zz",
+            "readout_crosstalk",
             "model",
             "attribution",
             "anharmonicities",
@@ -688,6 +787,7 @@ class QuantumSystem:
             "coupling_map",
             "connectivity_graph",
             "drive_amplitude_scale",
+            "frequency_frame",
         }:
             return getattr(self.__dict__["_description"], name)
         if name == "true_qudits":
@@ -714,8 +814,9 @@ class QuantumSystem:
         """A variant of the quantum system, as ``dataclasses.replace`` makes one:
         the quantum system ``pulse.quantum_system(name=..., qudits=...)`` builds
         from this one's ``name``, ``qudits`` (its ``physical_qudits``),
-        ``couplings``, ``residual_zz``, ``model``, ``attribution``, ``layout``,
-        ``control_system`` and ``clock_ghz``, with *changes* in their place:
+        ``couplings``, ``residual_zz``, ``model``, ``attribution``, ``frames``,
+        ``readout_crosstalk``, ``layout``, ``control_system`` and ``clock_ghz``,
+        with *changes* in their place:
         ``qs.replace(qudits={**qs.physical_qudits, 0: qudit})`` changes one
         qudit. The values are the calibrated ones, so the variant has no
         ``calibration`` of its own.
@@ -737,12 +838,12 @@ class QuantumSystem:
         clock_ghz = changes.pop(
             "clock_ghz", None if self.clock_ghz == described.clock_ghz else self.clock_ghz
         )
-        unknown = sorted(changes.keys() - _DESCRIPTION_FIELDS)
+        unknown = sorted(changes.keys() - _DESCRIPTION_FIELDS - _REPLACED_TOO)
         if unknown:
             raise InvalidTypeError(
                 f"QuantumSystem.replace() got an unexpected keyword argument {unknown[0]!r}; "
-                f"it takes {', '.join(_DESCRIPTION_FIELDS[:-1])}, layout, control_system, "
-                "clock_ghz, parameter_drift and parameter_drift_seed"
+                f"it takes {', '.join(_DESCRIPTION_FIELDS[:-1])}, frames, readout_crosstalk, "
+                "layout, control_system, clock_ghz, parameter_drift and parameter_drift_seed"
             )
         return QuantumSystem(
             described.replace(**changes),
@@ -783,6 +884,53 @@ class QuantumSystem:
 
     def __repr__(self) -> str:
         return f"<QuantumSystem {self.name} ({len(self.layout)} qudits)>"
+
+
+# The types of readout frequencies that are frequencies in Hz (or none
+# given), and whether some types are all among them: any other takes
+# _offset_readouts, which adds a float type it meets (numpy.float64).
+_HZ_TYPES = {float, int, type(None)}
+_ONLY_HZ = _HZ_TYPES.issuperset
+
+
+# Refuse a readout frequency of *system* that is an ``Offset`` (or as a
+# system file holds one) when its qudits give their frequencies in Hz:
+# it would be read as a frequency in Hz. *given* are the readout
+# frequencies of *carriers*. A system whose qudits give offsets from a
+# shared reference checked its readouts when it was built.
+def _offset_readouts(system: QuantumSystem, carriers: Sequence[int], given: Sequence[Any]) -> None:
+    from .quantum_systems.base import Offset
+
+    kinds = set(map(type, given))
+    if Offset not in kinds and not any(issubclass(kind, Mapping) for kind in kinds):
+        # Numbers of other types: the float types among them are looked at
+        # once, here and where a system file is written.
+        from . import _system
+
+        floats = [k for k in kinds if issubclass(k, float) and not issubclass(k, Offset)]
+        _HZ_TYPES.update(floats)
+        _system._HZ_TYPES.update(floats)
+        return
+    target = system._description
+    if target._frame != "absolute":
+        return
+    for carrier, frequency in zip(carriers, given, strict=True):
+        if frequency.__class__ is Offset or isinstance(frequency, Mapping):
+            raise InvalidValueError(
+                f"the readout of qudit {carrier} of quantum system {target.name!r} gives its "
+                f"frequency_hz as {frequency!r}, an offset from a shared reference, and the "
+                "system's qudits give their frequencies in Hz; an Offset readout frequency "
+                "needs qudits that give Offsets from the same reference"
+            )
+
+
+# ``_offset_readouts`` for the system file of *quantum_system*, whose
+# qudits are *target*'s: the file would hold an ``Offset`` as its number.
+def _offset_readouts_in_file(quantum_system: QuantumSystem, target: _Description) -> None:
+    carriers = sorted(target.qudits)
+    readouts = [target.qudits[carrier].readout for carrier in carriers]
+    given = [None if readout is None else readout.frequency_hz for readout in readouts]
+    _offset_readouts(quantum_system, carriers, given)
 
 
 # The quantum system of *target*, registered as *spec* (``None`` for a
@@ -1020,7 +1168,7 @@ def _checked(config: Mapping[str, Any], source: str, problems: list[Problem]) ->
             )
         )
     spec = config.get("name")
-    described = spec if spec.__class__ is _Description else None
+    described = spec if isinstance(spec, _Description) else None
     built = described is not None or "qudits" in config
     if not built and config.keys() & _BUILT_KEYS:
         for key in sorted(config.keys() & _BUILT_KEYS):
@@ -1056,6 +1204,21 @@ def _checked(config: Mapping[str, Any], source: str, problems: list[Problem]) ->
         problems.extend(
             _program_clock(control, clock_ghz, 0.0 if target is None else target.clock_ghz)[1]
         )
+    frames = config.get("frames", "dressed")
+    if target is not None and frames != target.frames:
+        if frames.__class__ is str and frames in _DRIVE_FRAMES:
+            target = target.replace(frames=frames)
+        else:
+            problems.append(
+                Problem(
+                    f'is {frames!r}; it is "dressed" (the default: a system with couplings '
+                    'drives each qudit at its dressed frequency) or "bare"',
+                    path="frames",
+                )
+            )
+    crosstalk = config.get("readout_crosstalk")
+    if target is not None and crosstalk is not None:
+        target = _with_crosstalk(target, crosstalk, problems)
     if problems or target is None:
         return None
     try:
@@ -1150,6 +1313,7 @@ def quantum_system(
     clock_ghz: float | None = None,
     parameter_drift: bool | ParameterDriftModel | Mapping[int, ParameterDriftModel] = False,
     parameter_drift_seed: int | None = None,
+    frames: str = "dressed",
 ) -> QuantumSystem:
     """A quantum system: a registered one by name, or one built from its qudits.
 
@@ -1186,6 +1350,12 @@ def quantum_system(
     (2 GHz for one built here).
     Controller clocks that do not divide evenly into one need it, and the
     problem lists the clocks that work.
+
+    ``frames`` is where the drive tones of a system with couplings play:
+    ``"dressed"`` (the default) at each qudit's 0-1 frequency with the
+    couplings included (``Qudit.dressed_frequency_hz``), so that a qudit
+    does not precess at its neighbours' shift; ``"bare"`` at its
+    ``frequency_hz``. A system without couplings is the same either way.
 
     ``parameter_drift`` makes the simulated system's qudit parameters drift
     (``cudaq_pulse.quantum_systems.drift``): ``True`` for the default
@@ -1241,6 +1411,7 @@ def quantum_system(
             and clock_ghz is None
             and not parameter_drift
             and parameter_drift_seed is None
+            and frames == "dressed"
         ):
             return _calibrated(
                 make_quantum_system(name), name, f"quantum system {name}", None, None
@@ -1254,6 +1425,7 @@ def quantum_system(
             and clock_ghz is None
             and not parameter_drift
             and parameter_drift_seed is None
+            and frames == "dressed"
         ):
             from .quantum_systems._registry import current_quantum_system
 
@@ -1294,10 +1466,11 @@ def quantum_system(
         "control_system": control_system,
         "clock_ghz": clock_ghz,
     }
+    defined: dict[str, Any] = {k: v for k, v in arguments.items() if v is not None}
+    if frames != "dressed":
+        defined["frames"] = frames
     problems: list[Problem] = []
-    found = _definition(
-        {k: v for k, v in arguments.items() if v is not None}, "arguments", problems
-    )
+    found = _definition(defined, "arguments", problems)
     if found is None:
         raise QuantumSystemDefinitionError(
             f"{_count(len(problems), 'problem')} in pulse.quantum_system()", problems=problems
@@ -1306,8 +1479,60 @@ def quantum_system(
         from .quantum_systems.drift import _replaced
 
         drift = {"parameter_drift": parameter_drift, "parameter_drift_seed": parameter_drift_seed}
-        return _replaced(found, drift)
+        found = _replaced(found, drift)
     return found
+
+
+# *target* with the readout crosstalk entries of a system file, *given*
+# (``readout_crosstalk``), each an object of resonator_of, qudit and
+# chi_hz; or *target* itself, with the problems found added to *problems*.
+def _with_crosstalk(target: _Description, given: Any, problems: list[Problem]) -> _Description:
+    from .quantum_systems.base import ReadoutCrosstalk
+
+    fields = ("resonator_of", "qudit", "chi_hz")
+    if isinstance(given, (str, bytes)) or not isinstance(given, Sequence):
+        problems.append(
+            Problem(
+                f"must be a list of entries, got {type(given).__name__}",
+                path="readout_crosstalk",
+                fix='give each as {"resonator_of": 14, "qudit": 4, "chi_hz": -20000.0}',
+            )
+        )
+        return target
+    entries = []
+    found = len(problems)
+    for i, item in enumerate(given):
+        where = f"readout_crosstalk[{i}]"
+        if not isinstance(item, Mapping):
+            problems.append(
+                Problem(
+                    "must be an object of resonator_of, qudit and chi_hz, got "
+                    + type(item).__name__,
+                    path=where,
+                )
+            )
+            continue
+        unknown = sorted(set(item) - set(fields))
+        missing = [k for k in fields if k not in item]
+        for key in unknown:
+            problems.append(
+                Problem(
+                    f"{key!r} is not a field of a readout crosstalk entry",
+                    path=f"{where}.{key}",
+                    fix="its fields are resonator_of, qudit and chi_hz",
+                )
+            )
+        for key in missing:
+            problems.append(Problem(f"{key} is missing", path=where))
+        if not unknown and not missing:
+            entries.append(ReadoutCrosstalk(**item))
+    if len(problems) > found:
+        return target
+    try:
+        return target.replace(readout_crosstalk=entries)
+    except QuantumSystemDefinitionError as error:
+        problems.extend(error.problems)
+        return target
 
 
 # Raise for a QuantumSystem given where ``pulse.quantum_system`` takes a name.

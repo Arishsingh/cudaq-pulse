@@ -87,8 +87,10 @@
 #define GET_OP_CLASSES
 #include "cudaq-pulse/Dialect/Classical/ClassicalOps.h.inc"
 
+#include "ContextDialects.h"
 #include "LengthInference.h"
 #include "ModuleLoader.h"
+#include "SegmentBoundaries.h"
 #include "cudaq-pulse/Analysis/ClassicalTiming.h"
 #include "cudaq-pulse/Analysis/Execution.h"
 #include "cudaq-pulse/Analysis/LineGrid.h"
@@ -1200,9 +1202,16 @@ struct SegmentWalk {
         return false;
       segment += *moved;
     }
+    skips.push_back({static_cast<int64_t>(boundaries.size()), count() + 1,
+                     count() - from.opened, times});
     skipped += *more;
     return true;
   }
+
+  /// Of each loop skip() counted iterations of: how many boundaries were
+  /// visited before them, the first segment they open, how many each
+  /// opens, and how many they are.
+  std::vector<std::array<int64_t, 4>> skips;
 
   int64_t timelineOf(mlir::Operation *op) {
     if (AttrNames::has(op, names.timeline))
@@ -2765,7 +2774,8 @@ private:
                readouts = key("readouts"), result = key("result"),
                role = key("role"), runtime = key("runtime"),
                samples = key("samples"), shape = key("shape"),
-               start = key("start_cycles"), test = key("test"),
+               start = key("start_cycles"), term = key("term"),
+               table = key("terms"), test = key("test"),
                timeout = key("timeout_ns"), tone = key("tone"),
                type = key("type"), unknown = key("unknown"),
                value = key("value"), values = key("values"), wait = key("wait"),
@@ -2881,6 +2891,27 @@ private:
 
   nb::object expression(int32_t index) {
     using Expression = ControllerEventWalk::Expression;
+    return walk->written(
+        index, [&](int32_t at) { return leaf(at); },
+        [&](int n) {
+          nb::object out = dict();
+          put(out, keys.term, integer(n));
+          return out;
+        },
+        [&](const Expression &e, nb::handle of, nb::handle table) {
+          nb::object out = dict();
+          if (table.is_valid())
+            put(out, keys.table, table);
+          put(out, keys.op, keys.terms[e.term]);
+          put(out, keys.type, keys.types[e.type]);
+          put(out, keys.of, of);
+          return out;
+        });
+  }
+
+  /// What is no term of an expression.
+  nb::object leaf(int32_t index) {
+    using Expression = ControllerEventWalk::Expression;
     const Expression &e = walk->expressions[index];
     if (e.kind == Expression::Number)
       return textNumber(e.number);
@@ -2902,14 +2933,8 @@ private:
       put(out, keys.answer, integer(e.event));
       put(out, keys.result, integer(e.result));
       break;
-    default: {
-      put(out, keys.op, keys.terms[e.term]);
-      put(out, keys.type, keys.types[e.type]);
-      nb::list of = list(e.of.size());
-      for (size_t i = 0; i < e.of.size(); ++i)
-        set(of, i, expression(e.of[i]));
-      put(out, keys.of, of);
-    }
+    default:
+      break;
     }
     return out;
   }
@@ -3471,12 +3496,26 @@ public:
           throw std::runtime_error("Cannot add pass: " + pass.str());
       }
     flush();
+    if (build)
+      cudaq_pulse::requireLoadedDialects(pm, ctx_.get(), "run_passes");
     programs_.clear();
     bool verify = verifyEverything();
     runPipelineVerifyingOnce(pm, *module_, "MLIR pass pipeline failed", verify);
     if (verify)
       verified();
     ContextStore::keepPipeline(ctx_.get(), pipeline, std::move(passes));
+  }
+
+  /// Mark the frame changes of this scheduled module that some path leaves
+  /// to no drive or readout, as pulse-frame-changes does, each change
+  /// staying where it is: for a module another compiler scheduled, whose
+  /// own marks are not read.
+  void mark_frame_updates() {
+    std::lock_guard<std::recursive_mutex> guard(*lock_);
+    if (pulse::markFrameUpdates(*module_)) {
+      changed();
+      programs_.clear();
+    }
   }
 
   /// Keep the selects whose uses all set a parameter of a kind in
@@ -3488,6 +3527,7 @@ public:
     pm.addNestedPass<mlir::func::FuncOp>(
         pulse::createPulseLowerSelectsPass(runtime));
     programs_.clear();
+    calls_ = {};
     runPipeline(pm, *module_, "lowering selects failed");
     return keepsSelects();
   }
@@ -3522,7 +3562,8 @@ public:
       std::string bytes;
       llvm::raw_string_ostream os(bytes);
       if (mlir::failed(mlir::writeBytecodeToFile(
-              module, os, mlir::BytecodeWriterConfig("cudaq-pulse"))))
+              module, os,
+              mlir::BytecodeWriterConfig(cudaq_pulse::kBytecodeProducer))))
         throw std::runtime_error("cannot write the module as bytecode");
       return bytes;
     };
@@ -3535,10 +3576,13 @@ public:
 
   std::string run_full_lowering() {
     std::lock_guard<std::recursive_mutex> guard(*lock_);
-    // Lower a clone so inspection does not consume the scheduled Pulse module;
+    // Lower a copy so inspection does not consume the scheduled Pulse module;
     // callers may lower repeatedly and still execute the original artifact.
-    auto lowered = mlir::OwningOpRef<mlir::ModuleOp>(module_->clone());
-    mlir::PassManager pm(ctx_.get());
+    // The copy is in a context this thread keeps for lowering: the module's
+    // context is shared and has no LLVM dialect, and loading one there would
+    // race with the threads working in it (ContextDialects.h).
+    auto lowered = cudaq_pulse::copyForLowering(*module_, makeRegistry);
+    mlir::PassManager pm(lowered->getContext());
     pm.addPass(pulse::createPulseToQOpPass());
     pm.addPass(qop::createQOpToCuDensityMatPass());
     pm.addPass(cudm::createCuDensityMatToLLVMPass());
@@ -3619,6 +3663,52 @@ public:
     };
     collect(*module_->getBody());
     return result;
+  }
+
+  /// How many events event_tree(limit) lists or stands for, without making
+  /// one: where event_tree(limit) is events(), the readout events() refuses
+  /// is refused here, with its error. None for more events than an int64_t
+  /// counts.
+  std::optional<int64_t> event_count(int64_t limit) {
+    std::lock_guard<std::recursive_mutex> guard(*lock_);
+    // The first readout events() refuses, in the order it lists them: it
+    // lists no op of a loop that runs no iteration.
+    mlir::Operation *refused = nullptr;
+    auto add = [](uint64_t a, uint64_t b) {
+      return checkedAdd(a, b).value_or(UINT64_MAX);
+    };
+    std::function<uint64_t(mlir::Block &)> count =
+        [&](mlir::Block &block) -> uint64_t {
+      uint64_t n = 0;
+      for (mlir::Operation &op : block) {
+        if (auto readout = mlir::dyn_cast<pulse::ReadoutOp>(op)) {
+          if (!refused && readout.getMode() != pulse::ReadoutMode::IQ)
+            refused = &op;
+          n = add(n, 1);
+        } else if (mlir::isa<pulse::DriveOp, pulse::WaitOp, classical::SubmitOp,
+                             classical::WaitOp>(op)) {
+          n = add(n, 1);
+        } else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+          int64_t trips = pulse::constantTripCount(loop).value_or(0);
+          if (trips > 0)
+            n = add(n, checkedMul(static_cast<uint64_t>(trips),
+                                  count(*loop.getBody()))
+                           .value_or(UINT64_MAX));
+        } else {
+          for (mlir::Region &region : op.getRegions())
+            for (mlir::Block &nested : region)
+              n = add(n, count(nested));
+        }
+      }
+      return n;
+    };
+    uint64_t events = count(*module_->getBody());
+    if (refused && limit >= 0 &&
+        (!loops_ || events <= static_cast<uint64_t>(limit)))
+      requireExportedMode(refused);
+    if (events > static_cast<uint64_t>(INT64_MAX))
+      return std::nullopt;
+    return static_cast<int64_t>(events);
   }
 
   /// events(), or, when it lists more than `limit` events, a 1-tuple of
@@ -3713,6 +3803,90 @@ public:
     nb::list root;
     build(*module_->getBody(), root);
     return nb::make_tuple(root);
+  }
+
+  /// The events the exposure of the module's classical calls asks about:
+  /// event_tree(limit), `limit` the larger of `listed` and `perCall` events
+  /// per call. Only a call with a first use asks about an event. Where
+  /// classical_calls() found none, after event_tree(limit) has refused what
+  /// it refuses, the list holds one readout, ("readout", -1, qudit, 0, 0),
+  /// for each qudit read out in the events event_tree(limit) gives, in
+  /// their order: all the exposure takes from events nothing asks about is
+  /// the depletion time of each qudit read out.
+  ///
+  /// How many calls there are, and whether an op uses an answer, is what
+  /// classical_calls() noted of the module as it is now (calls_); a module
+  /// changed since, or never asked, is asked here.
+  nb::object call_events(int64_t listed, int64_t perCall) {
+    std::lock_guard<std::recursive_mutex> guard(*lock_);
+    if (calls_.version != version_.load()) {
+      classical_calls();
+      // A module that declares no call notes nothing: it has none.
+      if (calls_.version != version_.load())
+        calls_ = {version_.load(), 0, false};
+    }
+    int64_t limit =
+        std::max(listed, checkedMul(perCall, calls_.count).value_or(INT64_MAX));
+    if (calls_.used)
+      return event_tree(limit);
+    // event_tree() refuses only a readout whose mode the exports do not
+    // support.
+    bool refuses =
+        module_
+            ->walk([](mlir::Operation *op) {
+              auto readout = mlir::dyn_cast<pulse::ReadoutOp>(op);
+              return readout && readout.getMode() != pulse::ReadoutMode::IQ
+                         ? mlir::WalkResult::interrupt()
+                         : mlir::WalkResult::advance();
+            })
+            .wasInterrupted();
+    if (refuses)
+      event_tree(limit);
+    // The readouts with a start and a length, each with whether events()
+    // lists it (it lists no op of a loop that runs no iteration; the tree
+    // holds every op), and how many events there are.
+    llvm::SmallVector<std::pair<mlir::Operation *, bool>> readouts;
+    auto add = [](uint64_t a, uint64_t b) {
+      return checkedAdd(a, b).value_or(UINT64_MAX);
+    };
+    std::function<uint64_t(mlir::Block &, bool)> count =
+        [&](mlir::Block &block, bool runs) -> uint64_t {
+      uint64_t n = 0;
+      for (mlir::Operation &op : block) {
+        if (mlir::isa<pulse::DriveOp, pulse::ReadoutOp, pulse::WaitOp,
+                      classical::SubmitOp, classical::WaitOp>(op)) {
+          if (mlir::isa<pulse::ReadoutOp>(op) && pulse::hasStart(&op) &&
+              pulse::scheduledDuration(&op))
+            readouts.emplace_back(&op, runs);
+          n = add(n, 1);
+        } else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+          uint64_t trips = static_cast<uint64_t>(
+              std::max<int64_t>(0, pulse::constantTripCount(loop).value_or(0)));
+          uint64_t body = count(*loop.getBody(), runs && trips > 0);
+          n = add(n, checkedMul(trips, body).value_or(UINT64_MAX));
+        } else {
+          for (mlir::Region &region : op.getRegions())
+            for (mlir::Block &nested : region)
+              n = add(n, count(nested, runs));
+        }
+      }
+      return n;
+    };
+    uint64_t events = count(*module_->getBody(), true);
+    bool everyEvent =
+        limit >= 0 && (!loops_ || events <= static_cast<uint64_t>(limit));
+    nb::list result;
+    llvm::SmallDenseSet<int64_t, 8> seen;
+    pulse::AllocationTracer trace;
+    for (auto [op, runs] : readouts) {
+      if (everyEvent && !runs)
+        continue;
+      mlir::Operation *allocation = trace(op->getOperand(0));
+      int64_t qudit = allocation ? pulse::quditOf(allocation) : -1;
+      if (seen.insert(qudit).second)
+        result.append(nb::make_tuple("readout", -1, qudit, 0, 0));
+    }
+    return result;
   }
 
   // ── Sites: the traced ops of a program, for idle replacement ────────
@@ -3894,10 +4068,13 @@ public:
   /// boundary) has its events once, no event has a tone id or frame
   /// changes, and `repeats` gets each such loop's ControllerEventWalk::Repeat;
   /// with a list `periods` too, its lines may repeat at periods of their
-  /// own, and `periods` gets them (ControllerEventWalk::linePeriods).
+  /// own, and `periods` gets them (ControllerEventWalk::linePeriods). A
+  /// list `segments` gets, of a module with classical calls, the segment
+  /// boundaries the walk visited (as segment_boundaries() gives them) and
+  /// then SegmentWalk::skips, the iterations it did not visit.
   nb::tuple controller_events(nb::handle parameters, nb::handle amplitudes,
                               nb::object slots, nb::object repeats,
-                              nb::object periods) {
+                              nb::object periods, nb::object segments) {
     ControllerObjects objects(parameters, amplitudes);
     std::unique_ptr<ControllerEventWalk> walk;
     std::vector<ControllerLine> lines;
@@ -3910,6 +4087,11 @@ public:
     }
     lineSlots(found, slots);
     appendRepeats(*walk, repeats, periods);
+    if (!segments.is_none() && walk->segmentWalk) {
+      auto out = nb::borrow<nb::list>(segments);
+      out.append(nb::cast(walk->segmentWalk->boundaries));
+      out.append(nb::cast(walk->segmentWalk->skips));
+    }
     return nb::make_tuple(objects.lines(lines), objects.events(*walk));
   }
 
@@ -4566,6 +4748,12 @@ public:
       }
     };
     collect(*module_->getBody());
+    // A call has a first use only if an op is computed from its answer: the
+    // ops found for the waits of the calls listed. Without any, no call has.
+    calls_ = {version_.load(), static_cast<int64_t>(calls.size()),
+              llvm::any_of(consumers, [](const auto &found) {
+                return !found.second.empty();
+              })};
     return calls;
   }
 
@@ -4581,7 +4769,13 @@ public:
     if (!classical::declaresClassicalCalls(*module_))
       return {};
     SegmentWalk walk(*module_);
-    walk.run(*module_->getBody(), [](mlir::Operation *, int64_t) {});
+    // Only where segments open is asked for: the iterations of a loop that
+    // opens none are not walked (SegmentBoundaries.h).
+    cudaq_pulse::walkSegmentBoundaries(
+        *module_->getBody(), walk.names.variable, walk.names.blocking,
+        [&](mlir::Operation *op, llvm::ArrayRef<int64_t> iteration) {
+          walk.visit(op, iteration);
+        });
     return std::move(walk.boundaries);
   }
 
@@ -4928,10 +5122,11 @@ public:
   }
 
   using ReadoutDrive =
-      std::tuple<int64_t, std::vector<int64_t>, double, double>;
+      std::tuple<int64_t, std::vector<int64_t>, double, double, double>;
 
   /// Every readout on `path` as (readout index, iteration, tone frequency in
-  /// Hz, peak amplitude of its pulse); NaN where a value is not a number.
+  /// Hz, peak amplitude of its pulse, the frequency in Hz its line's tone
+  /// started the program at); NaN where a value is not a number.
   std::vector<ReadoutDrive>
   readout_drives(const std::vector<std::vector<int64_t>> &path) {
     std::lock_guard<std::recursive_mutex> guard(*lock_);
@@ -4944,12 +5139,14 @@ public:
                            const pulse::MeasurementKey &key) {
       int64_t index =
           std::distance(readouts.begin(), llvm::find(readouts, occurrence.op));
-      const pulse::Affine &frequency = occurrence.tone.frequencyHz;
-      double hz = frequency.isConstant()
-                      ? frequency.evaluate({})
-                      : std::numeric_limits<double>::quiet_NaN();
-      result.emplace_back(index, key.iteration, hz,
-                          peakAmplitude(occurrence.op->getOperand(1)));
+      auto number = [](const pulse::Affine &value) {
+        return value.isConstant() ? value.evaluate({})
+                                  : std::numeric_limits<double>::quiet_NaN();
+      };
+      result.emplace_back(index, key.iteration,
+                          number(occurrence.tone.frequencyHz),
+                          peakAmplitude(occurrence.op->getOperand(1)),
+                          number(occurrence.tone.frameFrequencyHz));
       return false;
     };
     auto function = getFuncOp();
@@ -5458,10 +5655,16 @@ public:
     result.loops_ = loops_;
     result.runTime_ = runTime_;
     result.keepSource();
-    runSchedule(*result.module_, true, schedule, maxDrives, maxReadouts,
-                readoutLatency, switchPenalty,
-                "specialize: pass pipeline failed", specialized_.frameChanges,
-                verifyEverything());
+    try {
+      runSchedule(*result.module_, true, schedule, maxDrives, maxReadouts,
+                  readoutLatency, switchPenalty,
+                  "specialize: pass pipeline failed", specialized_.frameChanges,
+                  verifyEverything());
+    } catch (const std::runtime_error &error) {
+      // Values that take the schedule past a controller's longest program
+      // are what is wrong: an error of the values.
+      pulse::rethrowPastProgramLimit(error);
+    }
     // Verified, or trusted as the verified module it is rescheduled from.
     result.verified();
     return result;
@@ -6313,6 +6516,21 @@ private:
   // Lowered operator programs by module attribute dictionary.
   std::map<const void *, ProgramTemplate> programs_;
   Version version_;
+  // What classical_calls() last found in a module that declares calls, for
+  // call_events(): the version_ it was found at, how many calls it listed,
+  // and whether an op is computed from an answer of one. There is none
+  // (UINT64_MAX) before the calls are first listed, and after
+  // lower_selects(), which rewrites the ops in place without a new
+  // version. strip_sites() rewrites without one too, but only locations
+  // and `pulse.written`, which the calls do not depend on. It is of this
+  // module alone: a module made from it (a copy, a binding, a
+  // specialization) starts without one.
+  struct Calls {
+    uint64_t version = UINT64_MAX;
+    int64_t count = 0;
+    bool used = false;
+  };
+  Calls calls_;
   // Its specialized modules by their arguments (specialize_shared).
   SpecializedCache specialized_;
   // Made by simulation_module(): bind_call() along a path cuts windows of
@@ -6337,8 +6555,9 @@ private:
 // -----------------------------------------------------------------------
 // PulseModuleBuilder: decode a packed int64 buffer into in-memory Pulse IR
 // -----------------------------------------------------------------------
-/// Loading the dialects into a new context costs about 0.4 ms, so builders
-/// share a context. A context keeps every attribute it ever uniqued (each
+/// Loading the dialects into a new context takes a fraction of a millisecond,
+/// so builders share a context, made with the dialects its modules can hold
+/// (ContextDialects.h). A context keeps every attribute it ever uniqued (each
 /// compile with new qubit frequencies, for instance, adds a few hundred bytes
 /// per qubit), so it is retired after a number of builders or once the
 /// programs built in it reach a number of packed words, whichever comes
@@ -6367,7 +6586,7 @@ public:
     auto &pool = state();
     if (!pool.current || ++pool.uses > limits.modules ||
         pool.words >= limits.words) {
-      pool.current = makeContext(makeRegistry());
+      pool.current = makeContext(cudaq_pulse::sharedContextDialects());
       pool.current->loadAllAvailableDialects();
       pool.uses = 1;
       pool.words = 0;
@@ -8354,6 +8573,10 @@ NB_MODULE(_cudaq_pulse_native, m) {
       .def("run_passes", &PulseModule::run_passes,
            nb::call_guard<nb::gil_scoped_release>(),
            "Run named MLIR passes on this module")
+      .def("mark_frame_updates", &PulseModule::mark_frame_updates,
+           nb::call_guard<nb::gil_scoped_release>(),
+           "Mark the frame changes no drive or readout takes on some path, "
+           "each where the module places it")
       .def("lower_selects", &PulseModule::lower_selects,
            nb::call_guard<nb::gil_scoped_release>(), nb::arg("runtime"),
            "Keep the selects of the run-time parameter kinds given; run "
@@ -8370,6 +8593,9 @@ NB_MODULE(_cudaq_pulse_native, m) {
            "Schedule pulse operations", nb::arg("policy"),
            nb::arg("max_drives") = 4, nb::arg("max_readouts") = 2,
            nb::arg("readout_latency") = 0, nb::arg("switch_penalty") = 0)
+      .def("event_count", &PulseModule::event_count, nb::arg("limit"),
+           "The number of events event_tree(limit) lists or stands for, "
+           "refusing what it refuses")
       .def(
           "events", &PulseModule::events,
           nb::call_guard<nb::gil_scoped_release>(),
@@ -8377,6 +8603,10 @@ NB_MODULE(_cudaq_pulse_native, m) {
       .def("event_tree", &PulseModule::event_tree, nb::arg("limit"),
            "events(), or past `limit` events the ops once each with the "
            "loops they repeat in")
+      .def("call_events", &PulseModule::call_events, nb::arg("listed"),
+           nb::arg("per_call"),
+           "event_tree() for the exposure of the module's classical calls: "
+           "one readout per qudit read out when no op uses an answer")
       .def("strip_sites", &PulseModule::strip_sites,
            "Remove the site numbers the packed site records gave")
       .def("site_tree", &PulseModule::site_tree,
@@ -8405,6 +8635,7 @@ NB_MODULE(_cudaq_pulse_native, m) {
            nb::arg("slots").none() = nb::none(),
            nb::arg("repeats").none() = nb::none(),
            nb::arg("periods").none() = nb::none(),
+           nb::arg("segments").none() = nb::none(),
            "The lines and events of the export for a controller, as "
            "controller.export() gives them; a list `slots` gets each line's "
            "runtime-qudit slot")
@@ -8481,7 +8712,7 @@ NB_MODULE(_cudaq_pulse_native, m) {
       .def("readout_drives", &PulseModule::readout_drives, nb::arg("path"),
            nb::call_guard<nb::gil_scoped_release>(),
            "Every readout on a path: (index, iteration, frequency Hz, "
-           "amplitude)")
+           "amplitude, the frequency Hz its line's tone started at)")
       .def("drive_frames", &PulseModule::drive_frames, nb::arg("path"),
            nb::arg("outcome") = -1, nb::call_guard<nb::gil_scoped_release>(),
            "Every drive on a path with the frame it plays with, and the "

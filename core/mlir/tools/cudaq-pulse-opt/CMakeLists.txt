@@ -8,6 +8,8 @@ get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 
 add_llvm_executable(cudaq-pulse-opt
   cudaq-pulse-opt.cpp
+  # The pulse-broadcast-lines pass, which registers itself (transforms/).
+  $<TARGET_OBJECTS:CudaqPulseBroadcastLines>
 )
 
 # --version prints the package's version (cmake/CudaqPulseVersion.cmake) and
@@ -17,6 +19,9 @@ file(CONFIGURE
   CONTENT "#define CUDAQ_PULSE_VERSION \"@CUDAQ_PULSE_PACKAGE_VERSION@\"\n#define CUDAQ_PULSE_LLVM_VERSION \"@LLVM_PACKAGE_VERSION@\"\n"
   @ONLY)
 target_include_directories(cudaq-pulse-opt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/include")
+
+# --emit-bytecode states the dialect source.
+add_dependencies(cudaq-pulse-opt CudaqPulseDialectSourceInc)
 
 target_link_libraries(cudaq-pulse-opt PRIVATE
   CudaqPulsePulse

@@ -170,6 +170,21 @@ Options, all keyword-only:
 Calling the kernel directly always uses the defaults: ``k(...)`` takes only
 the kernel's own arguments.
 
+.. themed-figure:: figures/schedule_policies.svg
+   :alt: Four timelines of one kernel on the drive lines of D1, D2 and D3: an X pulse on D1, one on D2 and two on D3, then a sync of the three lines. asap: D1 at 0 ns, D2 at 0 ns, D3 at 0 and 40 ns, done at 80 ns; alap: D1 at 40 ns, D2 at 40 ns, D3 at 0 and 40 ns, done at 80 ns; rcp: D1 at 0 ns, D2 at 0 ns, D3 at 40 and 80 ns, done at 120 ns; alap_rcp: D1 at 0 ns, D2 at 40 ns, D3 at 40 and 80 ns, done at 120 ns. asap and alap drive 3 lines at once; rcp and alap_rcp never more than 2. Each pulse's Q quadrature is drawn dashed where it is large enough.
+   :width: 100%
+
+   The four policies on one kernel: an X pulse on D1, one on D2 and two on
+   D3, then a ``sync`` of the three lines, for a control system with two
+   drive lanes (``max_concurrent_drives=2``) and no controllers. ``asap``
+   starts each pulse as early as its line allows and ``alap`` as late, and
+   without controllers neither is held to the lanes. ``rcp`` and
+   ``alap_rcp`` place operations in program order and never move a later
+   one ahead of an earlier one, so here D1 and D2 take both lanes first and
+   D3's pulses wait, though an order starting with D3 would end at 80 ns.
+   ``alap_rcp`` hands out lanes from the end in reverse program order, so
+   D1 here gets the first slot. Dashed blue is a pulse's Q quadrature.
+
 .. _idle-replacement:
 
 Idle replacement
@@ -221,6 +236,16 @@ and the window's length in clock cycles:
 The data qudit's line now holds a wait from cycle 80 to 240, the echo from
 240 to 320 and a wait to 480; every operation of ``syndrome`` starts where
 it did, and the program is as long as it was (280 ns).
+
+.. themed-figure:: figures/idle_window_fill.svg
+   :alt: Two timelines of the syndrome kernel on D1's drive line and X1's drive and readout lines. As compiled, D1 has an X90 pulse, then an idle window from 40 to 240 ns while the ancilla is read out, then a second X90 pulse. After replace_idle, the window holds a wait, the echo pulse from 120 to 160 ns and a wait, and every other pulse starts where it did. The X and echo pulses have a small Q quadrature, drawn dashed.
+   :width: 100%
+
+   The schedule of ``syndrome`` as compiled and with the idle window
+   filled. The axis is in nanoseconds, and one nanosecond is two cycles
+   of the system's 2 GHz clock: the shaded stretch, 40 to 240 ns, is the
+   window of the report above, cycles 80 to 480. Dashed blue is a pulse's
+   Q quadrature, where it is large enough to draw.
 
 **Windows.** A qudit idles while its drive line has no operation, its
 line's tone does not play from another line (a cross-resonance pulse at its
@@ -296,7 +321,10 @@ a window whose fill would move an operation of the kernel there is left
 unfilled, and its ``result`` says so. Under ``"asap"`` and ``"alap"``, fills
 that take the control system past one of its limits (``max_concurrent_drives``)
 make compiling fail with ``ControllerLimitError``, which names idle
-replacement and the way out (``qudits=``, a fill with fewer pulses).
+replacement and the way out (``qudits=``, a fill with fewer pulses). A
+program that ``"asap"`` or ``"alap"`` places past such a limit without its
+fills is placed as ``"rcp"`` or ``"alap_rcp"`` places it, and its windows are
+read from and filled under that policy.
 ``compiled.replace_idle(rule)`` returns a new compiled kernel and leaves
 ``compiled`` as it is; a kernel whose idle windows are not replaced runs
 none of this. A program with filled windows pickles as the program it is,
@@ -434,6 +462,55 @@ quantum system gives the coupling of two of them, ``qs.coupling(a, b)``.
    set a wait length is both. A loop that compiles each round can tell which
    path each round took, and reading it does no work.
 
+``.exposure``
+   What the schedule does to each qudit over time, for estimating what its
+   idle time costs. One row per qudit and per outermost loop the qudit has
+   a pulse in, with the loop's rounds, and one for the rest of the
+   program's length; an example follows. A qudit is driven while a pulse
+   plays on its drive line or at its tone from another line; a ``wait`` is
+   idle time, and a drive during a readout counts in both. Lines run on
+   their own, so a loop the qudit has no pulse in takes none of its time.
+   ``decay`` and ``dephasing`` are what the idle time of one round costs at
+   the qudit's T1 and T2 star (see ``QuditExposure``); what a pulse costs
+   is not in them. Loops stay rolled, so reading it costs the same for 1000
+   rounds as for two. ``exact`` is ``no`` where the schedule does not fix
+   the figures: a stretch that waits for an answer as long as it takes or
+   has a wait of run-time length, a loop whose rounds overlap, whose
+   operations repeat with different periods or that runs while the qudit is
+   busy outside it, and a branch whose arms keep the qudit busy for
+   different lengths, where the less busy arm is counted. It works on a
+   program ``pulse.load`` read as on a compiled one, and is built when
+   read: a program that never reads it loads none of it.
+
+The exposure of a syndrome round, 1000 times:
+
+.. code-block:: python
+   :class: fragment
+
+   @pulse.kernel
+   def syndrome(data, ancilla, rounds: int):
+       d = get_drive_line(data)
+       a = get_drive_line(ancilla)
+       r = get_readout_line(ancilla)
+       for _ in range(rounds):
+           drive(d, square(16, 0.1))
+           drive(a, square(16, 0.1))
+           sync(d, a, r)
+           readout(r, square(200, 0.05))
+           sync(d, a, r)
+
+   program = pulse.compile(syndrome).lower(data, ancilla, 1000)
+   print(program.exposure)
+
+.. code-block:: text
+
+   qudit  loop  rounds  cycles  drive  readout  idle  idle %  exact     decay  dephasing
+       0     0    1000     216     16        0   200    92.6    yes  3.43e-03   5.69e-04
+       9     0    1000     216     16      200     0     0.0    yes  0.00e+00   0.00e+00
+
+A round is 216 clock cycles, of which the data qudit is driven for 16 and
+idle for 200 while the ancilla is read out.
+
 Loading a scheduled function
 ----------------------------
 
@@ -464,19 +541,98 @@ get that system's frequencies.
 check it: on its qudits and control system the function is verified as every
 scheduled program is, and checked against what the controllers can play. A
 module that states its clock must state the quantum system's. Attributes
-another compiler put on the function or its operations are dropped. The
-function plays on the qudits it takes and allocates none. A control system
+another compiler put on the function or its operations are dropped. Two that
+``compile`` uses for its own programs are a module's to state only where
+they mean what they say: ``classical.variable``, the mark of a wait whose
+length is the answer of a classical call, is kept on a ``pulse.wait`` whose
+length is computed from an answer, which then reserves its lowest length
+(its ``duration_cycles`` is its ``pulse.min_cycles``), and dropped anywhere
+else, where a drive, a readout or a wait of constant length is verified for
+the length it has; and answers bound to a call (``classical.answers``, which
+a simulation writes on its own copy of a program) are dropped, so that a
+loaded program takes every answer while it runs. A phase
+or frequency change keeps the start the module gives it; which changes no
+later drive or readout takes, and so are frame updates in the export
+(:doc:`controller_backends`), ``load`` finds from the function's operations
+as ``compile`` does, and a module does not say. The
+function plays on the qudits it takes and allocates none. Each line, tone
+and link is one from where it starts (a line and its tone at
+``pulse.get_drive_line`` or ``pulse.get_readout_line`` of a qudit the
+function takes, a tone of its own at ``pulse.tone``, a link at
+``classical.get_link``) to its last use: Pulse and classical operations,
+``scf.if`` and ``scf.for`` pass it on, and nothing else makes one (a line
+picked by ``arith.select`` is refused). A branch whose arms give the
+lines or tones of two qudits, two tones made apart or two links as one
+result is refused, and so is a loop that yields another than it takes in:
+what follows would play on a line that depends on the path. A qudit picked
+by an operation such as ``arith.select``, or passed through a branch or a
+loop, is refused too. A control system
 with line delays, or a controller with ``max_instructions`` or
 ``max_program_duration``, is refused: ``load`` does not apply or check those
 yet.
+
+Assembly is the form to pass between different builds: it holds an
+operation's properties by name. Bytecode holds them by position, in the
+shape the writer's copy of the dialects gives them, so it is read only with
+the dialect source that wrote it. Bytecode states that source in its
+producer string, as ``cudaq-pulse-dialects=<source>``: the LLVM version and a
+digest of the definition files of the Pulse and Classical dialects
+(``22.1.8-cf2faa24b237fcb9``). The bytecode of a pickled program and of
+``cudaq-pulse-opt --emit-bytecode`` states it. ``load`` refuses bytecode that
+states another source than its own, naming both, before it reads anything
+else of the module. Two sources are the same when their digests are equal
+and their LLVM versions have the same major and minor: bytecode written with
+LLVM 22.1.4 and the same dialect files is read by a build with LLVM 22.1.8,
+and bytecode written with 22.2.0 or 23.1.8 is refused. Bytecode that states
+no source is read as it is given.
+
+A compiler built from a checkout of this repository states the source of
+that checkout. ``cmake/write_dialect_source.cmake`` computes it and writes it
+as a C++ string literal:
+
+.. code-block:: bash
+
+   cmake -DROOT=<checkout> -DLLVM_VERSION=<LLVM version> \
+         -DOUTPUT=dialect_source.inc -P <checkout>/cmake/write_dialect_source.cmake
+
+.. code-block:: cpp
+
+   mlir::BytecodeWriterConfig config("mycompiler 1.0 cudaq-pulse-dialects="
+   #include "dialect_source.inc"
+   );
+   mlir::writeBytecodeToFile(module, os, config);
+
+``LLVM_VERSION`` is the version of the LLVM the compiler is built with, in
+full, as LLVM's CMake package gives it (``LLVM_PACKAGE_VERSION``,
+``22.1.8``). ``load`` compares the digest, which is what follows the last
+hyphen of the source, and the version's first two numbers; what follows the
+second dot (a patch number, a suffix such as ``22.1.8git``) is not compared.
+A stated source that has no hyphen, or whose version does not start with two
+numbers and a dot between them, is refused. The producer string is the
+compiler's own name, then ``cudaq-pulse-dialects=`` and the source, set apart
+by spaces. The first ``cudaq-pulse-dialects=`` in the string counts, and the
+source ends at the next space or at the string's end.
+
+Two attributes that are neither an operation's own nor named ``pulse.`` are
+kept, on a ``pulse.drive`` and as a finite ``f64``: ``frame_phase_offset``, a
+constant phase shift that ``compile`` folds into the drive after it (the tone
+keeps it from that drive on), and ``phase_offset``, the phase of that drive
+alone, which ``compile`` does not write. With the first, the scheduled module
+of a compiled kernel loads to the program it was compiled to. On another
+operation, or of another type, they are dropped like any attribute of another
+compiler.
 
 A module given to ``load`` is another compiler's and is treated as untrusted
 input. Nested modules are refused; the entry and the functions it calls are
 those of the module's own symbol table; what its calls would write in place
 is counted first and refused above 2\ :sup:`20` operations; calls nest at most
 256 deep; regions nest at most 256 deep counting the module's and the
-function's own, which leaves 254 branches or loops nested in a function;
-starts, durations and periods are counts of 0 to 2\ :sup:`50` cycles; and the
+function's own, which leaves 254 branches or loops nested in a function,
+and the same once its calls are written in place;
+starts, durations and periods are counts of 0 to 2\ :sup:`50` cycles, and so
+is an operation's start in the last trip of its loops, which are ``scf.for``
+loops that count signed, with bounds and a step that are index constants of at
+most 2\ :sup:`50`; and the
 module ``load`` writes is verified before anything reads it. The text or
 bytecode itself is parsed by MLIR as it is given, and the depth of that parse
 is not bounded: input nested tens of thousands of levels deep can exhaust the
@@ -510,6 +666,51 @@ from its submission's own future (a future yielded from a branch or a loop
 is refused there). A CUDA-Q QEC
 function given in ``classical=`` gives the latency of the module's versions
 of its message.
+
+A round that only sends syndromes and takes the corrections once at the end
+looks like this in a module (operations shortened to what matters):
+
+.. code-block:: text
+
+   classical.callable @enqueue_syndromes__3_2 {args = ["i64", "i64", "i64", "i64", "bits:2"], dispatch_key = 2128133762 : i64, ...}
+   classical.callable @get_corrections__3_1 {args = ["i64", "i64", "u8"], dispatch_key = 2284673953 : i64, latency_max_ns = 1.0e+03 : f64, ...}
+   func.func @main(%a: !pulse.qudit, %c: !pulse.qudit) attributes {pulse.schedule_state = #pulse.schedule_state<timed>} {
+     ...
+     scf.for %i = %c0 to %c4 step %c1 ... {
+       %ra1, %ta1, %s0 = pulse.readout ... <{duration_cycles = 100 : i64, period_cycles = array<i64: 100>, start_cycles = 0 : i64}> ...
+       %rc1, %tc1, %s1 = pulse.readout ... <{duration_cycles = 100 : i64, period_cycles = array<i64: 100>, start_cycles = 0 : i64}> ...
+       %l1, %f = classical.submit %l, @enqueue_syndromes__3_2(%c3, %c7, %c0, %c2, %s0, %s1) <{duration_cycles = 100 : i64, period_cycles = array<i64: 100>, start_cycles = 100 : i64}> ...
+       ...
+     }
+     %l2, %g = classical.submit %l1, @get_corrections__3_1(%c3, %c1, %c1) <{duration_cycles = 100 : i64, start_cycles = 500 : i64}> ...
+     %fix = classical.wait %g, @get_corrections__3_1 <{duration_cycles = 0 : i64, start_cycles = 2800 : i64}> ...
+     scf.if %fix ... { pulse.drive ... <{duration_cycles = 16 : i64, start_cycles = 2800 : i64}> ... }
+     return
+   }
+
+.. code-block:: python
+
+   from cudaq_pulse.classical import Link
+
+   machine = pulse.ControlSystem(links={"host": Link(fixed_ns=50, feedback_ns=100)})
+   program = pulse.load(
+       text, entry="main", qudits=[system.qudits[0], system.qudits[2]], control_system=machine
+   )
+   [
+       (c["function"], c["submit_cycles"], c["taken_cycles"])
+       for c in program.export_to_controller()["calls"]
+   ]
+
+.. code-block:: text
+
+   [('enqueue_syndromes__3_2', 100, None), ('enqueue_syndromes__3_2', 200, None),
+    ('enqueue_syndromes__3_2', 300, None), ('enqueue_syndromes__3_2', 400, None),
+    ('get_corrections__3_1', 500, 2800)]
+
+The four rounds send their syndromes and wait for nothing, and the loop stays
+rolled. The corrections are asked for once, at 500, and used at 2800, when the
+decoder's latency and the link allow.
+
 ``classical=`` gives functions declared with
 ``pulse.classical`` for the module's, by name. Each must take and give what
 the module states, with its latency mode and submit policy, and its latency
@@ -524,13 +725,14 @@ and implementation replace the module's:
    qudits = [system.qudits[0], system.qudits[2]]
    program = pulse.load(text, entry="main", qudits=qudits, classical=[decide])
 
-A call of another function of the module states when it starts, as
-``pulse.start_cycles`` on the ``func.call`` (with ``pulse.length_cycles``,
-which the callee must fit in, and ``pulse.period_cycles`` inside a loop), and
-is written in place: the callee's operations, each that much later. The
-callee takes and returns the lines and tones it plays on, is scheduled, and
-holds no loop. This spelling is provisional and will follow the dialect's
-timed call.
+A call of another function of the module is a placed ``pulse.call``: it
+states its start and its length (``start_cycles`` and ``duration_cycles``,
+with one ``period_cycles`` entry per loop around it), and is written in
+place, the callee's operations each that much later. The callee takes and
+returns the lines and tones it plays on, is scheduled, records its length
+(``pulse.length_cycles``) and holds no loop; a call that lasts longer than
+its callee holds the callee's lines until its end. A ``func.call`` is
+refused.
 
 Threads
 -------
@@ -570,6 +772,6 @@ compiled:
 Each must be a whole number from 1 to 2\ :sup:`40`; any other value makes
 compiling raise ``ValueError`` naming the variable. Lower values bound the
 memory a long session keeps (a loop that compiles a large program for many
-quantum systems, for example) at the cost of creating contexts more often, about
-0.4 ms each. ``python -m cudaq_pulse.doctor`` prints the limits in effect,
+quantum systems, for example) at the cost of creating contexts more often, a
+fraction of a millisecond each. ``python -m cudaq_pulse.doctor`` prints the limits in effect,
 the process quantum system and the kernel cache size.

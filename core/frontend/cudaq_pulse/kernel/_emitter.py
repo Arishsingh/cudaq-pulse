@@ -295,6 +295,9 @@ def _uses_pulse_ops(
     if owner is None:
         return False
     owners = [owner]
+    # The ids of the objects in *owners*, which keeps them alive; made
+    # when the first object *owner* holds is found.
+    known: set[int] | None = None
     for holder in owners:
         for name in fn.__code__.co_names:
             attr = _static_attr(holder, name)
@@ -305,8 +308,12 @@ def _uses_pulse_ops(
             if isinstance(attr, types.FunctionType):
                 if _uses_pulse_ops(attr, seen, holder, strict=True):
                     return True
-            elif _may_own_helpers(attr) and all(attr is not o for o in owners):
-                owners.append(attr)
+            elif _may_own_helpers(attr):
+                if known is None:
+                    known = {id(owner)}
+                if id(attr) not in known:
+                    known.add(id(attr))
+                    owners.append(attr)
     return False
 
 
@@ -863,7 +870,6 @@ _UNBOUND = object()
 # The tag of ("__unresolved__", name), a name nothing in scope defines.
 _UNRESOLVED = "__unresolved__"
 
-_LINE_OPS = frozenset({"get_drive_line", "get_readout_line"})
 # Ops that play a waveform on a line, at its tone or at the keyword tone.
 _PLAYS = frozenset({"drive", "readout"})
 _first = operator.itemgetter(0)
@@ -2506,6 +2512,11 @@ class PulseIREmitter:
                 plain = self._lines.plain = {}
             # What a generator yields is added to without a note.
             yielded: Any = saved_locals.get(".yielded")
+            # The lists of lines put back from the arms' slot logs, by id, in
+            # the order their first names come; and each further name of
+            # one, with the number of containers before it.
+            backed: dict[int, list[Any]] = {}
+            repeats: list[tuple[int, list[Any]]] | None = None
             for v in found:
                 if v is yielded:
                     containers.append((v, list(v)))
@@ -2513,7 +2524,8 @@ class PulseIREmitter:
                 if v.__class__ is dict or v.__class__ is not list and not isinstance(v, list):
                     lazy.append((v, len(v)))
                     continue
-                seen = plain.get(id(v))
+                ident = id(v)
+                seen = plain.get(ident)
                 i = 0 if seen is None or seen[0] is not v else seen[1]
                 n = len(v)
                 if i > n:
@@ -2524,22 +2536,35 @@ class PulseIREmitter:
                         break
                     i += 1
                 else:
-                    plain[id(v)] = (v, n)
+                    plain[ident] = (v, n)
                     lazy.append((v, n))
                     continue
-                plain.pop(id(v), None)
+                if seen is not None:
+                    del plain[ident]
                 # A list holding lines or tones is not copied: each arm puts
                 # back what it wrote into the list's slots from its slot log
                 # (copy None), and copies the list, as it was when the arm
                 # began, only if code changes it (_materialize). A subclass
                 # is copied as before: its own indexing runs as often as it did.
-                containers.append((v, None if v.__class__ is list else list(v)))
-            if any(copy is None for _, copy in containers):
+                if v.__class__ is not list:
+                    containers.append((v, list(v)))
+                elif ident in backed:
+                    # Another name of a list already here: the if keeps one
+                    # record of it, however many names hold it, and puts it
+                    # back where its last name comes
+                    # (_branch_journal._put_back_order).
+                    if repeats is None:
+                        repeats = []
+                    repeats.append((len(containers), v))
+                else:
+                    backed[ident] = v
+                    containers.append((v, None))
+            if backed:
                 # Lists of lines put back from the arms' slot logs: the
                 # containers copied when first changed become a record of the
                 # if's slot logs (_branch_journal.Logged).
                 journal_class: Any = _journal_lines or _load_journal_lines()
-                lazy = journal_class.logged(self, containers, lazy)
+                lazy = journal_class.logged(self, containers, lazy, backed, repeats)
 
         # JournalLines from the first such if on (_branch_journal).
         lines: Any = self._lines
@@ -2599,18 +2624,24 @@ class PulseIREmitter:
             # channels: neither reads the other).
             if containers:
                 undo: dict[int, list[tuple[int, IRValue]]] | None = None
-                # The lists put back, in order: their records are made
-                # canonical as each is put back, from the records written
-                # since the last if unless the lists differ from its own.
-                canon = tuple(id(obj) for obj, _ in containers if isinstance(obj, list))
-                # Or every one if code may have moved the items of one since
-                # (_branch_journal.Logged.fresh).
+                # The containers in the order they are put back: theirs,
+                # unless names repeat a list of lines, which is put back
+                # where its last name comes (_branch_journal._put_back_order).
+                back = containers
                 started = lazy.__class__ is not list
                 if started:
                     then_log = lazy.log
                     then_made = lazy.made
+                    if lazy.repeats is not None:
+                        back = lines.put_back_order(containers, lazy.repeats)
+                # The lists put back, in order: their records are made
+                # canonical as each is put back, from the records written
+                # since the last if unless the lists differ from its own.
+                canon = tuple(id(obj) for obj, _ in back if isinstance(obj, list))
+                # Or every one if code may have moved the items of one since
+                # (_branch_journal.Logged.fresh).
                 full = started and (lazy.fresh or lines.dirty or lines.canon != canon)
-                for obj, copy in containers:
+                for obj, copy in back:
                     if copy is None:
                         copy = then_made.get(id(obj))
                         if copy is None:
@@ -4108,7 +4139,7 @@ class PulseIREmitter:
             self.stack.append(results[-1])
         elif fname in {"drive", "wait", "sync"}:
             self.stack.append(None)
-        elif fname in _LINE_OPS:
+        elif fname in _ACQUIRES:
             self.stack.append(results[0])
         elif len(results) == 1:
             self.stack.append(results[0])
@@ -4166,10 +4197,9 @@ class PulseIREmitter:
             raise CompilationError(f"unknown pulse op: {fname}", code="unknown_name")
 
         value_count, attr_names, rtypes, operand_types = entry
-        acquires = fname in _ACQUIRES
         line_op = False
-        if acquires:
-            if fname in _LINE_OPS and call_args and call_args[0].__class__ is IRValue:
+        if fname in _ACQUIRES:
+            if call_args and call_args[0].__class__ is IRValue:
                 lines = self._lines
                 held = lines.held.get((call_args[0].vid, fname))
                 if held is not None:
@@ -4204,6 +4234,10 @@ class PulseIREmitter:
                 else:
                     last = _OPTIONAL_LAST.get(fname)
                     if last is None or len(call_args) != value_count + len(attr_names) + 1:
+                        if fname == "get_drive_line" and len(call_args) > 1:
+                            from ._emit_errors import no_broadcast_line
+
+                            raise no_broadcast_line(len(call_args))
                         raise CompilationError(
                             f"{fname}: expected {value_count + len(attr_names)} args, "
                             f"got {len(call_args)}",
@@ -4420,7 +4454,6 @@ class PulseIREmitter:
             del slots[id(old)]
             slots[id(new)] = (slot[0], slot[1], new)
 
-    # Find the local variable name bound to a given IRValue.
     def _find_local_name(self, val: IRValue) -> str | None:
         for name, v in self.locals.items():
             if v is val:

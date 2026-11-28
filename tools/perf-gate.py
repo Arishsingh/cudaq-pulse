@@ -88,11 +88,21 @@ one, a count of zero or one too small for its case, or a heavier case not
 measuring well above a lighter one (``implausible``). Such counts are never
 written as a baseline; ``--dumps DIR`` keeps the dumps for inspection.
 
+Without Valgrind, or on another platform than Linux x86-64, only the
+program sizes are compared; where ``setarch -R`` is refused the counts are
+measured with address randomization on; and bootstrap mode passes without
+gating a count. Each is right for a run at a desk and wrong for a run that
+a merge waits for, which would pass having gated nothing. ``--strict``,
+which CI passes on every run but the one that takes a baseline, fails such
+a run: unless instruction counts were measured, with address randomization
+off, against a measured baseline (``strict_errors``).
+
 Usage:
     python tools/perf-gate.py                 # compare with the baseline
     python tools/perf-gate.py --update        # rewrite the baseline from this run
     python tools/perf-gate.py --processes 5   # also show the spread of 5 runs
     python tools/perf-gate.py --base-commit SHA   # in CI: compare with the base
+    python tools/perf-gate.py --strict        # in CI: fail unless counts were gated
 
 ``--out FILE`` writes this run's measurements in the baseline's format;
 CI uploads it, so a baseline can be taken from a CI run (CONTRIBUTING.md).
@@ -113,7 +123,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -126,7 +136,7 @@ BASELINE = ROOT / "benchmarks" / "baselines" / "perf_gate.json"
 FORMAT = 2
 READABLE_FORMATS = (1, 2)
 # A case's keys in the baseline that are not program sizes.
-NOT_SIZES = ("instructions", "estimated_cycles", "python_work", "tolerance")
+NOT_SIZES = ("instructions", "estimated_cycles", "python_work", "tolerance", "address_keyed")
 
 LAYOUT_ONLY = (
     "instructions moved with identical Python work, likely layout only (for example "
@@ -172,7 +182,7 @@ PYTHON_OR_TEXT = (
     "pyrightconfig.json",
     ".clang-format",
     "tools/check-*.py",
-    "tools/ci-changes.py",
+    "tools/ci-*.py",
     "tools/stubtest-allowlist.txt",
     "tools/tutorial-scripts.py",
     "benchmarks/baselines/*",
@@ -186,6 +196,13 @@ AS_BASE = (
     "the change keeps its base's measured code; on its base's Python sources, measured on "
     "this build, the case ran the same Python work and the same calls outside the layout "
     "classes, so it is judged against its base: reported, not failed, and not a gain to keep"
+)
+AS_KEYED = (
+    "its count less the change in cost per call of the address-keyed functions (ADDRESS_KEYED: "
+    "MLIR lookups whose cost per call follows where a key lands in a hash table), judged against "
+    "the baseline's records of them or else its base, is no more than its tolerance above the "
+    "stored baseline, and what was taken out is at most 2% of the baseline's count, so it is "
+    "reported, not failed, and not a gain to keep"
 )
 AS_NATIVE_BASE = (
     "the change touches native code; on its base, built in this job, the case ran the same "
@@ -265,6 +282,35 @@ LAYOUT_CLASSES = (
     # libc enters the kernel through, on CI's runner also the interpreter's
     # own functions. Named so, as it cannot tell which.
     ("unmapped (interpreter or kernel)", r"^\?\?\?$", None),
+)
+
+# Functions of the pinned MLIR toolchain whose own instructions per call
+# follow where a key lands in a hash table: entered as often, they do the
+# same work. A row that fails as a regression against the stored baseline,
+# and whose base the job measured, is judged on its count less the change of
+# those it entered exactly as often as its base, against the stored baseline
+# (apply_address_keyed). Every entry is an anchored
+# pattern for one function of MLIR or LLVM, never of this repository or the
+# interpreter, with what it keys on and the CI runs that showed it entered
+# as often on both sides with its cost per call moved. An entry is added in
+# a pull request of its own that changes only this list and its test, and
+# the owner approves it.
+ADDRESS_KEYED = (
+    # Keys on: the storage's TypeID (a DenseMap of TypeID to its parametric
+    # uniquer), then the instance's hash in that uniquer's shard.
+    # Evidence: CI runs 45638819498 (main) and 45685405489 (a branch): first_compile 984
+    # entries each way, 544.6 -> 590.5 instructions per call; specialize_amplitude 740 each
+    # way, 190.7 -> 272.0.
+    r"^mlir::StorageUniquer::getParametricStorageTypeImpl\(",
+    # Keys on: the attribute's TypeID in the context's map of abstract attributes.
+    # Evidence: CI runs 45638819498 and 45685405489: first_compile 688 entries each way,
+    # 35.4 -> 124.9 instructions per call.
+    r"^mlir::detail::AttributeUniquer::initializeAttributeStorage\(",
+    # Keys on: the operation's TypeID and name in the context's maps of registered
+    # operations.
+    # Evidence: CI runs 45638819498 and 45685405489: first_compile 443 entries each way,
+    # 911.2 -> 831.0 instructions per call (lower).
+    r"^mlir::RegisteredOperationName::insert\(",
 )
 
 # Callgrind's cache model, fixed so the estimate does not depend on the
@@ -705,6 +751,10 @@ class Row:
     # For a layout-only row that fails against its base: what to bring to
     # the owner (shift_detail), from the dumps of the tree and the base.
     shift: str = ""
+    # For a row that failed as a regression, with an address-keyed function
+    # that moved against the baseline's records or its base: its judgement on
+    # the rest.
+    keyed: Keyed | None = None
 
     @property
     def work(self) -> str:
@@ -914,11 +964,18 @@ def failure_reason(r: Row) -> str:
     }[r.verdict]
     if kind is None:
         return f"{r.name}: {reason}"
+    keyed = (
+        f"; judged outside its address-keyed functions: {keyed_text(r.keyed, r.tolerance)}: fails"
+        if r.keyed is not None
+        else ""
+    )
     if r.on_base is True:
         return (
             f"{r.name}: layout only, {_pct(r.own)} from {_base(r)} {r.base_where} "
             f"(limit +{100 * r.tolerance:g}%): fails, the owner's to accept or not; same Python "
-            f"work; {_by_class(r.calls)}" + (f"; bring to the owner: {r.shift}" if r.shift else "")
+            f"work; {_by_class(r.calls)}"
+            + (f"; bring to the owner: {r.shift}" if r.shift else "")
+            + keyed
         )
     if kind == "gain":
         reason += ": update the baseline to keep the gain"
@@ -938,7 +995,7 @@ def failure_reason(r: Row) -> str:
         reason += f"; judged against the stored baseline: {why}"
     elif r.scope:
         reason += f"; judged against the stored baseline: no base built in this job ({r.scope})"
-    return f"{r.name}: {kind}, {reason}"
+    return f"{r.name}: {kind}, {reason}{keyed}"
 
 
 def layout_notes(rows: list[Row]) -> list[str]:
@@ -948,6 +1005,17 @@ def layout_notes(rows: list[Row]) -> list[str]:
         f"(limit +{100 * r.tolerance:g}%): passes, not a gain to keep; {_by_class(r.calls)}"
         for r in rows
         if r.verdict == "layout" and r.own is not None
+    ]
+
+
+def keyed_notes(rows: list[Row]) -> list[str]:
+    """One line for each row that passed as address-keyed."""
+    return [
+        f"{r.name}: address-keyed, {_pct(r.delta)} against the stored baseline"
+        + ("" if r.keyed.records else f" and {_pct(r.keyed.whole)} from {_base(r)} {r.base_where}")
+        + f"; {keyed_text(r.keyed, r.tolerance)}: passes, not a gain to keep"
+        for r in rows
+        if r.verdict == "address-keyed" and r.keyed is not None
     ]
 
 
@@ -1246,6 +1314,241 @@ def shift_detail(tree: str, base: str, top: int = 3) -> str:
     )
 
 
+def address_keyed(function: Function) -> bool:
+    """Whether *function* is one of ADDRESS_KEYED."""
+    return any(re.search(pattern, function[1]) for pattern in ADDRESS_KEYED)
+
+
+@dataclass(frozen=True)
+class Keyed:
+    """A row judged outside its address-keyed functions, against the
+    baseline's records of them (*records*) or its base's dump. *whole* and
+    *remainder* are its change from that reference, all of it and less the
+    listed functions' change in cost per call, each a fraction of the
+    reference's count; *excluded* is those functions' change as a
+    fraction of the tree's count. *against_baseline* is the rest's change
+    from the stored baseline, which judges it (*passes*: at most the row's
+    tolerance). *taken_out* names each function taken out, with its calls
+    and its cost per call on both sides; *left_in* each listed function
+    entered a different number of times."""
+
+    whole: float
+    remainder: float
+    excluded: float
+    taken_out: tuple[str, ...]
+    left_in: tuple[str, ...]
+    against_baseline: float | None = None
+    passes: bool = False
+    # Whether its listed functions were judged against the baseline's records
+    # of them (address_keyed_records), else against its base's dump.
+    records: bool = False
+    # Whether what was taken out exceeded LAYOUT_SHIFT of the baseline's count.
+    too_much: bool = False
+
+
+def address_keyed_judgement(tree: str, base: str) -> Keyed | None:
+    """The address-keyed functions of a case's dump *tree* against its
+    base's dump *base* (judge_address_keyed)."""
+    return judge_address_keyed(
+        dump_costs(tree), dump_costs(base), dump_calls(tree), dump_calls(base)
+    )
+
+
+# How many more or fewer times than its base a row may enter a listed
+# function and still have its change in cost per call taken out: 1% of the
+# base's entries, and at least one. With so few new entries the cost per
+# call is measured almost wholly on the base's own keys.
+ADDRESS_KEYED_ENTRIES = 0.01
+
+
+def entry_cap(entries: int) -> int:
+    """The most entries a listed function may gain or lose against
+    *entries* on the base and still be judged by its cost per call."""
+    return max(1, int(ADDRESS_KEYED_ENTRIES * entries))
+
+
+def judge_address_keyed(
+    after: dict[Function, int],
+    before: dict[Function, int],
+    tree_calls: Calls,
+    base_calls: Calls,
+) -> Keyed | None:
+    """From each function's own instructions (*after* in the tree, *before*
+    on the base) and its calls: for each ADDRESS_KEYED function entered at
+    least once on both sides, and at most entry_cap more or fewer times in
+    the tree, its change in cost per call over the tree's entries is taken
+    out, and the entries it gained or lost stay in at the base's cost per
+    call. None when nothing was taken out, where the rule has nothing to
+    judge."""
+    total, tree_total = sum(before.values()), sum(after.values())
+    if not total or not tree_total:
+        return None
+    excluded = 0.0
+    taken_out, left_in = [], []
+    for function in sorted(set(after) | set(before)):
+        if not address_keyed(function):
+            continue
+        n, m = base_calls.get(function, 0), tree_calls.get(function, 0)
+        a, b = after.get(function, 0), before.get(function, 0)
+        name = f"{function[0]}:{_short(function[1])}" if function[0] else _short(function[1])
+        if n and m and abs(m - n) <= entry_cap(n):
+            # Its change in cost per call over the tree's entries; the
+            # entries it gained or lost stay in the rest at the base's
+            # cost per call.
+            took = m * (a / m - b / n)
+            excluded += took
+            if m == n and a != b:
+                taken_out.append(
+                    f"{name} ({n:,} calls, {b / n:,.1f} -> {a / n:,.1f} per call, {a - b:+,})"
+                )
+            elif m != n:
+                taken_out.append(
+                    f"{name} ({n:,} -> {m:,} calls, {b / n:,.1f} -> {a / m:,.1f} per call, "
+                    f"taken out {took:+,.0f}, left in for {m - n:+,} calls "
+                    f"{(m - n) * b / n:+,.0f})"
+                )
+        elif a != b or n != m:
+            left_in.append(
+                f"{name} (calls {n:,} -> {m:,}, more than {entry_cap(n) if n else 0} apart, "
+                f"{a - b:+,})"
+            )
+    if not taken_out:
+        return None
+    whole = tree_total - total
+    return Keyed(
+        whole / total,
+        (whole - excluded) / total,
+        excluded / tree_total,
+        tuple(taken_out),
+        tuple(left_in),
+    )
+
+
+def apply_address_keyed(
+    rows: list[Row],
+    trees: dict[str, str],
+    bases: dict[str, str],
+    records: dict[str, dict[str, list[float]]] | None = None,
+    reps: dict[str, int] | None = None,
+) -> None:
+    """Judge each row that fails as a regression (``slower``) outside its
+    address-keyed functions: against the baseline's *records* of them when
+    it has some, for the case's *reps* repetitions, else against its base's
+    dump in *bases*. Its count less their change, against the stored
+    baseline, passes as ``address-keyed`` when at most its tolerance above
+    it (judge_row)."""
+    for r in rows:
+        if r.verdict != "slower" or r.name not in trees:
+            continue
+        recorded = (records or {}).get(r.name)
+        if recorded and r.measured and r.baseline and r.name in (reps or {}):
+            judge_row(
+                r, judge_against_records(trees[r.name], recorded, r.baseline, (reps or {})[r.name])
+            )
+        elif r.name in bases:
+            judge_row(r, address_keyed_judgement(trees[r.name], bases[r.name]))
+
+
+def judge_row(r: Row, keyed: Keyed | None) -> None:
+    """Judge a ``slower`` row *r* on *keyed*, its address-keyed functions
+    against the baseline's records or its base: its count less their
+    change, against the stored baseline, passes as ``address-keyed`` when
+    at most its tolerance above it and what was taken out is at most
+    LAYOUT_SHIFT of the baseline's count."""
+    if keyed is None or not r.measured or not r.baseline:
+        return
+    taken = keyed.excluded * r.measured
+    against = (r.measured - taken) / r.baseline - 1
+    too_much = abs(taken) > LAYOUT_SHIFT * r.baseline
+    r.keyed = replace(
+        keyed,
+        against_baseline=against,
+        passes=against <= r.tolerance and not too_much,
+        too_much=too_much,
+    )
+    if r.keyed.passes:
+        r.verdict = "address-keyed"
+
+
+def address_keyed_records(text: str, reps: int) -> dict[str, list[float]]:
+    """Each ADDRESS_KEYED function a case's dump *text* entered: its entries
+    and its own instructions per repetition, as a baseline records them."""
+    costs, calls = dump_costs(text), dump_calls(text)
+    # By name, summed over the objects that hold one.
+    totals: dict[str, list[int]] = {}
+    for function in set(costs) | set(calls):
+        if address_keyed(function):
+            total = totals.setdefault(function[1], [0, 0])
+            total[0] += calls.get(function, 0)
+            total[1] += costs.get(function, 0)
+    return {
+        name: [round(entries / reps, 3), round(cost / reps, 3)]
+        for name, (entries, cost) in sorted(totals.items())
+        if entries
+    }
+
+
+def judge_against_records(
+    tree: str, records: dict[str, list[float]], baseline: float, reps: int
+) -> Keyed | None:
+    """judge_records on a case's dump *tree*."""
+    return judge_records(dump_costs(tree), dump_calls(tree), records, baseline, reps)
+
+
+def judge_records(
+    after: dict[Function, int],
+    tree_calls: Calls,
+    records: dict[str, list[float]],
+    baseline: float,
+    reps: int,
+) -> Keyed | None:
+    """judge_address_keyed of a case's own instructions *after* and calls
+    *tree_calls* against the baseline's *records* of its listed functions
+    and its count *baseline*, each per repetition, for *reps* repetitions:
+    like for like, without a base."""
+    # The listed functions by name, summed over the objects that hold one,
+    # as the records keep them.
+    merged: dict[Function, int] = {}
+    merged_calls: Calls = {}
+    for function, cost in after.items():
+        key = ("", function[1]) if address_keyed(function) else function
+        merged[key] = merged.get(key, 0) + cost
+    for function, n in tree_calls.items():
+        key = ("", function[1]) if address_keyed(function) else function
+        merged_calls[key] = merged_calls.get(key, 0) + n
+    after, tree_calls = merged, merged_calls
+    before: dict[Function, int] = {}
+    base_calls: Calls = {}
+    for name, (entries, cost) in records.items():
+        before["", name] = round(cost * reps)
+        base_calls["", name] = round(entries * reps)
+    before["", "(the rest of the baseline)"] = round(baseline * reps) - sum(before.values())
+    keyed = judge_address_keyed(after, before, tree_calls, base_calls)
+    return None if keyed is None else replace(keyed, records=True)
+
+
+def keyed_text(k: Keyed, tolerance: float) -> str:
+    """What a row's address-keyed judgement says: the rest's change from the
+    stored baseline and its limit, its change from the base, and every
+    function taken out or left in."""
+    where = "the baseline's records" if k.records else "the base"
+    text = (
+        f"outside the address-keyed functions {_pct(k.against_baseline)} against the stored "
+        f"baseline (limit +{100 * tolerance:g}%)"
+        + ("" if k.records else f", {_pct(k.remainder)} from the base")
+        + f"; taken out, against {where}: "
+        + "; ".join(k.taken_out)
+    )
+    if k.too_much:
+        text += (
+            f"; what was taken out is more than {100 * LAYOUT_SHIFT:g}% of the baseline's count, "
+            "so the whole count is judged"
+        )
+    if k.left_in:
+        text += "; left in, entered a different number of times: " + "; ".join(k.left_in)
+    return text
+
+
 def build_tree(source: Path, build: Path, python: str) -> None:
     """Configures and builds the package in *source* as the perf-gate job
     builds it (GATE_CMAKE_ARGS)."""
@@ -1382,6 +1685,61 @@ def baseline_error(baseline: dict[str, Any], frozen: bool = False) -> str | None
     return None
 
 
+def unmeasured_baseline(baseline: dict[str, Any]) -> str | None:
+    """Why the baseline is not a measured one, or None: it is in bootstrap
+    mode, a case has no instruction count, or it does not record the
+    environment and the CI run its counts were measured in."""
+    if "bootstrap" in baseline:
+        return 'it has a "bootstrap" field, which a measured baseline does not'
+    cases = baseline.get("cases", {})
+    missing = sorted(n for n, c in cases.items() if "instructions" not in c)
+    if not cases or missing:
+        return "it has no instruction count" + (
+            f" for {', '.join(missing[:3])}{', ...' if len(missing) > 3 else ''}"
+            if missing
+            else "s"
+        )
+    if not baseline.get("environment"):
+        return "it does not record the environment its counts were measured in"
+    source = baseline.get("source")
+    if not (isinstance(source, dict) and source.get("run") and source.get("commit")):
+        return "it does not name the CI run its counts were measured in"
+    return None
+
+
+def strict_errors(
+    baseline: dict[str, Any],
+    measured: bool,
+    no_aslr: bool,
+    why_not: str = "",
+    name: str = BASELINE.name,
+) -> list[str]:
+    """Why a run is not one a merge may wait for (``--strict``), or []: no
+    instruction counts were *measured* (*why_not* says why), they were
+    measured with address randomization on (not *no_aslr*), or the baseline
+    is not a measured one (*name* is its file's). A run that fails here
+    gated no count, or gated counts that do not repeat."""
+    errors = []
+    why_not = why_not.removeprefix("instruction counts ").removeprefix("not measured")
+    if not measured:
+        errors.append(
+            "--strict: no instruction counts were measured"
+            + (f" ({why_not})" if why_not else "")
+            + ", so only the program sizes were compared"
+        )
+    elif not no_aslr:
+        errors.append(
+            "--strict: the counts were measured with address randomization on "
+            "(setarch -R is missing or not permitted here), so they do not repeat"
+        )
+    unmeasured = unmeasured_baseline(baseline)
+    if unmeasured:
+        errors.append(
+            f"--strict: {name} is not a measured baseline: {unmeasured} (--help, taking a baseline)"
+        )
+    return errors
+
+
 def _pct(x: float | None) -> str:
     return "" if x is None else f"{100 * x:+.2f}%"
 
@@ -1488,6 +1846,7 @@ def as_baseline(
     tolerances: dict[str, float],
     source: dict[str, Any] | None = None,
     python_work: PythonWork | None = None,
+    records: dict[str, dict[str, list[float]]] | None = None,
 ) -> dict[str, Any]:
     """This run in the baseline's format, with the tolerances the cases
     declare, the run it was measured in and the cases' Python work.
@@ -1505,8 +1864,10 @@ def as_baseline(
                 entry["estimated_cycles"] = round(cycles)
             if python_work and name in python_work:
                 entry["python_work"] = python_work[name]
+            if records and records.get(name):
+                entry["address_keyed"] = records[name]
         else:
-            for key in ("instructions", "estimated_cycles", "python_work"):
+            for key in ("instructions", "estimated_cycles", "python_work", "address_keyed"):
                 if key in old.get(name, {}):
                     entry[key] = old[name][key]
         if name in tolerances:
@@ -1532,7 +1893,10 @@ def _update_command() -> str:
     repo = os.environ.get("GITHUB_REPOSITORY")
     if run and repo:
         return f"gh run download {run} -R {repo} -n perf-gate-baseline -D benchmarks/baselines"
-    return "python tools/perf-gate.py --update   (on Linux x86-64, in CI's environment)"
+    return (
+        "python tools/perf-gate.py --update   (the program sizes; the instruction counts "
+        "come from a CI run: --help, taking a baseline)"
+    )
 
 
 _REGENERATE = """\
@@ -1655,6 +2019,40 @@ native base comparison:
   cases, the job or the pins is not compared this way, nor a base from
   before the extension's symbols were kept, nor a tree whose extension
   has none; its dumps are in the native-base directory of the dumps.
+
+address-keyed functions:
+  A few functions of the pinned MLIR toolchain look a key up in a hash
+  table, and the instructions each call takes follow where the key lands
+  (ADDRESS_KEYED: the uniquer's parametric storage lookup, an attribute
+  storage's initialization, an operation's registration, each keyed on a
+  TypeID). A change that moves the build's layout moves their cost per
+  call while they do the same work. The baseline records, for each case,
+  each listed function's entries and instructions per repetition
+  (address_keyed, taken with its count from the same run). A row that
+  fails as a regression is also judged against those records: for each
+  listed function it entered as often as the baseline's run, or at most
+  1% of those entries (and at least one) more or fewer times, its change
+  in cost per call over its own entries is taken out; the entries it
+  gained or lost stay in the rest at the baseline's cost per call, so
+  more work is counted as work at that price, and a function entered
+  more or fewer times than that keeps all its change in the rest. When
+  that rest is at most its tolerance (0.4% unless the case declares its
+  own) above the stored baseline, and what was taken out is at most 2%
+  of the baseline's count, it passes as "address-keyed", with a notice
+  that gives each listed function's entries and cost per call in the
+  baseline and in the row, what was taken out and what was left in; it
+  is not a gain to keep and the baseline is not changed. The rest is
+  compared like for like with the baseline's, so an address-keyed change
+  merged into main does not stay in later rows, and nothing outside the
+  listed functions can add up across merges. The baseline's environment
+  pins the MLIR toolchain, so the listed functions' code is the same as
+  when the baseline was taken. A baseline without these records (taken
+  before this rule) is judged the same way against the change's base,
+  when this job built or measured one (either way above). A name is
+  added to the list in a pull request of its own, with what it keys on
+  and the CI runs that showed it entered as often on both sides with its
+  cost per call moved, and the owner approves it; only MLIR or LLVM
+  functions may be listed.
 """
 
 
@@ -1683,6 +2081,12 @@ def main() -> int:
         "--sizes-only", action="store_true", help="skip the instruction counts (no Valgrind)"
     )
     parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail unless instruction counts were measured, with address randomization off, "
+        "against a measured baseline: for a run that a merge waits for",
+    )
+    parser.add_argument(
         "--dumps", type=Path, help="keep Callgrind's dumps and logs in this new directory"
     )
     parser.add_argument(
@@ -1698,6 +2102,8 @@ def main() -> int:
         return 0
     if args.dumps and args.dumps.exists() and any(args.dumps.iterdir()):
         parser.error(f"--dumps {args.dumps} is not empty")
+    if args.strict and (args.sizes_only or args.update):
+        parser.error("--strict gates a run on its counts: not with --sizes-only or --update")
 
     pythonpath = str((ROOT / args.pythonpath).resolve())
     baseline = json.loads(args.baseline.read_text()) if args.baseline.exists() else {}
@@ -1718,6 +2124,7 @@ def main() -> int:
         tree_calls: dict[str, Calls] | None = None
         base_calls: dict[str, Calls] | None = None
         scope = None
+        no_aslr = False
         note = work_note = ""
         if args.sizes_only:
             note = "instruction counts skipped (--sizes-only)"
@@ -1781,7 +2188,26 @@ def main() -> int:
                             tree_calls = case_calls(dumps / "run0")
                         if why:
                             scope += f"; and not against its base built here: {why}"
+        # The dumps the judgements below read, while they exist: without
+        # --dumps they go with the work directory.
+        tree_texts: dict[str, str] = {}
+        base_texts: dict[str, str] = {}
+        if instructions is not None:
+            tree_texts = case_texts(dumps / "run0")
+            if native is not None or base is not None:
+                where = dumps / ("native-base" if native is not None else "base") / "run0"
+                base_texts = case_texts(where)
 
+    # Each case's repetitions, from run0's dump and its count (run0's is the
+    # first of a case's counts).
+    reps = {
+        name: max(1, round(sum(dump_costs(text).values()) / instructions[name].instructions[0]))
+        for name, text in tree_texts.items()
+        if instructions is not None
+        and name in instructions
+        and instructions[name].instructions
+        and instructions[name].instructions[0]
+    }
     rows = compare(
         baseline,
         sizes,
@@ -1794,16 +2220,32 @@ def main() -> int:
         base_calls,
         (args.base_commit or "")[:8],
     )
+    # A regression: judged outside its address-keyed functions, against the
+    # baseline's records of them, else against its base in this job.
+    records = {
+        name: case["address_keyed"]
+        for name, case in baseline.get("cases", {}).items()
+        if case.get("address_keyed")
+    }
+    if any(r.verdict == "slower" for r in rows):
+        apply_address_keyed(rows, tree_texts, base_texts, records, reps)
     # A layout-only row that fails against its base: what carried its shift.
     failing = [r for r in rows if r.on_base is True and r.verdict in FAILING]
-    if failing:
-        where = dumps / ("native-base" if native is not None else "base") / "run0"
-        trees, bases = case_texts(dumps / "run0"), case_texts(where)
-        for r in failing:
-            if r.name in trees and r.name in bases:
-                r.shift = shift_detail(trees[r.name], bases[r.name])
+    for r in failing:
+        if r.name in tree_texts and r.name in base_texts:
+            r.shift = shift_detail(tree_texts[r.name], base_texts[r.name])
     notes = layout_notes(rows)
+    keyed = keyed_notes(rows)
     # Counts that failed the checks are reported but never become a baseline.
+    # The listed functions' entries and cost per repetition, from this run's
+    # dumps, for the baseline that this run may become.
+    recorded: dict[str, dict[str, list[float]]] = {}
+    if not problems:
+        recorded = {
+            name: address_keyed_records(text, reps[name])
+            for name, text in tree_texts.items()
+            if name in reps
+        }
     measured = as_baseline(
         environment,
         sizes,
@@ -1812,6 +2254,7 @@ def main() -> int:
         tolerances,
         _source(args.processes),
         python_work,
+        recorded,
     )
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -1868,10 +2311,14 @@ def main() -> int:
         for line in notes:
             why = AS_NATIVE_BASE if native is not None else AS_BASE
             print(f"::notice title=Perf gate::{line}: {why}")
+        for line in keyed:
+            print(f"::notice title=Perf gate::{line}: {AS_KEYED}")
     if notes:
         why = AS_NATIVE_BASE if native is not None else AS_BASE
         print("\nLayout:\n" + "".join(f"  {line}\n" for line in notes) + f"  ({why})")
-    if bootstrapped and not problems:
+    if keyed:
+        print("\nAddress-keyed:\n" + "".join(f"  {line}\n" for line in keyed) + f"  ({AS_KEYED})")
+    if bootstrapped and not problems and not args.strict:
         print(
             "\nBOOTSTRAP MODE: the baseline has no instruction counts for "
             f"{len(bootstrapped)} case(s); they are measured and reported, not gated."
@@ -1907,6 +2354,13 @@ def main() -> int:
         lines.append(f"{args.baseline.name}: {stale}")
     if env_diff and gated:
         lines.append(f"{args.baseline.name}: {env_diff}")
+    # A run a merge waits for must have gated its counts.
+    strict: list[str] = []
+    if args.strict:
+        strict = strict_errors(
+            baseline, instructions is not None, no_aslr, note, args.baseline.name
+        )
+    lines += strict
     if os.environ.get("GITHUB_ACTIONS"):
         dumps_hint = "the perf-gate-callgrind-dumps artifact has each run's dumps and Valgrind log"
     elif args.dumps:
@@ -1927,7 +2381,7 @@ def main() -> int:
                     + " ".join(f"{line}." for line in problems)
                     + f" To inspect: {dumps_hint}.\n\n"
                 )
-            elif bootstrapped:
+            elif bootstrapped and not args.strict:
                 f.write(
                     "> [!WARNING]\n"
                     f"> **Bootstrap mode.** {len(bootstrapped)} case(s) have no instruction "
@@ -1966,6 +2420,14 @@ def main() -> int:
                         else "(`python tools/perf-gate.py --help`, base comparison).\n\n"
                     )
                 )
+            if keyed:
+                f.write(
+                    "> [!NOTE]\n"
+                    f"> **Address-keyed ({len(keyed)}).** "
+                    + " ".join(f"{line}." for line in keyed)
+                    + f" In each, {AS_KEYED} "
+                    "(`python tools/perf-gate.py --help`, address-keyed functions).\n\n"
+                )
             own = ", ".join(f"{n} +{100 * t:g}%" for n, t in sorted(tolerances.items()))
             f.write(
                 f"Fails above +{100 * REGRESSION:.1f}% "
@@ -1975,7 +2437,11 @@ def main() -> int:
                 "its base's Python work, and no call outside the layout classes that differs "
                 "from its base's, is judged against its base built in this job: it passes as "
                 f"layout up to +{100 * REGRESSION:.1f}% above it, and any lower count passes "
-                "(verdict layout). "
+                "(verdict layout). A regression with a base in this job is also judged on its "
+                "count less the change of the address-keyed functions it entered as often as "
+                "the base: it "
+                "passes as address-keyed when that rest is within its tolerance above the "
+                "stored baseline. "
                 f"Spread: largest difference between {args.processes} identical runs. "
                 "Python work: the bytecodes, Python calls and C calls of a repetition, "
                 "counted natively, against the baseline's; it labels a failure, and "
@@ -1995,7 +2461,13 @@ def main() -> int:
                     + "".join(f"- {line}\n" for line in lines)
                     + "\n"
                 )
-                if not problems:
+                if strict:
+                    f.write(
+                        "A run that a merge waits for passes `--strict`: it must measure "
+                        "its instruction counts, with address randomization off, against a "
+                        "measured baseline.\n"
+                    )
+                elif not problems:
                     f.write(
                         "If the change is intended, take this run as the baseline and "
                         f"commit it:\n\n```\n{_update_command()}\n```\n"
@@ -2006,13 +2478,21 @@ def main() -> int:
             print(f"  {line}")
         if problems:
             print(f"\nThe instruction counts are not valid; {dumps_hint}.")
+        elif strict:
+            print(
+                "\n--strict: a run that a merge waits for must measure its instruction "
+                "counts, with address randomization off, against a measured baseline."
+            )
         else:
             print(f"\nIf the change is intended, update the baseline:\n  {_update_command()}")
         return 1
     if bootstrapped:
         print("\nPerf gate passed in bootstrap mode: instruction counts were not gated.")
     else:
-        print("\nPerf gate passed" + (f" ({len(notes)} layout)." if notes else "."))
+        passed = [f"{len(notes)} layout"] * bool(notes) + [f"{len(keyed)} address-keyed"] * bool(
+            keyed
+        )
+        print("\nPerf gate passed" + (f" ({', '.join(passed)})." if passed else "."))
     return 0
 
 

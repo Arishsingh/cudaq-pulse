@@ -355,6 +355,10 @@ class PackedIRBuilder:
     # control system of several controllers. Waveforms are then sampled for
     # the line that plays them.
     sample_rate_of: Callable[[str, int], tuple[int, int] | None] | None = None
+    # The tracer of a program the plain one does not trace: lines of
+    # different sample rates (``_mixed_rates``), a broadcast drive line
+    # (``_broadcast_lines``); compile() sets it. None: ``PulseIREmitter``.
+    tracer: Any = None
     # The control system's model, which names links and whose controllers may fix
     # dispatch keys; compile() sets it. None: links are ids.
     machine: Any = None
@@ -488,9 +492,50 @@ class PackedIRBuilder:
         self._ensure(0)
 
     def limit_cycles(self, cycles: int) -> None:
-        """Make a program longer than *cycles* (the controller's longest
-        program) an error when the module is built."""
+        """Make a program that sums, op after op, to more than *cycles* (the
+        controller's longest program) times the lines it takes an error when
+        the module is built: no schedule of it fits, since the operations of
+        one line follow each other. Within that the schedule decides. Only a
+        builder given a limit counts its lines, when its buffer is taken.
+        Of several limits the lowest holds."""
+        import weakref
+
+        earlier = vars(self).get("get_buffer")
+        if earlier is not None:
+            earlier.lowest[0] = min(earlier.lowest[0], cycles)
+            return
+        # The record holds the most the program may sum to, which is known
+        # when the buffer is taken.
+        at = self._cur + 1
         self._record(_MAX_CYCLES, [cycles])
+        # The builder holds the function and the function must not hold the
+        # builder, nor do the functions here hold each other in a ring: a
+        # builder under a limit is freed as any other is.
+        held = weakref.ref(self)
+        lowest = [cycles]
+
+        def stop() -> int:
+            builder = held()
+            assert builder is not None
+            return min(lowest[0] * max(1, len(builder._line_qudit)), 1 << 60)
+
+        def with_stop() -> Any:
+            builder = held()
+            assert builder is not None
+            builder._buf[at] = stop()
+            return PackedIRBuilder.get_buffer(builder)
+
+        def restated(message: str) -> str:
+            # The module's error gives the sum it stopped at as the longest
+            # program; the controller's is the limit.
+            return message.replace(
+                f"more than {stop()} cycles, the longest program",
+                f"more than {lowest[0]} cycles, the longest program",
+            )
+
+        with_stop.lowest = lowest  # type: ignore[attr-defined]
+        with_stop.restated = restated  # type: ignore[attr-defined]
+        self.get_buffer = with_stop  # type: ignore[method-assign]
 
     def _w(self, val: int) -> None:
         self._buf[self._cur] = val
@@ -712,19 +757,12 @@ class PackedIRBuilder:
                             code="invalid_duration",
                         )
             if symbolic:
-                pvid = self._get_numeric_vid(dur_raw, "i64")
-                self._ensure(4)
-                self._w(_header(_WAIT, 3, 1 << 2))
-                self._w(lv)
-                self._w(rlv)
-                self._w(pvid)
+                header = _header(_WAIT, 3, 1 << 2)
+                word = self._get_numeric_vid(dur_raw, "i64")
             else:
-                dur = _as_i64(dur_raw, "wait duration")
-                self._ensure(4)
-                self._w(_header(_WAIT, 3))
-                self._w(lv)
-                self._w(rlv)
-                self._w(dur)
+                header = _WAIT_HEADER
+                word = _as_i64(dur_raw, "wait duration")
+            self._put((header, lv, rlv, word))
             return results
 
         # --- shift_phase ---
@@ -1218,7 +1256,6 @@ class PackedIRBuilder:
         for key in [k for k, vid in self._numeric_vids.items() if vid >= live]:
             del self._numeric_vids[key]
 
-    # Get a block-argument reference and infer its storage type.
     def _get_parameter_base_vid(self, param: Parameter, expected_dtype: str) -> int:
         if param.dtype == "unknown":
             param.dtype = expected_dtype
@@ -1538,11 +1575,7 @@ class PackedIRBuilder:
         what = ("duration", "amplitude", "sigma", "beta")[slot]
         return cycles(_WF_NAMES[wf_code], what, value, False, "", self.clock_ghz)
 
-    # Emit a waveform record, handling mixed Parameter/concrete values.
-    #
-    # For each value slot, if the value is a Parameter, emit a PARAM record
-    # first and encode the param vid. A param_mask bit flags parametric slots
-    # so the C++ decoder can distinguish vids from literals.
+    # The decoder uses the parameter mask to tell value ids from literals.
     def _emit_wf(self, wf_code: int, rv: int, vals: list[Any], dtypes: list[str]) -> None:
         encoded: list[int] = []
         param_mask = 0
@@ -1670,6 +1703,10 @@ class PackedIRBuilder:
         found.unroll_threshold = self.unroll_threshold
         found.machine = self.machine
         found.line_tones = self.line_tones
+        if self.tracer is not None and "broadcast_lines" in self.__dict__:
+            from .._broadcast_lines import armed_like
+
+            armed_like(found, self)
         found.locate_structural = self.locate_structural
         return found
 

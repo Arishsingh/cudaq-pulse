@@ -16,6 +16,7 @@ import pytest
 from cudaq_pulse.compiler import DEFAULT_PASSES, CompileOptions
 
 from tests._handles import Q
+from tests._sources import source_file
 
 _ROOT = str(Path(pulse.__file__).parent.parent)
 
@@ -993,9 +994,9 @@ def _surface_code_cycle():
     import importlib.util
     import io
 
-    path = Path(__file__).parent.parent / "examples/transmon"
     spec = importlib.util.spec_from_file_location(
-        "surface_code_cycle_example", path / "transmon_surface17_surface_code_cycle.py"
+        "surface_code_cycle_example",
+        source_file("examples/transmon/transmon_surface17_surface_code_cycle.py"),
     )
     example = importlib.util.module_from_spec(spec)
     with contextlib.redirect_stdout(io.StringIO()):
@@ -1826,6 +1827,49 @@ def test_a_fill_past_the_systems_drive_limit_fails_and_names_it(schedule):
         "; fill fewer qudits (qudits=), use a fill with fewer pulses, or raise the "
         "control system's limit"
     )
+
+
+@pulse.kernel
+def three_at_once(a, b, c):
+    da = get_drive_line(a)
+    db = get_drive_line(b)
+    dc = get_drive_line(c)
+    drive(da, square(40, 0.1))
+    drive(db, square(40, 0.1))
+    drive(dc, square(40, 0.1))
+    sync(da, db, dc)
+    drive(da, square(400, 0.1))
+    sync(da, db, dc)
+    drive(db, square(40, 0.1))
+
+
+@pytest.mark.parametrize(("schedule", "placed"), [("asap", "rcp"), ("alap", "alap_rcp")])
+def test_a_program_past_the_drive_limit_without_fills_is_filled_as_its_rcp_schedule(
+    schedule, placed
+):
+    from cudaq_pulse.controller import DriveLine, ReadoutLine
+
+    from tests._handles import ladder_target
+
+    box = pulse.Controller(
+        drive_lines=[DriveLine(q) for q in range(4)],
+        readout_lines=[ReadoutLine(q) for q in range(4)],
+    )
+    qpu = ladder_target(
+        4, control_system=pulse.ControlSystem(controllers=[box], max_concurrent_drives=2)
+    )
+    q = qpu.qudits
+    rule = pulse.IdleReplacement(pi, threshold=100)
+    # Three lines play at once without the fill: the program is placed as
+    # rcp (alap_rcp) places it, its windows read and filled there: b's
+    # window beside a's long pulse takes the free lane, c's has none.
+    filled = pulse.compile(three_at_once, schedule=schedule).replace_idle(rule).lower(*q[:3])
+    as_placed = pulse.compile(three_at_once, schedule=placed).replace_idle(rule).lower(*q[:3])
+    assert filled.options.schedule == placed
+    assert [(w.qudit, w.filled) for w in filled.metrics.idle_windows] == [(1, True), (2, False)]
+    assert [(e.kind, e.line, e.start_cycles) for e in filled.schedule] == [
+        (e.kind, e.line, e.start_cycles) for e in as_placed.schedule
+    ]
 
 
 def test_a_float_parameter_that_sets_a_pulses_length_compiles_at_once():

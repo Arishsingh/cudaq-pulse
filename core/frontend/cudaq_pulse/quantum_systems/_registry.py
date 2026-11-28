@@ -136,7 +136,7 @@ def make_quantum_system(spec: str) -> _Description:
             f"{', '.join(names)}"
         )
     target = factory(arg if colon else None)
-    if target.__class__ is _Description:
+    if isinstance(target, _Description):
         return target
     if hasattr(target, "to_quantum_system"):
         target = target.to_quantum_system()

@@ -79,12 +79,10 @@ def _trace(
     closures = _extract_closures(fn) if fn.__closure__ else {}
     if emitter_type is not None:
         emitter = emitter_type(builder, fn.__globals__, closures)
-    elif builder.sample_rate_of is None:
+    elif builder.tracer is None:
         emitter = PulseIREmitter(builder, fn.__globals__, closures)
     else:
-        from ._mixed_rates import MixedRates
-
-        emitter = MixedRates(builder, fn.__globals__, closures)
+        emitter = builder.tracer(builder, fn.__globals__, closures)
     local_vars = emitter.locals
     for name, val in zip(params, args, strict=False):
         if type(val) is Qudit:

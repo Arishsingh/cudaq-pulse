@@ -105,6 +105,16 @@ In the qudit's frame, which rotates at its 0-1 frequency, a tone at
 its frame. The 1-2 transition of a transmon is driven resonantly by a tone at
 ``w_q + alpha``.
 
+.. themed-figure:: figures/frame_phase.svg
+   :alt: The phase of a drive tone's frame against time, above the three X90 pulses that take it. A shift_phase of π/2 at 40 ns is a step; a shift_frequency of +2.5 MHz at 80 ns makes the phase rise steadily from there. The phase each pulse starts with: 0 for the pulse from 0 ns, π/2 for the pulse from 40 ns, π for the pulse from 180 ns. Each pulse's small Q quadrature is drawn dashed.
+   :width: 100%
+
+   A frame over three X90 pulses: ``shift_phase(tone, pi / 2)`` after the
+   first, and ``shift_frequency(tone, 2.5e6)`` and a 100 ns wait after the
+   second. A phase shift is a step and a frequency shift a slope; each
+   pulse takes the phase the frame has when it starts. Dashed blue is a
+   pulse's Q quadrature.
+
 .. _virtual-z:
 
 Phase frames and virtual Z gates
@@ -181,11 +191,26 @@ an ``int`` number of clock cycles or a time such as ``20 * pulse.ns``;
        anharmonicity ``alpha`` in radians per clock cycle (``2 pi f_alpha /
        f_clock``, negative for a transmon).
    * - ``cosine(duration, amplitude)``
-     - Raised-cosine envelope
+     - Raised-cosine envelope:
+       ``amplitude * (1 - cos(2 * pi * t / duration)) / 2`` at time ``t``
+       from the start of the pulse. It starts at 0, peaks at *amplitude*
+       in the middle, and returns to 0 at the end.
    * - ``tanh_ramp(duration, amplitude, sigma)``
-     - Hyperbolic tangent ramp from zero to the requested amplitude
+     - Hyperbolic tangent ramp:
+       ``amplitude * (1 + tanh((t - duration / 2) / sigma)) / 2`` at time
+       ``t`` from the start of the pulse. It passes *amplitude* / 2 at the
+       midpoint ``t = duration / 2``, rising from
+       ``amplitude * (1 - tanh(duration / (2 * sigma))) / 2`` at the start
+       to ``amplitude * (1 + tanh(duration / (2 * sigma))) / 2`` at the end:
+       with ``duration = 4 * sigma``, about 2% and 98% of *amplitude*.
    * - ``gaussian_square(duration, amplitude, sigma, width)``
-     - Flat-top pulse with Gaussian rise/fall edges
+     - Flat-top pulse with Gaussian rise/fall edges: with
+       ``edge = (duration - width) / 2`` the length of each edge, the
+       envelope is ``amplitude * exp(-(t - edge)**2 / (2 * sigma**2))``
+       while it rises, *amplitude* on the flat top, and
+       ``amplitude * exp(-(t - (duration - edge))**2 / (2 * sigma**2))``
+       while it falls. It starts and ends at
+       ``amplitude * exp(-edge**2 / (2 * sigma**2))``.
    * - ``custom(duration, envelope_fn)``
      - A Python function ``f(t)`` of the time in clock cycles, sampled while
        tracing (below)
@@ -211,8 +236,9 @@ frame (see :ref:`conventions-frames`).
 
       <div class="pulse-waveform-explorer" data-shape="drag"></div>
 
-.. figure:: figures/waveform_envelopes.svg
+.. themed-figure:: figures/waveform_envelopes.svg
    :figclass: pwe-fallback
+   :width: 100%
    :alt: The I and Q envelopes of gaussian, drag, cosine, tanh_ramp,
          gaussian_square and square, each 40 clock cycles long.
 

@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType, ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import cudaq_pulse.classical as classical
 
@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from . import _clocks
     from ._classical_report import ClassicalCall as ClassicalCall
     from ._device import QuantumSystem
+    from ._exposure import Exposure as Exposure
+    from ._exposure import QuditExposure as QuditExposure
     from ._idle_windows import IdleWindow as IdleWindow
     from ._idle_windows import IdleWindows as IdleWindows
     from ._programs import _Role
@@ -86,6 +88,19 @@ class _Module(ModuleType):
         from ._idle_windows import IdleWindows
 
         return IdleWindows
+
+    # The types of ScheduledKernel.exposure, loaded with the first one read.
+    @property
+    def Exposure(self) -> type[Exposure]:  # noqa: N802
+        from ._exposure import Exposure
+
+        return Exposure
+
+    @property
+    def QuditExposure(self) -> type[QuditExposure]:  # noqa: N802
+        from ._exposure import QuditExposure
+
+        return QuditExposure
 
 
 sys.modules[__name__].__class__ = _Module
@@ -155,11 +170,11 @@ def _passes(passes: Sequence[str]) -> tuple[Pass, ...]:
             f"passes must be a sequence of pass names, not the string {passes!r}"
         )
     members = []
-    names = [p.value for p in Pass]
     for name in passes:
         try:
             members.append(Pass(name))
         except ValueError:
+            names = [p.value for p in Pass]
             close = _closest(str(name), names)
             hint = "" if close is None else f" Did you mean {close!r}?"
             raise InvalidValueError(
@@ -280,6 +295,17 @@ class _MachineModel:
         # given, else _RCP_DRIVES and _RCP_READOUTS. Not fields, as _bare.
         _drive_lanes: int = field(init=False)
         _readout_lanes: int = field(init=False)
+
+        # The emulator export of a program on one controller or none
+        # (classical.wire sets it when it loads).
+        _emulation: ClassVar[Any]
+        _emulation_part: ClassVar[Any]
+
+        def _clocked_builder(self, builder: Any, target: QuantumSystem) -> Any: ...
+
+        def _clocked_module(
+            self, module: Any, target: QuantumSystem, clocks: Any, max_duration_cycles: int | None
+        ) -> Mapping[tuple[str, int], float] | None: ...
 
     def __post_init__(self) -> None:
         drives, readouts = self.max_concurrent_drives, self.max_concurrent_readouts
@@ -598,13 +624,23 @@ class CompileOptions:
                 ) from None
             drives, readouts = machine.max_concurrent_drives, machine.max_concurrent_readouts
             if drives is not None and drives <= 0:
-                raise ValueError("ControlSystem.max_concurrent_drives must be positive")
+                raise ValueError(
+                    f"ControlSystem.max_concurrent_drives must be positive, got {drives!r}"
+                )
             if readouts is not None and readouts <= 0:
-                raise ValueError("ControlSystem.max_concurrent_readouts must be positive")
+                raise ValueError(
+                    f"ControlSystem.max_concurrent_readouts must be positive, got {readouts!r}"
+                )
             if machine.readout_latency_cycles < 0:
-                raise ValueError("the readout latency cannot be negative")
+                raise ValueError(
+                    "the readout latency cannot be negative, "
+                    f"got {machine.readout_latency_cycles!r}"
+                )
             if machine.line_switch_penalty_cycles < 0:
-                raise ValueError("ControlSystem.line_switch_penalty_cycles cannot be negative")
+                raise ValueError(
+                    "ControlSystem.line_switch_penalty_cycles cannot be negative, "
+                    f"got {machine.line_switch_penalty_cycles!r}"
+                )
         options = CompileOptions(
             schedule,
             passes,
@@ -1135,6 +1171,19 @@ class ScheduledKernel:
         whose idle windows were not replaced."""
         return getattr(self.metrics, "idle_windows", None)
 
+    @property
+    def exposure(self) -> Exposure:
+        """What the schedule does to each qudit over time, built when read:
+        per qudit and per outermost loop it has a pulse in, the cycles of
+        one round in which the qudit is driven, read out and idle, the number of rounds, and
+        what the idle time costs at the qudit's T1 and T2 star (see
+        ``QuditExposure``); ``print`` it for a table. Loops stay rolled, so
+        it costs the same for 2 rounds as for a million. ``UnsupportedError``
+        for a program whose schedule depends on its arguments' values."""
+        from ._exposure import report
+
+        return report(self)
+
     def export_to_emulator(self, *, controller: int | None = None) -> dict[str, Any]:
         """The program for a controller emulator: its schedule by segment, its
         calls and the manifest of its classical functions (see
@@ -1251,6 +1300,10 @@ def _rejected_literal(
     from .kernel._emitter import add_source_note
 
     message, word = error.args
+    limited = vars(traced).get("get_buffer")
+    if limited is not None:
+        # A builder under a controller's longest program says the limit.
+        message = limited.restated(message)
     arms = message.startswith("arms:")
     if arms:
         located = _different_lines(message, None)
@@ -1434,11 +1487,15 @@ def build(
         flatten_schedules=options.flatten_schedules,
     )
     builder.unroll_threshold = options.unroll_threshold
-    builder.line_tones = target._line_tones
+    # A coupled system's tones are a Mapping that works higher ones out when
+    # read; the emitter only calls .get on it.
+    builder.line_tones = target._line_tones  # type: ignore[assignment]
+    if target._description._own_carrier:
+        _refuse_other_qudits_tones(builder, target, fn, trace_args)
     builder.machine = machine
     builder.locate_structural = frozenset(parameters)
     plain = machine._plain
-    clocks = None if plain else _clocked_builder(builder, machine, target)
+    clocks = None if plain else machine._clocked_builder(builder, target)
     # One try for the trace and the module: a try statement costs a bytecode.
     try:
         if options.unit_warnings:
@@ -1539,7 +1596,7 @@ def build(
     fine_delays = (
         None
         if plain and max_duration_cycles is None
-        else _clocked_module(module, machine, target, clocks, max_duration_cycles)
+        else machine._clocked_module(module, target, clocks, max_duration_cycles)
     )
     metrics.ffi_ms = (time.perf_counter() - t0) * 1000
 
@@ -1652,31 +1709,89 @@ def build(
         role.every = qudits
         role.program_id = role.identify(buf, name, parameters, target, options)
     if not plain:
-        lowered = _check_controller(lowered)
+        try:
+            lowered = _check_controller(lowered)
+        except CompilationError as error:
+            # A try statement costs a bytecode where the check passes.
+            return _placed_by_limits(
+                error, fn, trace_args, parameters, target, options, slots, role, max_duration_cycles
+            )
     return lowered, builder
 
 
-# Set *builder* up for *machine*'s controllers; their clock plan.
+#: The policy that places a program by its control system's limits, for
+#: each that does not (``_placed_by_limits``).
+_PLACED_BY_LIMITS = {"asap": "rcp", "alap": "alap_rcp"}
+
+
+# A program asap or alap places past a limit of its control system, which
+# declares how many drives or readouts play at once, built again as rcp or
+# alap_rcp places it, when that keeps to every limit; else *error*, the limits
+# the program is over. Only a program the controller check refuses comes here;
+# one compiled with ``keeps_schedule`` options (idle replacement's fills) keeps
+# its schedule and its error.
+def _placed_by_limits(
+    error: CompilationError,
+    fn: Any,
+    trace_args: Sequence[Any],
+    parameters: tuple[str, ...],
+    target: QuantumSystem,
+    options: CompileOptions,
+    slots: int,
+    role: _Role | None,
+    max_duration_cycles: int | None,
+) -> tuple[ScheduledKernel, Any]:
+    from .controller import ControllerLimitError
+
+    machine = options.machine
+    placed = _PLACED_BY_LIMITS.get(options.schedule)
+    if (
+        not isinstance(error, ControllerLimitError)
+        or placed is None
+        or getattr(options, "keeps_schedule", False)
+        or (machine.max_concurrent_drives is None and machine.max_concurrent_readouts is None)
+    ):
+        raise error
+    try:
+        return build(
+            fn,
+            trace_args,
+            parameters,
+            target,
+            dataclasses.replace(options, schedule=placed),
+            slots,
+            role,
+            max_duration_cycles,
+        )
+    except Exception:
+        # Placed by the limits, the program fails otherwise: the limit it is
+        # over is the error to give.
+        raise error from None
+
+
+# Set *builder* up for the model's controllers; their clock plan.
+# ``_MachineModel._clocked_builder``: the model of a control system with a
+# broadcast line has its own (``_broadcast_lines``).
 def _clocked_builder(
-    builder: Any, machine: _MachineModel, target: QuantumSystem
+    self: _MachineModel, builder: Any, target: QuantumSystem
 ) -> _clocks.ClockPlan | None:
     from . import _clocks
 
-    system = machine._system
-    controller = machine.controller
+    system = self._system
+    controller = self.controller
     if system is not None and controller is None:
         clocks = system._clock_plan(target.clock_ghz)
-    elif controller is None and machine.reference_clock_ghz is None:
+    elif controller is None and self.reference_clock_ghz is None:
         clocks = None
     else:
-        clocks = _clocks.plan(controller, target.clock_ghz, machine.reference_clock_ghz)
+        clocks = _clocks.plan(controller, target.clock_ghz, self.reference_clock_ghz)
         if clocks is not None and controller is not None:
             # The controller counts its feedback latency in its own cycles;
             # the scheduler waits it in the program's (a new plan: plans
             # are cached).
             from fractions import Fraction
 
-            latency = Fraction(machine.readout_latency_cycles) / clocks.controllers[0].ratio
+            latency = Fraction(self.readout_latency_cycles) / clocks.controllers[0].ratio
             clocks = dataclasses.replace(clocks, readout_latency_cycles=math.ceil(latency))
     if clocks is not None:
         builder.line_grid = clocks.grid_of
@@ -1696,10 +1811,13 @@ def _clocked_builder(
         if len(set(rates)) == 1:
             builder.sample_rate = rates[0]
         else:
+            from .kernel._mixed_rates import MixedRates
+
             owners = system._line_owners
             builder.sample_rate_of = lambda role, qudit: (
                 None if (owner := owners.get((role, qudit))) is None else rates[owner]
             )
+            builder.tracer = MixedRates
     return clocks
 
 
@@ -1709,8 +1827,8 @@ def _clocked_builder(
 # *max_duration_cycles*, where any differs from the default; the fine
 # delays.
 def _clocked_module(
+    self: _MachineModel,
     module: Any,
-    machine: _MachineModel,
     target: QuantumSystem,
     clocks: _clocks.ClockPlan | None,
     max_duration_cycles: int | None,
@@ -1719,15 +1837,15 @@ def _clocked_module(
 
     shifts: Mapping[tuple[str, int], int] = {}
     fine_delays = None
-    if machine._line_delays:
-        shifts, fine_delays = _line_delays(machine, target, clocks)
-    lines = _lines(machine, shifts, fine_delays, target.clock_ghz)
-    system = machine._system
-    if system is not None and machine.controller is None:
+    if self._line_delays:
+        shifts, fine_delays = _line_delays(self, target, clocks)
+    lines = _lines(self, shifts, fine_delays, target.clock_ghz)
+    system = self._system
+    if system is not None and self.controller is None:
         controllers = system._controllers_attribute(target.clock_ghz, max_duration_cycles)
     else:
-        controllers = _controller_attribute(machine.controller, clocks, max_duration_cycles)
-    if limits := _program_limits(machine, target.clock_ghz):
+        controllers = _controller_attribute(self.controller, clocks, max_duration_cycles)
+    if limits := _program_limits(self, target.clock_ghz):
         module.set_attributes(limits)
     if lines or controllers:
         text = "{pulse.control_system = #pulse.control_system<clock_period_fs = "
@@ -1738,6 +1856,118 @@ def _clocked_module(
             text += f", controllers = {controllers}"
         module.set_attributes(text + ">}")
     return fine_delays
+
+
+# Methods of the model, so that the model of a control system with a
+# broadcast line (``_broadcast_lines``) sets up the trace and the module for
+# one, and no other compilation asks whether it has one.
+_MachineModel._clocked_builder = _clocked_builder  # type: ignore[method-assign]
+_MachineModel._clocked_module = _clocked_module  # type: ignore[method-assign]
+
+
+# For a quantum system whose qudits give no frequencies: make *builder*
+# refuse a drive or readout at the tone of another qudit. Each tone is
+# then an offset from its own qudit's carrier, and the system does not
+# state how far apart two carriers are. A tone whose qudit the trace does
+# not know is refused too. Only such a system's builder is wrapped; every
+# other compile emits as it did.
+def _refuse_other_qudits_tones(
+    builder: Any, target: QuantumSystem, fn: Any, trace_args: Sequence[Any]
+) -> None:
+    emit = builder.emit
+    lines = ("pulse.get_drive_line", "pulse.get_readout_line")
+    # The qudit (by the value it was made from) of each line and tone the
+    # builder made, for a value whose channel the trace does not record.
+    made: dict[int, int] = {}
+
+    def owner(value: Any) -> int | None:
+        chan = getattr(value, "chan", None)
+        return made.get(value.vid) if chan is None else chan.held.key[0]
+
+    def named(qref: int) -> str:
+        qudit = builder._qref_to_qudit.get(qref)
+        if qudit is None:
+            return "another qudit"
+        if qudit >= 0:
+            layout = target.layout
+            return f"qudit {layout.index(qudit) if qudit in layout else qudit}"
+        return _runtime_qudit(fn, trace_args, qudit)
+
+    def checked(kind: str, operands: Any = (), result_types: Any = (), attrs: Any = None) -> Any:
+        played = kind == "pulse.drive" or kind == "pulse.readout"
+        ours = theirs = None
+        if played:
+            line, tone = operands[0], operands[2]
+            ours, theirs = owner(line), owner(tone)
+            chan = getattr(line, "chan", None)
+            if chan is not None and len(chan.held.cells) > 1 and chan.held.cells[1].value is tone:
+                # The line's own tone as it is now.
+                theirs = ours
+            op = kind.removeprefix("pulse.")
+            reason = (
+                f"the qudits of quantum system {target.name!r} give no frequency_hz, so each "
+                "tone is an offset from its own qudit's carrier and the system does not state "
+                "how far apart two carriers are"
+            )
+            if ours is None or theirs is None:
+                raise CompilationError(
+                    f"{op}(): the trace cannot tell which qudit's tone tone= is (the tone, or "
+                    "the line, is a value of its own: what a loop carries, or what the arms of "
+                    f"an if on a measurement bind differently); {reason}",
+                    code="control_system",
+                    fix="read the tone from its line where it is used, as line.tone or "
+                    "line.tones[(1, 2)], or give the qudits their frequencies",
+                )
+            # One qudit, by its index where the builder knows both.
+            mine, other = map(builder._qref_to_qudit.get, (ours, theirs))
+            if ours != theirs if mine is None or other is None else mine != other:
+                raise CompilationError(
+                    f"{op}(): tone= is the tone of {named(theirs)}, and the line is that of "
+                    f"{named(ours)}; {reason}",
+                    code="control_system",
+                    fix="give the qudits their frequencies, or drive the line at its own tone",
+                )
+        results = emit(kind, operands, result_types, attrs)
+        for result in results:
+            # An id is used again after the trace takes a body back.
+            made.pop(result.vid, None)
+        if played:
+            # Both known, or the drive was refused.
+            if ours is not None and theirs is not None:
+                made[results[0].vid], made[results[1].vid] = ours, theirs
+        elif kind in lines:
+            made[results[0].vid] = made[results[1].vid] = operands[0].vid
+        elif results and not kind.startswith("scf."):
+            # A tone or line an op makes from one of its kind is that one's
+            # qudit's; from several, in their order.
+            for vtype in ("tone", "drive_line", "readout_line"):
+                after = [r for r in results if r.vtype == vtype]
+                before = [o for o in operands if getattr(o, "vtype", None) == vtype]
+                if after and len(after) == len(before):
+                    for result, source in zip(after, before, strict=True):
+                        found = owner(source)
+                        if found is not None:
+                            made[result.vid] = found
+        return results
+
+    builder.emit = checked
+
+
+# How an error names the runtime qudit that traces as qudit *slot*
+# (-1 - k): by the kernel's parameter.
+def _runtime_qudit(fn: Any, trace_args: Sequence[Any], slot: int) -> str:
+    from ._device import Qudit, Register
+
+    code = getattr(fn, "__code__", None)
+    names = code.co_varnames[: code.co_argcount] if code is not None else ()
+    for name, value in zip(names, trace_args, strict=False):
+        if value.__class__ is Qudit and value.index == slot:
+            return f"the qudit {name!r}"
+        if value.__class__ is Register:
+            for k, qudit in enumerate(value):
+                if qudit.index == slot:
+                    return f"the qudit {name}[{k}]"
+    return "a runtime qudit"
 
 
 # ``pulse.program_limits``: each controller's ``max_program_duration``,
@@ -1944,7 +2174,15 @@ def with_line_delays(lowered: _Kernel, options: CompileOptions) -> _Kernel | Non
     result.classical = lowered.classical
     result.runtime_selects = lowered.runtime_selects
     result._reused_trace = True
-    return _check_controller(result)
+    if options.schedule not in _PLACED_BY_LIMITS:
+        return _check_controller(result)
+    from .controller import ControllerLimitError
+
+    try:
+        return _check_controller(result)
+    except ControllerLimitError:
+        # Placed past a limit: a full compile places it by the limits.
+        return None
 
 
 class _ClassicalFunctions(tuple[Any, ...]):

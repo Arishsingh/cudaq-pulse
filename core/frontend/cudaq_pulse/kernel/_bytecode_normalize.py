@@ -606,13 +606,18 @@ def _protected(
 ) -> tuple[list[int], list[tuple[int, int, int, int, bool]]]:
     if not code.co_exceptiontable:
         return [], []
-    entries = getattr(dis.Bytecode(code), "exception_entries", ())
     handlers = {ins.offset for ins in raw if ins.opname == "PUSH_EXC_INFO"}
+    if not handlers:
+        # No try or with handler: no range reaches one that catches.
+        return [], []
+    entries = getattr(dis.Bytecode(code), "exception_entries", ())
     starts = sorted({e.start for e in entries if e.target in handlers})
     out = []
     for e in entries:
         reached = e
-        for _ in range(len(entries)):
+        # A chain that repeats no entry ends within a step per entry; the
+        # bound stops a table that loops.
+        for _ in entries:
             if reached.target in handlers:
                 out.append((e.start, e.end, reached.target, reached.depth, reached.lasti))
                 break
@@ -729,11 +734,10 @@ def _decode(code: CodeType) -> DecodedCode:
                 # place; the tracer notes it first. One on a name (x += 1) is
                 # not noted unless its operator is a set's or dict's: a
                 # container a name holds is compared after a branch arm.
+                # index_at has an entry for each instruction up to this
+                # one, so its length is the index of the next.
                 fn = _NB_OPS[iarg]
-                if (
-                    fn in (_op.iand, _op.ior, _op.ixor)
-                    or raw[raw.index(ins) + 1].opname != "STORE_FAST"
-                ):
+                if fn in (_op.iand, _op.ior, _op.ixor) or raw[len(index_at)].opname != "STORE_FAST":
                     out.append([NOTE_INPLACE, None])
                 out.append([BINARY, fn])
         elif name == "BINARY_SLICE":

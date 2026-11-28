@@ -517,14 +517,15 @@ def fake_gate(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(gate.platform, "machine", lambda: "x86_64")
     environment = gate._environment(sys.executable)
 
-    def run(instructions, work, baseline_work=_WORK, form=2, base_commit=None):
+    def run(instructions, work, baseline_work=_WORK, form=2, base_commit=None, args=(), edit=None):
         case = {"op_count": 15, "instructions": 1_000_000}
         if baseline_work is not None:
             case["python_work"] = baseline_work
         baseline = tmp_path / "perf_gate.json"
-        baseline.write_text(
-            json.dumps({"format": form, "environment": environment, "cases": {"c": case}})
-        )
+        content = {"format": form, "environment": environment, "cases": {"c": case}}
+        if edit is not None:
+            edit(content)
+        baseline.write_text(json.dumps(content))
         (bin_dir / "instructions.json").write_text(json.dumps({"c": instructions}))
         (tmp_path / "python_work.json").write_text(json.dumps({"c": work}))
         summary, out = tmp_path / "summary.md", tmp_path / "out.json"
@@ -532,6 +533,7 @@ def fake_gate(tmp_path, monkeypatch, capsys):
         argv = ["perf-gate.py", "--baseline", str(baseline), "--python", sys.executable]
         argv += ["--pythonpath", str(tmp_path), "--summary", str(summary), "--out", str(out)]
         argv += ["--base-commit", base_commit] if base_commit else []
+        argv += args
         monkeypatch.setattr(sys, "argv", argv)
         code = gate.main()
         return code, capsys.readouterr().out, summary.read_text(), json.loads(out.read_text())
@@ -600,6 +602,179 @@ def test_python_work_that_differs_between_identical_runs_labels_nothing(fake_gat
     assert "two identical runs counted it differently (c)" in log
     assert "  c: regression, +0.50% instructions (limit +0.4%)\n" in log
     assert "python_work" not in taken["cases"]["c"]
+
+
+# A run that a merge waits for (--strict). Each case below passes without
+# the flag, having gated no count or counts that do not repeat, which is
+# right at a desk; with it, the run fails and says why.
+_RUN = {"repository": "o/r", "run": 1, "attempt": 1, "commit": "c" * 40, "processes": 5}
+
+
+def _measured(baseline):
+    baseline["source"] = _RUN
+
+
+def _bootstrapping(baseline):
+    baseline["bootstrap"] = True
+    del baseline["cases"]["c"]["instructions"]
+
+
+@pytest.fixture
+def strict_gate(fake_gate, monkeypatch):
+    """The fake gate where ``setarch -R`` works (``env`` stands for it) and
+    the baseline is a measured one, unless the test says otherwise."""
+    monkeypatch.setattr(gate, "_no_aslr", lambda: ["env"])
+
+    def run(strict, edit=_measured, instructions=1_000_000, args=()):
+        return fake_gate(instructions, _WORK, args=["--strict"] * strict + [*args], edit=edit)
+
+    return run
+
+
+def test_a_strict_run_passes_on_measured_counts_without_randomization(strict_gate):
+    for strict in (False, True):
+        code, log, _, _ = strict_gate(strict)
+        assert code == 0 and "Perf gate passed." in log, log
+        assert "address randomization off (setarch -R)" in log
+
+
+def test_a_strict_run_still_fails_a_regression_as_any_run_does(strict_gate):
+    code, log, _, _ = strict_gate(True, instructions=1_005_000)
+    assert code == 1 and "c: layout only, +0.50% instructions" in log
+    assert "--strict" not in log
+
+
+def _without_valgrind(monkeypatch):
+    which = gate.shutil.which
+    monkeypatch.setattr(
+        gate.shutil, "which", lambda name, *a, **k: None if name == "valgrind" else which(name)
+    )
+
+
+def test_without_valgrind_only_a_strict_run_fails(strict_gate, monkeypatch):
+    _without_valgrind(monkeypatch)
+    code, log, _, _ = strict_gate(False)
+    assert code == 0 and "instruction counts skipped: valgrind is not installed" in log
+    code, log, summary, _ = strict_gate(True)
+    assert code == 1
+    refusal = (
+        "--strict: no instruction counts were measured (skipped: valgrind is not installed), "
+        "so only the program sizes were compared"
+    )
+    assert f"  {refusal}\n" in log and f"- {refusal}\n" in summary
+    assert "If the change is intended" not in log + summary
+
+
+@pytest.mark.parametrize(("system", "machine"), [("Linux", "aarch64"), ("Darwin", "arm64")])
+def test_on_another_platform_only_a_strict_run_fails(strict_gate, monkeypatch, system, machine):
+    monkeypatch.setattr(gate.platform, "system", lambda: system)
+    monkeypatch.setattr(gate.platform, "machine", lambda: machine)
+    assert strict_gate(False)[0] == 0
+    code, log, _, _ = strict_gate(True)
+    assert code == 1
+    assert "no instruction counts were measured (skipped: the baseline is for Linux x86-64)" in log
+
+
+def test_with_address_randomization_on_only_a_strict_run_fails(strict_gate, monkeypatch):
+    """The counts happen to match here; they would not repeat."""
+    monkeypatch.setattr(gate, "_no_aslr", list)
+    code, log, _, _ = strict_gate(False)
+    assert code == 0 and "address randomization on: setarch -R is not permitted here" in log
+    code, log, summary, _ = strict_gate(True)
+    assert code == 1
+    refusal = "--strict: the counts were measured with address randomization on"
+    assert refusal in log and refusal in summary
+
+
+def test_with_a_bootstrap_baseline_only_a_strict_run_fails(strict_gate, monkeypatch):
+    """On a pull request: main refuses the field in every run."""
+    monkeypatch.setenv("GITHUB_REF", "refs/pull/1/merge")
+    code, log, _, _ = strict_gate(False, edit=_bootstrapping)
+    assert code == 0 and "Perf gate passed in bootstrap mode" in log
+    code, log, summary, _ = strict_gate(True, edit=_bootstrapping)
+    assert code == 1
+    refusal = (
+        '--strict: perf_gate.json is not a measured baseline: it has a "bootstrap" field, '
+        "which a measured baseline does not"
+    )
+    assert refusal in log and refusal in summary
+    # It fails: it does not also say that the counts pass without a gate.
+    assert "BOOTSTRAP MODE" not in log and "Bootstrap mode" not in summary
+
+
+def test_a_strict_run_needs_a_baseline_that_names_its_run(strict_gate):
+    assert strict_gate(False, edit=None)[0] == 0
+    code, log, _, _ = strict_gate(True, edit=None)
+    assert code == 1
+    assert "is not a measured baseline: it does not name the CI run its counts were" in log
+
+
+def test_a_strict_run_fails_on_each_thing_it_lacks(strict_gate, monkeypatch):
+    _without_valgrind(monkeypatch)
+    code, log, _, _ = strict_gate(True, edit=_bootstrapping)
+    assert code == 1 and log.count("  --strict: ") == 2
+
+
+@pytest.mark.parametrize("other", ["--sizes-only", "--update"])
+def test_a_strict_run_takes_no_flag_that_skips_or_rewrites_the_counts(strict_gate, capsys, other):
+    with pytest.raises(SystemExit) as error:
+        strict_gate(True, args=[other])
+    assert error.value.code == 2
+    assert "--strict gates a run on its counts" in capsys.readouterr().err
+
+
+def test_a_measured_baseline_has_every_count_its_environment_and_its_run():
+    measured = {"environment": {"python": "3.12.15"}, "source": _RUN, **_baseline()}
+    assert gate.unmeasured_baseline(measured) is None
+    assert "bootstrap" in gate.unmeasured_baseline({**measured, "bootstrap": False})
+    assert "bootstrap" in gate.unmeasured_baseline({"bootstrap": True, "cases": {"c": {}}})
+    two = {**measured, "cases": {**measured["cases"], "d": {"op_count": 1}}}
+    assert gate.unmeasured_baseline(two) == "it has no instruction count for d"
+    assert gate.unmeasured_baseline({}) == "it has no instruction counts"
+    assert "environment" in gate.unmeasured_baseline({**measured, "environment": {}})
+    for source in (None, {}, {"run": 1}, {"commit": "c" * 40}, "a run"):
+        assert "CI run" in gate.unmeasured_baseline({**measured, "source": source})
+
+
+def test_strict_errors_name_what_is_missing():
+    measured = {"environment": {"python": "3.12.15"}, "source": _RUN, **_baseline()}
+    assert gate.strict_errors(measured, measured=True, no_aslr=True) == []
+    assert len(gate.strict_errors(measured, measured=False, no_aslr=False)) == 1
+    assert len(gate.strict_errors(measured, measured=True, no_aslr=False)) == 1
+    assert len(gate.strict_errors({}, measured=False, no_aslr=True)) == 2
+    (unmeasured,) = gate.strict_errors({}, True, True, name="other.json")
+    assert unmeasured.startswith("--strict: other.json is not a measured baseline")
+    (failed,) = gate.strict_errors(measured, False, False, "instruction counts not measured")
+    assert failed == (
+        "--strict: no instruction counts were measured, so only the program sizes were compared"
+    )
+
+
+def test_the_checked_in_baseline_is_one_a_strict_run_accepts():
+    assert gate.unmeasured_baseline(json.loads(gate.BASELINE.read_text())) is None
+
+
+def test_ci_gates_strictly_in_every_run_but_the_one_that_takes_a_baseline():
+    """The flag is on unless the manual perf_baseline input is true, which no
+    pull request and no push can set, and nothing else in the step drops it."""
+    job = (_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    step = job[job.index("- name: Perf gate") :]
+    step = step[: step.index("\n\n")]
+    assert "PERF_BASELINE: ${{ inputs.perf_baseline }}" in step
+    lines = [line.strip() for line in step.splitlines()]
+    assert lines.count("strict=yes") == 1
+    assert [line for line in lines if "strict=" in line and line != "strict=yes"] == [
+        'if [ "$PERF_BASELINE" = true ]; then strict=; fi'
+    ]
+    assert lines.index("strict=yes") < lines.index(
+        'if [ "$PERF_BASELINE" = true ]; then strict=; fi'
+    )
+    assert "tools/perf-gate.py" in step and step.count("perf-gate.py") == 1
+    assert "${strict:+--strict}" in step[step.index("tools/perf-gate.py") :]
+    assert "--sizes-only" not in step and "--update" not in step and "--baseline" not in step
+    # The step fails the job.
+    gate_job = job[job.index("\n  perf-gate:\n") :]
+    assert "continue-on-error" not in gate_job[: gate_job.index("\n\n  # ")]
 
 
 def test_in_bootstrap_mode_a_case_without_a_count_is_reported_and_passes():
@@ -1063,6 +1238,7 @@ def test_python_sources_and_files_the_job_never_reads_keep_the_measured_code(rep
             ".github__workflows__docs.yml": "",
             "tools__check-k.py": "",
             "tools__ci-changes.py": "",
+            "tools__ci-ok.py": "",
             "challenges__k__score.py": "",
             "benchmarks__baselines__perf_gate.json": '{"a": 1}\n',
             # Dev dependencies, tool settings and the sdist's contents are not built.
@@ -1624,3 +1800,342 @@ def test_a_function_is_named_short_in_the_shift_detail():
     )
     assert gate._short(name) == "bool llvm::DenseMapBase<...>::doFind<...>(...) const"
     assert len(gate._short("f" * 200)) == 90
+
+
+# Rule 537: address-keyed functions, replayed on #274's CI dumps against
+# main's (run0 of each): each listed function's own instructions and calls on
+# both sides, one of the program's own functions, and the rest of the row.
+_KEYED = json.loads((Path(__file__).parent / "perf_gate_address_keyed.json").read_text())
+_KEYED_ROWS = next(rows for label, rows in _KEYED.items() if label.startswith("#274"))
+# coupling-lines-5: each listed lookup entered twice more than on its base
+# (two more ops and a type registered).
+_COUPLING = next(rows for label, rows in _KEYED.items() if label.startswith("coupling-lines-5"))
+
+
+def _keyed_sides(case, rows=_KEYED_ROWS):
+    """A recorded row as the judgement reads it: each side's own
+    instructions and calls by function."""
+    after, before, tree_calls, base_calls = {}, {}, {}, {}
+    for obj, name, b, a, n, m in rows[case]["functions"]:
+        before[obj, name], after[obj, name] = b, a
+        base_calls[obj, name], tree_calls[obj, name] = n, m
+    rest_before, rest_after = rows[case]["rest"]
+    before["", "(the rest)"], after["", "(the rest)"] = rest_before, rest_after
+    return after, before, tree_calls, base_calls
+
+
+def test_every_address_keyed_entry_names_one_mlir_or_llvm_function_with_its_reasons():
+    import re
+
+    source = (_ROOT / "tools" / "perf-gate.py").read_text()
+    start = source.index("ADDRESS_KEYED = (")
+    block = source[start : source.index("\n)\n", start)]
+    entries = re.findall(r"((?:\n    #[^\n]*)+)\n    r\"([^\"]+)\",", block)
+    assert [pattern for _, pattern in entries] == list(gate.ADDRESS_KEYED)
+    for comments, pattern in entries:
+        # One function of MLIR or LLVM, never of this repository or the interpreter.
+        assert re.match(r"\^(mlir|llvm)::[\w:]+\\\($", pattern), pattern
+        assert "Keys on:" in comments and "Evidence: CI runs" in comments, pattern
+    for function in [("x.so", "pulse::DriveOp::build(x)"), ("python3.12", "PyObject_Malloc")]:
+        assert not gate.address_keyed(function)
+
+
+def _keyed_row(case, after, before, tree_calls, base_calls, baseline=None):
+    """The recorded row, failing against a stored baseline (the base's count
+    unless *baseline*), judged on its address-keyed functions."""
+    total = sum(before.values())
+    row = gate.Row(
+        case,
+        baseline or total,
+        sum(after.values()),
+        0.0,
+        None,
+        "same",
+        "slower",
+        base_name="8311de57",
+    )
+    gate.judge_row(row, gate.judge_address_keyed(after, before, tree_calls, base_calls))
+    return row
+
+
+@pytest.mark.parametrize("case", sorted(_KEYED_ROWS))
+def test_274s_rows_pass_outside_their_address_keyed_functions(case):
+    expected = _KEYED_ROWS[case]["expected"]
+    row = _keyed_row(case, *_keyed_sides(case))
+    # Each row failed by more than its tolerance as a whole.
+    assert row.delta > gate.REGRESSION
+    assert row.keyed.whole == pytest.approx(expected["whole"], abs=1e-6)
+    assert row.keyed.remainder == pytest.approx(expected["remainder"], abs=1e-6)
+    # Against a baseline equal to the base, the rest is the same change.
+    assert row.keyed.against_baseline == pytest.approx(expected["remainder"], abs=1e-6)
+    assert row.verdict == "address-keyed" and not row.keyed.left_in
+
+
+def test_real_work_outside_the_list_still_fails():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    own = next(f for f in after if f[1].startswith("pulse::"))
+    after[own] += int(0.003 * sum(before.values()))
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
+    assert row.verdict == "slower" and row.keyed.against_baseline > gate.REGRESSION
+
+
+def test_the_rest_is_held_to_the_stored_baseline_not_to_a_base_that_drifted():
+    # The base already sits 0.3% above the stored baseline; a change adds
+    # 0.35% of real work and moves a listed function by one instruction.
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    for f in after:
+        after[f] = before[f]
+    uniquer = next(f for f in after if "getParametricStorageTypeImpl" in f[1])
+    after[uniquer] += 1
+    own = next(f for f in after if f[1].startswith("pulse::"))
+    total = sum(before.values())
+    after[own] = before[own] + int(0.0035 * total)
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls, total / 1.003)
+    assert row.keyed.remainder < gate.REGRESSION
+    assert row.keyed.against_baseline > gate.REGRESSION
+    assert row.verdict == "slower"
+
+
+def test_a_listed_function_entered_many_more_times_stays_in_the_rest_and_fails():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    uniquer = next(f for f in after if "getParametricStorageTypeImpl" in f[1])
+    # 200 more entries, far beyond 1% of 984, at the same cost per call.
+    after[uniquer] += 200 * after[uniquer] // tree_calls[uniquer]
+    tree_calls[uniquer] += 200
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
+    assert row.verdict == "slower"
+    assert any(
+        "getParametricStorageTypeImpl" in s and "calls 984 -> 1,184, more than 9 apart" in s
+        for s in row.keyed.left_in
+    )
+
+
+def test_the_coupling_row_passes_with_its_few_extra_entries_counted_as_work():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile", _COUPLING)
+    baseline = _COUPLING["first_compile"]["baseline"]
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls, baseline)
+    assert row.delta > gate.REGRESSION
+    assert row.keyed.against_baseline == pytest.approx(0.00335, abs=5e-5)
+    assert row.verdict == "address-keyed"
+    insert = next(s for s in row.keyed.taken_out if "RegisteredOperationName::insert" in s)
+    assert "443 -> 445 calls, 911.2 -> 928.7 per call, taken out +7,797" in insert
+    assert "left in for +2 calls +1,822" in insert
+
+
+def test_the_entry_cap_is_one_percent_of_the_base_and_at_least_one():
+    assert [gate.entry_cap(n) for n in (0, 40, 99, 100, 443, 984)] == [1, 1, 1, 1, 4, 9]
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile", _COUPLING)
+    insert = next(f for f in after if "RegisteredOperationName::insert" in f[1])
+    for extra, taken in ((4, True), (5, False)):
+        calls = dict(tree_calls)
+        calls[insert] = base_calls[insert] + extra
+        keyed = gate.judge_address_keyed(after, before, calls, base_calls)
+        assert any("RegisteredOperationName::insert" in s for s in keyed.taken_out) is taken
+
+
+def test_fewer_entries_credit_the_rest_at_the_bases_cost_per_call():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    uniquer = next(f for f in after if "getParametricStorageTypeImpl" in f[1])
+    # Two fewer entries, each at the tree's cost per call.
+    per_call = after[uniquer] / tree_calls[uniquer]
+    after[uniquer] -= round(2 * per_call)
+    tree_calls[uniquer] -= 2
+    keyed = gate.judge_address_keyed(after, before, tree_calls, base_calls)
+    text = next(s for s in keyed.taken_out if "getParametricStorageTypeImpl" in s)
+    assert "984 -> 982 calls" in text and "left in for -2 calls -1,089" in text
+
+
+def test_a_listed_function_never_called_on_either_side_is_not_taken_out():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    total = sum(before.values())
+    ghost = ("x.so", "mlir::RegisteredOperationName::insert(ghost)")
+    before[ghost], after[ghost] = 0, int(0.05 * total)
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
+    assert row.verdict == "slower"
+    assert any(s.startswith("x.so:") and "calls 0 -> 0" in s for s in row.keyed.left_in)
+
+
+def test_a_row_whose_listed_functions_did_not_move_is_not_judged_this_way():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    for f in after:
+        if gate.address_keyed(f):
+            after[f] = before[f]
+    assert gate.judge_address_keyed(after, before, tree_calls, base_calls) is None
+
+
+def test_only_a_regression_is_judged_this_way():
+    for verdict in ("improved", "layout", "ok", "faster"):
+        row = gate.Row("first_compile", 1.0, 2.0, 0.0, None, "same", verdict)
+        gate.apply_address_keyed([row], {"first_compile": "x"}, {"first_compile": "x"})
+        assert row.verdict == verdict and row.keyed is None
+
+
+def test_an_address_keyed_pass_shows_the_whole_change_and_each_function_per_call():
+    row = _keyed_row("first_compile", *_keyed_sides("first_compile"))
+    (note,) = gate.keyed_notes([row])
+    assert note.startswith(
+        "first_compile: address-keyed, +0.85% against the stored baseline and +0.85% from its "
+        "base 8311de57"
+    )
+    assert "outside the address-keyed functions +0.26% against the stored baseline" in note
+    assert "984 calls, 544.6 -> 590.5 per call, +45,139" in note
+    assert "688 calls, 35.4 -> 124.9 per call, +61,580" in note
+    assert "443 calls, 911.2 -> 831.0 per call, -35,537" in note
+    assert "address-keyed" not in gate.FAILING
+
+
+def test_a_regression_still_above_the_limit_says_so_outside_the_list():
+    after, before, tree_calls, base_calls = _keyed_sides("first_compile")
+    own = next(f for f in after if f[1].startswith("pulse::"))
+    after[own] += int(0.003 * sum(before.values()))
+    row = _keyed_row("first_compile", after, before, tree_calls, base_calls)
+    reason = gate.failure_reason(row)
+    assert "regression" in reason
+    assert (
+        "judged outside its address-keyed functions: "
+        "outside the address-keyed functions +0.56% against the stored baseline" in reason
+    )
+    assert reason.endswith(": fails")
+    # A layout-only row that also fails outside the list says both.
+    row.on_base, row.own = True, 0.0085
+    assert "outside the address-keyed functions +0.56%" in gate.failure_reason(row)
+
+
+# Rule 550: the listed functions judged like for like against the records the
+# baseline keeps of them. walks-without-recursion failed while main stood
+# +1.02% above the baseline after #274's address-keyed pass.
+_WALKS = next(rows for label, rows in _KEYED.items() if label.startswith("walks-without"))
+
+
+def _walks_row(case, edit=None):
+    """walks' recorded row, failing against the baseline, judged against the
+    baseline's records of its listed functions (*edit* changes its own
+    instructions and calls first)."""
+    c = _WALKS[case]
+    after = {(obj, name): ir for obj, name, ir, _ in c["functions"]}
+    calls = {(obj, name): n for obj, name, _, n in c["functions"]}
+    after["", "(the rest)"] = c["rest"]
+    if edit:
+        edit(after, calls)
+    row = gate.Row(
+        case, c["baseline"], sum(after.values()) / c["reps"], 0.0, None, "same", "slower"
+    )
+    gate.judge_row(row, gate.judge_records(after, calls, c["records"], c["baseline"], c["reps"]))
+    return row
+
+
+def test_a_change_merged_as_address_keyed_does_not_stay_in_later_rows():
+    row = _walks_row("first_compile")
+    assert row.delta == pytest.approx(0.00608, abs=5e-5)
+    assert row.keyed.records and row.keyed.against_baseline == pytest.approx(0.00133, abs=5e-5)
+    assert row.verdict == "address-keyed"
+    (note,) = gate.keyed_notes([row])
+    assert "from its base" not in note and "against the baseline's records" in note
+    assert "443 calls, 911.2 -> 931.9 per call" in note
+
+
+def test_work_outside_the_list_stays_held_to_the_baseline():
+    # walks' specialize_wait: main itself stood +0.23% above the baseline
+    # outside the listed functions, and walks adds about +0.24% more.
+    row = _walks_row("specialize_wait")
+    assert row.keyed.against_baseline == pytest.approx(0.00473, abs=5e-5)
+    assert row.verdict == "slower"
+
+
+def test_no_more_than_two_percent_of_the_baseline_is_taken_out():
+    def eightfold(after, calls):
+        for f in after:
+            if gate.address_keyed(f):
+                after[f] *= 8
+
+    row = _walks_row("first_compile", eightfold)
+    assert row.keyed.too_much and row.verdict == "slower"
+    assert "more than 2% of the baseline's count" in gate.failure_reason(row)
+
+
+def test_a_baseline_records_its_listed_functions_and_they_are_not_a_size():
+    records = {"first_compile": _WALKS["first_compile"]["records"]}
+    measured = gate.as_baseline(
+        {},
+        {"first_compile": {"ops": 1}},
+        {"first_compile": gate.Measured([12_000_000.0], [1.0])},
+        {},
+        {},
+        records=records,
+    )
+    entry = measured["cases"]["first_compile"]
+    assert entry["address_keyed"] == records["first_compile"]
+    (row,) = gate.compare(measured, {"first_compile": {"ops": 1}}, None)
+    assert row.verdict == "ok"
+
+
+def _keyed_dump(entries_a, cost_a, entries_b, cost_b, rest):
+    """A small Callgrind dump of one case: a caller that enters the uniquer
+    lookup in two objects, and the rest of its own work."""
+    name = "mlir::StorageUniquer::getParametricStorageTypeImpl(x)"
+    return "\n".join(
+        [
+            "desc: Trigger: Client Request: case",
+            "events: Ir",
+            "ob=(1) /x/liba.so",
+            "fn=(1) caller",
+            f"0 {rest}",
+            "cob=(2) /x/libb.so",
+            f"cfn=(2) {name}",
+            f"calls={entries_b} 0",
+            f"0 {cost_b}",
+            f"cfn=(3) {name}",
+            f"calls={entries_a} 0",
+            f"0 {cost_a}",
+            "fn=(3)",
+            f"0 {cost_a}",
+            "ob=(2)",
+            "fn=(2)",
+            f"0 {cost_b}",
+            "",
+        ]
+    )
+
+
+def test_records_round_trip_by_name_over_the_objects_that_hold_one():
+    text = _keyed_dump(1000, 500_000, 10, 5_000, 2_000_000)
+    records = gate.address_keyed_records(text, 10)
+    assert records == {"mlir::StorageUniquer::getParametricStorageTypeImpl(x)": [101.0, 50_500.0]}
+    baseline = sum(gate.dump_costs(text).values()) / 10
+    # The same dump against its own records: nothing moved, nothing to judge.
+    assert gate.judge_against_records(text, records, baseline, 10) is None
+    # Each call 10% dearer in both objects: all of it taken out, rest unchanged.
+    dearer = _keyed_dump(1000, 550_000, 10, 5_500, 2_000_000)
+    keyed = gate.judge_against_records(dearer, records, baseline, 10)
+    assert keyed.records and keyed.remainder == pytest.approx(0.0, abs=1e-12)
+    assert keyed.taken_out == (
+        "mlir::StorageUniquer::getParametricStorageTypeImpl(...) "
+        "(1,010 calls, 500.0 -> 550.0 per call, +50,500)",
+    )
+
+
+def test_a_listed_function_s_own_cost_without_calls_in_an_object_counts_on_both_sides():
+    # Its own instructions in a third object it has no calls into there.
+    name = "mlir::StorageUniquer::getParametricStorageTypeImpl(x)"
+    extra = f"\nob=(3) /x/libc.so\nfn=(4) {name}\n0 7000\n"
+    text = _keyed_dump(1000, 500_000, 10, 5_000, 2_000_000) + extra
+    records = gate.address_keyed_records(text, 10)
+    baseline = sum(gate.dump_costs(text).values()) / 10
+    assert gate.judge_against_records(text, records, baseline, 10) is None
+
+
+def test_the_gate_judges_a_regression_against_the_records_for_its_repetitions():
+    text = _keyed_dump(1000, 500_000, 10, 5_000, 2_000_000)
+    records = {"case": gate.address_keyed_records(text, 10)}
+    baseline = sum(gate.dump_costs(text).values()) / 10
+    # Each call 3% dearer: 0.6% of the row taken out, within the 2% bound.
+    dearer = _keyed_dump(1000, 515_000, 10, 5_150, 2_000_000)
+    row = gate.Row(
+        "case", baseline, sum(gate.dump_costs(dearer).values()) / 10, 0.0, None, "same", "slower"
+    )
+    gate.apply_address_keyed([row], {"case": dearer}, {}, records, {"case": 10})
+    assert row.verdict == "address-keyed" and row.keyed.records
+    # Without the case's repetitions, nothing judges it against the records.
+    other = gate.Row("case", baseline, row.measured, 0.0, None, "same", "slower")
+    gate.apply_address_keyed([other], {"case": dearer}, {}, records, {})
+    assert other.verdict == "slower" and other.keyed is None

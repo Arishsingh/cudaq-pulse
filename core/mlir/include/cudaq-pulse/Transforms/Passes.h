@@ -12,6 +12,7 @@
 #include "mlir/Pass/PassRegistry.h"
 
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <string>
 
@@ -87,6 +88,21 @@ mlir::LogicalResult expandCalls(mlir::ModuleOp module, bool callSites);
 /// keeps the rules for one, no call runs back into itself, and the program
 /// with its calls written out passes every check.
 mlir::LogicalResult checkCalls(mlir::ModuleOp module);
+
+/// For a `module` that lists its controllers' longest programs (its
+/// pulse.program_limits, from Controller.max_program_duration): fails if a
+/// scheduled function of it can last longer than one of them with its
+/// waits of run-time length at their highest, or has such a wait with no
+/// highest length where it holds back a line of such a controller
+/// (PulseProgramLimits.cpp). The program as scheduled is the schedule
+/// passes' to check.
+mlir::LogicalResult checkWaitLimits(mlir::ModuleOp module);
+/// For the handler of a schedule that failed with a call's values, `error`:
+/// where the schedule's check said the program then lasts longer than a
+/// controller's longest program, throws that sentence as an error of the
+/// values (std::invalid_argument); else throws `error` again (the
+/// extension's ProgramLimitError.cpp).
+[[noreturn]] void rethrowPastProgramLimit(const std::exception &error);
 /// Whether `module` holds a pulse.call.
 bool moduleHasCalls(mlir::ModuleOp module);
 std::unique_ptr<mlir::Pass>
@@ -100,6 +116,12 @@ std::unique_ptr<mlir::Pass> createPulseFrameChangesPass();
 /// Whether pulse-frame-changes would change `op`: it holds a frame change,
 /// or a loop or branch the pass marked.
 bool hasFrameChangeWork(mlir::Operation *op);
+/// The marks of pulse-frame-changes alone, on a module whose frame changes
+/// have their place: one another compiler scheduled. The marks its frame
+/// changes, loops and branches carry are replaced by those the code gives;
+/// no change moves. Returns whether the module may have changed: it holds a
+/// frame change, or a loop or branch with a mark.
+bool markFrameUpdates(mlir::ModuleOp module);
 std::unique_ptr<mlir::Pass> createPulseUnrollClassicalLoopsPass();
 /// pulse-lower-selects with no parameter taken at run time, for
 /// cudaq-pulse-opt (where the `runtime` option sets them).
