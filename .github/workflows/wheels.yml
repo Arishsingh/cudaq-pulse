@@ -74,6 +74,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # In a second, before any wheel is built: the files the wheels' tests
+      # are given (test-sources in pyproject.toml) are in the checkout, and
+      # no test asks for one that is not listed (tests/_sources.py). Each
+      # wheel's test command checks its own copy again before its long run.
+      - name: Check the files the wheels' tests are given
+        run: python3 tests/_sources.py check
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - id: version
         env:
