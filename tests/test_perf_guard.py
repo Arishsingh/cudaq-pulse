@@ -1401,6 +1401,33 @@ def test_compiling_calls_takes_little_memory_per_call():
     assert per_call < 2048, per_call
 
 
+@pytest.mark.scaling
+def test_a_segment_costs_the_emulator_export_one_call():
+    from cudaq_pulse.classical import wire
+    from cudaq_pulse.compiler import Segment
+
+    @pulse.kernel
+    def kernel(q):
+        drive(get_drive_line(q), square(8, 0.1))
+
+    lowered = pulse.compile(kernel).lower(Q[0])
+
+    def exporting(n: int):
+        segments = [Segment(0, "start", -1, 0, 0, 0)]
+        segments += [Segment(k, "wait", 0, 100 * k, 0, None) for k in range(1, n)]
+        program = ((segments, [None, *range(n - 1)]), ())
+        return lambda: wire._export(lowered, False, None, program)
+
+    # The segments alone, with no events and no calls: each further one
+    # costs the export one call, where copying it field by field with
+    # dataclasses.asdict took about 30.
+    runs = {n: exporting(n) for n in (100, 800)}
+    work = {n: python_work(run) for n, run in runs.items()}
+    assert work[800]["calls"] - work[100]["calls"] <= 700, work
+    assert len(runs[800]()["segments"]) == 800
+    _assert_linear("segments", runs, 16)
+
+
 def _if_chain(n):
     src = (
         "def k(a, b):\n    da = get_drive_line(a)\n    db = get_drive_line(b)\n"
