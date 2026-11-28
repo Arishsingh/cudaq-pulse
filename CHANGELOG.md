@@ -517,6 +517,14 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 - **Faster compiles of branches beside long lists of lines.** Tracing a
   measurement-conditioned `if` in a kernel that keeps many lines or tones
   in a list costs less; the programs compiled are unchanged.
+- **A kernel of many comprehensions and no `try` or `with` block is
+  decoded in linear time.** Reading a kernel's bytecode looked, for the
+  exception-table entry of each inlined comprehension, through every entry
+  of the kernel, so a kernel with a thousand comprehensions ran 16 million
+  bytecodes there the first time it was compiled, most of that compile's
+  Python work. A kernel without a `try` or `with` block no longer looks:
+  it has no handler to find. One with such a block is read as before. The
+  programs compiled are unchanged.
 - **A list of lines held under several names costs a branch once.** A
   measurement-conditioned `if` kept a record of a list of lines or tones for
   every local name that held it (a further variable, or a called kernel

@@ -44,7 +44,13 @@ from cudaq_pulse.kernel.packed_ir_builder import PackedIRBuilder
 from tests._handles import Q, ladder_target
 from tests._ir import python_ir
 from tests._tools import missing
-from tests._work import cpu_seconds_each, native_seconds_each, python_work, seconds_each
+from tests._work import (
+    bytecodes,
+    cpu_seconds_each,
+    native_seconds_each,
+    python_work,
+    seconds_each,
+)
 from tests.kernel.ir_corpus import (
     bicycle_syndrome,
     dd_loop,
@@ -357,6 +363,25 @@ def test_augmented_assignments_are_decoded_in_linear_time():
     # Eight times the assignments: about 8x the time when linear, 64x when
     # the instruction after each is looked for from the first.
     _assert_linear("decode", {n: decoding(n) for n in (1000, 8000)}, 16)
+
+
+@pytest.mark.scaling
+def test_comprehensions_are_decoded_in_linear_time():
+    def decoding(n: int):
+        scope = {}
+        exec("def f(x):\n" + "    y = [x + j for j in range(2)]\n" * n + "    return y\n", scope)
+        code = scope["f"].__code__
+        return lambda: _decode(code)
+
+    # An inlined comprehension has an exception-table entry (Python 3.12 to
+    # 3.15), and this code has no try or with block. Eight times the
+    # comprehensions: 8x the instructions when linear, 17x when every entry
+    # is looked for among all of them, which ran on one line and so showed
+    # in neither the lines nor the calls.
+    runs = {n: decoding(n) for n in (100, 800)}
+    steps = {n: bytecodes(run) for n, run in runs.items()}
+    assert steps[800] <= steps[100] * 8, steps
+    _assert_linear("decode", runs, 16)
 
 
 @pytest.mark.scaling
