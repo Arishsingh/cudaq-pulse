@@ -820,6 +820,25 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
 
 ### Fixed
 
+- **A frame update in a measured branch of a rolled loop waits for its
+  readout.** A phase or frequency change in an arm of an `if` on a
+  measurement is made once the measurement is in. In a rolled loop that
+  carries the tone through the branch (the loop's iterations do not drive
+  the tone, or drive it only after the branch), the change was placed at
+  the start of the iteration instead: for
+  `for _ in range(3): if readout(r, square(200, 0.05)): shift_phase(d.tone, 0.25)`
+  the exported frame updates were at cycles 0, 200 and 400, each on the
+  condition of a readout that completes 200 cycles later, where the same
+  loop written out gives 200, 400 and 600. Such a change, one that no
+  drive or readout plays with on a tone whose free time is not one pattern
+  over the iterations, is now placed when the readouts its branches test
+  complete, and where two of them move differently from one iteration to
+  the next, once both have. Only the start of such a change moves: drives,
+  readouts and waits are scheduled as before, and unrolled programs and
+  programs without a frame change in a measured branch of a rolled loop
+  compile to the IR, schedule and exports they had. A change in a loop
+  that drives its tone before the branch, and a branch in a loop on a
+  measurement from before the loop, are placed as before.
 - **Compiling loops of classical calls inside loops no longer slows with
   the trips of any of them.** Of the loops around a call, the classical
   check took one from a single copy of its body and walked the others
