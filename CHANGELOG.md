@@ -1615,7 +1615,8 @@ release's `## [X.Y.Z] - Unreleased`, in the pull request that makes it.
   swept `sigma` or DRAG `beta` was read as that many clock cycles, half the
   width meant on a 2 GHz clock, with no error. NumPy numbers now follow the
   same rules as Python's on either side of a time, and a NumPy array times
-  a unit is a `TypeError` rather than an array that lost its unit.
+  a unit is a `TypeError` that says to multiply its elements, rather than
+  an array that lost its unit.
 
 ## [0.1.0] - 2026-11-13
 

@@ -161,7 +161,8 @@ them from a calibration the kernel closes over.
   time, are errors. ``0.1 * pulse.us`` is exactly 100 ns: a time holds its
   value as a fraction, from the digits it is written with.
   A NumPy number is a number here, so ``np.float64(4) * pulse.ns`` is 4 ns;
-  a NumPy array times a unit is a ``TypeError``, so multiply its elements.
+  a NumPy array times a unit is a ``TypeError`` that says to multiply its
+  elements, ``[x * pulse.ns for x in array]``.
 - Times compare with times: ``pulse_length <= 40 * pulse.ns``. Comparing a
   time with a bare number, ``==`` or an ordering, is a ``TypeError``, since
   the number could be cycles or nanoseconds; ``float(t)`` is the time in
