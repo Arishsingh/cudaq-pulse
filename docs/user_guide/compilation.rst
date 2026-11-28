@@ -555,7 +555,18 @@ or frequency change keeps the start the module gives it; which changes no
 later drive or readout takes, and so are frame updates in the export
 (:doc:`controller_backends`), ``load`` finds from the function's operations
 as ``compile`` does, and a module does not say. The
-function plays on the qudits it takes and allocates none. A control system
+function plays on the qudits it takes and allocates none. Each line, tone
+and link is one from where it starts (a line and its tone at
+``pulse.get_drive_line`` or ``pulse.get_readout_line`` of a qudit the
+function takes, a tone of its own at ``pulse.tone``, a link at
+``classical.get_link``) to its last use: Pulse and classical operations,
+``scf.if`` and ``scf.for`` pass it on, and nothing else makes one (a line
+picked by ``arith.select`` is refused). A branch whose arms give the
+lines or tones of two qudits, two tones made apart or two links as one
+result is refused, and so is a loop that yields another than it takes in:
+what follows would play on a line that depends on the path. A qudit picked
+by an operation such as ``arith.select``, or passed through a branch or a
+loop, is refused too. A control system
 with line delays, or a controller with ``max_instructions`` or
 ``max_program_duration``, is refused: ``load`` does not apply or check those
 yet.
