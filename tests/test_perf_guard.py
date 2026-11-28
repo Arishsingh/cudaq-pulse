@@ -44,7 +44,13 @@ from cudaq_pulse.kernel.packed_ir_builder import PackedIRBuilder
 from tests._handles import Q, ladder_target
 from tests._ir import python_ir
 from tests._tools import missing
-from tests._work import cpu_seconds_each, native_seconds_each, python_work, seconds_each
+from tests._work import (
+    bytecodes,
+    cpu_seconds_each,
+    native_seconds_each,
+    python_work,
+    seconds_each,
+)
 from tests.kernel.ir_corpus import (
     bicycle_syndrome,
     dd_loop,
@@ -357,6 +363,25 @@ def test_augmented_assignments_are_decoded_in_linear_time():
     # Eight times the assignments: about 8x the time when linear, 64x when
     # the instruction after each is looked for from the first.
     _assert_linear("decode", {n: decoding(n) for n in (1000, 8000)}, 16)
+
+
+@pytest.mark.scaling
+def test_comprehensions_are_decoded_in_linear_time():
+    def decoding(n: int):
+        scope = {}
+        exec("def f(x):\n" + "    y = [x + j for j in range(2)]\n" * n + "    return y\n", scope)
+        code = scope["f"].__code__
+        return lambda: _decode(code)
+
+    # An inlined comprehension has an exception-table entry (Python 3.12 to
+    # 3.15), and this code has no try or with block. Eight times the
+    # comprehensions: 8x the instructions when linear, 17x when every entry
+    # is looked for among all of them, which ran on one line and so showed
+    # in neither the lines nor the calls.
+    runs = {n: decoding(n) for n in (100, 800)}
+    steps = {n: bytecodes(run) for n, run in runs.items()}
+    assert steps[800] <= steps[100] * 8, steps
+    _assert_linear("decode", runs, 16)
 
 
 @pytest.mark.scaling
@@ -1320,6 +1345,45 @@ def test_a_call_adds_little_to_simulation_on_the_same_timeline():
 
 
 @pytest.mark.scaling
+def test_a_readout_beside_calls_weighs_each_outcome_once(monkeypatch):
+    from cudaq_pulse.runtime import simulate as simulation
+
+    @pulse.classical(max_latency_ns=200, name="perf_weighed_gain")
+    def gain(bits: pulse.Bits) -> float:
+        return 0.1 * bits[0]
+
+    def program(n: int):
+        source = "def kernel(q):\n    line = get_drive_line(q)\n    probe = get_readout_line(q)\n"
+        source += (
+            "    drive(line, square(8, 0.07))\n"
+            "    sync(line, probe)\n"
+            "    m = readout(probe, square(16, 0.05))\n"
+            "    sync(probe, line)\n"
+            "    drive(line, square(8, gain.submit([m]).result()))\n"
+        ) * n
+        scope = dict(vars(pulse), gain=gain)
+        exec(compile(source, f"<{n} readouts>", "exec"), scope)
+        return pulse.compile(pulse.kernel(scope["kernel"])).lower(Q[0])
+
+    weight = simulation._Backend.weight
+    weighed = dict.fromkeys((1, 4), 0)
+    for n in weighed:
+        lowered = program(n)
+
+        def counted(state: object, n: int = n) -> float:
+            weighed[n] += 1
+            return weight(state)
+
+        monkeypatch.setattr(simulation._Backend, "weight", staticmethod(counted))
+        pulse.simulate(lowered, levels=2, dt_ns=0.5, shots_count=1, seed=3, branches="sampled")
+        monkeypatch.undo()
+    # One shot follows one path: each further readout projects the state on
+    # its two levels and takes the weight of each once. Taking them again
+    # for the probabilities and for the outcome followed made it five.
+    assert weighed[4] - weighed[1] == 3 * 2, weighed
+
+
+@pytest.mark.scaling
 def test_compiling_calls_takes_little_memory_per_call():
     import tracemalloc
 
@@ -1335,6 +1399,33 @@ def test_compiling_calls_takes_little_memory_per_call():
         tracemalloc.stop()
     per_call = (peaks[4000] - peaks[500]) / 3500
     assert per_call < 2048, per_call
+
+
+@pytest.mark.scaling
+def test_a_segment_costs_the_emulator_export_one_call():
+    from cudaq_pulse.classical import wire
+    from cudaq_pulse.compiler import Segment
+
+    @pulse.kernel
+    def kernel(q):
+        drive(get_drive_line(q), square(8, 0.1))
+
+    lowered = pulse.compile(kernel).lower(Q[0])
+
+    def exporting(n: int):
+        segments = [Segment(0, "start", -1, 0, 0, 0)]
+        segments += [Segment(k, "wait", 0, 100 * k, 0, None) for k in range(1, n)]
+        program = ((segments, [None, *range(n - 1)]), ())
+        return lambda: wire._export(lowered, False, None, program)
+
+    # The segments alone, with no events and no calls: each further one
+    # costs the export one call, where copying it field by field with
+    # dataclasses.asdict took about 30.
+    runs = {n: exporting(n) for n in (100, 800)}
+    work = {n: python_work(run) for n, run in runs.items()}
+    assert work[800]["calls"] - work[100]["calls"] <= 700, work
+    assert len(runs[800]()["segments"]) == 800
+    _assert_linear("segments", runs, 16)
 
 
 def _if_chain(n):
